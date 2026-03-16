@@ -84,6 +84,7 @@ This is a stripped-down, Bambu-only fork of [mcp-3D-printer-server](https://gith
 
 - Node.js 18 or higher
 - npm
+- **BambuStudio** *(optional -- only needed for slicing)* -- [download from bambulab.com](https://bambulab.com/en/download/studio). Required by `slice_stl` and `print_3mf` auto-slice (when a 3MF has no embedded gcode). Not needed if you only print pre-sliced 3MF files. Default path: `/Applications/BambuStudio.app/Contents/MacOS/BambuStudio` (macOS); set `SLICER_PATH` if installed elsewhere.
 
 ### Run without installing (npx)
 
