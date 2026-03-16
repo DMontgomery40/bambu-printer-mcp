@@ -1,6 +1,6 @@
 {
   "name": "bambu-printer-mcp",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "MCP server for Bambu Lab 3D printers with STL manipulation, slicing, and print management",
   "main": "dist/index.js",
   "repository": "https://github.com/DMontgomery40/bambu-printer-mcp",
