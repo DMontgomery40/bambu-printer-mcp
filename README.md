@@ -25,8 +25,7 @@ This is a stripped-down, Bambu-only fork of [mcp-3D-printer-server](https://gith
   - [Install from source](#install-from-source)
 - [Configuration](#configuration)
   - [Environment variables reference](#environment-variables-reference)
-- [Usage with Claude Desktop](#usage-with-claude-desktop)
-- [Usage with Claude Code](#usage-with-claude-code)
+- [Usage](#usage)
 - [Enabling Developer Mode (Required)](#enabling-developer-mode-required)
 - [Finding Your Bambu Printer's Serial Number and Access Token](#finding-your-bambu-printers-serial-number-and-access-token)
 - [AMS (Automatic Material System) Setup](#ams-automatic-material-system-setup)
@@ -182,48 +181,9 @@ BLENDER_MCP_BRIDGE_COMMAND=       # Shell command to invoke your Blender MCP bri
 
 ---
 
-## Usage with Claude Desktop
+## Usage
 
-Edit your Claude Desktop configuration file. On macOS this is at `~/Library/Application Support/Claude/claude_desktop_config.json`. On Windows it is at `%APPDATA%\Claude\claude_desktop_config.json`.
-
-**Using npx (recommended -- always runs the latest version):**
-
-```json
-{
-  "mcpServers": {
-    "bambu-printer": {
-      "command": "npx",
-      "args": ["-y", "bambu-printer-mcp"],
-      "env": {
-        "PRINTER_HOST": "192.168.1.100",
-        "BAMBU_SERIAL": "01P00A123456789",
-        "BAMBU_TOKEN": "your_access_token",
-        "BAMBU_MODEL": "p1s"
-      }
-    }
-  }
-}
-```
-
-**Using a globally installed binary:**
-
-```json
-{
-  "mcpServers": {
-    "bambu-printer": {
-      "command": "bambu-printer-mcp",
-      "env": {
-        "PRINTER_HOST": "192.168.1.100",
-        "BAMBU_SERIAL": "01P00A123456789",
-        "BAMBU_TOKEN": "your_access_token",
-        "BAMBU_MODEL": "p1s"
-      }
-    }
-  }
-}
-```
-
-**With slicer configured (for auto-slice and print_3mf workflows):**
+Add this server to your MCP client's config (Claude Desktop, Claude Code, Cursor, Codex CLI, or any MCP-compatible client). The config format is the same everywhere -- an `mcpServers` entry with the command and env vars:
 
 ```json
 {
@@ -244,53 +204,29 @@ Edit your Claude Desktop configuration file. On macOS this is at `~/Library/Appl
 }
 ```
 
-After editing the file, restart Claude Desktop. You should see the bambu-printer tools appear in the tool list when you open a new conversation.
+Where this config lives depends on your client:
 
----
+| Client | Config location |
+|--------|----------------|
+| Claude Desktop (macOS) | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+| Claude Desktop (Windows) | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Claude Code (project) | `.mcp.json` in project root |
+| Claude Code (global) | `~/.claude/settings.json` |
+| Cursor | MCP settings in Cursor preferences |
+| Codex CLI | MCP config per Codex docs |
 
-## Usage with Claude Code
+Restart your client after editing the config.
 
-In Claude Code, MCP servers are configured in your project's `.mcp.json` file or in your global Claude Code settings at `~/.claude/settings.json`.
+### Recommended: use with codemode-mcp
 
-**Project-level configuration (`.mcp.json` in your project root):**
+For any MCP server with a large tool surface, wrapping it behind [codemode-mcp](https://github.com/jx-codes/codemode-mcp) dramatically reduces token usage. Instead of exposing every tool definition to the model (which can consume tens of thousands of tokens per turn), codemode lets the agent write code against a two-tool interface (`search()` and `execute()`), loading only the tools it needs on demand.
 
-```json
-{
-  "mcpServers": {
-    "bambu-printer": {
-      "command": "npx",
-      "args": ["-y", "bambu-printer-mcp"],
-      "env": {
-        "PRINTER_HOST": "192.168.1.100",
-        "BAMBU_SERIAL": "01P00A123456789",
-        "BAMBU_TOKEN": "your_access_token",
-        "BAMBU_MODEL": "p1s",
-        "SLICER_TYPE": "bambustudio",
-        "SLICER_PATH": "/Applications/BambuStudio.app/Contents/MacOS/BambuStudio"
-      }
-    }
-  }
-}
-```
+Anthropic and Cloudflare independently demonstrated this pattern reduces MCP token costs by up to 98%:
 
-**Global configuration (`~/.claude/settings.json`):**
+- [Code execution with MCP](https://www.anthropic.com/engineering/code-execution-with-mcp) (Anthropic)
+- [Code Mode: give agents an entire API in 1,000 tokens](https://blog.cloudflare.com/code-mode-mcp/) (Cloudflare)
 
-```json
-{
-  "mcpServers": {
-    "bambu-printer": {
-      "command": "npx",
-      "args": ["-y", "bambu-printer-mcp"],
-      "env": {
-        "PRINTER_HOST": "192.168.1.100",
-        "BAMBU_SERIAL": "01P00A123456789",
-        "BAMBU_TOKEN": "your_access_token",
-        "BAMBU_MODEL": "p1s"
-      }
-    }
-  }
-}
-```
+This applies to all MCP servers, not just this one.
 
 ---
 
