@@ -23,9 +23,13 @@ b208eac chore: H2 camera probe scripts + diagnostic findings
 Verification:
 
 - `npm test` passes: **34/34**.
+- BambuStudio CLI slicing smoke passes for H2S, H2D, X1C, and P1S via
+  `scripts/test-cli-slice.mjs`; each run produced a sliced 3MF with non-empty
+  `Metadata/plate_1.gcode`.
 - `npm pack --dry-run` passes: 21 files, 150.7 kB package.
 - `npm publish --dry-run --access public` passes for
   `@rowbotik/bambu-printer-mcp@1.1.0`.
+- `@rowbotik/bambu-printer-mcp@1.1.0` has been published to npm.
 - Physical H2S/Parker SuperTack one-color print completed.
 - Camera snapshot live probes succeeded on Parker (H2S), Kingpin (H2D), and
   X1C via RTSPS port 322.
@@ -38,11 +42,9 @@ from this fork.
 ### Source of truth / next queue
 
 1. Keep this file current after every meaningful change.
-2. Publish `@rowbotik/bambu-printer-mcp@1.1.0` with
-   `npm publish --access public` when ready.
-3. Optional live validations still useful later: `skip_objects`, light/fan,
+2. Optional live validations still useful later: `skip_objects`, light/fan,
    print speed, airduct, HMS clear, RFID reread.
-4. Optional future features: better live AMS inventory reporting for
+3. Optional future features: better live AMS inventory reporting for
    `auto_match_ams`, broader camera docs/examples, printer-file delete live
    validation on a harmless file.
 
