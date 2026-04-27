@@ -73,7 +73,9 @@ Local handoff note: see [REMOTE-DEPLOYMENT.md](./REMOTE-DEPLOYMENT.md) for the c
 - Optional auto-slice path via BambuStudio CLI. Set `BAMBU_CLI_FLATTEN=true` to enable a workaround that flattens BBL profile inheritance before invoking the CLI — works around upstream bugs in BambuStudio CLI mode ([#9636](https://github.com/bambulab/BambuStudio/issues/9636), [#9968](https://github.com/bambulab/BambuStudio/issues/9968)). Verified on H2S/H2D/X1C/P1S. Default off; Path A (GUI-slice) remains the recommended workflow for non-BBL profiles or first-time prints. See [docs/SLICING.md](./docs/SLICING.md).
 - Parse AMS mapping from the 3MF's embedded slicer metadata (`Metadata/plate_<n>.json` + gcode filament header) and send it correctly formatted per the OpenBambuAPI spec
 - Cancel, pause, and resume in-progress print jobs via MQTT
+- Set print speed mode, clear HMS/print errors, trigger AMS RFID re-read, and control H2/P2 airduct mode via MQTT command surfaces
 - Set nozzle and bed temperature via G-code dispatch over MQTT
+- Set fan speed and chamber light mode via MQTT
 - Start G-code files already stored on the printer
 - STL manipulation: scale, rotate, extend base, merge vertices, center at origin, lay flat, and inspect model info
 - Slice STL or 3MF files using BambuStudio, OrcaSlicer, PrusaSlicer, Cura, or Slic3r
@@ -754,6 +756,58 @@ Resume a paused print job. Sends an `UpdateState` MQTT command with `state: "res
 }
 ```
 
+#### clear_hms_errors
+
+Clear HMS or print error state on the printer. Sends Bambu's `clean_print_error` MQTT command.
+
+```json
+{
+  "host": "192.168.1.100",
+  "bambu_serial": "01P00A123456789",
+  "bambu_token": "your_access_token"
+}
+```
+
+#### set_print_speed
+
+Set the active print speed mode. Accepted `mode` values are `silent`, `standard`, `sport`, `ludicrous`, or their numeric equivalents `1`, `2`, `3`, and `4`.
+
+```json
+{
+  "mode": "sport",
+  "host": "192.168.1.100",
+  "bambu_serial": "01P00A123456789",
+  "bambu_token": "your_access_token"
+}
+```
+
+#### set_airduct_mode
+
+Set H2/P2 airduct mode to `cooling` or `heating`. This is intended for supported printers only.
+
+```json
+{
+  "mode": "cooling",
+  "host": "192.168.1.100",
+  "bambu_serial": "01P00A123456789",
+  "bambu_token": "your_access_token"
+}
+```
+
+#### reread_ams_rfid
+
+Trigger a Bambu AMS RFID re-read for one AMS slot. This can move AMS filament; use it only when the printer is idle and unloaded.
+
+```json
+{
+  "ams_id": 0,
+  "slot_id": 1,
+  "host": "192.168.1.100",
+  "bambu_serial": "01P00A123456789",
+  "bambu_token": "your_access_token"
+}
+```
+
 #### set_temperature
 
 Set the target temperature for the bed or nozzle. Dispatches an M140 (bed) or M104 (nozzle) G-code command via MQTT. Valid range is 0 to 300 degrees Celsius. Accepted values for `component` are `bed`, `nozzle`, `extruder`, `tool`, and `tool0`.
@@ -1183,3 +1237,7 @@ STL manipulation tools load the entire mesh into memory as Three.js geometry. Fo
 GPL-2.0. See [LICENSE](./LICENSE) for the full text.
 
 This project is a fork of [mcp-3D-printer-server](https://github.com/DMontgomery40/mcp-3D-printer-server) by David Montgomery, also GPL-2.0.
+
+## Acknowledgements
+
+Some printer command surfaces and workflow priorities were informed by [Bambuddy](https://github.com/maziggy/bambuddy), an AGPL-3.0 Bambu Lab printer management project. This project does not vendor Bambuddy code.

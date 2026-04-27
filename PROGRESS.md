@@ -185,8 +185,9 @@ feat: BambuStudio CLI auto-flatten + pause/resume tools
 - **End-to-end test through the actual MCP tool surface.** `slice_stl` via
   MCP stdio is verified with `BAMBU_CLI_FLATTEN=true`; still need a live
   `print_3mf` run against H2S/H2D when it is safe to start a physical print.
-- **Post upstream comment on bambulab/BambuStudio#9636.** Dossier is saved at
-  `docs/BAMBUSTUDIO-CLI-UPSTREAM-COMMENT.md`; needs posting. Includes:
+- **Post upstream comment on bambulab/BambuStudio#9636.** ✅ Posted:
+  https://github.com/bambulab/BambuStudio/issues/9636#issuecomment-4323987647.
+  Dossier is saved at `docs/BAMBUSTUDIO-CLI-UPSTREAM-COMMENT.md`. Includes:
   - Root-cause walkthrough with line numbers from `BambuStudio.cpp`.
   - Three independent breakages reproduced and resolved.
   - Userland workaround (link to this PR/repo).
