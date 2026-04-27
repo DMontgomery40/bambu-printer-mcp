@@ -102,6 +102,15 @@ export declare class BambuImplementation {
         savePath?: string;
         timeoutMs?: number;
         bambuModel?: string;
+        /**
+         * Opt-in: try the TCP-on-6000 path for hardware whose camera
+         * protocol isn't documented upstream (currently H2 series). The
+         * A1/P1 wire format may or may not work; if it does, we get a
+         * JPEG. If not, the connection fails or the auth handshake is
+         * rejected and the caller gets a clean error. No data is
+         * exfiltrated either way -- read-only.
+         */
+        experimental?: boolean;
     }): Promise<{
         status: string;
         format: string;
@@ -110,6 +119,7 @@ export declare class BambuImplementation {
         savedTo?: string;
         width?: number;
         height?: number;
+        note?: string;
     }>;
     /**
      * Open the TLS-on-6000 socket, send the 80-byte auth packet, and read

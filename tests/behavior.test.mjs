@@ -565,6 +565,49 @@ test("camera_snapshot supported models reach the wire path (mocked) and decode a
   }
 });
 
+test("camera_snapshot experimental:true bypasses H2 fail-fast and reaches the wire path", async () => {
+  const bambu = new BambuImplementation();
+  const fakeJpeg = Buffer.from([0xff, 0xd8, 0x99, 0x88, 0xff, 0xd9]);
+  let wireCalled = 0;
+  bambu.fetchTcpCameraFrame = async () => {
+    wireCalled += 1;
+    return fakeJpeg;
+  };
+
+  for (const model of ["h2", "h2s", "h2d"]) {
+    const out = await bambu.cameraSnapshot("127.0.0.1", "S", "T", {
+      bambuModel: model,
+      experimental: true,
+    });
+    assert.equal(out.status, "success", `${model} experimental should reach wire path`);
+    assert.equal(out.sizeBytes, fakeJpeg.length);
+    assert.match(
+      out.note,
+      /experimental:true/i,
+      `${model} response should carry an experimental note`
+    );
+  }
+  assert.equal(wireCalled, 3, "wire path should run once per H2 variant");
+});
+
+test("camera_snapshot experimental:true does NOT bypass the X1/P2S RTSP error", async () => {
+  const bambu = new BambuImplementation();
+  bambu.fetchTcpCameraFrame = async () => {
+    throw new Error("RTSP models must not reach the TCP wire path");
+  };
+
+  for (const model of ["x1", "x1c", "x1e", "p2s"]) {
+    await assert.rejects(
+      bambu.cameraSnapshot("127.0.0.1", "S", "T", {
+        bambuModel: model,
+        experimental: true,
+      }),
+      /RTSP on port 322 which is not yet implemented/i,
+      `${model} should still fail; experimental flag is H2-only for now`
+    );
+  }
+});
+
 test("camera_snapshot save_path writes the jpeg to disk", async (t) => {
   const bambu = new BambuImplementation();
   const fakeJpeg = Buffer.from([0xff, 0xd8, 0x42, 0x42, 0xff, 0xd9]);

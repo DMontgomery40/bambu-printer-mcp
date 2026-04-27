@@ -685,9 +685,9 @@ Capture a single JPEG frame from the printer's chamber camera. Read-only.
 
 **Supported on this code path:** A1, A1 mini, P1S, P1P. Wire protocol per [OpenBambuAPI/video.md](https://github.com/Doridian/OpenBambuAPI/blob/main/video.md): TLS on port 6000, 80-byte auth packet (`bblp` + access token), repeating 16-byte frame header + JPEG payload.
 
-**Not yet supported:**
+**Not yet supported by default:**
 - **X1 / X1 Carbon / X1E / P2S** — these use RTSP on port 322 (`rtsps://bblp:<token>@<host>:322/streaming/live/1`). Tool returns a clear error pointing at the URL until RTSP support lands.
-- **H2 / H2S / H2D** — wire protocol not documented upstream. Tool refuses rather than guess. Track [video.md](https://github.com/Doridian/OpenBambuAPI/blob/main/video.md) for updates.
+- **H2 / H2S / H2D** — wire protocol not documented upstream. Default behavior is to refuse rather than guess. Pass `experimental: true` to try the A1/P1 TCP-on-6000 path against H2 hardware anyway. Read-only either way: if the auth/format isn't right you'll get a clean error rather than a frame, and no data is exfiltrated. If experimental mode returns a JPEG on your H2, please share the result — that's how we promote H2 out of the experimental bucket. Track [video.md](https://github.com/Doridian/OpenBambuAPI/blob/main/video.md) for upstream documentation.
 
 ```json
 {
@@ -700,7 +700,17 @@ Capture a single JPEG frame from the printer's chamber camera. Read-only.
 }
 ```
 
-Returns `{ status, format: "image/jpeg", sizeBytes, base64, savedTo? }`. Pass `save_path` to also write the bytes to disk; otherwise only the base64 payload is returned.
+Returns `{ status, format: "image/jpeg", sizeBytes, base64, savedTo?, note? }`. Pass `save_path` to also write the bytes to disk; otherwise only the base64 payload is returned. When `experimental: true` is set against an H2 model, the response includes a `note` field describing the experimental status.
+
+To probe an H2 series printer:
+
+```json
+{
+  "bambu_model": "h2s",
+  "experimental": true,
+  "save_path": "/tmp/h2s-probe.jpg"
+}
+```
 
 #### delete_printer_file
 

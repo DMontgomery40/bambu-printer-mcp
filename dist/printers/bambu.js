@@ -943,13 +943,18 @@ export class BambuImplementation {
         const TCP_CAMERA_MODELS = new Set(["a1", "a1mini", "p1s", "p1p"]);
         const RTSP_MODELS = new Set(["x1", "x1c", "x1carbon", "x1e", "p2s"]);
         const UNDOCUMENTED_MODELS = new Set(["h2", "h2s", "h2d"]);
+        let experimentalNote;
         if (UNDOCUMENTED_MODELS.has(model)) {
-            throw new Error(`camera_snapshot: H2 series camera protocol is not documented upstream and not yet verified. Refusing to send a guess at the wire format. Track https://github.com/Doridian/OpenBambuAPI/blob/main/video.md for updates.`);
+            if (!options.experimental) {
+                throw new Error(`camera_snapshot: H2 series camera protocol is not documented upstream and not yet verified. Refusing to send a guess at the wire format. Pass experimental:true to try the A1/P1 TCP-on-6000 path anyway. Track https://github.com/Doridian/OpenBambuAPI/blob/main/video.md for updates.`);
+            }
+            experimentalNote = `Used the A1/P1 TCP-on-6000 wire format against ${model.toUpperCase()} via experimental:true. The H2 protocol is not documented upstream; if this returned a JPEG, please share details so we can promote H2 out of the experimental bucket.`;
+            console.warn(`[camera_snapshot] EXPERIMENTAL: trying A1/P1 TCP-on-6000 path against ${model.toUpperCase()}. Wire format is not verified for this model.`);
         }
-        if (RTSP_MODELS.has(model)) {
+        else if (RTSP_MODELS.has(model)) {
             throw new Error(`camera_snapshot: ${model.toUpperCase()} uses RTSP on port 322 which is not yet implemented in this MCP. Use OctoEverywhere or rtsps://bblp:<token>@${host}:322/streaming/live/1 directly.`);
         }
-        if (model && !TCP_CAMERA_MODELS.has(model)) {
+        else if (model && !TCP_CAMERA_MODELS.has(model)) {
             throw new Error(`camera_snapshot: model "${model}" is not a known Bambu Lab printer model. Supported on this code path: ${[...TCP_CAMERA_MODELS].join(", ")}`);
         }
         const jpeg = await this.fetchTcpCameraFrame(host, token, timeoutMs);
@@ -959,6 +964,8 @@ export class BambuImplementation {
             sizeBytes: jpeg.length,
             base64: jpeg.toString("base64"),
         };
+        if (experimentalNote)
+            result.note = experimentalNote;
         if (options.savePath) {
             const fsSync = await import("node:fs");
             fsSync.writeFileSync(options.savePath, jpeg);

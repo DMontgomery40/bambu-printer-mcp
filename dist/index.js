@@ -1048,6 +1048,7 @@ class BambuPrinterMCPServer {
                                 save_path: { type: "string", description: "Optional absolute path to write the JPEG to disk. If omitted, only the base64 payload is returned." },
                                 timeout_ms: { type: "number", description: "Max ms to wait for a full frame (default 8000). Camera may take a few seconds on cold start." },
                                 bambu_model: { type: "string", description: "Printer model. Used to route to the correct protocol or fail fast on unsupported models. Defaults to BAMBU_MODEL." },
+                                experimental: { type: "boolean", description: "Opt-in for unverified printers. Currently the H2 series (h2, h2s, h2d) — the wire format is not documented upstream, but the A1/P1 TCP-on-6000 path may work. Read-only either way; if the auth/format is wrong you'll get a clean error rather than a frame." },
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
                                 bambu_token: { type: "string", description: "Access token (default: value from env)" }
@@ -1500,6 +1501,7 @@ class BambuPrinterMCPServer {
                             savePath: args?.save_path ? String(args.save_path) : undefined,
                             timeoutMs: args?.timeout_ms !== undefined ? Number(args.timeout_ms) : undefined,
                             bambuModel: snapshotModel ? String(snapshotModel) : undefined,
+                            experimental: Boolean(args?.experimental),
                         });
                         break;
                     }
