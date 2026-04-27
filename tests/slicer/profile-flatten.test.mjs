@@ -210,6 +210,74 @@ test("nozzleVolumeType override produces matching-length array", async () => {
   assert.deepEqual(flat.nozzle_volume_type, ["High Flow", "High Flow"]);
 });
 
+test("bedType override stamps the flattened process profile", async () => {
+  const { root, bbl } = await makeSyntheticTree();
+
+  await writeProfile(bbl, "machine", {
+    name: "Bambu Lab TEST 0.4 nozzle",
+    inherits: null,
+    instantiation: "true",
+    nozzle_diameter: ["0.4"],
+    default_nozzle_volume_type: ["Standard"],
+  });
+  await writeProfile(bbl, "process", {
+    name: "0.20mm @TEST",
+    inherits: null,
+    curr_bed_type: "Cool Plate",
+  });
+  await writeProfile(bbl, "filament", { name: "PETG @TEST", inherits: null });
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "flat-bed-"));
+  const result = await flattenForCli({
+    machineLeaf: "Bambu Lab TEST 0.4 nozzle",
+    processLeaf: "0.20mm @TEST",
+    filamentLeaves: ["PETG @TEST"],
+    profilesRoot: root,
+    tempDir,
+    bedType: "Textured PEI Plate",
+  });
+
+  const process = JSON.parse(await fs.readFile(result.processPath, "utf8"));
+  assert.equal(process.curr_bed_type, "Textured PEI Plate");
+});
+
+test("machine-model bed metadata is copied onto flattened machine profile", async () => {
+  const { root, bbl } = await makeSyntheticTree();
+
+  await writeProfile(bbl, "machine", {
+    name: "Bambu Lab TEST",
+    inherits: null,
+    type: "machine_model",
+    default_bed_type: "Textured PEI Plate",
+    image_bed_type: "o",
+    not_support_bed_type: "Cool Plate",
+  });
+  await writeProfile(bbl, "machine", {
+    name: "Bambu Lab TEST 0.4 nozzle",
+    inherits: null,
+    instantiation: "true",
+    nozzle_diameter: ["0.4"],
+    default_nozzle_volume_type: ["Standard"],
+    printer_model: "Bambu Lab TEST",
+  });
+  await writeProfile(bbl, "process", { name: "0.20mm @TEST", inherits: null });
+  await writeProfile(bbl, "filament", { name: "PETG @TEST", inherits: null });
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "flat-bed-meta-"));
+  const result = await flattenForCli({
+    machineLeaf: "Bambu Lab TEST 0.4 nozzle",
+    processLeaf: "0.20mm @TEST",
+    filamentLeaves: ["PETG @TEST"],
+    profilesRoot: root,
+    tempDir,
+  });
+
+  const machine = JSON.parse(await fs.readFile(result.machinePath, "utf8"));
+  assert.equal(machine.default_bed_type, "Textured PEI Plate");
+  assert.equal(machine.image_bed_type, "o");
+  assert.equal(machine.not_support_bed_type, "Cool Plate");
+});
+
 test("mismatched nozzle_volume_type entries throw (hardware invariant)", async () => {
   const { root, bbl } = await makeSyntheticTree();
 

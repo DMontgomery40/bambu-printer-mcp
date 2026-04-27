@@ -86,6 +86,10 @@ function assertCommonToolPresence(listToolsResult) {
   assert.ok(names.includes("list_3mf_plate_objects"));
   assert.ok(names.includes("set_fan_speed"));
   assert.ok(names.includes("set_light"));
+  assert.ok(names.includes("clear_hms_errors"));
+  assert.ok(names.includes("set_print_speed"));
+  assert.ok(names.includes("set_airduct_mode"));
+  assert.ok(names.includes("reread_ams_rfid"));
   assert.ok(names.includes("skip_objects"));
   assert.ok(names.includes("get_stl_info"));
   assert.ok(names.includes("blender_mcp_edit_model"));
@@ -116,6 +120,7 @@ const BAMBU_SLICER_OPTION_CONTRACTS = [
   ["skip_objects",          "string",  "skip"],
   ["load_filaments",        "string",  "filament"],
   ["load_filament_ids",     "string",  "filament"],
+  ["bed_type",              "string",  "bed"],
   ["enable_timelapse",      "boolean", "timelapse"],
   ["allow_mix_temp",        "boolean", "temperature"],
   ["scale",                 "number",  "scale"],
@@ -202,6 +207,24 @@ test("printer model safety: schema requires bambu_model, rejects missing/invalid
     sliceTool.inputSchema.required.includes("bambu_model"),
     "slice_stl must list bambu_model as required"
   );
+
+  const speedTool = listToolsResult.tools.find((t) => t.name === "set_print_speed");
+  assert.ok(speedTool, "set_print_speed tool must exist");
+  assert.ok(speedTool.inputSchema.properties.mode, "set_print_speed must accept mode");
+  assert.ok(speedTool.inputSchema.required.includes("mode"), "set_print_speed.mode must be required");
+
+  const airductTool = listToolsResult.tools.find((t) => t.name === "set_airduct_mode");
+  assert.ok(airductTool, "set_airduct_mode tool must exist");
+  assert.deepEqual(
+    airductTool.inputSchema.properties.mode.enum,
+    ["cooling", "heating"],
+    "set_airduct_mode must enumerate cooling/heating"
+  );
+
+  const rfidTool = listToolsResult.tools.find((t) => t.name === "reread_ams_rfid");
+  assert.ok(rfidTool, "reread_ams_rfid tool must exist");
+  assert.ok(rfidTool.inputSchema.required.includes("ams_id"), "reread_ams_rfid.ams_id must be required");
+  assert.ok(rfidTool.inputSchema.required.includes("slot_id"), "reread_ams_rfid.slot_id must be required");
 
   // No 'type' param should exist on any tool (Bambu-only)
   for (const tool of listToolsResult.tools) {

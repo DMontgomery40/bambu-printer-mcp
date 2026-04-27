@@ -64,6 +64,8 @@ export interface FlattenOptions {
    * nozzles are installed.
    */
   nozzleVolumeType?: "Standard" | "High Flow";
+  /** BambuStudio display name, e.g. "Textured PEI Plate" or "Cool Plate". */
+  bedType?: string;
 }
 
 interface IndexedProfile {
@@ -416,6 +418,28 @@ function normalizeForCli(
   // _condition fields can stay null (string-typed, tolerated as null).
 }
 
+function applyBedType(processFlat: Record<string, unknown>, bedType?: string): void {
+  if (!bedType) return;
+  processFlat.curr_bed_type = bedType;
+}
+
+function applyMachineModelBedMetadata(
+  machineFlat: Record<string, unknown>,
+  index: NameIndex
+): void {
+  const modelName = machineFlat.printer_model;
+  if (typeof modelName !== "string") return;
+
+  const model = index.get(modelName)?.data;
+  if (!model) return;
+
+  for (const key of ["default_bed_type", "image_bed_type", "not_support_bed_type"]) {
+    if (!(key in machineFlat) && key in model) {
+      machineFlat[key] = model[key];
+    }
+  }
+}
+
 /* -------------------------------------------------------------------------- */
 /* Public entry point                                                          */
 /* -------------------------------------------------------------------------- */
@@ -454,12 +478,14 @@ export async function flattenForCli(opts: FlattenOptions): Promise<FlattenedProf
 
   // CLI-specific post-processing on machine profile only.
   deriveNozzleVolumeType(machineFlat, opts.nozzleVolumeType);
+  applyMachineModelBedMetadata(machineFlat, index);
   const cliOverlayApplied = await applyCliOverlay(machineFlat, opts.profilesRoot, vendor);
 
   // Normalize each flattened profile for CLI consumption.
   normalizeForCli(machineFlat, "machine", opts.machineLeaf);
   normalizeForCli(processFlat, "process", opts.processLeaf);
   filamentFlats.forEach((f, i) => normalizeForCli(f, "filament", opts.filamentLeaves[i]));
+  applyBedType(processFlat, opts.bedType);
 
   // Mirror the GUI's auto-extend behavior: when the caller explicitly
   // chose a process or filament that wasn't pre-declared compatible with

@@ -31,6 +31,10 @@ export declare class BambuImplementation {
     cancelJob(host: string, serial: string, token: string): Promise<any>;
     pauseJob(host: string, serial: string, token: string): Promise<any>;
     resumeJob(host: string, serial: string, token: string): Promise<any>;
+    clearHmsErrors(host: string, serial: string, token: string): Promise<any>;
+    setPrintSpeed(host: string, serial: string, token: string, speedMode: string | number): Promise<any>;
+    setAirductMode(host: string, serial: string, token: string, mode: string): Promise<any>;
+    rereadAmsRfid(host: string, serial: string, token: string, amsId: number, slotId: number): Promise<any>;
     setTemperature(host: string, serial: string, token: string, component: string, temperature: number): Promise<{
         status: string;
         message: string;

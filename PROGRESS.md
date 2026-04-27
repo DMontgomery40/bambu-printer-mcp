@@ -198,13 +198,18 @@ feat: BambuStudio CLI auto-flatten + pause/resume tools
 - **VERY MUCH WANT:** ✅ AMS auto-match by RFID — implemented as
   `resolve_3mf_ams_slots` dry run plus opt-in `print_3mf auto_match_ams`.
   Still needs live H2S/H2D print validation before calling it production-safe.
-- **Future versions:** AMS RFID re-read tool, airduct control, AMS dryer
-  start/stop.
+- **Future versions:** ✅ AMS RFID re-read tool and airduct control are
+  implemented as MCP command surfaces. AMS dryer start/stop remains future work.
+  RFID re-read can move AMS filament and needs live validation when physical
+  testing is allowed.
 - **HMS error resource:** ✅ `printer://{host}/hms` is implemented as a
   read-only diagnostics summary over the existing status path.
 - **Light/fan control:** ✅ `set_light` and `set_fan_speed` are implemented
   through the existing `bambu-node` MQTT commands. They still need live-device
   validation.
+- **Bambuddy-inspired utility controls:** ✅ `set_print_speed`,
+  `set_airduct_mode`, `clear_hms_errors`, and `reread_ams_rfid` are implemented
+  with schema coverage. They still need live-device validation.
 - **Skip objects:** ✅ `list_3mf_plate_objects` and `skip_objects` are
   implemented. They still need live-print validation.
 

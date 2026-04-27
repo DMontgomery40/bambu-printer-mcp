@@ -32,6 +32,7 @@ export interface BambuSliceOptions {
     skipObjects?: string;
     loadFilaments?: string;
     loadFilamentIds?: string;
+    bedType?: string;
     enableTimelapse?: boolean;
     allowMixTemp?: boolean;
     scale?: number;
@@ -74,6 +75,7 @@ export declare class STLManipulator extends EventEmitter {
      * flattened; user-provided custom configs pass through untouched.
      */
     private maybeFlattenBundle;
+    private resolveBambuStudioBedType;
     /** Read a profile JSON's top-level `name` field, or null if unreadable. */
     private readLeafName;
     /**

@@ -15,6 +15,12 @@ const BAMBU_PROFILE_ROOTS = [
     '/Applications/BambuStudio.app/Contents/Resources/profiles/BBL',
     '/Applications/OrcaSlicer.app/Contents/Resources/profiles/BBL',
 ];
+const BAMBU_CLI_BED_TYPES = {
+    textured_plate: 'Textured PEI Plate',
+    cool_plate: 'Cool Plate',
+    engineering_plate: 'Engineering Plate',
+    hot_plate: 'High Temp Plate',
+};
 export class STLManipulator extends EventEmitter {
     constructor(tempDir = path.join(process.cwd(), 'temp')) {
         super();
@@ -227,7 +233,7 @@ export class STLManipulator extends EventEmitter {
      * backward-compatible. When enabled, only BBL-shipped leaves get
      * flattened; user-provided custom configs pass through untouched.
      */
-    async maybeFlattenBundle(bundle) {
+    async maybeFlattenBundle(bundle, bambuOptions) {
         const flag = process.env.BAMBU_CLI_FLATTEN;
         if (flag !== 'true' && flag !== '1')
             return bundle;
@@ -258,6 +264,7 @@ export class STLManipulator extends EventEmitter {
                 filamentLeaves,
                 profilesRoot,
                 tempDir: this.tempDir,
+                bedType: this.resolveBambuStudioBedType(bambuOptions?.bedType),
             });
             console.log(`[cli-flatten] applied for ${machineLeaf} (cliOverlay=${flat.meta.cliOverlayApplied})`);
             return {
@@ -269,6 +276,12 @@ export class STLManipulator extends EventEmitter {
             console.error(`[cli-flatten] failed, falling back to unflattened bundle: ${err?.message ?? err}`);
             return bundle;
         }
+    }
+    resolveBambuStudioBedType(bedType) {
+        if (!bedType)
+            return undefined;
+        const normalized = bedType.trim().toLowerCase();
+        return BAMBU_CLI_BED_TYPES[normalized] || bedType;
     }
     /** Read a profile JSON's top-level `name` field, or null if unreadable. */
     readLeafName(filePath) {
@@ -1051,7 +1064,7 @@ export class STLManipulator extends EventEmitter {
                         // Opt-in flatten step: walks the BBL `inherits` chain so the
                         // CLI accepts what we hand it. See maybeFlattenBundle docstring.
                         const settingsBundle = slicerType === 'bambustudio'
-                            ? await this.maybeFlattenBundle(rawBundle)
+                            ? await this.maybeFlattenBundle(rawBundle, bambuOptions)
                             : rawBundle;
                         args = [
                             '--slice', String(bambuOptions?.slicePlate ?? 0),

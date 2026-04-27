@@ -766,6 +766,7 @@ class BambuPrinterMCPServer {
     slicerProfile: string | undefined,
     printModel: string,
     printNozzle: string,
+    bedType: string,
     host: string,
     bambuSerial: string,
     bambuToken: string
@@ -794,6 +795,7 @@ class BambuPrinterMCPServer {
       ensureOnBed: true,
       minSave: true,
       skipModifiedGcodes: true,
+      bedType,
     };
 
     try {
@@ -1218,6 +1220,11 @@ class BambuPrinterMCPServer {
                 },
                 slicer_path: { type: "string", description: "Path to the slicer executable (default: value from env)" },
                 nozzle_diameter: { type: "string", description: "Nozzle diameter in mm (default: 0.4)" },
+                bed_type: {
+                  type: "string",
+                  enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"],
+                  description: "Bed plate type to encode in BambuStudio slicer settings (default: textured_plate)"
+                },
                 use_printer_filaments: { type: "boolean", description: "When true, and no explicit slicer profile or load_filaments override is provided, use the printer's current or first loaded AMS filament as the slicer filament profile." },
                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
@@ -1261,6 +1268,11 @@ class BambuPrinterMCPServer {
                 template_name: { type: "string", description: "Optional named template from the local registry. Resolves to template_3mf_path automatically." },
                 template_dir: { type: "string", description: "Optional template directory override when resolving template_name." },
                 nozzle_diameter: { type: "string", description: "Nozzle diameter in mm (default: 0.4)" },
+                bed_type: {
+                  type: "string",
+                  enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"],
+                  description: "Bed plate type to encode in BambuStudio slicer settings (default: textured_plate)"
+                },
                 use_printer_filaments: { type: "boolean", description: "When true, and no explicit slicer profile or load_filaments override is provided, use the printer's current or first loaded AMS filament as the slicer filament profile. Template 3MF process settings can still be used at the same time." },
                 uptodate: { type: "boolean", description: "Refresh 3MF preset configs to match the latest BambuStudio version. Use when slicing downloaded or older 3MF files to prevent stale-config failures." },
                 repetitions: { type: "number", description: "Print N identical copies of the model. Each copy gets its own plate placement. Example: 3 prints three copies." },
@@ -1375,6 +1387,69 @@ class BambuPrinterMCPServer {
                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
                 bambu_token: { type: "string", description: "Access token (default: value from env)" }
               }
+            }
+          },
+          {
+            name: "clear_hms_errors",
+            description: "Clear HMS or print error state on the Bambu Lab printer using the clean_print_error MQTT command.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
+                bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
+                bambu_token: { type: "string", description: "Access token (default: value from env)" }
+              }
+            }
+          },
+          {
+            name: "set_print_speed",
+            description: "Set the active print speed mode: silent, standard, sport, or ludicrous.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                mode: {
+                  type: "string",
+                  enum: ["silent", "standard", "sport", "ludicrous", "1", "2", "3", "4"],
+                  description: "Speed mode to apply: silent/1, standard/2, sport/3, or ludicrous/4"
+                },
+                host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
+                bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
+                bambu_token: { type: "string", description: "Access token (default: value from env)" }
+              },
+              required: ["mode"]
+            }
+          },
+          {
+            name: "set_airduct_mode",
+            description: "Set H2/P2 airduct mode to cooling or heating.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                mode: {
+                  type: "string",
+                  enum: ["cooling", "heating"],
+                  description: "Airduct mode to apply"
+                },
+                host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
+                bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
+                bambu_token: { type: "string", description: "Access token (default: value from env)" }
+              },
+              required: ["mode"]
+            }
+          },
+          {
+            name: "reread_ams_rfid",
+            description: "Trigger a Bambu AMS RFID re-read for one AMS slot. This can move AMS filament; use only when the printer is idle and unloaded.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                ams_id: { type: "number", description: "AMS unit index from 0 to 3" },
+                slot_id: { type: "number", description: "Slot index within that AMS, from 0 to 3" },
+                host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
+                bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
+                bambu_token: { type: "string", description: "Access token (default: value from env)" }
+              },
+              required: ["ams_id", "slot_id"]
             }
           },
           {
@@ -1733,6 +1808,37 @@ class BambuPrinterMCPServer {
             result = await this.bambu.resumeJob(host, bambuSerial, bambuToken);
             break;
 
+          case "clear_hms_errors":
+            result = await this.bambu.clearHmsErrors(host, bambuSerial, bambuToken);
+            break;
+
+          case "set_print_speed":
+            if (!args?.mode) {
+              throw new Error("Missing required parameter: mode");
+            }
+            result = await this.bambu.setPrintSpeed(host, bambuSerial, bambuToken, String(args.mode));
+            break;
+
+          case "set_airduct_mode":
+            if (!args?.mode) {
+              throw new Error("Missing required parameter: mode");
+            }
+            result = await this.bambu.setAirductMode(host, bambuSerial, bambuToken, String(args.mode));
+            break;
+
+          case "reread_ams_rfid":
+            if (args?.ams_id === undefined || args?.slot_id === undefined) {
+              throw new Error("Missing required parameters: ams_id and slot_id");
+            }
+            result = await this.bambu.rereadAmsRfid(
+              host,
+              bambuSerial,
+              bambuToken,
+              Number(args.ams_id),
+              Number(args.slot_id)
+            );
+            break;
+
           case "set_temperature":
             if (!args?.component || args?.temperature === undefined) {
               throw new Error("Missing required parameters: component and temperature");
@@ -1861,6 +1967,7 @@ class BambuPrinterMCPServer {
             if (args?.skip_objects !== undefined) sliceBambuOptions.skipObjects = String(args.skip_objects);
             if (args?.load_filaments !== undefined) sliceBambuOptions.loadFilaments = String(args.load_filaments);
             if (args?.load_filament_ids !== undefined) sliceBambuOptions.loadFilamentIds = String(args.load_filament_ids);
+            sliceBambuOptions.bedType = resolveBedType(args?.bed_type as string | undefined);
             if (args?.enable_timelapse !== undefined) sliceBambuOptions.enableTimelapse = Boolean(args.enable_timelapse);
             if (args?.allow_mix_temp !== undefined) sliceBambuOptions.allowMixTemp = Boolean(args.allow_mix_temp);
             if (args?.scale !== undefined) sliceBambuOptions.scale = Number(args.scale);
@@ -1930,6 +2037,7 @@ class BambuPrinterMCPServer {
             if (args?.skip_objects !== undefined) sliceBambuOptions.skipObjects = String(args.skip_objects);
             if (args?.load_filaments !== undefined) sliceBambuOptions.loadFilaments = String(args.load_filaments);
             if (args?.load_filament_ids !== undefined) sliceBambuOptions.loadFilamentIds = String(args.load_filament_ids);
+            sliceBambuOptions.bedType = resolveBedType(args?.bed_type as string | undefined);
             if (args?.enable_timelapse !== undefined) sliceBambuOptions.enableTimelapse = Boolean(args.enable_timelapse);
             if (args?.allow_mix_temp !== undefined) sliceBambuOptions.allowMixTemp = Boolean(args.allow_mix_temp);
             if (args?.scale !== undefined) sliceBambuOptions.scale = Number(args.scale);
@@ -2010,6 +2118,7 @@ class BambuPrinterMCPServer {
                   ensureOnBed: true,
                   minSave: true,
                   skipModifiedGcodes: true,
+                  bedType: printBedType,
                 };
                 if (!explicitSlicerProfile) {
                   try {
@@ -2155,6 +2264,7 @@ class BambuPrinterMCPServer {
               activeSlicerProfile || undefined,
               printModel,
               printNozzle,
+              printBedType,
               host,
               bambuSerial,
               bambuToken

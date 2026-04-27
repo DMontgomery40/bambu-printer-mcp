@@ -646,6 +646,91 @@ export class BambuImplementation {
             throw new Error(`Failed to resume print: ${error.message}`);
         }
     }
+    async clearHmsErrors(host, serial, token) {
+        const printer = await this.getPrinter(host, serial, token);
+        await printer.publish({
+            print: {
+                command: "clean_print_error",
+                sequence_id: "0",
+            },
+        });
+        await sleep(COMMAND_SETTLE_MS);
+        return { status: "success", message: "HMS clear command sent." };
+    }
+    async setPrintSpeed(host, serial, token, speedMode) {
+        const printer = await this.getPrinter(host, serial, token);
+        const normalized = typeof speedMode === "number" ? String(Math.trunc(speedMode)) : speedMode.trim().toLowerCase();
+        const mode = normalized === "silent" ? 1 :
+            normalized === "standard" ? 2 :
+                normalized === "sport" ? 3 :
+                    normalized === "ludicrous" ? 4 :
+                        Number(normalized);
+        if (!Number.isInteger(mode) || mode < 1 || mode > 4) {
+            throw new Error("Print speed mode must be one of: silent, standard, sport, ludicrous, 1, 2, 3, 4.");
+        }
+        await printer.publish({
+            print: {
+                command: "print_speed",
+                param: String(mode),
+                sequence_id: "0",
+            },
+        });
+        await sleep(COMMAND_SETTLE_MS);
+        const names = ["", "silent", "standard", "sport", "ludicrous"];
+        return {
+            status: "success",
+            message: `Print speed command sent for ${names[mode]}.`,
+            mode,
+            label: names[mode],
+        };
+    }
+    async setAirductMode(host, serial, token, mode) {
+        const printer = await this.getPrinter(host, serial, token);
+        const normalizedMode = mode.trim().toLowerCase();
+        if (normalizedMode !== "cooling" && normalizedMode !== "heating") {
+            throw new Error("Airduct mode must be one of: cooling, heating.");
+        }
+        await printer.publish({
+            print: {
+                command: "set_airduct",
+                modeId: normalizedMode === "cooling" ? 0 : 1,
+                submode: -1,
+                sequence_id: "0",
+            },
+        });
+        await sleep(COMMAND_SETTLE_MS);
+        return {
+            status: "success",
+            message: `Airduct mode command sent for ${normalizedMode}.`,
+            mode: normalizedMode,
+        };
+    }
+    async rereadAmsRfid(host, serial, token, amsId, slotId) {
+        const printer = await this.getPrinter(host, serial, token);
+        const normalizedAmsId = Math.trunc(amsId);
+        const normalizedSlotId = Math.trunc(slotId);
+        if (!Number.isInteger(normalizedAmsId) || normalizedAmsId < 0 || normalizedAmsId > 3) {
+            throw new Error("ams_id must be an integer from 0 to 3.");
+        }
+        if (!Number.isInteger(normalizedSlotId) || normalizedSlotId < 0 || normalizedSlotId > 3) {
+            throw new Error("slot_id must be an integer from 0 to 3.");
+        }
+        await printer.publish({
+            print: {
+                command: "ams_get_rfid",
+                ams_id: normalizedAmsId,
+                slot_id: normalizedSlotId,
+                sequence_id: "0",
+            },
+        });
+        await sleep(COMMAND_SETTLE_MS);
+        return {
+            status: "success",
+            message: `AMS RFID re-read command sent for AMS ${normalizedAmsId} slot ${normalizedSlotId}.`,
+            ams_id: normalizedAmsId,
+            slot_id: normalizedSlotId,
+        };
+    }
     async setTemperature(host, serial, token, component, temperature) {
         const printer = await this.getPrinter(host, serial, token);
         const normalizedComponent = component.toLowerCase();

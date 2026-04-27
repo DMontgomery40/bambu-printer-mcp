@@ -57,6 +57,8 @@ export interface FlattenOptions {
      * nozzles are installed.
      */
     nozzleVolumeType?: "Standard" | "High Flow";
+    /** BambuStudio display name, e.g. "Textured PEI Plate" or "Cool Plate". */
+    bedType?: string;
 }
 /**
  * Flatten the leaf profiles, post-process for CLI, and write to temp files.

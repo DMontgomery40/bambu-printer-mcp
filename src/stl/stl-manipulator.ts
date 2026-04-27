@@ -16,6 +16,12 @@ const BAMBU_PROFILE_ROOTS = [
   '/Applications/BambuStudio.app/Contents/Resources/profiles/BBL',
   '/Applications/OrcaSlicer.app/Contents/Resources/profiles/BBL',
 ];
+const BAMBU_CLI_BED_TYPES: Record<string, string> = {
+  textured_plate: 'Textured PEI Plate',
+  cool_plate: 'Cool Plate',
+  engineering_plate: 'Engineering Plate',
+  hot_plate: 'High Temp Plate',
+};
 
 // Define types for progress tracking
 export type ProgressCallback = (progress: number, message?: string) => void;
@@ -56,6 +62,7 @@ export interface BambuSliceOptions {
   skipObjects?: string;        // --skip-objects "3,5,10": skip specific objects
   loadFilaments?: string;      // --load-filaments "f1.json;f2.json": filament profiles
   loadFilamentIds?: string;    // --load-filament-ids "1,2,3,1": filament-to-object mapping
+  bedType?: string;            // Bambu bed type, e.g. textured_plate or cool_plate
   enableTimelapse?: boolean;   // --enable-timelapse: timelapse-aware slicing
   allowMixTemp?: boolean;      // --allow-mix-temp: allow mixed-temp filaments
   scale?: number;              // --scale factor: uniform scale
@@ -344,7 +351,8 @@ export class STLManipulator extends EventEmitter {
    * flattened; user-provided custom configs pass through untouched.
    */
   private async maybeFlattenBundle(
-    bundle: { settingsArg?: string; filamentPaths: string[] }
+    bundle: { settingsArg?: string; filamentPaths: string[] },
+    bambuOptions?: BambuSliceOptions
   ): Promise<{ settingsArg?: string; filamentPaths: string[] }> {
     const flag = process.env.BAMBU_CLI_FLATTEN;
     if (flag !== 'true' && flag !== '1') return bundle;
@@ -379,6 +387,7 @@ export class STLManipulator extends EventEmitter {
         filamentLeaves,
         profilesRoot,
         tempDir: this.tempDir,
+        bedType: this.resolveBambuStudioBedType(bambuOptions?.bedType),
       });
       console.log(
         `[cli-flatten] applied for ${machineLeaf} (cliOverlay=${flat.meta.cliOverlayApplied})`
@@ -393,6 +402,12 @@ export class STLManipulator extends EventEmitter {
       );
       return bundle;
     }
+  }
+
+  private resolveBambuStudioBedType(bedType?: string): string | undefined {
+    if (!bedType) return undefined;
+    const normalized = bedType.trim().toLowerCase();
+    return BAMBU_CLI_BED_TYPES[normalized] || bedType;
   }
 
   /** Read a profile JSON's top-level `name` field, or null if unreadable. */
@@ -1391,7 +1406,7 @@ export class STLManipulator extends EventEmitter {
             // CLI accepts what we hand it. See maybeFlattenBundle docstring.
             const settingsBundle =
               slicerType === 'bambustudio'
-                ? await this.maybeFlattenBundle(rawBundle)
+                ? await this.maybeFlattenBundle(rawBundle, bambuOptions)
                 : rawBundle;
             args = [
               '--slice', String(bambuOptions?.slicePlate ?? 0),
