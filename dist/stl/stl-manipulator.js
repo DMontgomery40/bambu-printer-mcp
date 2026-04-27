@@ -256,6 +256,7 @@ export class STLManipulator extends EventEmitter {
             console.log('[cli-flatten] skipping: could not derive BBL leaf names from bundle paths');
             return bundle;
         }
+        const bedType = this.resolveBambuStudioBedType(bambuOptions?.bedType);
         try {
             const profilesRoot = detectProfilesRoot(process.env.SLICER_PATH);
             const flat = await flattenForCli({
@@ -264,7 +265,7 @@ export class STLManipulator extends EventEmitter {
                 filamentLeaves,
                 profilesRoot,
                 tempDir: this.tempDir,
-                bedType: this.resolveBambuStudioBedType(bambuOptions?.bedType),
+                bedType,
             });
             console.log(`[cli-flatten] applied for ${machineLeaf} (cliOverlay=${flat.meta.cliOverlayApplied})`);
             return {
@@ -281,6 +282,9 @@ export class STLManipulator extends EventEmitter {
         if (!bedType)
             return undefined;
         const normalized = bedType.trim().toLowerCase();
+        if (normalized === 'supertack_plate') {
+            throw new Error('BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF or choose textured_plate, cool_plate, engineering_plate, or hot_plate.');
+        }
         return BAMBU_CLI_BED_TYPES[normalized] || bedType;
     }
     /** Read a profile JSON's top-level `name` field, or null if unreadable. */

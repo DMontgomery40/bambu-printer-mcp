@@ -1,5 +1,130 @@
 # Progress
 
+## Current handoff (2026-04-27)
+
+Branch: `codex/collar-charm-h2-cleanup`.
+
+This file is the source-of-truth handoff if the active assistant thread runs
+out of context. Read this section first, then continue the queue below.
+
+### Current worktree
+
+Tracked local changes:
+
+- `.gitignore`
+- `README.md`
+- `src/index.ts`
+- `src/printers/bambu.ts`
+- `src/stl/stl-manipulator.ts`
+- `tests/behavior.test.mjs`
+- rebuilt `dist/index.js`, `dist/printers/bambu.js`, `dist/stl/stl-manipulator.js`
+
+Ignored/local-only artifacts:
+
+- `.claude/worktrees/` — Claude Code nested worktree cache; do not commit.
+- `docs/*.gcode.3mf` — private/generated sliced print artifacts; do not commit.
+
+### Latest verified status
+
+- `npm test` passes: **23/23**.
+- H2S/Parker read-only status works.
+- A pre-sliced one-color H2S SuperTack print completed on Parker.
+- The successful physical print path used `print_3mf` with:
+  - `bambu_model: "h2s"`
+  - `bed_type: "supertack_plate"`
+  - explicit `ams_slots: [0]`
+  - `use_ams: true`
+- Sends with `use_ams: false` were accepted by the MCP layer but did not
+  visibly start the job.
+
+### Decisions from the live H2S test
+
+- SuperTack is valid for **pre-sliced** print jobs.
+- BambuStudio CLI SuperTack slicing is **not verified**. Attempts to encode
+  SuperTack in flattened CLI profiles produced G-code that fell back to Cool
+  Plate. The MCP now fails fast for `supertack_plate` on CLI slicing and
+  auto-slicing paths.
+- On H2/H2D, do **not** trust embedded `slicerConfig.ams_mapping` parsed from
+  the 3MF. It can be stale project metadata.
+- H2 pre-sliced jobs with declared filaments must provide one of:
+  - explicit `ams_slots`
+  - raw project-level `ams_mapping`
+  - `auto_match_ams: true`
+- If none is provided, the server now fails before upload/send.
+- `ams_slots` is still the preferred API: one physical tray per used filament
+  in `plate_N.json.filament_ids` order. The printer layer expands that into
+  project-level `ams_mapping` and `ams_mapping2`.
+
+Recovered Claude evidence to preserve:
+
+```text
+G-code header project filaments:
+; filament_ids    = GFG02;GFG01;GFL00;GFL03
+; filament_colour = #FFFFFF;#FF911A80;#DCF478;#DCF478
+; filament_type   = PETG;PETG;PLA;PLA
+
+plate_1.json.filament_ids = [1]
+physical tray = AMS 0 slot 1
+
+Working H2 mapping:
+ams_mapping:  [-1, 1, -1, -1]
+ams_mapping2: [{255,255}, {0,1}, {255,255}, {255,255}]
+```
+
+Rule: `ams_mapping` length must match the project-level filament declaration
+from the G-code header, and the populated position must match the
+project-level filament index from `plate_N.json.filament_ids`.
+
+### Tests added in current work
+
+- H2 `print_3mf` rejects pre-sliced filament jobs without explicit mapping
+  before FTP/network.
+- H2 `ams_slots` expands into project-level `ams_mapping` and `ams_mapping2`;
+  regression covers the recovered case where `plate_1.json.filament_ids = [1]`
+  and `ams_slots = [1]` expands to `[-1, 1, -1, -1]`.
+
+### CC side work
+
+Claude Code created a nested worktree at:
+
+```text
+.claude/worktrees/cool-saha-810d33
+```
+
+It contains two commits on top of `08f6afe`:
+
+- `ff42958 chore: bump to 1.1.0 and add CHANGELOG`
+- `abcb47a docs: update PROGRESS for 1.1.0 publish attempt and next queue`
+
+Do not blindly cherry-pick yet. Current H2/SuperTack behavior and regression
+tests should land first. Then selectively port `CHANGELOG.md` / version bump if
+we want to prepare `1.1.0`.
+
+### Next queue
+
+1. Review the current diff for scope.
+2. Commit the H2/SuperTack/mapping fixes and tests once satisfied.
+3. After that, decide whether to port CC's `CHANGELOG.md` and `1.1.0` version
+   bump from `.claude/worktrees/cool-saha-810d33`.
+4. Optional follow-up: improve `auto_match_ams` live behavior for Parker once
+   we have a loaded AMS inventory snapshot that reports trays reliably.
+5. Optional future features from prior queue: camera snapshot, printer-file
+   delete, live validation for skip objects/light/fan/utility controls.
+
+### Verification commands
+
+```bash
+cd /Users/alexbuchan/Sync/bambu-printer-mcp
+npm test
+git status --short --branch
+```
+
+Expected now: `npm test` passes 23/23. Status should show only the tracked
+worktree changes listed above; `.claude/worktrees/` and private `.gcode.3mf`
+files should be ignored.
+
+---
+
 Working state for the BambuStudio CLI auto-flatten + control-tool work.
 Branch: `codex/collar-charm-h2-cleanup`. Committed as `235f224`
 (`feat: BambuStudio CLI auto-flatten + pause/resume tools`); not pushed yet.

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
@@ -13,12 +14,48 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import JSZip from "jszip";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF } from "../dist/3mf_parser.js";
+import { BambuImplementation } from "../dist/printers/bambu.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, "..");
 const SERVER_ENTRY = path.join(REPO_ROOT, "dist", "index.js");
 const SAMPLE_STL = path.join(REPO_ROOT, "test", "sample_cube.stl");
+
+async function writeSliced3mfFixture({
+  name = "h2-project-filament",
+  projectFilamentIds = ["GFG02", "GFG01", "GFL00", "GFL03"],
+  projectFilamentColors = ["#FFFFFF", "#FF911A80", "#DCF478", "#DCF478"],
+  projectFilamentTypes = ["PETG", "PETG", "PLA", "PLA"],
+  plateFilamentIds = [1],
+} = {}) {
+  const zip = new JSZip();
+  const gcode = [
+    `; filament_ids = ${projectFilamentIds.join(";")}`,
+    `; filament_colour = ${projectFilamentColors.join(";")}`,
+    `; filament_type = ${projectFilamentTypes.join(";")}`,
+    "G1 X0 Y0",
+    "",
+  ].join("\n");
+  const md5 = createHash("md5").update(Buffer.from(gcode)).digest("hex");
+  zip.file("Metadata/plate_1.gcode", gcode);
+  zip.file("Metadata/plate_1.gcode.md5", md5);
+  zip.file(
+    "3D/3dmodel.model",
+    '<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources><object id="1" type="model" name="cube.stl"><mesh><vertices/><triangles/></mesh></object></resources><build><item objectid="1"/></build></model>'
+  );
+  zip.file(
+    "Metadata/plate_1.json",
+    JSON.stringify({
+      filament_ids: plateFilamentIds,
+      bbox_objects: [{ id: 1, name: "cube.stl", area: 1 }],
+      version: 2,
+    })
+  );
+  const tempPath = path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.gcode.3mf`);
+  fs.writeFileSync(tempPath, await zip.generateAsync({ type: "nodebuffer" }));
+  return tempPath;
+}
 
 function createClient() {
   return new Client({
@@ -398,6 +435,86 @@ test("collar charm analysis rejects projects that do not resolve to exactly two 
     );
   } finally {
     fs.rmSync(tempPath, { force: true });
+  }
+});
+
+test("H2 print_3mf rejects pre-sliced filament jobs without explicit AMS mapping", async (t) => {
+  const threeMfPath = await writeSliced3mfFixture({ plateFilamentIds: [1] });
+  t.after(() => { fs.rmSync(threeMfPath, { force: true }); });
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+      BAMBU_PRINTER_HOST: "127.0.0.1",
+      BAMBU_PRINTER_SERIAL: "0938TEST0000000",
+      BAMBU_PRINTER_ACCESS_TOKEN: "TEST_TOKEN",
+      BAMBU_PRINTER_MODEL: "h2s",
+    },
+    stderr: "pipe",
+  });
+
+  const client = createClient();
+  t.after(async () => { await closeTransport(transport); });
+
+  await client.connect(transport);
+  const result = await client.callTool({
+    name: "print_3mf",
+    arguments: {
+      three_mf_path: threeMfPath,
+      bambu_model: "h2s",
+      bed_type: "supertack_plate",
+    },
+  });
+
+  assert.equal(result.isError, true);
+  const errorText = result.content?.[0]?.text || "";
+  assert.match(errorText, /require ams_slots, ams_mapping, or auto_match_ams/i);
+  assert.match(errorText, /project filament positions \[1\]/i);
+  assert.doesNotMatch(errorText, /ECONNREFUSED|control socket/i);
+});
+
+test("H2 ams_slots expand into project-level ams_mapping and ams_mapping2", async () => {
+  const threeMfPath = await writeSliced3mfFixture({ plateFilamentIds: [1] });
+  const bambu = new BambuImplementation();
+  let uploaded = false;
+  let publishedPayload = null;
+
+  bambu.ftpUpload = async () => {
+    uploaded = true;
+  };
+  bambu.getPrinter = async () => ({
+    publish: async (payload) => {
+      publishedPayload = payload;
+    },
+  });
+
+  try {
+    const result = await bambu.print3mf("127.0.0.1", "0938TEST0000000", "TEST_TOKEN", {
+      projectName: "cube",
+      filePath: threeMfPath,
+      plateIndex: 0,
+      useAMS: true,
+      amsSlots: [1],
+      bedType: "supertack_plate",
+    });
+
+    assert.equal(uploaded, true, "print3mf should upload before publishing");
+    assert.equal(result.status, "success");
+    assert.ok(publishedPayload?.print, "project_file payload should be published");
+    assert.equal(publishedPayload.print.command, "project_file");
+    assert.equal(publishedPayload.print.param, "Metadata/plate_1.gcode");
+    assert.deepEqual(publishedPayload.print.ams_mapping, [-1, 1, -1, -1]);
+    assert.deepEqual(publishedPayload.print.ams_mapping2, [
+      { ams_id: 255, slot_id: 255 },
+      { ams_id: 0, slot_id: 1 },
+      { ams_id: 255, slot_id: 255 },
+      { ams_id: 255, slot_id: 255 },
+    ]);
+  } finally {
+    fs.rmSync(threeMfPath, { force: true });
   }
 });
 

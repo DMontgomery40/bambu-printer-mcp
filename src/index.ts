@@ -40,7 +40,8 @@ const DEFAULT_NOZZLE_DIAMETER = process.env.NOZZLE_DIAMETER?.trim() || "0.4";
 const VALID_BAMBU_MODELS = ["p1s", "p1p", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s"] as const;
 type BambuModel = typeof VALID_BAMBU_MODELS[number];
 
-const VALID_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"] as const;
+const VALID_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"] as const;
+const VALID_BAMBUSTUDIO_CLI_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"] as const;
 
 // Map model IDs to BambuStudio --load-machine preset names
 const BAMBU_MODEL_PRESETS: Record<string, (nozzle: string) => string> = {
@@ -350,6 +351,16 @@ function resolveBedType(argsBedType: string | undefined): string {
   if (!(VALID_BED_TYPES as readonly string[]).includes(bedType)) {
     throw new Error(
       `Invalid bed_type: "${bedType}". Valid types: ${VALID_BED_TYPES.join(", ")}`
+    );
+  }
+  return bedType;
+}
+
+function resolveBambuStudioCliBedType(argsBedType: string | undefined): string {
+  const bedType = resolveBedType(argsBedType);
+  if (!(VALID_BAMBUSTUDIO_CLI_BED_TYPES as readonly string[]).includes(bedType)) {
+    throw new Error(
+      `BambuStudio CLI bed_type "${bedType}" is not verified. Use a pre-sliced 3MF for SuperTack, or choose one of: ${VALID_BAMBUSTUDIO_CLI_BED_TYPES.join(", ")}`
     );
   }
   return bedType;
@@ -790,6 +801,11 @@ class BambuPrinterMCPServer {
     }
 
     const printPreset = BAMBU_MODEL_PRESETS[printModel]?.(printNozzle);
+    if (bedType === "supertack_plate") {
+      throw new Error(
+        'BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF for SuperTack or choose textured_plate, cool_plate, engineering_plate, or hot_plate.'
+      );
+    }
     const autoSliceOptions: BambuSliceOptions = {
       uptodate: true,
       ensureOnBed: true,
@@ -1222,8 +1238,8 @@ class BambuPrinterMCPServer {
                 nozzle_diameter: { type: "string", description: "Nozzle diameter in mm (default: 0.4)" },
                 bed_type: {
                   type: "string",
-                  enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"],
-                  description: "Bed plate type to encode in BambuStudio slicer settings (default: textured_plate)"
+                  enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"],
+                  description: "Bed plate type for slicing (default: textured_plate). SuperTack is accepted only for pre-sliced print jobs until the BambuStudio CLI identifier is verified."
                 },
                 use_printer_filaments: { type: "boolean", description: "When true, and no explicit slicer profile or load_filaments override is provided, use the printer's current or first loaded AMS filament as the slicer filament profile." },
                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
@@ -1270,8 +1286,8 @@ class BambuPrinterMCPServer {
                 nozzle_diameter: { type: "string", description: "Nozzle diameter in mm (default: 0.4)" },
                 bed_type: {
                   type: "string",
-                  enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"],
-                  description: "Bed plate type to encode in BambuStudio slicer settings (default: textured_plate)"
+                  enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"],
+                  description: "Bed plate type for slicing (default: textured_plate). SuperTack is accepted only for pre-sliced print jobs until the BambuStudio CLI identifier is verified."
                 },
                 use_printer_filaments: { type: "boolean", description: "When true, and no explicit slicer profile or load_filaments override is provided, use the printer's current or first loaded AMS filament as the slicer filament profile. Template 3MF process settings can still be used at the same time." },
                 uptodate: { type: "boolean", description: "Refresh 3MF preset configs to match the latest BambuStudio version. Use when slicing downloaded or older 3MF files to prevent stale-config failures." },
@@ -1539,7 +1555,7 @@ class BambuPrinterMCPServer {
                 },
                 bed_type: {
                   type: "string",
-                  enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"],
+                  enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"],
                   description: "Bed plate type currently installed (default: textured_plate)"
                 },
                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
@@ -1592,7 +1608,7 @@ class BambuPrinterMCPServer {
                 bambu_token: { type: "string", description: "Access token (default: value from env)" },
                 bed_type: {
                   type: "string",
-                  enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"],
+                  enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"],
                   description: "Bed plate type currently installed (default: textured_plate)"
                 },
                 bed_leveling: { type: "boolean", description: "Enable auto bed leveling (default: true)" },
@@ -1967,7 +1983,7 @@ class BambuPrinterMCPServer {
             if (args?.skip_objects !== undefined) sliceBambuOptions.skipObjects = String(args.skip_objects);
             if (args?.load_filaments !== undefined) sliceBambuOptions.loadFilaments = String(args.load_filaments);
             if (args?.load_filament_ids !== undefined) sliceBambuOptions.loadFilamentIds = String(args.load_filament_ids);
-            sliceBambuOptions.bedType = resolveBedType(args?.bed_type as string | undefined);
+            sliceBambuOptions.bedType = resolveBambuStudioCliBedType(args?.bed_type as string | undefined);
             if (args?.enable_timelapse !== undefined) sliceBambuOptions.enableTimelapse = Boolean(args.enable_timelapse);
             if (args?.allow_mix_temp !== undefined) sliceBambuOptions.allowMixTemp = Boolean(args.allow_mix_temp);
             if (args?.scale !== undefined) sliceBambuOptions.scale = Number(args.scale);
@@ -2037,7 +2053,7 @@ class BambuPrinterMCPServer {
             if (args?.skip_objects !== undefined) sliceBambuOptions.skipObjects = String(args.skip_objects);
             if (args?.load_filaments !== undefined) sliceBambuOptions.loadFilaments = String(args.load_filaments);
             if (args?.load_filament_ids !== undefined) sliceBambuOptions.loadFilamentIds = String(args.load_filament_ids);
-            sliceBambuOptions.bedType = resolveBedType(args?.bed_type as string | undefined);
+            sliceBambuOptions.bedType = resolveBambuStudioCliBedType(args?.bed_type as string | undefined);
             if (args?.enable_timelapse !== undefined) sliceBambuOptions.enableTimelapse = Boolean(args.enable_timelapse);
             if (args?.allow_mix_temp !== undefined) sliceBambuOptions.allowMixTemp = Boolean(args.allow_mix_temp);
             if (args?.scale !== undefined) sliceBambuOptions.scale = Number(args.scale);
@@ -2112,6 +2128,11 @@ class BambuPrinterMCPServer {
                 f => f.match(/Metadata\/plate_\d+\.gcode/i) || f.endsWith('.gcode')
               );
               if (!hasGcode) {
+                if (printBedType === "supertack_plate") {
+                  throw new Error(
+                    'BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF for SuperTack or choose textured_plate, cool_plate, engineering_plate, or hot_plate.'
+                  );
+                }
                 console.log(`3MF has no gcode — auto-slicing with ${slicerType} for ${printModel}`);
                 const autoSliceOptions: BambuSliceOptions = {
                   uptodate: true,
@@ -2145,12 +2166,16 @@ class BambuPrinterMCPServer {
                 console.log("Auto-sliced to: " + threeMFPath);
               }
             } catch (sliceCheckErr: any) {
+              if (String(sliceCheckErr?.message || "").includes("SuperTack")) {
+                throw sliceCheckErr;
+              }
               console.warn("Could not check/slice 3MF, proceeding with original:", sliceCheckErr.message);
             }
 
             const parsed3MFData = await parse3MF(threeMFPath);
+            const isH2Print = printModel === "h2s" || printModel === "h2d";
             let parsedAmsMapping: number[] | undefined;
-            if (parsed3MFData.slicerConfig?.ams_mapping) {
+            if (!isH2Print && parsed3MFData.slicerConfig?.ams_mapping) {
               const slots = Object.values(parsed3MFData.slicerConfig.ams_mapping)
                 .filter(v => typeof v === 'number') as number[];
               if (slots.length > 0) {
@@ -2206,6 +2231,21 @@ class BambuPrinterMCPServer {
               finalAmsMapping = undefined;
               finalAmsSlots = resolved.ams_slots;
               useAMS = finalAmsSlots.length > 0;
+            }
+            if (
+              isH2Print &&
+              !hasUserAmsMapping &&
+              !hasUserAmsSlots &&
+              args?.auto_match_ams !== true &&
+              (!finalAmsMapping || finalAmsMapping.length === 0) &&
+              (!finalAmsSlots || finalAmsSlots.length === 0)
+            ) {
+              const requirements = await analyze3MFAmsRequirements(threeMFPath, 0);
+              if (requirements.usedFilamentPositions.length > 0) {
+                throw new Error(
+                  `H2 ${printModel.toUpperCase()} pre-sliced jobs with declared filaments require ams_slots, ams_mapping, or auto_match_ams: true. Plate uses project filament positions ${JSON.stringify(requirements.usedFilamentPositions)}; pass one physical tray per used filament, for example ams_slots: [0] for AMS 0 slot 0 or [1] for AMS 0 slot 1.`
+                );
+              }
             }
 
             if (args?.use_ams === false) {

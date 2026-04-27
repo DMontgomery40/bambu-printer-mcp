@@ -646,6 +646,11 @@ export class BambuImplementation {
         baseMapping[pos] = options.amsSlots![i];
       });
     } else {
+      if (isH2 && projectMetadata.usedFilamentPositions.length > 0) {
+        throw new Error(
+          `H2 project_file requires amsSlots or amsMapping for sliced files with declared filaments. Plate uses project filament positions ${JSON.stringify(projectMetadata.usedFilamentPositions)}.`
+        );
+      }
       const positions = projectMetadata.usedFilamentPositions;
       const projectLen = Math.max(
         projectMetadata.projectFilamentCount,

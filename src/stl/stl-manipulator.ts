@@ -379,6 +379,8 @@ export class STLManipulator extends EventEmitter {
       return bundle;
     }
 
+    const bedType = this.resolveBambuStudioBedType(bambuOptions?.bedType);
+
     try {
       const profilesRoot = detectProfilesRoot(process.env.SLICER_PATH);
       const flat = await flattenForCli({
@@ -387,7 +389,7 @@ export class STLManipulator extends EventEmitter {
         filamentLeaves,
         profilesRoot,
         tempDir: this.tempDir,
-        bedType: this.resolveBambuStudioBedType(bambuOptions?.bedType),
+        bedType,
       });
       console.log(
         `[cli-flatten] applied for ${machineLeaf} (cliOverlay=${flat.meta.cliOverlayApplied})`
@@ -407,6 +409,11 @@ export class STLManipulator extends EventEmitter {
   private resolveBambuStudioBedType(bedType?: string): string | undefined {
     if (!bedType) return undefined;
     const normalized = bedType.trim().toLowerCase();
+    if (normalized === 'supertack_plate') {
+      throw new Error(
+        'BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF or choose textured_plate, cool_plate, engineering_plate, or hot_plate.'
+      );
+    }
     return BAMBU_CLI_BED_TYPES[normalized] || bedType;
   }
 
