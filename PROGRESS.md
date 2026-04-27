@@ -38,6 +38,48 @@ wire format on a printer we can't easily test against. Future work:
 either reverse-engineer the H2 protocol from a packet capture or wait
 for upstream docs.
 
+### H2 probe results (2026-04-27, against Parker H2S `192.168.68.93`)
+
+Fired `camera_snapshot` with `experimental:true` against Parker, then
+the raw-byte probe (`scripts/probe-h2-raw.mjs`) for diagnostic data.
+
+Findings:
+
+- **TLS handshake succeeds** without a client certificate
+  (`rejectUnauthorized: false`). mTLS is NOT the gate on port 6000.
+- **A1/P1 16-byte frame header layout IS the H2 layout** — the printer
+  responds with that exact structure.
+- **The 80-byte A1/P1 auth packet (with the LAN access code as the
+  password) is rejected by H2 firmware.** The printer replies with one
+  framed error response and closes the connection:
+
+  ```
+  offset  bytes                                            interpretation
+  0x00    08 00 00 00                                      payload_size = 8
+  0x04    3f 01 03 a2                                      error_code  = 0xa203013f
+  0x08    00 00 00 00 00 00 00 00                          reserved
+  0x10    ff ff ff ff b8 e0 eb 9b                          8-byte error payload
+  ```
+
+- Round-trip is fast (~145ms total), so the printer is responsive on
+  port 6000 — it just doesn't like our credential or packet shape.
+
+This is a meaningful narrowing of the H2 mystery. Next experiments to
+try (in increasing cost):
+
+1. **Different credential.** Use the cloud-derived `dev_access_code`
+   from `bambu certs/` instead of the LAN access code. If that succeeds,
+   H2 simply gates camera behind cloud auth even in LAN mode.
+2. **Read HA bambulab integration source.** They handle H2 cameras
+   today; whatever they pass is the answer. Should be quick to find in
+   `custom_components/bambu_lab/pybambu/`.
+3. **Different packet format.** Try `type = 0x4000` (vs `0x3000`),
+   longer packet, or look for a magic-bytes difference. Lowest-confidence
+   path; only attempt if 1 + 2 don't pan out.
+
+The diagnostic scripts (`scripts/probe-h2-camera.mjs` and
+`scripts/probe-h2-raw.mjs`) are committed and reusable.
+
 ### Working state
 
 Tracked local changes since `12ae6b9`:
