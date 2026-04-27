@@ -26,6 +26,11 @@ Verification:
 - BambuStudio CLI slicing smoke passes for H2S, H2D, X1C, and P1S via
   `scripts/test-cli-slice.mjs`; each run produced a sliced 3MF with non-empty
   `Metadata/plate_1.gcode`.
+- Two-filament CLI profile loading is not the same as verified two-color
+  slicing. A temp-only H2S smoke with two cube STLs, two flattened PLA
+  filament profiles, and `--load-filament-ids` accepted the profiles but still
+  produced plate metadata with `filament_ids: [0]`; two-color CLI assignment
+  needs more work before claiming support.
 - `npm pack --dry-run` passes: 21 files, 150.7 kB package.
 - `npm publish --dry-run --access public` passes for
   `@rowbotik/bambu-printer-mcp@1.1.0`.
@@ -44,9 +49,9 @@ from this fork.
 1. Keep this file current after every meaningful change.
 2. Optional live validations still useful later: `skip_objects`, light/fan,
    print speed, airduct, HMS clear, RFID reread.
-3. Optional future features: better live AMS inventory reporting for
-   `auto_match_ams`, broader camera docs/examples, printer-file delete live
-   validation on a harmless file.
+3. Optional future features: two-color CLI slicing assignment verification,
+   better live AMS inventory reporting for `auto_match_ams`, broader camera
+   docs/examples, printer-file delete live validation on a harmless file.
 
 ---
 
