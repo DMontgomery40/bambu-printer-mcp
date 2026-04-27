@@ -1,12 +1,20 @@
 # Remote Deployment Notes
 
-Updated: 2026-04-22
+Updated: 2026-04-27
 
-This document records the local patches made to this clone of `bambu-printer-mcp`, what was verified against the live printers, and how to deploy the patched server on a remote machine.
+This document summarizes the deployment-relevant changes in this patched `bambu-printer-mcp` clone without including operator-specific hosts, printer names, serials, or secrets.
 
-Access tokens are intentionally omitted from this document. The synced MCP config currently contains them, but this README avoids repeating secrets.
+## Scope
 
-## What Changed
+This branch extends the previously dormant project so it can work reliably with newer Bambu hardware, especially:
+
+- H2D
+- H2S
+- AMS-backed `.gcode.3mf` and project-based `3mf` print flows
+- template-driven slicing workflows
+- read-only diagnostics and basic live controls
+
+## Deployment-Relevant Changes
 
 ### MQTT status handling
 
@@ -17,15 +25,15 @@ Files:
 
 Changes:
 
-- Added a tolerant `BambuClient` subclass that subscribes to `device/<serial>/report` without requiring the legacy `get_version` ACK.
-- Added a report cache keyed by `host + serial + token`.
-- Waited for the first real `push_status` report instead of relying on `printer.data` immediately after connect.
-- Kept the fire-and-settle helper for commands that do not ACK reliably on newer firmware.
+- Added a tolerant Bambu MQTT client path that does not depend on the legacy `get_version` ACK.
+- Added a small report cache keyed by printer connection identity.
+- Waits for the first real `push_status` report instead of assuming the printer object is populated immediately after connect.
+- Keeps a fire-and-settle helper for commands that do not ACK reliably on newer firmware.
 
-Why:
+Why it matters:
 
-- H2D and H2S firmware can stream live status over MQTT while never answering the `bambu-node` `get_version` handshake.
-- Without this patch, the connection looked broken even though the printer was already sending valid reports.
+- Some newer Bambu firmware builds stream valid status while never answering the older handshake path expected by the original library.
+- Without this patch, printers could appear disconnected even when status and control were actually available.
 
 ### Environment variable compatibility
 
@@ -49,12 +57,12 @@ Changes:
   - `BAMBU_MODEL`
   - `SLICER_PATH`
 
-Why:
+Why it matters:
 
-- The real MCP config in `/Users/alexbuchan/Sync/bambu-mcp-config.json` already used the `BAMBU_PRINTER_*` naming pattern.
-- Accepting both naming schemes avoids rewriting every caller.
+- Existing machine-local configs often already use the `BAMBU_PRINTER_*` naming pattern.
+- Accepting both schemes reduces migration friction.
 
-### H2S model support
+### H2 printer support
 
 Files:
 
@@ -65,31 +73,29 @@ Files:
 Changes:
 
 - Added `h2s` to model validation.
-- Added the `Bambu Lab H2S <nozzle> nozzle` slicer preset mapping.
-- Added `h2s` to the interactive model picker and tool schema enums.
+- Added H2-series slicer preset mapping.
+- Extended tool schema enums and validation so H2D/H2S can be used directly in slicing and print calls.
 
-Why:
+Why it matters:
 
-- Parker is an H2S. Without this patch, the server would reject its configured model before slicing or printing.
+- The original project did not fully support these newer Bambu models in the local MCP workflow.
 
-### Per-printer MCP split
+### FTPS and project-file print path hardening
 
-File:
+Files:
 
-- `/Users/alexbuchan/Sync/bambu-mcp-config.json`
+- `src/printers/bambu.ts`
+- `dist/printers/bambu.js`
 
 Changes:
 
-- Replaced the single `bambu` MCP entry with:
-  - `bambu-kingpin`
-  - `bambu-parker`
-  - `bambu-x1c`
-- Pointed each entry at this patched clone:
-  - `node /Users/alexbuchan/Desktop/bambu-printer-mcp/dist/index.js`
+- Hardened FTPS upload behavior to survive the TLS session reuse quirk that blocks some Bambu file uploads.
+- Added the H2-safe `.gcode.3mf` / `project_file` print path handling needed by newer H2 firmware.
+- Expanded AMS mapping behavior so project-length mappings and `ams_mapping2` are emitted for H2-class printers.
 
-Why:
+Why it matters:
 
-- One MCP entry per device is simpler and safer than constantly overriding host, serial, and token per tool call.
+- This is the core fix that allows local FTPS + MQTT printing to work reliably on H2D/H2S with AMS.
 
 ### Live filament inventory resolution
 
@@ -101,116 +107,102 @@ Files:
 Changes:
 
 - Added `get_printer_filaments` to normalize live AMS tray data from MQTT.
-- Resolved printer-reported `tray_info_idx` values like `GFG02` or `GFL00` to matching BambuStudio filament profile JSON paths for the configured model.
-- Added a simple single-material slicing fallback: when `slice_stl` has no explicit slicer profile or `load_filaments`, it uses the printer's current or first loaded tray as the slicer filament profile.
-- Template-driven slicing and live MQTT filament selection now work together, so a saved 3MF can supply process settings while the active printer tray supplies the material choice.
+- Resolves printer-reported tray identifiers to slicer-ready filament profile paths.
+- Added a simple single-material slicing fallback so `slice_stl` can reuse the active printer filament when the caller does not provide an explicit slicer profile or `load_filaments`.
+- Template-driven slicing and live MQTT filament selection now work together.
 
-Why:
+Why it matters:
 
-- The collar workflow needs live filament awareness before slicing, not just after a 3MF is already created.
-- Raw MQTT AMS data is useful but too low-level for an agent; this patch turns it into direct slicer inputs.
+- Agents can now move from “what is loaded right now?” to “slice with the correct material” without manual lookup glue.
 
-## Printer Inventory
+### BambuStudio CLI flattening
 
-These are the deployed logical printer names used in the config:
+Files:
 
-| Name | Model | Host | Serial |
-|---|---|---|---|
-| Kingpin | H2D | `192.168.68.73` | `0948AB4C1900179` |
-| Parker | H2S | `192.168.68.93` | `0938AC5B0600334` |
-| X1C | X1C | `192.168.68.53` | `00M00A2C0617448` |
+- `src/slicer/profile-flatten.ts`
+- `src/stl/stl-manipulator.ts`
+- `dist/slicer/profile-flatten.js`
+- `dist/stl/stl-manipulator.js`
+
+Changes:
+
+- Added an opt-in BBL profile flattener behind `BAMBU_CLI_FLATTEN=true`.
+- Flattens bundled BambuStudio `inherits` chains before CLI slicing.
+- Applies BambuStudio CLI machine-limit overlays and derives required H2/P/X profile fields.
+
+Why it matters:
+
+- This works around current BambuStudio CLI profile-resolution failures without making CLI slicing the default production path.
+
+### Diagnostics and controls
+
+Files:
+
+- `src/index.ts`
+- `src/printers/bambu.ts`
+- `dist/index.js`
+- `dist/printers/bambu.js`
+
+Changes:
+
+- Added `printer://{host}/hms` for read-only HMS/error diagnostics.
+- Added `pause_print` and `resume_print`.
+- Added `set_light` and `set_fan_speed`.
+- Added `list_3mf_plate_objects` and `skip_objects`.
+- Added `resolve_3mf_ams_slots` plus opt-in `print_3mf auto_match_ams`.
+
+Why it matters:
+
+- Agents can inspect common failure state, resolve AMS slot requirements, and perform basic controls without hand-crafting MQTT payloads.
 
 ## What Was Verified
 
-Live status checks were run against all three printers on 2026-04-22.
+This branch has been verified locally for:
 
-Results:
+- `npm run build`
+- `npm test` (19/19 passing)
+- BambuStudio CLI smoke slicing for H2S, H2D, X1C, and P1S
+- MCP stdio `slice_stl` with `BAMBU_CLI_FLATTEN=true`
+- H2-class AMS mapping behavior through regression tests
+- local H2 print dispatch logic for project-based prints
+- template-aware slicing and print-path integration
 
-- Kingpin: connected, reported `IDLE`, returned live temperatures and AMS data.
-- Parker: connected, reported `IDLE`, returned live temperatures.
-- X1C: connected and returned status successfully; the printer-reported state was `FAILED` at the time of the check, which is a printer state, not an auth failure.
-- `getFiles()` worked against Kingpin and returned the expected printer directories.
-- Live filament resolution produced slicer-ready paths such as `Bambu PETG HF @BBL H2D 0.4 nozzle.json`, `Bambu PETG Translucent @BBL H2S.json`, and `PolyLite PLA @BBL X1C.json`.
+Live checks on 2026-04-27 verified:
 
-Important note:
+- H2D status and `printer://{host}/hms`
+- H2S status and `printer://{host}/hms`
+- X1C status connectivity
+- `set_light` on the H2D, then restored to off
+- `set_fan_speed` on the H2D chamber fan, restored to 0
+- `list_3mf_plate_objects` against the local sliced sample
+- `resolve_3mf_ams_slots` against H2D/H2S; it correctly reported the sample's required PLA `tray_info_idx` was not loaded
 
-- `model` in the returned status can still show `Unknown` on these push-only reports because `model_id` is blank in the payload and the tolerant path intentionally skips the `get_version` model probe. This does not block status, file, or command operations.
+Still not live-validated:
 
-## Current Local Layout
+- `print_3mf auto_match_ams`
+- `skip_objects`
+- a full physical H2S/H2D print from this branch after the latest feature additions
 
-- Patched repo:
-  - `/Users/alexbuchan/Desktop/bambu-printer-mcp`
-- Synced MCP config:
-  - `/Users/alexbuchan/Sync/bambu-mcp-config.json`
-- Current command used by the synced config:
-  - `node /Users/alexbuchan/Desktop/bambu-printer-mcp/dist/index.js`
+## Safe Deployment Guidance
 
-## Remote Deployment Plan
+Recommended deployment shape:
 
-### Option A: Mirror the same path
-
-This is the easiest path.
-
-1. Copy the patched repo to the remote machine at:
-   - `/Users/alexbuchan/Desktop/bambu-printer-mcp`
-2. On the remote machine, install runtime dependencies in that repo:
+1. Copy this patched repo to the target machine.
+2. Install runtime dependencies:
    - `npm install --omit=dev`
-3. Keep the synced `bambu-mcp-config.json` as-is.
-4. Restart the MCP host or client.
-5. Smoke test:
-   - `get_printer_status` on `bambu-kingpin`
-   - `get_printer_status` on `bambu-parker`
-   - `get_printer_status` on `bambu-x1c`
-   - `list_printer_files` on at least one printer
-
-### Option B: Deploy to a different path
-
-Use this if the remote machine should not mirror the Desktop path.
-
-1. Copy the patched repo anywhere on the remote machine.
-2. Run:
-   - `npm install --omit=dev`
-3. Update each Bambu MCP entry in the remote config so `command` points at the new path, for example:
-   - `node /opt/bambu-printer-mcp/dist/index.js`
-4. Restart the MCP host or client.
-5. Run the same smoke tests listed above.
-
-### Option C: Package or publish later
-
-This was not done in this rollout.
-
-Possible later cleanup:
-
-- publish a private fork
-- create a local tarball package
-- install the patched clone in a stable machine-local location instead of running from Desktop
-
-## Recommended Remote Rollout
-
-If the goal is to get the remote station working with minimum risk:
-
-1. Copy this exact repo to the remote machine.
-2. Install runtime dependencies there with `npm install --omit=dev`.
-3. Update the Bambu MCP `command` path on the remote machine if needed.
-4. Restart the MCP client.
-5. Verify status on all three printers before attempting any file upload or print command.
-6. Only after status works, test:
+3. Point your MCP host or wrapper at:
+   - `node /path/to/bambu-printer-mcp/dist/index.js`
+4. Keep printer secrets in machine-local config, not in synced repo files.
+5. Smoke test in this order:
+   - `get_printer_status`
+   - `printer://{host}/hms`
+   - `get_printer_filaments`
    - `list_printer_files`
-   - a harmless temperature read
-   - a file upload on a non-critical test file
+   - `resolve_3mf_ams_slots` on the intended sliced file
+   - a non-critical print or upload flow
 
 ## Operational Notes
 
-- `tsc` was not available in this local clone while patching, so both `src/` and `dist/` were edited directly. The checked-in runtime is the source of truth for deployment unless the remote machine rebuilds the project.
-- The synced config currently stores printer secrets. Long term, a better design is to keep the tokens machine-local and inject them from an unsynced config or wrapper.
-- Reverting the MCP config back to `npx -y bambu-printer-mcp` will also revert the H2D/H2S compatibility work, because the published package does not include these local patches.
-
-## Files Touched In This Rollout
-
-- `src/printers/bambu.ts`
-- `dist/printers/bambu.js`
-- `src/index.ts`
-- `dist/index.js`
-- `README.md`
-- `REMOTE-DEPLOYMENT.md`
-- `/Users/alexbuchan/Sync/bambu-mcp-config.json`
+- This repo currently checks in both `src/` and built `dist/` artifacts, so deployment can use the committed runtime directly.
+- Certificate-based auth research is separate from the currently working local access-code FTPS + MQTT path.
+- If you maintain multiple printers, prefer one machine-local config entry per device instead of baking printer identities into the repo.
