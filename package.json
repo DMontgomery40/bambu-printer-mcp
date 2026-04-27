@@ -1,11 +1,11 @@
 {
-  "name": "bambu-printer-mcp",
+  "name": "@rowbotik/bambu-printer-mcp",
   "version": "1.1.0",
   "description": "MCP server for Bambu Lab 3D printers with STL manipulation, slicing, and print management",
   "main": "dist/index.js",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/DMontgomery40/bambu-printer-mcp.git"
+    "url": "git+https://github.com/rowbotik/bambu-printer-mcp.git"
   },
   "type": "module",
   "scripts": {
@@ -17,6 +17,9 @@
   },
   "bin": {
     "bambu-printer-mcp": "dist/index.js"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "files": [
     "dist",
@@ -33,7 +36,7 @@
     "stl",
     "3mf"
   ],
-  "author": "David Montgomery",
+  "author": "Rowbotik",
   "license": "GPL-2.0",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.0",

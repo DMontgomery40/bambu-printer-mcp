@@ -1,11 +1,11 @@
 # bambu-printer-mcp
 
-[![npm version](https://img.shields.io/npm/v/bambu-printer-mcp.svg)](https://www.npmjs.com/package/bambu-printer-mcp)
+[![npm version](https://img.shields.io/npm/v/%40rowbotik%2Fbambu-printer-mcp.svg)](https://www.npmjs.com/package/@rowbotik/bambu-printer-mcp)
 [![License: GPL-2.0](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0%2B-blue)](https://www.typescriptlang.org/)
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D%2018.0.0-green.svg)](https://nodejs.org/en/download/)
-[![GitHub stars](https://img.shields.io/github/stars/DMontgomery40/bambu-printer-mcp.svg?style=social&label=Star)](https://github.com/DMontgomery40/bambu-printer-mcp)
-[![Downloads](https://img.shields.io/npm/dm/bambu-printer-mcp.svg)](https://www.npmjs.com/package/bambu-printer-mcp)
+[![GitHub stars](https://img.shields.io/github/stars/rowbotik/bambu-printer-mcp.svg?style=social&label=Star)](https://github.com/rowbotik/bambu-printer-mcp)
+[![Downloads](https://img.shields.io/npm/dm/%40rowbotik%2Fbambu-printer-mcp.svg)](https://www.npmjs.com/package/@rowbotik/bambu-printer-mcp)
 
 A Bambu Lab-focused MCP server for controlling Bambu printers, manipulating STL files, and managing end-to-end 3MF print workflows from Claude Desktop, Claude Code, or any MCP-compatible client.
 
@@ -104,7 +104,7 @@ Local handoff note: see [REMOTE-DEPLOYMENT.md](./REMOTE-DEPLOYMENT.md) for the c
 The fastest way to get started. No global install required:
 
 ```bash
-npx bambu-printer-mcp
+npx @rowbotik/bambu-printer-mcp
 ```
 
 Set environment variables inline or via a `.env` file in your working directory (see [Configuration](#configuration)).
@@ -112,7 +112,7 @@ Set environment variables inline or via a `.env` file in your working directory 
 ### Install globally from npm
 
 ```bash
-npm install -g bambu-printer-mcp
+npm install -g @rowbotik/bambu-printer-mcp
 ```
 
 After installation, the `bambu-printer-mcp` command is available in your PATH.
@@ -120,7 +120,7 @@ After installation, the `bambu-printer-mcp` command is available in your PATH.
 ### Install from source
 
 ```bash
-git clone https://github.com/DMontgomery40/bambu-printer-mcp.git
+git clone https://github.com/rowbotik/bambu-printer-mcp.git
 cd bambu-printer-mcp
 npm install
 npm run build
@@ -212,7 +212,7 @@ Add this server to your MCP client's config (Claude Desktop, Claude Code, Cursor
   "mcpServers": {
     "bambu-printer": {
       "command": "npx",
-      "args": ["-y", "bambu-printer-mcp"],
+      "args": ["-y", "@rowbotik/bambu-printer-mcp"],
       "env": {
         "PRINTER_HOST": "192.168.1.100",
         "BAMBU_SERIAL": "01P00A123456789",

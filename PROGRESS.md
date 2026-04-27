@@ -1,42 +1,64 @@
 # Progress
 
-## Latest commit (2026-04-27)
+## Current status (2026-04-27)
 
-Branch `codex/collar-charm-h2-cleanup` (not pushed). Stack:
+Branch `codex/collar-charm-h2-cleanup` is pushed to
+`rowbotik-fork/codex/collar-charm-h2-cleanup`.
+
+Version: `1.1.0`, package name `@rowbotik/bambu-printer-mcp`.
+
+Latest stack:
 
 ```
+a14a117 docs(changelog): cover delete_printer_file, camera_snapshot, H2 mapping fixes
+29b8ec4 chore: bump to 1.1.0 and add CHANGELOG
+3bf954f feat(camera): RTSP path for X1/P2S/H2 series
+b208eac chore: H2 camera probe scripts + diagnostic findings
+5d473c5 feat(camera): add experimental:true opt-in for H2 series
+2a42574 feat: add camera_snapshot MCP tool (A1/P1 only)
 1838855 feat: add delete_printer_file MCP tool
 12ae6b9 fix(h2): require explicit AMS mapping; reject SuperTack on CLI slicing
 ```
 
-On top of those: new `camera_snapshot` MCP tool — TCP-on-6000 JPEG frame
-fetch with strict per-model routing. **`npm test` now passes 33/33**
-(added 5 camera tests on top of the 5 delete tests landed in `1838855`).
-Not committed yet — see "Working state" below.
+Verification:
+
+- `npm test` passes: **34/34**.
+- `npm pack --dry-run` passes: 21 files, 150.7 kB package.
+- `npm publish --dry-run --access public` passes for
+  `@rowbotik/bambu-printer-mcp@1.1.0`.
+- Physical H2S/Parker SuperTack one-color print completed.
+- Camera snapshot live probes succeeded on Parker (H2S), Kingpin (H2D), and
+  X1C via RTSPS port 322.
+- Changelog exists and covers the 1.1.0 stack.
+
+Publish target: `@rowbotik/bambu-printer-mcp`. The unscoped
+`bambu-printer-mcp` package belongs to upstream and should not be published
+from this fork.
+
+### Source of truth / next queue
+
+1. Keep this file current after every meaningful change.
+2. Publish `@rowbotik/bambu-printer-mcp@1.1.0` with
+   `npm publish --access public` when ready.
+3. Optional live validations still useful later: `skip_objects`, light/fan,
+   print speed, airduct, HMS clear, RFID reread.
+4. Optional future features: better live AMS inventory reporting for
+   `auto_match_ams`, broader camera docs/examples, printer-file delete live
+   validation on a harmless file.
+
+---
 
 ### `camera_snapshot` — what shipped
 
-- Implements the OpenBambuAPI wire format (80-byte auth packet, 16-byte
-  frame header) for **A1 / A1 mini / P1S / P1P**. Verified against the
-  Doridian video.md spec.
-- **X1 / X1C / X1E / P2S** → fail-fast with a pointer at the RTSP URL
-  (`rtsps://bblp:<token>@<host>:322/streaming/live/1`). RTSP support is
-  deferred.
-- **H2 / H2S / H2D** → fail-fast: wire protocol is not documented
-  upstream and we refuse to guess. Same lesson as the SuperTack /
-  CLI-slicing path. Track upstream `video.md` and re-enable when verified.
-- Returns `{ status, format, sizeBytes, base64, savedTo? }`. Optional
-  `save_path` writes the bytes to disk in addition to returning base64.
+- Implements the OpenBambuAPI TCP-on-6000 wire format (80-byte auth packet,
+  16-byte frame header) for **A1 / A1 mini / P1S / P1P**.
+- Routes **X1 / X1C / X1E / P2S** and **H2 / H2S / H2D / H2C / H2D Pro** to
+  RTSPS port 322 via ffmpeg:
+  `rtsps://bblp:<token>@<host>:322/streaming/live/1`.
+- Returns `{ status, format, sizeBytes, base64, savedTo?, transport }`.
+  Optional `save_path` writes the bytes to disk in addition to returning
+  base64.
 - Default 8s timeout for cold-start camera latency.
-
-### Why this won't help Parker today
-
-User's primary printer is H2S, which is in the undocumented bucket.
-`camera_snapshot` will refuse with a clear error there. This was a
-deliberate choice — shipping correctness rather than guessing at the
-wire format on a printer we can't easily test against. Future work:
-either reverse-engineer the H2 protocol from a packet capture or wait
-for upstream docs.
 
 ### H2 camera RESOLVED via RTSP (2026-04-27)
 
