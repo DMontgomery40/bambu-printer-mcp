@@ -198,6 +198,27 @@ function resolveAmsSlotsFromRequirements(requirements, inventory) {
     }
     return { ams_slots: amsSlots, matches, missing };
 }
+function extractPrinterDiagnostics(status) {
+    const raw = status?.raw && typeof status.raw === "object" ? status.raw : {};
+    const diagnosticFields = {};
+    for (const [key, value] of Object.entries(raw)) {
+        if (/(hms|error|fail|warn)/i.test(key)) {
+            diagnosticFields[key] = value;
+        }
+    }
+    return {
+        connected: Boolean(status?.connected),
+        serial: status?.serial ?? null,
+        printer_status: status?.status ?? null,
+        active_error: raw.print_error ??
+            raw.print_error_code ??
+            raw.mc_print_error_code ??
+            raw.fail_reason ??
+            null,
+        hms: raw.hms ?? raw.hms_info ?? raw.hms_list ?? null,
+        diagnostic_fields: diagnosticFields,
+    };
+}
 function validateBambuModel(model) {
     const normalized = model.trim().toLowerCase();
     if (!VALID_BAMBU_MODELS.includes(normalized)) {
@@ -638,6 +659,12 @@ class BambuPrinterMCPServer {
                         name: "Bambu Printer Files",
                         mimeType: "application/json",
                         description: "List of files on the Bambu Lab printer"
+                    },
+                    {
+                        uri: `printer://${DEFAULT_HOST}/hms`,
+                        name: "Bambu Printer HMS Diagnostics",
+                        mimeType: "application/json",
+                        description: "HMS and error-related fields from the latest printer status"
                     }
                 ],
                 templates: [
@@ -649,6 +676,11 @@ class BambuPrinterMCPServer {
                     {
                         uriTemplate: "printer://{host}/files",
                         name: "Bambu Printer Files",
+                        mimeType: "application/json"
+                    },
+                    {
+                        uriTemplate: "printer://{host}/hms",
+                        name: "Bambu Printer HMS Diagnostics",
                         mimeType: "application/json"
                     }
                 ]
@@ -669,6 +701,10 @@ class BambuPrinterMCPServer {
             }
             else if (resource === "files") {
                 content = await this.bambu.getFiles(host || DEFAULT_HOST, bambuSerial, bambuToken);
+            }
+            else if (resource === "hms") {
+                const status = await this.bambu.getStatus(host || DEFAULT_HOST, bambuSerial, bambuToken);
+                content = extractPrinterDiagnostics(status);
             }
             else {
                 throw new McpError(ErrorCode.InvalidRequest, `Unknown resource: ${resource}`);

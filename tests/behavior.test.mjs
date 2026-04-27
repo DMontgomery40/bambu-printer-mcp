@@ -374,6 +374,10 @@ test("stdio transport: initialize, list tools, call success + structured failure
   const listToolsResult = await client.listTools();
   assertCommonToolPresence(listToolsResult);
 
+  const listResourcesResult = await client.listResources();
+  const resourceUris = listResourcesResult.resources.map((resource) => resource.uri);
+  assert.ok(resourceUris.some((uri) => uri.endsWith("/hms")), "HMS diagnostics resource must be listed");
+
   const success = await client.callTool({
     name: "get_stl_info",
     arguments: { stl_path: SAMPLE_STL },
