@@ -1,5 +1,49 @@
 # Progress
 
+## Latest commit (2026-04-27)
+
+`12ae6b9 fix(h2): require explicit AMS mapping; reject SuperTack on CLI slicing`
+landed on `codex/collar-charm-h2-cleanup` (not pushed). Stacked on top:
+new `delete_printer_file` MCP tool with confirm-gate + path-allowlist
+guard rails. `npm test` now passes **28/28** (added 5 unit tests for the
+delete behavior). Not committed yet — see "Working state" below.
+
+### Working state
+
+Tracked local changes since `12ae6b9`:
+
+- `README.md` — features bullet, new `delete_printer_file` section
+- `PROGRESS.md` — this section
+- `src/index.ts` — tool registration + dispatch case
+- `src/printers/bambu.ts` — `deleteFile()` (public) and `ftpDelete()` (private)
+- `tests/behavior.test.mjs` — 5 new tests:
+  - `confirm:true` required, otherwise `status: "skipped"` with no FTP
+  - path traversal rejected
+  - paths outside `cache/`/`timelapse/`/`logs/` rejected
+  - happy path: bare names normalize to `cache/`, ftpDelete called with absolute path
+  - `timelapse/` and `logs/` paths accepted as-is
+- rebuilt `dist/` (`dist/index.js`, `dist/printers/bambu.js`)
+
+Suggested commit message:
+
+```
+feat: add delete_printer_file MCP tool
+
+- New deleteFile() in BambuImplementation: FTPS DELETE via basic-ftp
+  using the same TLS-session-ticket dance as ftpUpload.
+- Confirm-gated (confirm:true required) so a default invocation can't
+  destroy data; returns status:"skipped" otherwise without contacting
+  the printer.
+- Path safety: rejects ".." segments, restricts deletes to cache/,
+  timelapse/, and logs/ to prevent walking the filesystem.
+- Bare filenames default to cache/<name>; relative paths to other
+  allowed dirs are honored as-is.
+- README features bullet + delete_printer_file tool section updated.
+- 5 new unit tests cover the gating, path safety, and happy path.
+
+Total npm test: 28/28.
+```
+
 ## Current handoff (2026-04-27)
 
 Branch: `codex/collar-charm-h2-cleanup`.

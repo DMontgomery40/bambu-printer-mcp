@@ -72,6 +72,29 @@ export declare class BambuImplementation {
         file: string;
     }>;
     /**
+     * Delete a single file from the printer's SD card via FTPS.
+     *
+     * Destructive. Caller MUST set confirm=true; otherwise we return without
+     * touching the printer. Path is normalized the same way uploadFile()
+     * normalizes -- if the caller passes a bare filename, we look in cache/.
+     * Path traversal (`..`) is rejected.
+     *
+     * Only the printer-managed directories (cache/, timelapse/, logs/) are
+     * accepted as parents to avoid letting an agent wander further into the
+     * filesystem than expected.
+     */
+    deleteFile(host: string, _serial: string, token: string, filename: string, confirm: boolean): Promise<{
+        status: string;
+        deleted: boolean;
+        remotePath: string;
+        message?: string;
+    }>;
+    /**
+     * Delete a single remote file via FTPS, using basic-ftp directly so we
+     * get the same TLS-session-ticket handshake as ftpUpload().
+     */
+    private ftpDelete;
+    /**
      * Upload a file to the printer via FTP using basic-ftp directly.
      * Bypasses bambu-js's sendFile which has a double-path bug (ensureDir CDs
      * into the target directory, then uploadFrom uses the full relative path

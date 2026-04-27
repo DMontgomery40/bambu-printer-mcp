@@ -518,6 +518,89 @@ test("H2 ams_slots expand into project-level ams_mapping and ams_mapping2", asyn
   }
 });
 
+test("delete_printer_file requires confirm:true and skips FTP when omitted", async () => {
+  const bambu = new BambuImplementation();
+  let ftpCalled = false;
+  bambu.ftpDelete = async () => {
+    ftpCalled = true;
+  };
+
+  const result = await bambu.deleteFile(
+    "127.0.0.1",
+    "0938TEST",
+    "TEST_TOKEN",
+    "stale.gcode.3mf",
+    false
+  );
+
+  assert.equal(ftpCalled, false, "ftpDelete must not run without confirm:true");
+  assert.equal(result.status, "skipped");
+  assert.equal(result.deleted, false);
+  assert.match(result.message, /requires confirm:true/);
+});
+
+test("delete_printer_file rejects path traversal", async () => {
+  const bambu = new BambuImplementation();
+  bambu.ftpDelete = async () => {
+    throw new Error("ftpDelete should not be reached on traversal input");
+  };
+
+  await assert.rejects(
+    bambu.deleteFile("127.0.0.1", "S", "T", "../../etc/passwd", true),
+    /path traversal segments are not allowed/i
+  );
+});
+
+test("delete_printer_file rejects directories outside cache/timelapse/logs", async () => {
+  const bambu = new BambuImplementation();
+  bambu.ftpDelete = async () => {
+    throw new Error("ftpDelete should not be reached for disallowed parent");
+  };
+
+  await assert.rejects(
+    bambu.deleteFile("127.0.0.1", "S", "T", "userdata/secrets.bin", true),
+    /refusing to delete outside cache\/, timelapse\/, logs\//i
+  );
+});
+
+test("delete_printer_file with confirm:true normalizes bare names to cache/ and calls ftpDelete with absolute path", async () => {
+  const bambu = new BambuImplementation();
+  let ftpArgs = null;
+  bambu.ftpDelete = async (host, token, remote) => {
+    ftpArgs = { host, token, remote };
+  };
+
+  const result = await bambu.deleteFile(
+    "192.168.1.50",
+    "0938TEST",
+    "ACCESS_TOKEN",
+    "old_print.gcode.3mf",
+    true
+  );
+
+  assert.deepEqual(ftpArgs, {
+    host: "192.168.1.50",
+    token: "ACCESS_TOKEN",
+    remote: "/cache/old_print.gcode.3mf",
+  });
+  assert.equal(result.status, "success");
+  assert.equal(result.deleted, true);
+  assert.equal(result.remotePath, "cache/old_print.gcode.3mf");
+});
+
+test("delete_printer_file accepts explicit timelapse/ and logs/ paths", async () => {
+  const bambu = new BambuImplementation();
+  const calls = [];
+  bambu.ftpDelete = async (_host, _token, remote) => {
+    calls.push(remote);
+  };
+
+  await bambu.deleteFile("h", "s", "t", "timelapse/2026-04-26_12-00.mp4", true);
+  await bambu.deleteFile("h", "s", "t", "logs/printer.log", true);
+
+  assert.deepEqual(calls, ["/timelapse/2026-04-26_12-00.mp4", "/logs/printer.log"]);
+});
+
 test("stdio transport: initialize, list tools, call success + structured failure", async (t) => {
   const transport = new StdioClientTransport({
     command: process.execPath,

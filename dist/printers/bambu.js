@@ -911,6 +911,72 @@ export class BambuImplementation {
         };
     }
     /**
+     * Delete a single file from the printer's SD card via FTPS.
+     *
+     * Destructive. Caller MUST set confirm=true; otherwise we return without
+     * touching the printer. Path is normalized the same way uploadFile()
+     * normalizes -- if the caller passes a bare filename, we look in cache/.
+     * Path traversal (`..`) is rejected.
+     *
+     * Only the printer-managed directories (cache/, timelapse/, logs/) are
+     * accepted as parents to avoid letting an agent wander further into the
+     * filesystem than expected.
+     */
+    async deleteFile(host, _serial, token, filename, confirm) {
+        if (!confirm) {
+            return {
+                status: "skipped",
+                deleted: false,
+                remotePath: filename,
+                message: "delete_printer_file requires confirm:true. No FTP request was made.",
+            };
+        }
+        const normalizedFileName = filename.replace(/^\/+/, "");
+        if (normalizedFileName.length === 0) {
+            throw new Error("delete_printer_file: filename is required.");
+        }
+        if (normalizedFileName.split("/").some((seg) => seg === "..")) {
+            throw new Error(`delete_printer_file: path traversal segments are not allowed (got "${filename}").`);
+        }
+        const remotePath = normalizedFileName.includes("/")
+            ? normalizedFileName
+            : `cache/${normalizedFileName}`;
+        const topDir = remotePath.split("/")[0];
+        const ALLOWED_DIRS = new Set(["cache", "timelapse", "logs"]);
+        if (!ALLOWED_DIRS.has(topDir)) {
+            throw new Error(`delete_printer_file: refusing to delete outside cache/, timelapse/, logs/. Got "${remotePath}".`);
+        }
+        await this.ftpDelete(host, token, `/${remotePath}`);
+        return {
+            status: "success",
+            deleted: true,
+            remotePath,
+        };
+    }
+    /**
+     * Delete a single remote file via FTPS, using basic-ftp directly so we
+     * get the same TLS-session-ticket handshake as ftpUpload().
+     */
+    async ftpDelete(host, token, remotePath) {
+        const client = new FTPClient(15000);
+        try {
+            await client.access({
+                host,
+                port: 990,
+                user: "bblp",
+                password: token,
+                secure: "implicit",
+                secureOptions: ftpsSecureOptions(),
+            });
+            await this.waitForTlsSession(client);
+            const absoluteRemote = remotePath.startsWith("/") ? remotePath : `/${remotePath}`;
+            await client.remove(absoluteRemote);
+        }
+        finally {
+            client.close();
+        }
+    }
+    /**
      * Upload a file to the printer via FTP using basic-ftp directly.
      * Bypasses bambu-js's sendFile which has a double-path bug (ensureDir CDs
      * into the target directory, then uploadFrom uses the full relative path

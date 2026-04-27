@@ -68,7 +68,7 @@ Local handoff note: see [REMOTE-DEPLOYMENT.md](./REMOTE-DEPLOYMENT.md) for the c
 
 - Get detailed printer status: temperatures (nozzle, bed, chamber), print progress, current layer, time remaining, and live AMS slot data
 - Query live AMS inventory with resolved Bambu/Orca filament profile paths via `get_printer_filaments`
-- List, upload, and manage files on the printer's SD card via FTPS
+- List, upload, and delete files on the printer's SD card via FTPS
 - Upload and print pre-sliced `.gcode.3mf` files with full plate selection and calibration flag control (recommended path — see [docs/SLICING.md](./docs/SLICING.md))
 - Optional auto-slice path via BambuStudio CLI. Set `BAMBU_CLI_FLATTEN=true` to enable a workaround that flattens BBL profile inheritance before invoking the CLI — works around upstream bugs in BambuStudio CLI mode ([#9636](https://github.com/bambulab/BambuStudio/issues/9636), [#9968](https://github.com/bambulab/BambuStudio/issues/9968)). Verified on H2S/H2D/X1C/P1S. Default off; Path A (GUI-slice) remains the recommended workflow for non-BBL profiles or first-time prints. See [docs/SLICING.md](./docs/SLICING.md).
 - Parse AMS mapping from the 3MF's embedded slicer metadata (`Metadata/plate_<n>.json` + gcode filament header) and send it correctly formatted per the OpenBambuAPI spec
@@ -676,6 +676,27 @@ List files stored on the printer's SD card. Scans the `cache/`, `timelapse/`, an
   "bambu_serial": "01P00A123456789",
   "bambu_token": "your_access_token"
 }
+```
+
+#### delete_printer_file
+
+Delete a single file from the printer's SD card via FTPS. **Destructive.** Requires `confirm: true` — without it the call returns `status: "skipped"` and does not contact the printer. Path traversal segments (`..`) are rejected. Only files under `cache/`, `timelapse/`, and `logs/` can be deleted.
+
+```json
+{
+  "filename": "old_print.gcode.3mf",
+  "confirm": true,
+  "host": "192.168.1.100",
+  "bambu_serial": "01P00A123456789",
+  "bambu_token": "your_access_token"
+}
+```
+
+A bare filename defaults to `cache/<filename>`. To target other directories pass a relative path:
+
+```json
+{ "filename": "timelapse/2026-04-26_12-00.mp4", "confirm": true }
+{ "filename": "logs/printer.log", "confirm": true }
 ```
 
 #### upload_gcode

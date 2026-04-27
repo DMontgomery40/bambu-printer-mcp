@@ -1325,6 +1325,27 @@ class BambuPrinterMCPServer {
             }
           },
           {
+            name: "delete_printer_file",
+            description: "Delete a file from the Bambu Lab printer's SD card via FTPS. Destructive: requires confirm:true. Restricted to cache/, timelapse/, and logs/ directories. Path traversal segments (..) are rejected.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                filename: {
+                  type: "string",
+                  description: "File to delete. Bare names default to cache/<name>; pass a relative path like timelapse/foo.mp4 to target other allowed directories."
+                },
+                confirm: {
+                  type: "boolean",
+                  description: "Must be true to actually delete. When false or omitted the call returns without sending an FTP request."
+                },
+                host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
+                bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
+                bambu_token: { type: "string", description: "Access token (default: value from env)" }
+              },
+              required: ["filename"]
+            }
+          },
+          {
             name: "upload_gcode",
             description: "Upload a G-code file to the Bambu Lab printer",
             inputSchema: {
@@ -1780,6 +1801,19 @@ class BambuPrinterMCPServer {
 
           case "list_printer_files":
             result = await this.bambu.getFiles(host, bambuSerial, bambuToken);
+            break;
+
+          case "delete_printer_file":
+            if (!args?.filename) {
+              throw new Error("Missing required parameter: filename");
+            }
+            result = await this.bambu.deleteFile(
+              host,
+              bambuSerial,
+              bambuToken,
+              String(args.filename),
+              Boolean(args.confirm)
+            );
             break;
 
           case "upload_gcode": {
