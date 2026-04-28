@@ -943,7 +943,7 @@ The primary tool for starting a Bambu print. **Recommended input: a pre-sliced `
 
 `bed_type` defaults to `textured_plate` if omitted. `ams_slots` is the preferred override input; `ams_mapping` remains the raw escape hatch. On AMS-equipped H2 printers, `use_ams: false` does not suppress mapping lookup if the sliced file declares filaments. If no mapping is provided for an H2 pre-sliced job with declared filaments, the server fails before sending; pass explicit `ams_slots`, raw `ams_mapping`, or `auto_match_ams: true`.
 
-Set `auto_match_ams: true` to match the sliced 3MF's `tray_info_idx` values against the live AMS inventory and use the matching `ams_slots`. This is ignored when you provide `ams_slots` or `ams_mapping` explicitly.
+Set `auto_match_ams: true` to match the sliced 3MF's `tray_info_idx` values against the live AMS inventory and use the matching `ams_slots`. The matcher joins on `(tray_info_idx, tray_color)` and tracks already-claimed slots, so prints with two filaments of the same SKU but different colors (e.g. two GFG02 PETG HF in black and white) resolve correctly. Falls back to SKU-only when the 3MF's filament has no color set or only one tray of that SKU is loaded. Returns a structured `missing` report (`reason: "no_loaded_match" | "color_mismatch" | "exhausted" | "no_sku"`) when a filament can't be resolved. Ignored when you provide `ams_slots` or `ams_mapping` explicitly.
 
 Layer height, nozzle temperature, and other slicer parameters cannot be overridden via this tool -- they are baked into the 3MF's G-code at slice time. Apply those settings in your slicer before generating the 3MF.
 

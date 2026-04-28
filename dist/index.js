@@ -168,33 +168,106 @@ function normalizePrinterFilamentInventory(status, bambuModel, nozzleDiameter) {
         load_filaments_all: allProfilePaths.length > 0 ? allProfilePaths.join(";") : null,
     };
 }
+/**
+ * Normalize a hex color string to lowercase 6-char RGB (drop leading "#"
+ * and any trailing alpha bytes). Returns null if the input doesn't look
+ * like a hex color.
+ *
+ * Bambu mixes formats: 3MF project_settings stores `#FFFFFF` or
+ * `#FF911A80` (RGB or RGBA with leading #). AMS push_status reports
+ * `FFFFFFFF` (RGBA without #). Comparing alpha is risky -- the same
+ * filament can show up as `#000000` in one place and `000000FF` in
+ * another. RGB-only is the right key.
+ */
+function normalizeRgbColor(color) {
+    if (!color)
+        return null;
+    const hex = color.replace(/^#/, "").toLowerCase();
+    if (!/^[0-9a-f]{6}([0-9a-f]{2})?$/.test(hex))
+        return null;
+    return hex.slice(0, 6);
+}
 function resolveAmsSlotsFromRequirements(requirements, inventory) {
     const matches = [];
     const missing = [];
     const amsSlots = [];
+    // Track which AMS slots have already been claimed by an earlier
+    // requirement so two filaments with the same SKU don't collapse onto
+    // the same physical slot.
+    const claimedSlots = new Set();
     for (const filament of requirements.filaments) {
         if (!filament.tray_info_idx) {
             missing.push({
                 filament_position: filament.filamentPosition,
                 tray_info_idx: null,
+                required_color: filament.color ?? null,
+                reason: "no_sku",
             });
             continue;
         }
-        const tray = inventory.trays.find((candidate) => candidate.loaded &&
+        const requiredColor = normalizeRgbColor(filament.color);
+        // Pool of trays loaded with the required SKU that aren't already claimed.
+        const skuPool = inventory.trays.filter((candidate) => candidate.loaded &&
             candidate.slot !== null &&
-            candidate.tray_info_idx === filament.tray_info_idx);
-        if (!tray || tray.slot === null) {
+            candidate.tray_info_idx === filament.tray_info_idx &&
+            !claimedSlots.has(candidate.slot));
+        if (skuPool.length === 0) {
+            // No trays of this SKU loaded at all (or all already claimed).
+            const reason = inventory.trays.some((t) => t.tray_info_idx === filament.tray_info_idx)
+                ? "exhausted"
+                : "no_loaded_match";
             missing.push({
                 filament_position: filament.filamentPosition,
                 tray_info_idx: filament.tray_info_idx,
+                required_color: filament.color ?? null,
+                reason,
             });
             continue;
         }
-        amsSlots.push(tray.slot);
+        // Prefer an exact RGB color match. This is what disambiguates
+        // same-SKU different-color cases (e.g. two GFG02 PETG HF trays
+        // loaded -- one black, one white).
+        let chosen = skuPool.find((candidate) => normalizeRgbColor(candidate.tray_color) === requiredColor && requiredColor !== null);
+        let strategy = "color";
+        // Fall back to SKU-only when the requirement has no color (legacy
+        // 3MF) or when only one tray of this SKU is loaded (no ambiguity).
+        if (!chosen) {
+            if (!requiredColor || skuPool.length === 1) {
+                chosen = skuPool[0];
+                strategy = "sku-only";
+            }
+            else {
+                // Color was specified, multiple SKU candidates loaded, none
+                // match the requested color. Surface clearly rather than pick
+                // a wrong color silently.
+                missing.push({
+                    filament_position: filament.filamentPosition,
+                    tray_info_idx: filament.tray_info_idx,
+                    required_color: filament.color ?? null,
+                    reason: "color_mismatch",
+                });
+                continue;
+            }
+        }
+        if (chosen.slot === null) {
+            // Defensive: shouldn't happen because of the filter above, but
+            // keep the type contract honest.
+            missing.push({
+                filament_position: filament.filamentPosition,
+                tray_info_idx: filament.tray_info_idx,
+                required_color: filament.color ?? null,
+                reason: "no_loaded_match",
+            });
+            continue;
+        }
+        claimedSlots.add(chosen.slot);
+        amsSlots.push(chosen.slot);
         matches.push({
             filament_position: filament.filamentPosition,
             tray_info_idx: filament.tray_info_idx,
-            slot: tray.slot,
+            slot: chosen.slot,
+            matched_color: chosen.tray_color ?? null,
+            match_strategy: strategy,
         });
     }
     return { ams_slots: amsSlots, matches, missing };

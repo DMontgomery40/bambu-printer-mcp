@@ -2,6 +2,13 @@
 
 ## TL;DR
 
+| Use case | Path | Status |
+|---|---|---|
+| Single-color slice (any BBL printer) | `BAMBU_CLI_FLATTEN=true` → MCP slices via CLI | ✅ Works (verified H2S, H2D, X1C, P1S) |
+| Multi-color slice on H2D | None — **upstream BambuStudio CLI is blocked** | ❌ See "Multi-color CLI gap" below |
+| Pre-sliced `.gcode.3mf` → printer | MCP `print_3mf` | ✅ Works (verified live on Kingpin H2D) |
+| Anything else | Pre-slice in Bambu Studio GUI, hand to `print_3mf` | ✅ Works always |
+
 There are two slicing paths. Pick the one that matches your situation.
 
 **Path A — pre-slice in Bambu Studio (recommended, always works):**
@@ -27,6 +34,30 @@ on H2S, H2D, X1C, and P1S with stock BBL profiles.
 
 To enable Path B, set `BAMBU_CLI_FLATTEN=true` in the environment that
 runs the MCP. Default remains Path A so behavior is backward-compatible.
+
+## Multi-color CLI gap (2026-04-27)
+
+`BambuStudio --slice` SIGSEGVs in `load_nozzle_infos_with_compatibility` on
+**any** H2D dual-extruder, multi-color project on version 02.06.00.51 — verified
+upstream via a two-cube minimal repro. Filed as
+[bambulab/BambuStudio#10408](https://github.com/bambulab/BambuStudio/issues/10408).
+
+What this means in practice:
+
+- **Single-color slicing works.** The `BAMBU_CLI_FLATTEN=true` path slices
+  H2S/H2D/X1C/P1S models cleanly and produces printable `.gcode.3mf` output.
+- **Multi-color slicing must use the GUI.** Open the model in Bambu Studio,
+  paint or split-and-assign filaments, export the sliced `.gcode.3mf`, hand it
+  to MCP `print_3mf` (or `print_collar_charm` for two-part charm projects).
+- **The dispatch path is fine.** Once you have a sliced `.gcode.3mf`, the MCP
+  uploads it via FTPS and starts the print correctly — verified live on H2S
+  (Parker) and H2D (Kingpin).
+
+The MCP includes `scripts/build-charm-3mf.mjs` which constructs valid
+multi-object source 3MFs (per-object extruder assignment, plate filament_maps).
+That tool is correct end-to-end; it produces input the BambuStudio CLI parses
+without complaint. The crash is downstream, in BambuStudio's slicer setup
+itself. The script is ready to use the moment upstream ships #10408.
 
 ## Why Path A is still the default
 
