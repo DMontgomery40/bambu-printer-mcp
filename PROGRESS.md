@@ -2,7 +2,7 @@
 
 ## Active TODO (source of truth)
 
-Last updated: 2026-04-28 16:30 ET.
+Last updated: 2026-04-28 17:00 ET.
 
 | Priority | Owner | Status | Item | Next action | Done when |
 |---|---|---|---|---|---|
@@ -15,18 +15,18 @@ Last updated: 2026-04-28 16:30 ET.
 | P2 | Codex | Done | Retest generic CLI smoke on `02.06.01.55` | Ran `scripts/test-cli-slice.mjs` for `h2s`, `h2d`, `x1c`, `p1s`; all passed | We know single-color H2S/H2D/X1C/P1S CLI slicing still passes after the app upgrade |
 | P2 | DeepSeek | Done | Tiny Z-offset overlap experiment | Tested in session: 0.22mm Z-offset between objects still crashes SIGSEGV 139. Crash is NOT about geometric overlap — it's about having two objects with different extruders on the same plate, regardless of spatial overlap. | Z-offset does not avoid the crash. The root cause is in the multi-extruder code path, not overlapping geometry. |
 | P2 | DeepSeek | Optional diagnostic | Find an official CLI analog for GUI "Split to Parts" | Inspect source/UI actions for how GUI split-to-parts stores per-volume extruders and plate/model metadata, then compare to our generated 3MF/assemble-list output | We know whether our generated metadata differs from GUI-authored split-to-parts metadata in a way that explains #10408 |
-| P3 | Codex | Done | HMS diagnostics resource | Validated live on Parker H2S: MQTT connected, returned structured response with `connected:true`, `serial`, `printer_status`, `hms:null`, no errors. | Resource returns current state plus HMS/error/warning fields without throwing |
-| P3 | Codex | Done | Chamber light control | Validated live on Parker H2S: `set_light` toggled chamber_light on/off; both returned `{status:"success"}`. | `set_light` visibly or statefully changes chamber light and returns success |
-| P3 | Codex | Done | Fan control | Validated live on Parker H2S: `set_fan_speed` set auxiliary fan to 30% then 0%; both returned `{status:"success"}` with correct fan/speed fields. | Command is accepted and status/UI reflects expected fan target |
+| P3 | Codex | Done | HMS diagnostics resource | Validated live on Parker H2S and Kingpin H2D: MQTT connected, returned structured response. Resource now includes 1.5s settle-and-retry for the incremental HMS status push. Both printers showed `hms_errors: 1` (`code:131099`). | Resource returns current state plus HMS/error/warning fields without throwing |
+| P3 | Codex | Done | Chamber light control | Validated live on Parker H2S and Kingpin H2D: `set_light` toggled chamber_light on/off; both returned `{status:"success"}`. | `set_light` visibly or statefully changes chamber light and returns success |
+| P3 | Codex | Done | Fan control | Validated live on Parker H2S and Kingpin H2D: `set_fan_speed` set auxiliary fan to 30% then 0%; both returned `{status:"success"}` with correct fan/speed fields. | Command is accepted and status/UI reflects expected fan target |
 | P3 | Codex | Implemented / needs active-print validation | Print speed mode | During a user-approved non-critical print, test `silent` then `standard`; do not use `sport`/`ludicrous` as first validation | Printer accepts speed mode changes and reports/behaves as expected |
-| P3 | Codex | Done | Airduct mode | Validated live on Parker H2S: `set_airduct_mode` toggled cooling then heating; both returned `{status:"success"}` with correct mode field. | Command is accepted and no persistent unwanted airduct state remains |
-| P3 | Codex | Done | Clear HMS/errors | Validated live on Parker H2S: found 1 active HMS error (`code:131099`), `clear_hms_errors` returned `{status:"success"}`. Note: HMS resource (`printer://{host}/hms`) returned `hms:null` while the detailed check found the error — the resource may need a longer MQTT settle before the full status push arrives. | `clean_print_error` path clears or acknowledges the target error without masking real faults |
+| P3 | Codex | Done | Airduct mode | Validated live on Parker H2S and Kingpin H2D: `set_airduct_mode` toggled cooling then heating; both returned `{status:"success"}` with correct mode field. | Command is accepted and no persistent unwanted airduct state remains |
+| P3 | Codex | Done | Clear HMS/errors | Validated live on Parker H2S and Kingpin H2D: found 1 active HMS error (`code:131099`) on each, `clear_hms_errors` returned `{status:"success"}`. Resource now has 1.5s settle-and-retry to catch incremental HMS push. | `clean_print_error` path clears or acknowledges the target error without masking real faults |
 | P3 | Codex | Implemented / physical AMS validation required | AMS RFID reread | Only run with explicit user approval; select AMS/slot, observe any AMS movement, then verify inventory refresh | `reread_ams_rfid` refreshes the expected slot and does not disturb print state |
 | P3 | Codex | Implemented / active-print validation required | Skip objects | During a user-approved test print with known object IDs, call `list_3mf_plate_objects`, then `skip_objects` for a harmless object | Printer skips only the requested object(s); command shape verified against firmware |
 | P3 | Codex | Done | Better AMS inventory reporting | Added summary counts, display labels, profile resolution confidence, recommended `load_filaments`, README docs; `npm test` 35/35 | Output is easier to use for `auto_match_ams` decisions without reading raw status |
 | P3 | User + Codex | Parked | Physical print validation | Do not start prints or move hardware unless the user explicitly asks | Any print test has explicit user approval and plate/material context |
 
-Immediate next recommended action: P3 airduct mode and clear_hms_errors validated live on Parker. Remaining P3 items: AMS RFID reread (physical movement, needs user approval), print speed mode (during active print), skip objects (during active print). The first is ready to discuss with the user; the other two need a test print.
+Immediate next recommended action: All idle-printer P3 items validated on both Parker H2S and Kingpin H2D. Remaining P3 items: AMS RFID reread (physical movement, needs user approval), print speed mode (during active print), skip objects (during active print). First is ready to discuss; others need a test print.
 
 ### DeepSeek Sidecar Lane
 

@@ -840,7 +840,17 @@ class BambuPrinterMCPServer {
             }
             else if (resource === "hms") {
                 const status = await this.bambu.getStatus(host || DEFAULT_HOST, bambuSerial, bambuToken);
-                content = extractPrinterDiagnostics(status);
+                let diagnostics = extractPrinterDiagnostics(status);
+                // The first MQTT status push may not include HMS data — the printer
+                // sends basic state first, then pushes HMS/error fields on a subsequent
+                // report. If we got a connection but no HMS data, wait briefly and
+                // retry so the incremental merge has time to arrive.
+                if (!diagnostics.hms && status.connected) {
+                    await new Promise((r) => setTimeout(r, 1500));
+                    const retryStatus = await this.bambu.getStatus(host || DEFAULT_HOST, bambuSerial, bambuToken);
+                    diagnostics = extractPrinterDiagnostics(retryStatus);
+                }
+                content = diagnostics;
             }
             else {
                 throw new McpError(ErrorCode.InvalidRequest, `Unknown resource: ${resource}`);
