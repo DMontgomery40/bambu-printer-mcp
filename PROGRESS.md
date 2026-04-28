@@ -52,6 +52,29 @@ configuration parsing succeeds. Same family as upstream
 H2D multi-color CLI path appears to have additional segfault sites
 beyond the ones PR #9941 fixed.
 
+**Confirmed upstream-only via two-cube minimal repro:** swapped the
+bunny STLs for two trivial 8-vertex cubes (built inline in
+`scripts/two-cubes.mjs` style), kept everything else identical.
+Same SIGSEGV at the same place, same warning sequence. The crash is
+fundamental to BambuStudio 02.06.00.51's H2D dual-extruder CLI path
+and not a function of our input geometry, our 3MF construction, our
+flattener output, or the bunny mesh's complexity.
+
+Repro for upstream bug report:
+```bash
+# Two cubes 5mm × 5mm at the same XY, different Z
+# Build a synthetic source 3MF with object 1 → extruder 1, object 2 → extruder 2
+# Slice via:
+BambuStudio --slice 0 --debug 2 \
+  --curr-bed-type "Textured PEI Plate" \
+  --load-settings "<flat-h2d-machine.json>;<flat-process.json>" \
+  --load-filaments "<flat-petg-hf-1.json>;<flat-petg-hf-2.json>" \
+  --export-3mf out.gcode.3mf input.3mf
+
+# Result: SIGSEGV after "load_nozzle_infos_with_compatibility:
+# building nozzle list from filament map and volume types"
+```
+
 ### Repro commands
 
 ```bash
