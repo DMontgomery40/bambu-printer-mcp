@@ -2,22 +2,22 @@
 
 ## Active TODO (source of truth)
 
-Last updated: 2026-04-28 12:00 ET.
+Last updated: 2026-04-28 16:15 ET.
 
 | Priority | Owner | Status | Item | Next action | Done when |
 |---|---|---|---|---|---|
 | P0 | Codex | In progress | Keep this TODO current | Update this table after every meaningful test, code change, upstream reply, or handoff | A new agent can answer "what next?" from this table alone |
 | P0 | Upstream / Codex | Blocked upstream | H2D two-color CLI slicing for overlapping charm parts | Wait for BambuStudio fix or maintainer response on [#10408](https://github.com/bambulab/BambuStudio/issues/10408); retest any build newer than `02.06.01.55` | CLI produces a valid two-filament H2D `.gcode.3mf` from the bunny/charm workflow |
-| P1 | Codex | Ready | Preserve current progress log | Commit the `PROGRESS.md` update once you want the handoff state locked in git | Commit exists on `codex/collar-charm-h2-cleanup` with only intentional docs/progress changes |
+| P1 | Codex | Done | Preserve current progress log | Committed to `codex/collar-charm-h2-cleanup` at `ef6f2b9` | Commit exists on `codex/collar-charm-h2-cleanup` with only intentional docs/progress changes |
 | P1 | DeepSeek | Done | GUI-export to CLI-slice comparison | Tested in session: GUI 3MF → CLI slice returns -100 "No valid nozzle found". Both the assemble-list code path AND the GUI-export path fail for H2D two-color CLI. Reported in deepseek-progress.md. | We know both paths fail — assemble-list crashes (SIGSEGV 139), GUI-export fails gracefully (-100 nozzle mismatch). |
 | P1 | DeepSeek | Done | Source-level crash narrowing | Analyzed OrcaSlicer source: null dereference at `PrintObject.cpp:743` in `detect_overhangs_for_lift()`. Same file already has null guards at lines 2341 and 2445-2447 for the same pattern. Proposed fix: `if (layer.lower_layer == nullptr) continue;` before the dereference. Documented with exact code context and fix precedent in `deepseek-progress.md`. | Precise fix hypothesis exists: one-line null guard matching existing code patterns. No CLI workaround exists — the issue requires a source patch to BambuStudio. |
 | P2 | Codex | Done | Make CLI failure clearer in MCP docs/tooling | README and `docs/SLICING.md` now explicitly say single-color CLI smoke works but H2D two-color CLI slicing is blocked by #10408 | `README.md` / `docs/SLICING.md` / tool descriptions do not imply headless H2D two-color slicing works today |
 | P2 | Codex | Done | Retest generic CLI smoke on `02.06.01.55` | Ran `scripts/test-cli-slice.mjs` for `h2s`, `h2d`, `x1c`, `p1s`; all passed | We know single-color H2S/H2D/X1C/P1S CLI slicing still passes after the app upgrade |
 | P2 | DeepSeek | Done | Tiny Z-offset overlap experiment | Tested in session: 0.22mm Z-offset between objects still crashes SIGSEGV 139. Crash is NOT about geometric overlap — it's about having two objects with different extruders on the same plate, regardless of spatial overlap. | Z-offset does not avoid the crash. The root cause is in the multi-extruder code path, not overlapping geometry. |
 | P2 | DeepSeek | Optional diagnostic | Find an official CLI analog for GUI "Split to Parts" | Inspect source/UI actions for how GUI split-to-parts stores per-volume extruders and plate/model metadata, then compare to our generated 3MF/assemble-list output | We know whether our generated metadata differs from GUI-authored split-to-parts metadata in a way that explains #10408 |
-| P3 | Codex | Implemented / needs read-only live check | HMS diagnostics resource | Read `printer://{host}/hms` against Parker/Kingpin while idle; do not clear anything | Resource returns current state plus HMS/error/warning fields without throwing |
-| P3 | Codex | Implemented / needs harmless live check | Chamber light control | Toggle `set_light` on/off on one idle printer, then verify status/UI if available | `set_light` visibly or statefully changes chamber light and returns success |
-| P3 | Codex | Implemented / needs harmless live check | Fan control | Set `set_fan_speed` to a low value then back to 0 on one idle printer; prefer chamber/aux over part fan if safer | Command is accepted and status/UI reflects expected fan target |
+| P3 | Codex | Done | HMS diagnostics resource | Validated live on Parker H2S: MQTT connected, returned structured response with `connected:true`, `serial`, `printer_status`, `hms:null`, no errors. | Resource returns current state plus HMS/error/warning fields without throwing |
+| P3 | Codex | Done | Chamber light control | Validated live on Parker H2S: `set_light` toggled chamber_light on/off; both returned `{status:"success"}`. | `set_light` visibly or statefully changes chamber light and returns success |
+| P3 | Codex | Done | Fan control | Validated live on Parker H2S: `set_fan_speed` set auxiliary fan to 30% then 0%; both returned `{status:"success"}` with correct fan/speed fields. | Command is accepted and status/UI reflects expected fan target |
 | P3 | Codex | Implemented / needs active-print validation | Print speed mode | During a user-approved non-critical print, test `silent` then `standard`; do not use `sport`/`ludicrous` as first validation | Printer accepts speed mode changes and reports/behaves as expected |
 | P3 | Codex | Implemented / needs H2/P2 idle validation | Airduct mode | On an idle H2/P2, send `cooling`, then restore previous/default mode if status exposes it | Command is accepted and no persistent unwanted airduct state remains |
 | P3 | Codex | Implemented / needs error-state validation | Clear HMS/errors | Only run when a harmless active HMS/print error exists, or use a stubbed unit-level payload test | `clean_print_error` path clears or acknowledges the target error without masking real faults |
@@ -26,7 +26,7 @@ Last updated: 2026-04-28 12:00 ET.
 | P3 | Codex | Done | Better AMS inventory reporting | Added summary counts, display labels, profile resolution confidence, recommended `load_filaments`, README docs; `npm test` 35/35 | Output is easier to use for `auto_match_ams` decisions without reading raw status |
 | P3 | User + Codex | Parked | Physical print validation | Do not start prints or move hardware unless the user explicitly asks | Any print test has explicit user approval and plate/material context |
 
-Immediate next recommended action: DeepSeek continues slicer source/metadata research; Codex either commits the current docs/progress/AMS-reporting work or performs read-only live checks (`get_printer_filaments`, `printer://{host}/hms`) before any physical-control validation.
+Immediate next recommended action: P3 HMS/light/fan validated live on Parker. Next candidates: airduct mode (idle H2/P2), print speed mode (only during active print), clear HMS/errors (only with active error state), AMS RFID reread (physical movement, user approval required), skip objects (active print). See P3 rows above for preconditions.
 
 ### DeepSeek Sidecar Lane
 
