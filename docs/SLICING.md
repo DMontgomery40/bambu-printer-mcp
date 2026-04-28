@@ -4,7 +4,7 @@
 
 | Use case | Path | Status |
 |---|---|---|
-| Single-color slice (any BBL printer) | `BAMBU_CLI_FLATTEN=true` → MCP slices via CLI | ✅ Works (verified H2S, H2D, X1C, P1S) |
+| Single-color slice (any BBL printer) | `BAMBU_CLI_FLATTEN=true` → MCP slices via CLI | ✅ Works (verified H2S, H2D, X1C, P1S on 02.06.01.55) |
 | Multi-color slice on H2D | None — **upstream BambuStudio CLI is blocked** | ❌ See "Multi-color CLI gap" below |
 | Pre-sliced `.gcode.3mf` → printer | MCP `print_3mf` | ✅ Works (verified live on Kingpin H2D) |
 | Anything else | Pre-slice in Bambu Studio GUI, hand to `print_3mf` | ✅ Works always |
@@ -30,17 +30,22 @@ calling the CLI — a workaround for several upstream bugs in BambuStudio's
 CLI mode (issues
 [#9636](https://github.com/bambulab/BambuStudio/issues/9636) and
 [#9968](https://github.com/bambulab/BambuStudio/issues/9968)). Verified
-on H2S, H2D, X1C, and P1S with stock BBL profiles.
+on H2S, H2D, X1C, and P1S with stock BBL profiles. This verification is
+single-color only; it does not cover H2D two-color/multi-material slicing.
 
 To enable Path B, set `BAMBU_CLI_FLATTEN=true` in the environment that
 runs the MCP. Default remains Path A so behavior is backward-compatible.
 
-## Multi-color CLI gap (2026-04-27)
+## Multi-color CLI gap (2026-04-28)
 
-`BambuStudio --slice` SIGSEGVs in `load_nozzle_infos_with_compatibility` on
-**any** H2D dual-extruder, multi-color project on version 02.06.00.51 — verified
-upstream via a two-cube minimal repro. Filed as
-[bambulab/BambuStudio#10408](https://github.com/bambulab/BambuStudio/issues/10408).
+`BambuStudio --slice` is still blocked on H2D dual-extruder, multi-color
+projects. Version `02.06.00.51` SIGSEGVed in the slicer setup path, and
+version `02.06.01.55` still fails the same repro: exported-project CLI slicing
+reaches `Detect overhangs for auto-lift` then reports `No valid nozzle found.
+Please check nozzle count.` / `return_code=-100`; raw `--load-assemble-list`
+still exits `139`. Filed as
+[bambulab/BambuStudio#10408](https://github.com/bambulab/BambuStudio/issues/10408)
+with repro files attached.
 
 What this means in practice:
 

@@ -71,7 +71,7 @@ Local handoff note: see [REMOTE-DEPLOYMENT.md](./REMOTE-DEPLOYMENT.md) for the c
 - List, upload, and delete files on the printer's SD card via FTPS
 - Capture a JPEG snapshot from the chamber camera. Supports A1, A1 mini, P1S, P1P (TCP-on-6000), and X1, X1C, X1E, P2S, H2, H2S, H2D, H2C, H2D Pro (RTSP via ffmpeg). Requires ffmpeg in PATH for the RTSP path.
 - Upload and print pre-sliced `.gcode.3mf` files with full plate selection and calibration flag control (recommended path — see [docs/SLICING.md](./docs/SLICING.md))
-- Optional auto-slice path via BambuStudio CLI. Set `BAMBU_CLI_FLATTEN=true` to enable a workaround that flattens BBL profile inheritance before invoking the CLI — works around upstream bugs in BambuStudio CLI mode ([#9636](https://github.com/bambulab/BambuStudio/issues/9636), [#9968](https://github.com/bambulab/BambuStudio/issues/9968)). Verified on H2S/H2D/X1C/P1S. Default off; Path A (GUI-slice) remains the recommended workflow for non-BBL profiles or first-time prints. See [docs/SLICING.md](./docs/SLICING.md).
+- Optional single-color auto-slice path via BambuStudio CLI. Set `BAMBU_CLI_FLATTEN=true` to enable a workaround that flattens BBL profile inheritance before invoking the CLI — works around upstream bugs in BambuStudio CLI mode ([#9636](https://github.com/bambulab/BambuStudio/issues/9636), [#9968](https://github.com/bambulab/BambuStudio/issues/9968)). Single-color smoke is verified on H2S/H2D/X1C/P1S. H2D two-color CLI slicing is blocked upstream ([#10408](https://github.com/bambulab/BambuStudio/issues/10408)); use a GUI-sliced `.gcode.3mf` for that workflow. Default off; Path A (GUI-slice) remains the recommended workflow for non-BBL profiles, multi-color H2D jobs, or first-time prints. See [docs/SLICING.md](./docs/SLICING.md).
 - Parse AMS mapping from the 3MF's embedded slicer metadata (`Metadata/plate_<n>.json` + gcode filament header) and send it correctly formatted per the OpenBambuAPI spec
 - Cancel, pause, and resume in-progress print jobs via MQTT
 - Set print speed mode, clear HMS/print errors, trigger AMS RFID re-read, and control H2/P2 airduct mode via MQTT command surfaces
@@ -196,7 +196,7 @@ BLENDER_MCP_BRIDGE_COMMAND=       # Shell command to invoke your Blender MCP bri
 | `MCP_HTTP_JSON_RESPONSE` | `true` | No | Return structured JSON alongside text responses |
 | `MCP_HTTP_ALLOWED_ORIGINS` | | No | Comma-separated list of allowed CORS origins |
 | `BLENDER_MCP_BRIDGE_COMMAND` | | No | Command to invoke Blender MCP bridge |
-| `BAMBU_CLI_FLATTEN` | `false` | No | When `true`, the MCP flattens BBL profile inheritance before invoking the BambuStudio CLI. Workaround for upstream issues [#9636](https://github.com/bambulab/BambuStudio/issues/9636) / [#9968](https://github.com/bambulab/BambuStudio/issues/9968). BBL printers only. Verified on H2S/H2D/X1C/P1S. See [docs/SLICING.md](./docs/SLICING.md). |
+| `BAMBU_CLI_FLATTEN` | `false` | No | When `true`, the MCP flattens BBL profile inheritance before invoking the BambuStudio CLI. Workaround for upstream issues [#9636](https://github.com/bambulab/BambuStudio/issues/9636) / [#9968](https://github.com/bambulab/BambuStudio/issues/9968). BBL printers only. Single-color smoke verified on H2S/H2D/X1C/P1S; H2D two-color CLI slicing remains blocked by [#10408](https://github.com/bambulab/BambuStudio/issues/10408). See [docs/SLICING.md](./docs/SLICING.md). |
 | `BAMBU_PROFILES_ROOT` | derived from `SLICER_PATH` | No | Override path to the BambuStudio `Resources/profiles` directory used by the CLI flattener. Useful for non-standard installs or dev environments. |
 
 SuperTack can be passed for pre-sliced print jobs, but BambuStudio CLI slicing currently fails fast for `supertack_plate` because the accepted CLI bed identifier is not verified. Use a pre-sliced 3MF for SuperTack until this is confirmed.
@@ -666,6 +666,35 @@ Retrieve current printer state including temperatures, print progress, layer cou
 ```
 
 Returns a structured object with fields including `status` (gcode_state string), `temperatures.nozzle`, `temperatures.bed`, `temperatures.chamber`, `print.progress`, `print.currentLayer`, `print.totalLayers`, `print.timeRemaining`, and `ams` (raw AMS data from the printer).
+
+#### get_printer_filaments
+
+Read the live AMS inventory and resolve each loaded tray to Bambu Studio
+filament profile JSON paths when `bambu_model` is known. The result includes a
+summary, per-slot display labels, profile match confidence, and a recommended
+`load_filaments` value for simple single-material CLI slicing.
+
+```json
+{
+  "bambu_model": "h2d",
+  "nozzle_diameter": "0.4",
+  "host": "192.168.1.100",
+  "bambu_serial": "094...",
+  "bambu_token": "your_access_token"
+}
+```
+
+High-signal fields:
+
+- `summary.loaded_slots`, `summary.resolved_profile_slots`,
+  `summary.unresolved_loaded_slots`, `summary.empty_slots`
+- `trays[].display_name`, `trays[].tray_color`, `trays[].remain_percent`
+- `trays[].resolved_profile_path`
+- `trays[].profile_resolution`: `exact-model-nozzle`, `model`, `generic`, or
+  `unresolved`
+- `trays[].match_confidence`: `high`, `medium`, `low`, or `none`
+- `recommended.load_filaments`: the profile path the MCP will use for
+  auto-slicing when no explicit filament override is provided
 
 #### list_printer_files
 

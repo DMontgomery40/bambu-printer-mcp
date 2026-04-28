@@ -87,7 +87,7 @@ function resolveFilamentProfileCandidates(trayInfoIdx, bambuModel, nozzleDiamete
     const index = getFilamentProfileIndex();
     const baseName = index.baseNameByFilamentId.get(trayInfoIdx) || null;
     if (!baseName) {
-        return { baseName: null, paths: [] };
+        return { baseName: null, paths: [], resolution: "unresolved" };
     }
     const bareName = baseName.replace(/\s*@base$/, "");
     const modelCode = bambuModel ? FILAMENT_MODEL_CODES[bambuModel] : undefined;
@@ -99,10 +99,27 @@ function resolveFilamentProfileCandidates(trayInfoIdx, bambuModel, nozzleDiamete
         candidateNames.push(`${bareName} @BBL ${modelCode}`);
     }
     candidateNames.push(bareName, baseName);
-    const resolvedPaths = Array.from(new Set(candidateNames
-        .map((candidate) => index.byName.get(candidate))
-        .filter((candidate) => Boolean(candidate))));
-    return { baseName, paths: resolvedPaths };
+    const resolvedPaths = [];
+    let resolution = "unresolved";
+    for (const [candidateIndex, candidateName] of candidateNames.entries()) {
+        const candidatePath = index.byName.get(candidateName);
+        if (!candidatePath || resolvedPaths.includes(candidatePath))
+            continue;
+        resolvedPaths.push(candidatePath);
+        if (resolution === "unresolved") {
+            if (candidateIndex === 0 && modelCode && nozzleDiameter) {
+                resolution = "exact-model-nozzle";
+            }
+            else if ((candidateIndex === 0 && modelCode && !nozzleDiameter) ||
+                (candidateIndex === 1 && modelCode && nozzleDiameter)) {
+                resolution = "model";
+            }
+            else {
+                resolution = "generic";
+            }
+        }
+    }
+    return { baseName, paths: resolvedPaths, resolution };
 }
 function parseIntegerOrNull(value) {
     if (value === undefined || value === null || value === "")
@@ -125,7 +142,20 @@ function normalizePrinterFilamentInventory(status, bambuModel, nozzleDiameter) {
             const trayInfoIdx = typeof tray?.tray_info_idx === "string" ? tray.tray_info_idx : null;
             const profileResolution = trayInfoIdx
                 ? resolveFilamentProfileCandidates(trayInfoIdx, bambuModel, nozzleDiameter)
-                : { baseName: null, paths: [] };
+                : { baseName: null, paths: [], resolution: "unresolved" };
+            const resolvedProfilePath = profileResolution.paths[0] || null;
+            const matchConfidence = profileResolution.resolution === "exact-model-nozzle" ? "high" :
+                profileResolution.resolution === "model" ? "medium" :
+                    profileResolution.resolution === "generic" ? "low" :
+                        "none";
+            const trayType = typeof tray?.tray_type === "string" ? tray.tray_type : null;
+            const traySubBrands = typeof tray?.tray_sub_brands === "string" ? tray.tray_sub_brands : null;
+            const trayColor = typeof tray?.tray_color === "string" ? tray.tray_color : null;
+            const displayParts = [
+                traySubBrands && traySubBrands !== trayType ? traySubBrands : null,
+                trayType,
+                trayColor ? `#${normalizeRgbColor(trayColor) ?? trayColor.replace(/^#/, "").slice(0, 6)}` : null,
+            ].filter(Boolean);
             trays.push({
                 ams_id: amsId,
                 tray_id: trayId,
@@ -133,14 +163,17 @@ function normalizePrinterFilamentInventory(status, bambuModel, nozzleDiameter) {
                 state,
                 loaded: state !== 0 && Boolean(trayInfoIdx),
                 tray_info_idx: trayInfoIdx,
-                tray_type: typeof tray?.tray_type === "string" ? tray.tray_type : null,
-                tray_sub_brands: typeof tray?.tray_sub_brands === "string" ? tray.tray_sub_brands : null,
-                tray_color: typeof tray?.tray_color === "string" ? tray.tray_color : null,
+                tray_type: trayType,
+                tray_sub_brands: traySubBrands,
+                tray_color: trayColor,
                 remain_percent: typeof tray?.remain === "number" && tray.remain >= 0 ? tray.remain : null,
                 nozzle_temp_min: parseIntegerOrNull(tray?.nozzle_temp_min),
                 nozzle_temp_max: parseIntegerOrNull(tray?.nozzle_temp_max),
                 resolved_base_profile_name: profileResolution.baseName,
-                resolved_profile_path: profileResolution.paths[0] || null,
+                resolved_profile_path: resolvedProfilePath,
+                profile_resolution: profileResolution.resolution,
+                match_confidence: matchConfidence,
+                display_name: displayParts.length > 0 ? displayParts.join(" ") : "empty/unknown",
                 profile_candidates: profileResolution.paths,
             });
         }
@@ -149,12 +182,29 @@ function normalizePrinterFilamentInventory(status, bambuModel, nozzleDiameter) {
     const recommendedTray = loadedTrays.find((tray) => tray.slot === trayNow && tray.resolved_profile_path) ||
         loadedTrays.find((tray) => tray.resolved_profile_path) ||
         null;
+    const recommendedReason = recommendedTray?.slot === trayNow
+        ? "current AMS slot with resolved slicer profile"
+        : recommendedTray
+            ? "first loaded AMS slot with resolved slicer profile"
+            : null;
     const allProfilePaths = Array.from(new Set(loadedTrays
-        .flatMap((tray) => tray.profile_candidates)
+        .map((tray) => tray.resolved_profile_path)
         .filter((candidate) => Boolean(candidate))));
+    const emptySlots = trays.filter((tray) => !tray.loaded).length;
+    const resolvedProfileSlots = loadedTrays.filter((tray) => tray.resolved_profile_path).length;
     return {
         current_slot: trayNow !== null && trayNow >= 0 && trayNow < 254 ? trayNow : null,
         current_source: trayNow === 254 ? "external" : trayNow !== null && trayNow >= 0 && trayNow < 254 ? "ams" : null,
+        summary: {
+            loaded_slots: loadedTrays.length,
+            resolved_profile_slots: resolvedProfileSlots,
+            unresolved_loaded_slots: loadedTrays.length - resolvedProfileSlots,
+            empty_slots: emptySlots,
+            current_slot: trayNow !== null && trayNow >= 0 && trayNow < 254 ? trayNow : null,
+            current_source: trayNow === 254 ? "external" : trayNow !== null && trayNow >= 0 && trayNow < 254 ? "ams" : null,
+            recommended_slot: recommendedTray?.slot ?? null,
+            recommended_reason: recommendedReason,
+        },
         trays,
         recommended: recommendedTray
             ? {
@@ -163,6 +213,7 @@ function normalizePrinterFilamentInventory(status, bambuModel, nozzleDiameter) {
                 tray_type: recommendedTray.tray_type,
                 resolved_profile_path: recommendedTray.resolved_profile_path,
                 load_filaments: recommendedTray.resolved_profile_path,
+                reason: recommendedReason ?? "resolved slicer profile",
             }
             : null,
         load_filaments_all: allProfilePaths.length > 0 ? allProfilePaths.join(";") : null,
@@ -832,7 +883,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "get_printer_filaments",
-                        description: "Get the live AMS/external filament inventory from the printer over MQTT, including resolved slicer profile paths when the printer model is known.",
+                        description: "Get the live AMS/external filament inventory from the printer over MQTT, including loaded/empty slot summary, resolved slicer profile paths, match confidence, and recommended load_filaments when the printer model is known.",
                         inputSchema: {
                             type: "object",
                             properties: {

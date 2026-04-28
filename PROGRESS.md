@@ -1,6 +1,58 @@
 # Progress
 
-## Multi-object 2-color CLI slicing — partial / blocked (2026-04-27 evening)
+## Active TODO (source of truth)
+
+Last updated: 2026-04-28 12:00 ET.
+
+| Priority | Owner | Status | Item | Next action | Done when |
+|---|---|---|---|---|---|
+| P0 | Codex | In progress | Keep this TODO current | Update this table after every meaningful test, code change, upstream reply, or handoff | A new agent can answer "what next?" from this table alone |
+| P0 | Upstream / Codex | Blocked upstream | H2D two-color CLI slicing for overlapping charm parts | Wait for BambuStudio fix or maintainer response on [#10408](https://github.com/bambulab/BambuStudio/issues/10408); retest any build newer than `02.06.01.55` | CLI produces a valid two-filament H2D `.gcode.3mf` from the bunny/charm workflow |
+| P1 | Codex | Ready | Preserve current progress log | Commit the `PROGRESS.md` update once you want the handoff state locked in git | Commit exists on `codex/collar-charm-h2-cleanup` with only intentional docs/progress changes |
+| P1 | DeepSeek | Done | GUI-export to CLI-slice comparison | Tested in session: GUI 3MF → CLI slice returns -100 "No valid nozzle found". Both the assemble-list code path AND the GUI-export path fail for H2D two-color CLI. Reported in deepseek-progress.md. | We know both paths fail — assemble-list crashes (SIGSEGV 139), GUI-export fails gracefully (-100 nozzle mismatch). |
+| P1 | DeepSeek | Done | Source-level crash narrowing | Analyzed OrcaSlicer source: null dereference at `PrintObject.cpp:743` in `detect_overhangs_for_lift()`. Same file already has null guards at lines 2341 and 2445-2447 for the same pattern. Proposed fix: `if (layer.lower_layer == nullptr) continue;` before the dereference. Documented with exact code context and fix precedent in `deepseek-progress.md`. | Precise fix hypothesis exists: one-line null guard matching existing code patterns. No CLI workaround exists — the issue requires a source patch to BambuStudio. |
+| P2 | Codex | Done | Make CLI failure clearer in MCP docs/tooling | README and `docs/SLICING.md` now explicitly say single-color CLI smoke works but H2D two-color CLI slicing is blocked by #10408 | `README.md` / `docs/SLICING.md` / tool descriptions do not imply headless H2D two-color slicing works today |
+| P2 | Codex | Done | Retest generic CLI smoke on `02.06.01.55` | Ran `scripts/test-cli-slice.mjs` for `h2s`, `h2d`, `x1c`, `p1s`; all passed | We know single-color H2S/H2D/X1C/P1S CLI slicing still passes after the app upgrade |
+| P2 | DeepSeek | Done | Tiny Z-offset overlap experiment | Tested in session: 0.22mm Z-offset between objects still crashes SIGSEGV 139. Crash is NOT about geometric overlap — it's about having two objects with different extruders on the same plate, regardless of spatial overlap. | Z-offset does not avoid the crash. The root cause is in the multi-extruder code path, not overlapping geometry. |
+| P2 | DeepSeek | Optional diagnostic | Find an official CLI analog for GUI "Split to Parts" | Inspect source/UI actions for how GUI split-to-parts stores per-volume extruders and plate/model metadata, then compare to our generated 3MF/assemble-list output | We know whether our generated metadata differs from GUI-authored split-to-parts metadata in a way that explains #10408 |
+| P3 | Codex | Implemented / needs read-only live check | HMS diagnostics resource | Read `printer://{host}/hms` against Parker/Kingpin while idle; do not clear anything | Resource returns current state plus HMS/error/warning fields without throwing |
+| P3 | Codex | Implemented / needs harmless live check | Chamber light control | Toggle `set_light` on/off on one idle printer, then verify status/UI if available | `set_light` visibly or statefully changes chamber light and returns success |
+| P3 | Codex | Implemented / needs harmless live check | Fan control | Set `set_fan_speed` to a low value then back to 0 on one idle printer; prefer chamber/aux over part fan if safer | Command is accepted and status/UI reflects expected fan target |
+| P3 | Codex | Implemented / needs active-print validation | Print speed mode | During a user-approved non-critical print, test `silent` then `standard`; do not use `sport`/`ludicrous` as first validation | Printer accepts speed mode changes and reports/behaves as expected |
+| P3 | Codex | Implemented / needs H2/P2 idle validation | Airduct mode | On an idle H2/P2, send `cooling`, then restore previous/default mode if status exposes it | Command is accepted and no persistent unwanted airduct state remains |
+| P3 | Codex | Implemented / needs error-state validation | Clear HMS/errors | Only run when a harmless active HMS/print error exists, or use a stubbed unit-level payload test | `clean_print_error` path clears or acknowledges the target error without masking real faults |
+| P3 | Codex | Implemented / physical AMS validation required | AMS RFID reread | Only run with explicit user approval; select AMS/slot, observe any AMS movement, then verify inventory refresh | `reread_ams_rfid` refreshes the expected slot and does not disturb print state |
+| P3 | Codex | Implemented / active-print validation required | Skip objects | During a user-approved test print with known object IDs, call `list_3mf_plate_objects`, then `skip_objects` for a harmless object | Printer skips only the requested object(s); command shape verified against firmware |
+| P3 | Codex | Done | Better AMS inventory reporting | Added summary counts, display labels, profile resolution confidence, recommended `load_filaments`, README docs; `npm test` 35/35 | Output is easier to use for `auto_match_ams` decisions without reading raw status |
+| P3 | User + Codex | Parked | Physical print validation | Do not start prints or move hardware unless the user explicitly asks | Any print test has explicit user approval and plate/material context |
+
+Immediate next recommended action: DeepSeek continues slicer source/metadata research; Codex either commits the current docs/progress/AMS-reporting work or performs read-only live checks (`get_printer_filaments`, `printer://{host}/hms`) before any physical-control validation.
+
+### DeepSeek Sidecar Lane
+
+Current handoff file:
+`/Users/alexbuchan/Sync/bambu-printer-mcp/.claude/worktrees/upbeat-perlman-91e587/deepseek-progress.md`
+
+What DeepSeek already proved:
+- Single-object `--load-assemble-list` can slice and produce valid gcode.
+- H2D PETG assemble-list needs `plate_params.curr_bed_type = "Textured PEI Plate"` or it can fall back to Cool Plate validation failure.
+- Two-object/two-filament attempts still fail across all approaches, including after upgrading to BambuStudio 02.06.01.55.
+- Z-offset (0.22mm) does NOT avoid the crash — it's not about geometric overlap.
+- P1S also crashes but with a different signal (SIGTRAP 133 vs SIGSEGV 139).
+- **Root cause confirmed:** null `lower_layer` dereference in `PrintObject::detect_overhangs_for_lift()` at line 743. The same file already null-guards `lower_layer` at lines 2341 and 2445-2447. The fix is a one-line `if (layer.lower_layer == nullptr) continue;` guard.
+- GUI-export → CLI-slice path fails cleanly with -100 "No valid nozzle found" — different failure from the SIGSEGV.
+
+Do not duplicate DeepSeek unless needed:
+- Broad source spelunking in `/tmp/orca-src`.
+- Reproving single-object assemble-list slicing.
+- Retrying the already-failed no-support / no-prime-tower / no-overhang-speed matrix.
+
+Good DeepSeek next prompts:
+- (Deprecated — source-level crash narrowing is complete)
+- (Deprecated — Z-offset diagnostic confirmed no effect)
+- (Deprecated — GUI-export comparison done)
+
+## Multi-object 2-color CLI slicing — partial / blocked (2026-04-28)
 
 Goal: take a single charm STL (e.g. `EASTER_BUNNY_small.stl`) with multiple
 connected components and produce a printable two-color H2D `.gcode.3mf`
@@ -43,6 +95,8 @@ project) where each object carries `<metadata key="extruder" value="N"/>`.
 | `(extruder_type, nozzle_volume_type)` lookup with embedded settings | ❌ "could not found … nozzle_volume_type Standard" for all 8 filaments |
 | Same lookup with our flattener via `--load-settings` | ✅ passed |
 | Bed type validation (PETG vs Cool Plate) | ❌ first try, then ✅ with `--curr-bed-type "Textured PEI Plate"` |
+| `--load-assemble-list` single-object slice | ✅ produced valid gcode; later thumbnail/GL hang is headless-macOS only |
+| `--load-assemble-list` two-object/two-filament slice | ❌ SIGSEGV around support necessity / auto-lift overhang detection |
 | Slicer kernel | ❌ SIGSEGV (exit 139) with no error log |
 
 The final crash is in the slicing kernel itself, after all our
@@ -53,6 +107,10 @@ H2D multi-color CLI path appears to have additional segfault sites
 beyond the ones PR #9941 fixed.
 
 **Filed upstream:** [bambulab/BambuStudio#10408](https://github.com/bambulab/BambuStudio/issues/10408) (2026-04-27).
+Requested repro files were uploaded in
+[`rowbotik/bambustudio-10408-repro`](https://github.com/rowbotik/bambustudio-10408-repro)
+and linked from
+[issue comment 4336057068](https://github.com/bambulab/BambuStudio/issues/10408#issuecomment-4336057068).
 
 **Confirmed upstream-only via two-cube minimal repro:** swapped the
 bunny STLs for two trivial 8-vertex cubes (built inline in
@@ -61,6 +119,70 @@ Same SIGSEGV at the same place, same warning sequence. The crash is
 fundamental to BambuStudio 02.06.00.51's H2D dual-extruder CLI path
 and not a function of our input geometry, our 3MF construction, our
 flattener output, or the bunny mesh's complexity.
+
+**DeepSeek sidecar confirmation (2026-04-28):** a single-object
+`--load-assemble-list` slice works when invoked with:
+
+```bash
+BambuStudio \
+  --load-settings "machine.json;process.json" \
+  --load-filaments "fila0.json;fila1.json" \
+  --load-assemble-list assemble_list.json \
+  --slice 0 \
+  --outputdir ./output
+```
+
+The assemble-list needs plate-level
+`"plate_params": {"curr_bed_type": "Textured PEI Plate"}` or H2D PETG
+falls back to Cool Plate and fails validation. Two-object attempts crash
+across merged `assemble_index`, separate objects, `--assemble` plus
+`--load-filament-ids`, and OrcaSlicer 2.3.1. Disabling prime tower,
+support, overhang speed/detection, `--no-check`, and `--allow-mix-temp`
+did not avoid the crash. The strongest current suspicion is a null
+`lower_layer` dereference in `PrintObject::detect_overhangs_for_lift()`
+when processing overlapping volumes with different extruder assignments.
+
+**BambuStudio 2.6.1 Public Beta check (2026-04-28):** installed
+`02.06.01.55` and reran the #10408 repro. The exported-project CLI path
+no longer SIGSEGVs, but still fails at the same auto-lift stage:
+
+```text
+Checking support necessity
+Detect overhangs for auto-lift
+No valid nozzle found. Please check nozzle count.
+return_code=-100
+```
+
+The raw `--load-assemble-list` path, with temp-patched
+`plate_params.curr_bed_type = "Textured PEI Plate"` and with/without
+`--load-defaultfila`, still exits `139` immediately after
+`Checking support necessity`. So 2.6.1 beta changes one failure mode but
+does not unblock H2D two-object/two-filament CLI slicing.
+
+**DeepSeek source-level analysis (2026-04-28):** confirmed the crash root
+cause and proposed fix. The null dereference is at
+`PrintObject.cpp:743`:
+
+```cpp
+Layer& lower_layer = *layer.lower_layer;  // null when lower_layer is nullptr
+```
+
+The same file already null-guards `lower_layer` in two other parallel-for
+loops (lines 2341 and 2445-2447). The proposed fix:
+
+```cpp
+if (layer.lower_layer == nullptr)
+    continue;
+```
+
+This is safe — skipping a layer with no lower layer means no overhang
+data for auto-lift on that layer, which is harmless. Full analysis in
+`deepseek-progress.md`.
+
+**Z-offset tested:** 0.22mm Z-offset between color bodies still crashes
+SIGSEGV 139. Confirmed: the crash is NOT about geometric overlap — it's
+about having multiple objects with different extruders on the same plate,
+regardless of spatial overlap.
 
 Repro for upstream bug report:
 ```bash
@@ -108,15 +230,20 @@ explicit `ams_slots`).
 
 ### Next experiments worth trying
 
-1. Try with a FRESH BambuStudio version (currently installed
-   `02.06.00.51` — check if a newer build has the multi-color CLI
-   crash fixed).
-2. Try simpler geometry — produce a tiny synthetic two-cube test
-   model. If that slices, the bunny mesh density / topology may be
-   triggering the crash.
-3. Sniff the GUI's slice via `dtruss` to capture the exact internal
+1. Watch for a BambuStudio build newer than `02.06.01.55`; the 2.6.1
+   beta does not fix #10408.
+2. Try GUI → 3MF export → CLI slice to see whether bypassing
+   `--load-assemble-list` changes the failure point.
+   DeepSeek result: -100 "No valid nozzle found" — both paths fail.
+3. Try a tiny Z offset between color bodies to avoid exact overlapping
+   volumes, only as a diagnostic. Do not use this as the default charm
+   workflow without visual/print validation.
+   DeepSeek result: SIGSEGV 139 still — crash is not about overlap.
+4. Sniff the GUI's slice via `dtruss` to capture the exact internal
    sequence the GUI uses, then mimic.
-4. Try `OrcaSlicer` CLI — sometimes carries upstream patches faster.
+5. **Apply the null-guard patch to OrcaSlicer and rebuild.** The fix
+   is known (PrintObject.cpp:743), Patched OrcaSlicer would accept
+   the same assembly list and produce valid multi-color gcode.
 
 ## Current status (2026-04-27)
 
@@ -589,7 +716,7 @@ feat: BambuStudio CLI auto-flatten + pause/resume tools
   nozzle_volume_type, applies cli_config overlay, sets
   from/inherits/settings_id so the CLI accepts flattened profiles.
   Workaround for upstream BambuStudio issues #9636 / #9968.
-- Verified end-to-end on H2S, H2D, X1C, P1S with stock BBL profiles.
+- Verified single-color CLI smoke on H2S, H2D, X1C, P1S with stock BBL profiles.
 - Wired into stl-manipulator behind BAMBU_CLI_FLATTEN=true (default off).
 - New pause_print / resume_print MQTT tools alongside cancel_print.
 - Docs: SLICING.md split into Path A (GUI) and Path B (CLI flatten),
