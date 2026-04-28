@@ -1,5 +1,98 @@
 # Progress
 
+## Multi-object 2-color CLI slicing — partial / blocked (2026-04-27 evening)
+
+Goal: take a single charm STL (e.g. `EASTER_BUNNY_small.stl`) with multiple
+connected components and produce a printable two-color H2D `.gcode.3mf`
+without GUI involvement. Same workflow that produced the working
+`POP_BARKSIDE_large.gcode.3mf`, but headless.
+
+### Key insight
+
+Codex tried 16 variants of `BambuStudio --load-filaments` flags with
+two pre-split STLs and got `-50` (empty plate) or `-61` (filament
+incompatible). Root cause: **per-object filament/extruder assignment
+lives inside the 3MF (`Metadata/model_settings.config`), not in CLI
+flags.** Verified by inspecting `huskies.3mf` (a real BBL multi-object
+project) where each object carries `<metadata key="extruder" value="N"/>`.
+
+### What's shipped
+
+`scripts/build-charm-3mf.mjs` — assembles a multi-object source 3MF:
+- Parses two STLs (ASCII or binary).
+- Computes signed-tetrahedron volume → larger = body, smaller = face.
+  Robust against OpenSCAD's uniform facet density.
+- Preserves XYZ exactly as provided (caller orients the meshes; the
+  charm pieces stay together).
+- Emits inline `<mesh>` blocks in `3D/3dmodel.model` (single file,
+  simpler than the Production-Extension multi-file layout).
+- Writes `Metadata/model_settings.config` with per-object
+  `<metadata key="extruder" value="N"/>` and plate-level
+  `filament_maps` / `filament_volume_maps` so H2D's nozzle assignment
+  doesn't fall through.
+- Carries `Metadata/project_settings.config` from a known-good template
+  3MF (`docs/H2D_barkside_2clr.3mf.gcode.3mf`).
+
+### How far we got
+
+| Stage | Result |
+|---|---|
+| 3MF parses, build refs match | ✅ |
+| `model_settings.config` per-object extruder honored | ✅ |
+| H2D `filament_maps` consumed without segfault | ✅ |
+| `(extruder_type, nozzle_volume_type)` lookup with embedded settings | ❌ "could not found … nozzle_volume_type Standard" for all 8 filaments |
+| Same lookup with our flattener via `--load-settings` | ✅ passed |
+| Bed type validation (PETG vs Cool Plate) | ❌ first try, then ✅ with `--curr-bed-type "Textured PEI Plate"` |
+| Slicer kernel | ❌ SIGSEGV (exit 139) with no error log |
+
+The final crash is in the slicing kernel itself, after all our
+configuration parsing succeeds. Same family as upstream
+[#9968](https://github.com/bambulab/BambuStudio/issues/9968) /
+[#9636](https://github.com/bambulab/BambuStudio/issues/9636) — the
+H2D multi-color CLI path appears to have additional segfault sites
+beyond the ones PR #9941 fixed.
+
+### Repro commands
+
+```bash
+# Build the multi-object source 3MF
+node scripts/build-charm-3mf.mjs \
+  --stl-a body_white_facedown.stl \
+  --stl-b face_black_facedown.stl \
+  --template docs/H2D_barkside_2clr.3mf.gcode.3mf \
+  --out /tmp/charm.3mf \
+  --body-extruder 1 --face-extruder 2
+
+# Slice via the verified flattener path
+# (with --load-settings/--load-filaments instead of embedded settings)
+BambuStudio \
+  --slice 0 --debug 2 \
+  --curr-bed-type "Textured PEI Plate" \
+  --load-settings "<flat-machine.json>;<flat-process.json>" \
+  --load-filaments "<flat-fil-1.json>;<flat-fil-2.json>" \
+  --outputdir /tmp/out \
+  --export-3mf out.gcode.3mf \
+  /tmp/charm.3mf
+```
+
+### Workaround until upstream stabilizes
+
+GUI-slice in BambuStudio (path A from `docs/SLICING.md`), feed the
+resulting `.gcode.3mf` to `print_collar_charm` (or `print_3mf` with
+explicit `ams_slots`).
+
+### Next experiments worth trying
+
+1. Try with a FRESH BambuStudio version (currently installed
+   `02.06.00.51` — check if a newer build has the multi-color CLI
+   crash fixed).
+2. Try simpler geometry — produce a tiny synthetic two-cube test
+   model. If that slices, the bunny mesh density / topology may be
+   triggering the crash.
+3. Sniff the GUI's slice via `dtruss` to capture the exact internal
+   sequence the GUI uses, then mimic.
+4. Try `OrcaSlicer` CLI — sometimes carries upstream patches faster.
+
 ## Current status (2026-04-27)
 
 Branch `codex/collar-charm-h2-cleanup` is pushed to
