@@ -41,6 +41,7 @@ This is a stripped-down, Bambu-only fork of [mcp-3D-printer-server](https://gith
   - [Advanced Tools](#advanced-tools)
 - [Available Resources](#available-resources)
 - [Example Commands for Claude](#example-commands-for-claude)
+- [Troubleshooting and Tester Reports](#troubleshooting-and-tester-reports)
 - [Bambu Lab Printer Limitations](#bambu-lab-printer-limitations)
 - [General Limitations and Considerations](#general-limitations-and-considerations)
   - [Memory usage](#memory-usage)
@@ -261,15 +262,71 @@ FULU's [OrcaSlicer-bambulab](https://github.com/FULU-Foundation/OrcaSlicer-bambu
 
 These modes are intentionally separate. The default `print_3mf` path remains transparent local MQTT/FTPS. The BambuNetwork path is opt-in, because it uses FULU's restored network library and runtime instead of the MCP's direct LAN implementation.
 
-### Current test status
+### Current status, honestly
 
-This is shipping as an MCP server that people can clone, configure, and test against their own printers. The repo now contains the bridge client, tool schemas, behavior tests, and macOS setup documentation. The platform reality as of 2026-05-13:
+This is an MCP server that people can clone, configure, and run. The repo now contains the FULU bridge client, tool schemas, behavior tests, built `dist/` output, and macOS setup documentation. It is not being presented as magic or as a finished bypass for every Bambu firmware. The point of this release is to make the FULU path available from MCP, keep the old local Bambu flow intact, and collect real printer reports quickly.
 
-- **Linux:** expected to be the cleanest path because FULU's host binary and Linux shared libraries run natively. Tester reports are welcome.
-- **Windows:** WSL 2 support follows FULU's installer/runtime model, but we need Windows testers with real printers before calling this fully proven.
-- **macOS:** the FULU bridge runtime can be installed, verified, and started from this MCP on Apple Silicon. On the Mac test bench, bridge handshake and slicing worked, but print start still hit the same class of Bambu authorization/command-verification failures we are working around: FULU LAN print returned `send msg failed`, and direct MQTT/FTPS print produced Bambu HMS `0500050000010007` (`MQTT Command verification failed`). We are continuing to iterate from real user reports instead of pretending this is finished.
+As of 2026-05-13, the validation matrix is:
 
-The older local fallback is still here: `SLICER_TYPE=bambustudio` or `SLICER_TYPE=orcaslicer-bambulab` uses the slicer CLI to produce a Bambu 3MF, then the MCP uses the direct Bambu LAN path (`print_3mf`) with FTPS upload and MQTT status/control. That path remains useful for printers/firmware that still accept third-party local project commands, and it remains covered by the repo behavior tests. The new `connection_mode: "bambu_network"` path is the FULU bridge path.
+| Surface | Status | Notes |
+|---|---|---|
+| Source checkout | Working | `git clone`, `npm install`, `npm run build`, and `npm test` are the intended maintainer/dev path. |
+| MCP stdio transport | Working | Covered by behavior tests: initialize, list tools, success call, structured failure. |
+| MCP Streamable HTTP transport | Working | Covered by behavior tests, including origin rejection. |
+| FULU slicer aliasing | Working | `orcaslicer-bambulab`, `fulu-orca`, `orca-studio`, and `orca-bambulab` normalize to the Bambu-compatible Orca CLI flow. |
+| BambuStudio CLI fallback | Working | The existing `bambustudio` slicer path still works and remains the conservative fallback for slicing. |
+| FULU bridge protocol | Working in tests | The MCP speaks FULU's framed JSON protocol, creates an agent, retries ABI detection, and handles non-zero print return codes as failures. |
+| macOS bridge launch | Partially working | On Apple Silicon, the FULU runtime can verify and the x86_64 Lima bridge can handshake from this MCP. Real print start still needs iteration. |
+| macOS print start | Not proven | Test bench result: FULU LAN print reached the bridge but returned `send msg failed`; direct MQTT/FTPS upload reached the printer but the printer reported HMS `0500050000010007` (`MQTT Command verification failed`). |
+| Linux print start | Needs testers | This should be the cleanest FULU runtime because the Linux host and `.so` files run natively, but it needs real printer confirmations. |
+| Windows print start | Needs testers | WSL 2 support follows FULU's runtime model, but we need Windows testers with real printers before calling it proven. |
+
+The older local fallback is still here: `SLICER_TYPE=bambustudio` or `SLICER_TYPE=orcaslicer-bambulab` uses a slicer CLI to produce a Bambu 3MF, then the MCP uses the direct Bambu LAN path (`print_3mf`) with FTPS upload and MQTT status/control. That path remains useful for printers and firmware that still accept third-party local project commands, and it is covered by the repo behavior tests. The new `connection_mode: "bambu_network"` path is the FULU bridge path.
+
+Important wording detail: when `print_3mf` returns success, it means the file was uploaded and the MQTT `project_file` command was sent. On newer locked-down firmware, the printer can still reject that command after receipt. Check `get_printer_status` for `gcode_state`, HMS messages, and actual motion before declaring that a print started.
+
+### Clone-and-run checklist
+
+For a source checkout, use the same shape on every OS:
+
+```bash
+git clone https://github.com/DMontgomery40/bambu-printer-mcp.git
+cd bambu-printer-mcp
+npm install
+npm run build
+npm test
+```
+
+Then choose one of the two print paths:
+
+| Path | Use when | Key env/tool settings |
+|---|---|---|
+| Direct local Bambu path | You are on the same LAN and your firmware still accepts third-party MQTT `project_file` commands. | `PRINTER_HOST`, `BAMBU_SERIAL`, `BAMBU_TOKEN`, `BAMBU_MODEL`, then call `print_3mf`. |
+| FULU BambuNetwork path | You want to test restored BambuNetwork behavior through FULU's runtime. | `BAMBU_NETWORK_BRIDGE_COMMAND`, `BAMBU_DEV_ID`, `BAMBU_MODEL`, then call `print_3mf_bambu_network` or `print_3mf` with `connection_mode: "bambu_network"`. |
+
+Minimum local direct `.env`:
+
+```env
+PRINTER_HOST=192.168.1.100
+BAMBU_SERIAL=01P00A123456789
+BAMBU_TOKEN=your_lan_access_code
+BAMBU_MODEL=p1s
+SLICER_TYPE=bambustudio
+SLICER_PATH=/Applications/BambuStudio.app/Contents/MacOS/BambuStudio
+```
+
+Minimum FULU bridge `.env`:
+
+```env
+BAMBU_MODEL=p1s
+BAMBU_DEV_ID=01P00A123456789
+BAMBU_NETWORK_COUNTRY_CODE=US
+BAMBU_NETWORK_BRIDGE_COMMAND=/path/to/pjarczak_bambu_linux_host_or_platform_wrapper
+SLICER_TYPE=orcaslicer-bambulab
+SLICER_PATH=/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer
+```
+
+Do not paste access codes, serial numbers, cloud tokens, or account JSON into public issues. Redact them and keep only the last few characters if you need to distinguish devices.
 
 ### Slicer/exporter mode
 
@@ -292,7 +349,15 @@ FULU's bridge host speaks a small binary-framed JSON protocol over stdin/stdout.
 - `net.start`
 - `net.connect_server`
 
-The high-level print tool builds FULU-style `PrintParams` and calls `net.start_print`, `net.start_local_print`, `net.start_local_print_with_record`, `net.start_send_gcode_to_sdcard`, or `net.start_sdcard_print`.
+The high-level print tool builds FULU-style `PrintParams` and calls one of these bridge methods:
+
+| MCP `bambu_network_method` | FULU method | Typical use |
+|---|---|---|
+| `start_print` | `net.start_print` | Cloud/BambuNetwork print. This is the default when `connection_type` is `cloud`. |
+| `start_local_print` | `net.start_local_print` | Local LAN print through FULU without record upload. This is the default when `connection_type` is `lan`. |
+| `start_local_print_with_record` | `net.start_local_print_with_record` | Local LAN print plus BambuNetwork task record behavior, matching Orca's preferred LAN path when possible. |
+| `start_send_gcode_to_sdcard` | `net.start_send_gcode_to_sdcard` | Send sliced G-code/3MF content to SD card through the bridge. Useful for probing runtime behavior. |
+| `start_sdcard_print` | `net.start_sdcard_print` | Start an already-present SD card job through the bridge. |
 
 Use this probe first:
 
@@ -303,6 +368,23 @@ Use this probe first:
 ```
 
 with the `bambu_network_bridge_status` tool. The response includes runtime hints, missing macOS files, the resolved config directory, and the suggested macOS wrapper command when it can infer one.
+
+Healthy bridge status should show:
+
+```json
+{
+  "configured": true,
+  "connected": true,
+  "agentReady": true,
+  "handshake": {
+    "network_loaded": true,
+    "source_loaded": true,
+    "network_actual_abi_version": "02.05.02.58"
+  }
+}
+```
+
+The exact ABI version can change with FULU's bundled BambuNetwork library. This MCP reads `network_actual_abi_version` from `bridge.handshake` and retries with `PJARCZAK_EXPECTED_BAMBU_NETWORK_VERSION` automatically when the bridge reports an expected-version mismatch. You should not need to set that variable manually unless you are debugging the bridge itself.
 
 ### macOS runtime
 
@@ -344,6 +426,17 @@ export BAMBU_NETWORK_BRIDGE_COMMAND="PJARCZAK_MAC_LIMA_INSTANCE=orcaslicer-bambu
 
 The app name and resource path can differ by build, so trust `bambu_network_bridge_status` over hard-coded examples.
 
+macOS troubleshooting notes:
+
+| Symptom | Meaning | Next step |
+|---|---|---|
+| `configured: false` | `BAMBU_NETWORK_BRIDGE_COMMAND` is empty. | Run `bambu_network_bridge_status` without `connect`, copy the suggested command if present, or set it manually. |
+| Missing wrapper files | FULU's plugin files were not installed where the MCP expects. | Launch FULU OrcaSlicer-bambulab once, then run `verify_runtime_macos.sh`. |
+| Missing runtime `.so` files | The Linux bridge payload did not install into `macos-bridge/runtime`. | Run `install_runtime_macos.sh`, then `verify_runtime_macos.sh`. |
+| `template ".yaml" not found` | Lima's template syntax changed. | Use the `template://default` command shown above. |
+| `Bus error` or architecture crash | Rosetta/arm64 guest/runtime mismatch. | Try the x86_64 Lima instance command shown above. |
+| `send msg failed` during print | The FULU bridge ran, but the printer/network layer rejected the print start. | Report platform, printer model, firmware, method used, and redacted bridge output. |
+
 ### Linux runtime
 
 On Linux, point the bridge command at FULU's host binary with access to the bundled Bambu network shared libraries:
@@ -354,6 +447,8 @@ export PJARCZAK_BAMBU_PLUGIN_DIR="/path/to/fulu-orca-plugin-or-runtime"
 export BAMBU_NETWORK_COUNTRY_CODE=US
 ```
 
+Linux testers: please report whether `bambu_network_bridge_status` can create an agent, whether `print_3mf_bambu_network` returns `value: 0`, and whether the printer actually transitions out of `IDLE`. Include distro, CPU architecture, printer model, firmware version, and whether the job was `cloud` or `lan`.
+
 ### Windows runtime
 
 Windows support follows FULU's WSL 2 requirement. Enable WSL 2 as FULU documents, restart Windows, then use a `wsl ...` command that starts FULU's bridge host from the Linux environment:
@@ -363,6 +458,15 @@ setx BAMBU_NETWORK_BRIDGE_COMMAND "wsl -- /path/to/pjarczak_bambu_linux_host"
 ```
 
 If your FULU build includes `pjarczak_wsl_run_host.sh`, prefer that wrapper because it prepares the expected WSL runtime layout.
+
+Windows testers needed. The useful report is:
+
+- Windows version and CPU architecture.
+- WSL distro name and WSL version.
+- Whether FULU OrcaSlicer-bambulab itself can print through BambuNetwork.
+- Output from `bambu_network_bridge_status` with secrets redacted.
+- Which print method was used: `start_print`, `start_local_print`, or `start_local_print_with_record`.
+- Printer model, firmware, LAN-only/developer-mode state, and whether the printer moved beyond `IDLE`.
 
 ### Printing through BambuNetwork
 
@@ -399,6 +503,20 @@ You can also route the existing `print_3mf` tool through FULU by passing:
   "connection_mode": "bambu_network",
   "connection_type": "cloud",
   "dev_id": "01P00A123456789"
+}
+```
+
+Force a specific FULU method while testing:
+
+```json
+{
+  "three_mf_path": "/Users/you/Downloads/bracket.3mf",
+  "bambu_model": "p1s",
+  "connection_type": "lan",
+  "bambu_network_method": "start_local_print_with_record",
+  "dev_id": "01P00A123456789",
+  "dev_ip": "192.168.1.100",
+  "bambu_token": "your_access_token"
 }
 ```
 
@@ -832,7 +950,7 @@ Set the target temperature for the bed or nozzle. Dispatches an M140 (bed) or M1
 
 #### print_3mf
 
-The primary tool for starting a Bambu print. This tool handles the complete workflow:
+The primary tool for the direct local Bambu path. This tool handles the complete workflow:
 
 1. Checks whether the 3MF contains embedded G-code (`Metadata/plate_<n>.gcode` entries).
 2. If no G-code is found, automatically slices the file using the configured slicer before proceeding.
@@ -840,6 +958,8 @@ The primary tool for starting a Bambu print. This tool handles the complete work
 4. Also parses `Metadata/project_settings.config` to read AMS mapping embedded by Bambu Studio or OrcaSlicer.
 5. Uploads the 3MF to the printer's `cache/` directory via FTPS using `basic-ftp` directly (avoiding the bambu-js double-path bug).
 6. Sends a `project_file` MQTT command with the plate path, MD5, AMS mapping (formatted as a 5-element array per the OpenBambuAPI spec), and calibration flags.
+
+This path uses BambuStudio/Orca/FULU as a slicer CLI only. It does not use FULU's BambuNetwork runtime unless you explicitly set `connection_mode: "bambu_network"`.
 
 ```json
 {
@@ -868,6 +988,8 @@ The primary tool for starting a Bambu print. This tool handles the complete work
 `slicer_type`, `slicer_path`, and `slicer_profile` only matter when `print_3mf` receives an unsliced 3MF and needs to auto-slice it. Use `orcaslicer-bambulab` for FULU's fork, `orcaslicer` for upstream OrcaSlicer, or `bambustudio` for BambuStudio. `plate_index` is zero-based and selects which embedded `Metadata/plate_<n>.gcode` file to print.
 
 Layer height, nozzle temperature, and other slicer parameters cannot be overridden via this tool -- they are baked into the 3MF's G-code at slice time. Apply those settings in your slicer before generating the 3MF.
+
+On firmware that enforces Bambu's newer command verification, this direct path can upload the 3MF and still be rejected when the printer receives the MQTT `project_file` command. In that case, `get_printer_status` may show HMS `0500050000010007`, which BambuStudio's own HMS table describes as `MQTT Command verification failed`. That is the exact situation the FULU bridge path is meant to keep iterating on.
 
 To use FULU's restored BambuNetwork path from the same tool, pass `connection_mode: "bambu_network"`. In that mode, local `BAMBU_SERIAL`/`BAMBU_TOKEN` are not required for cloud print starts, but `dev_id` is required.
 
@@ -898,6 +1020,14 @@ Start a 3MF print through FULU OrcaSlicer-bambulab's restored BambuNetwork runti
 }
 ```
 
+The tool treats any non-zero numeric return from FULU's print method as a failure, even if the bridge response itself says `ok: true`. This matters because the bridge can successfully load and call the network library while the library returns a BambuNetwork print error such as `-4030`.
+
+When debugging, start with the defaults:
+
+- `connection_type: "cloud"` uses `start_print`.
+- `connection_type: "lan"` uses `start_local_print`.
+- Add `bambu_network_method: "start_local_print_with_record"` to mimic Orca's richer LAN path.
+
 For LAN/local bridge printing, include `dev_ip` and the printer access code:
 
 ```json
@@ -922,6 +1052,19 @@ Inspect the configured FULU bridge command and runtime. Pass `connect: true` to 
 }
 ```
 
+Use this before every print debugging session. Useful fields:
+
+| Field | What it means |
+|---|---|
+| `configured` | Whether `BAMBU_NETWORK_BRIDGE_COMMAND` or an equivalent env var is set. |
+| `connected` | Whether the bridge process started and agent initialization completed for this probe. |
+| `agentReady` | Whether the MCP has an initialized BambuNetwork agent handle. |
+| `handshake.network_loaded` | Whether FULU's BambuNetwork library loaded. |
+| `handshake.source_loaded` | Whether FULU's BambuSource library loaded. |
+| `handshake.network_actual_abi_version` | The ABI version reported by the loaded network library. The MCP can auto-retry with this value. |
+| `runtime.macosMissingRuntimeFiles` | Missing macOS runtime files under `~/Library/Application Support/OrcaSlicer/macos-bridge/runtime`. |
+| `runtime.macosMissingPluginFiles` | Missing macOS wrapper/install/verify files under the FULU plugin directory. |
+
 #### bambu_network_call
 
 Call a raw FULU bridge method. By default the tool initializes an agent and injects its `agent` id into the payload. Set `with_agent: false` for methods such as `bridge.handshake`.
@@ -932,6 +1075,25 @@ Call a raw FULU bridge method. By default the tool initializes an agent and inje
   "payload": {}
 }
 ```
+
+Examples:
+
+```json
+{
+  "method": "bridge.handshake",
+  "payload": {},
+  "with_agent": false
+}
+```
+
+```json
+{
+  "method": "net.get_user_selected_machine",
+  "payload": {}
+}
+```
+
+Raw bridge calls are for diagnostics and compatibility testing. Do not paste account `user_info` JSON or access tokens into issue reports.
 
 </details>
 
@@ -1099,6 +1261,55 @@ After connecting the MCP server in Claude Desktop or Claude Code, you can ask Cl
 
 ---
 
+## Troubleshooting and Tester Reports
+
+The fastest way to improve this is to keep reports concrete. A print command that was merely published is not the same thing as a printer starting motion. Always check the printer status after a print attempt.
+
+### Quick diagnosis flow
+
+1. Run `get_printer_status` first. Confirm the printer is connected, idle, has an SD card/storage available, and reports the expected model.
+2. If using a source checkout, run `npm run build` and `npm test` so local TypeScript or behavior-test failures are separated from printer/runtime failures.
+3. If using direct local printing, call `print_3mf`, then immediately call `get_printer_status` again. Look for `gcode_state`, `subtask_name`, `mc_percent`, and `hms`.
+4. If using FULU, call `bambu_network_bridge_status` with `connect: true` before printing. Confirm `network_loaded`, `source_loaded`, and `agentReady`.
+5. Try the default FULU method for your connection type. If LAN fails, retry with `bambu_network_method: "start_local_print_with_record"` and include the return code in your report.
+6. Report whether the printer actually left `IDLE`. A returned value of `0` is useful, but printer motion/status is the proof.
+
+### Common symptoms
+
+| Symptom | Likely layer | What to check |
+|---|---|---|
+| `BAMBU_MODEL is required` | Safety gate | Set `BAMBU_MODEL` or pass `bambu_model`. The server intentionally refuses to guess printer model for print operations. |
+| Slicer CLI cannot find a Bambu profile | Slicer setup | Use BambuStudio or Orca/FULU with installed printer profiles, or set `BAMBU_SLICER_PROFILE_DIRS` for custom profile locations. |
+| `3MF does not contain Metadata/plate_<n>.gcode` | Unsliced file | Let `print_3mf` auto-slice with a configured slicer, or export a sliced 3MF from BambuStudio/Orca/FULU first. |
+| FTPS upload fails | Local LAN file path/auth | Confirm Developer Mode/LAN access code, printer IP, port `990`, and SD card/storage state. |
+| Direct path says command sent but printer stays `IDLE` | Printer rejected MQTT command | Check `hms`; `0500050000010007` means `MQTT Command verification failed`. Try the FULU bridge path and report firmware/model details. |
+| `bambu_network_bridge_status` cannot start | Bridge command/runtime | Check `BAMBU_NETWORK_BRIDGE_COMMAND`, wrapper path, runtime files, and Lima/WSL setup. |
+| FULU print returns `-4030` or `send msg failed` | BambuNetwork runtime/printer acceptance | Bridge reached the library, but the print start failed. Report method, platform, firmware, connection type, and redacted bridge status. |
+| Bridge loads only after ABI retry | Expected with some FULU builds | The MCP auto-detects `network_actual_abi_version`; include it in reports but do not manually set it unless debugging. |
+
+### Minimal useful report
+
+Please include:
+
+- OS and architecture: for example `macOS 15 Apple Silicon`, `Ubuntu x86_64`, or `Windows 11 + WSL 2`.
+- Install source: npm package version, git commit SHA, or local branch.
+- Printer model and firmware version.
+- Slicer used: `bambustudio`, `orcaslicer`, or `orcaslicer-bambulab`.
+- Print path used: direct `print_3mf`, `print_3mf` with `connection_mode: "bambu_network"`, or `print_3mf_bambu_network`.
+- FULU method if applicable: `start_print`, `start_local_print`, `start_local_print_with_record`, `start_send_gcode_to_sdcard`, or `start_sdcard_print`.
+- Redacted `bambu_network_bridge_status` output when using FULU.
+- Return payload from the failed tool call with access codes, serial numbers, tokens, cloud account data, and local usernames redacted.
+- `get_printer_status` after the attempt, especially `gcode_state` and `hms`.
+
+Please do not include:
+
+- Full printer serial number.
+- LAN access code.
+- Bambu account token or raw `user_info` JSON.
+- Public IPs, VPN hostnames, or home-network details that are not needed for debugging.
+
+---
+
 ## Bambu Lab Printer Limitations
 
 Understanding these constraints will help you avoid frustrating errors and set appropriate expectations.
@@ -1116,6 +1327,8 @@ Understanding these constraints will help you avoid frustrating errors and set a
 6. **Direct MCP printing is LAN-only; FULU bridge printing is opt-in.** The default MQTT/FTPS tools require the printer to be on the same local network as the machine running this server with Developer Mode enabled. Remote/cloud printing requires the optional FULU BambuNetwork bridge and `print_3mf_bambu_network`.
 
 7. **Self-signed TLS certificate.** The printer's FTPS server uses a self-signed certificate. The `basic-ftp` client is configured with `rejectUnauthorized: false` to accept it. This is standard for local network Bambu connections but assumes a trusted local network environment.
+
+8. **Newer firmware can reject third-party project commands after upload.** A successful FTPS upload and MQTT publish does not guarantee the printer accepted the job. On the macOS test bench, the printer returned HMS `0500050000010007`, which BambuStudio describes as `MQTT Command verification failed`. This README calls that out because pretending the job started would waste everyone's time.
 
 ---
 
