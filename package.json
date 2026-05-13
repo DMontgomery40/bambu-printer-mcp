@@ -13,7 +13,8 @@
     "start:stdio": "MCP_TRANSPORT=stdio node dist/index.js",
     "start:http": "MCP_TRANSPORT=streamable-http node dist/index.js",
     "build": "tsc",
-    "test": "npm run build && node --test tests/**/*.test.mjs"
+    "test": "npm run build && node --test tests/**/*.test.mjs",
+    "postinstall": "patch-package"
   },
   "bin": {
     "bambu-printer-mcp": "dist/index.js"
@@ -48,6 +49,7 @@
   "devDependencies": {
     "@types/node": "^18.0.0",
     "@types/three": "^0.173.0",
-    "@types/xml2js": "^0.4.14"
+    "@types/xml2js": "^0.4.14",
+    "patch-package": "^8.0.1"
   }
 }
