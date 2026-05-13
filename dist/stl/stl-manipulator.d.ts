@@ -22,6 +22,10 @@ export type TransformationParams = {
     relative?: boolean;
     selectionBounds?: THREE.Box3;
 };
+export declare const SLICER_TYPES: readonly ["bambustudio", "orcaslicer", "orcaslicer-bambulab", "prusaslicer", "cura", "slic3r"];
+export type SlicerType = typeof SLICER_TYPES[number];
+export declare function normalizeSlicerType(rawSlicerType: string): SlicerType;
+export declare function isBambuCompatibleSlicer(slicerType: SlicerType): boolean;
 export interface BambuSliceOptions {
     uptodate?: boolean;
     repetitions?: number;
@@ -122,15 +126,15 @@ export declare class STLManipulator extends EventEmitter {
     /**
      * Slice an STL or 3MF file using the specified slicer
      * @param stlFilePath Path to the input STL or 3MF file
-     * @param slicerType Type of slicer (prusaslicer, cura, slic3r, orcaslicer, bambustudio)
+     * @param slicerType Type of slicer (prusaslicer, cura, slic3r, orcaslicer, orcaslicer-bambulab, bambustudio)
      * @param slicerPath Path to the slicer executable
      * @param slicerProfile Optional path to the slicer profile/config file
      * @param progressCallback Optional callback for progress updates
-     * @param printerPreset Optional BambuStudio printer preset name (e.g., "Bambu Lab P1S 0.4 nozzle")
-     * @param bambuOptions Optional BambuStudio-specific CLI flags
+     * @param printerPreset Optional Bambu-compatible printer preset name (e.g., "Bambu Lab P1S 0.4 nozzle")
+     * @param bambuOptions Optional Bambu-compatible CLI flags
      * @returns Path to the generated G-code or sliced 3MF file
      */
-    sliceSTL(stlFilePath: string, slicerType: 'prusaslicer' | 'cura' | 'slic3r' | 'orcaslicer' | 'bambustudio', slicerPath: string, slicerProfile?: string, progressCallback?: ProgressCallback, printerPreset?: string, bambuOptions?: BambuSliceOptions): Promise<string>;
+    sliceSTL(stlFilePath: string, slicerType: SlicerType, slicerPath: string, slicerProfile?: string, progressCallback?: ProgressCallback, printerPreset?: string, bambuOptions?: BambuSliceOptions): Promise<string>;
     /**
      * Enhanced version of confirmTemperatures with better error handling
      * @param gcodePath Path to the G-code file

@@ -3,6 +3,7 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
 import { EventEmitter } from 'events';
@@ -10,6 +11,100 @@ import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 const readFileAsync = promisify(fs.readFile);
 const writeFileAsync = promisify(fs.writeFile);
+export const SLICER_TYPES = [
+    'bambustudio',
+    'orcaslicer',
+    'orcaslicer-bambulab',
+    'prusaslicer',
+    'cura',
+    'slic3r',
+];
+const SLICER_TYPE_ALIASES = {
+    bambustudio: 'bambustudio',
+    'bambu-studio': 'bambustudio',
+    bblstudio: 'bambustudio',
+    orcaslicer: 'orcaslicer',
+    'orca-slicer': 'orcaslicer',
+    orca: 'orcaslicer',
+    'orcaslicer-bambulab': 'orcaslicer-bambulab',
+    'orca-slicer-bambulab': 'orcaslicer-bambulab',
+    'orca-bambulab': 'orcaslicer-bambulab',
+    'fulu-orca': 'orcaslicer-bambulab',
+    'fulu-orcaslicer': 'orcaslicer-bambulab',
+    'fulu-orca-slicer': 'orcaslicer-bambulab',
+    'orca-studio': 'orcaslicer-bambulab',
+    orcastudio: 'orcaslicer-bambulab',
+    'orcaslicer-bmcu': 'orcaslicer-bambulab',
+    'orca-bmcu': 'orcaslicer-bambulab',
+    prusaslicer: 'prusaslicer',
+    'prusa-slicer': 'prusaslicer',
+    cura: 'cura',
+    curaengine: 'cura',
+    slic3r: 'slic3r',
+};
+export function normalizeSlicerType(rawSlicerType) {
+    const key = rawSlicerType.trim().toLowerCase().replace(/_/g, '-');
+    const normalized = SLICER_TYPE_ALIASES[key];
+    if (!normalized) {
+        throw new Error(`Unsupported slicer_type: "${rawSlicerType}". Valid values: ${SLICER_TYPES.join(', ')}`);
+    }
+    return normalized;
+}
+export function isBambuCompatibleSlicer(slicerType) {
+    return (slicerType === 'bambustudio' ||
+        slicerType === 'orcaslicer' ||
+        slicerType === 'orcaslicer-bambulab');
+}
+function isPathLikeExecutable(executable) {
+    return path.isAbsolute(executable) || /[\\/]/.test(executable);
+}
+function configuredBambuProfileDirs() {
+    const override = process.env.BAMBU_SLICER_PROFILE_DIRS;
+    if (override !== undefined) {
+        return override.split(path.delimiter).filter(Boolean);
+    }
+    const home = os.homedir();
+    const macAppSupport = path.join(home, 'Library', 'Application Support');
+    const linuxConfig = path.join(home, '.config');
+    const appData = process.env.APPDATA;
+    const localAppData = process.env.LOCALAPPDATA;
+    const appNames = [
+        'BambuStudio',
+        'Bambu Studio',
+        'OrcaSlicer',
+        'Orca Slicer',
+        'OrcaStudio',
+        'Orca Studio',
+    ];
+    const roots = [
+        macAppSupport,
+        linuxConfig,
+        ...(appData ? [appData] : []),
+        ...(localAppData ? [localAppData] : []),
+    ];
+    return roots.flatMap((root) => appNames.map((appName) => path.join(root, appName, 'system', 'BBL', 'machine')));
+}
+function resolveBambuPrinterProfile(printerPreset) {
+    if (printerPreset.includes('/') || printerPreset.includes('\\')) {
+        return undefined;
+    }
+    for (const profileDir of configuredBambuProfileDirs()) {
+        const profilePath = path.join(profileDir, `${printerPreset}.json`);
+        if (fs.existsSync(profilePath)) {
+            return profilePath;
+        }
+    }
+    return undefined;
+}
+function generatedBambuPrinterSettings(printerPreset) {
+    return {
+        type: 'machine',
+        from: 'system',
+        name: printerPreset,
+        inherits: printerPreset,
+        printer_settings_id: printerPreset,
+    };
+}
 export class STLManipulator extends EventEmitter {
     constructor(tempDir = path.join(process.cwd(), 'temp')) {
         super();
@@ -733,18 +828,18 @@ export class STLManipulator extends EventEmitter {
     /**
      * Slice an STL or 3MF file using the specified slicer
      * @param stlFilePath Path to the input STL or 3MF file
-     * @param slicerType Type of slicer (prusaslicer, cura, slic3r, orcaslicer, bambustudio)
+     * @param slicerType Type of slicer (prusaslicer, cura, slic3r, orcaslicer, orcaslicer-bambulab, bambustudio)
      * @param slicerPath Path to the slicer executable
      * @param slicerProfile Optional path to the slicer profile/config file
      * @param progressCallback Optional callback for progress updates
-     * @param printerPreset Optional BambuStudio printer preset name (e.g., "Bambu Lab P1S 0.4 nozzle")
-     * @param bambuOptions Optional BambuStudio-specific CLI flags
+     * @param printerPreset Optional Bambu-compatible printer preset name (e.g., "Bambu Lab P1S 0.4 nozzle")
+     * @param bambuOptions Optional Bambu-compatible CLI flags
      * @returns Path to the generated G-code or sliced 3MF file
      */
     async sliceSTL(stlFilePath, slicerType, slicerPath, slicerProfile, progressCallback, printerPreset, bambuOptions) {
         const operationId = this.generateOperationId();
         this.activeOperations.set(operationId, true);
-        if (!fs.existsSync(slicerPath)) {
+        if (isPathLikeExecutable(slicerPath) && !fs.existsSync(slicerPath)) {
             throw new Error(`Slicer executable not found at: ${slicerPath}`);
         }
         if (slicerProfile && !fs.existsSync(slicerProfile)) {
@@ -769,24 +864,6 @@ export class STLManipulator extends EventEmitter {
                     // Remove empty profile arg if not provided
                     args = args.filter(arg => arg !== '');
                     break;
-                case 'orcaslicer': // Add OrcaSlicer case
-                    args = [
-                        // OrcaSlicer might use --load-settings like Bambu, or --load like Prusa
-                        // Assuming --load-settings based on discussion, adjust if needed.
-                        // Also assuming profile path points to the main .ini or .json config.
-                        '--load-settings', slicerProfile || '',
-                        '--output', outputFilePath, // Assuming --output works like PrusaSlicer
-                        stlFilePath
-                    ];
-                    // Alternative if --output doesn't specify filename:
-                    // args = [
-                    //    '--load-settings', slicerProfile || '',
-                    //    '--outputdir', this.tempDir,
-                    //    stlFilePath
-                    // ];
-                    // Remove empty profile arg if not provided
-                    args = args.filter(arg => arg !== '');
-                    break;
                 case 'cura':
                     // CuraEngine CLI args are different, often requiring -s for settings
                     // Example: curaengine slice -v -j cura_settings.json -s layer_height=0.2 -o output.gcode -l input.stl
@@ -802,7 +879,12 @@ export class STLManipulator extends EventEmitter {
                     }
                     break;
                 case 'bambustudio':
-                    // Bambu Studio CLI: slice and export as 3MF with embedded gcode
+                case 'orcaslicer':
+                case 'orcaslicer-bambulab':
+                    // Bambu-compatible CLI: slice and export as 3MF with embedded gcode.
+                    // FULU's OrcaSlicer-bambulab fork keeps OrcaSlicer's Bambu-style
+                    // --slice/--export-3mf path, so it must not use the generic Prusa
+                    // --output G-code flow.
                     // For 3MF input: slice in place and export sliced 3MF
                     // For STL input: slice and export as 3MF
                     {
@@ -819,14 +901,21 @@ export class STLManipulator extends EventEmitter {
                         // Always allow newer-version 3MF files (the CLI rejects them by default)
                         args.push('--allow-newer-file');
                         // If a printer preset name is given AND no explicit profile was provided,
-                        // write a minimal settings JSON containing the printer_settings_id so
-                        // BambuStudio resolves the correct machine profile from its built-in presets.
+                        // prefer the slicer's installed machine profile. Real BambuStudio rejects
+                        // skeletal JSON without profile metadata, so only fall back to generated
+                        // settings when no installed profile can be found.
                         if (printerPreset && !slicerProfile) {
-                            const presetJson = path.join(this.tempDir, '_printer_preset.json');
-                            fs.writeFileSync(presetJson, JSON.stringify({ printer_settings_id: printerPreset }));
-                            args.push('--load-settings', presetJson);
+                            const installedProfile = resolveBambuPrinterProfile(printerPreset);
+                            if (installedProfile) {
+                                args.push('--load-settings', installedProfile);
+                            }
+                            else {
+                                const presetJson = path.join(this.tempDir, '_printer_preset.json');
+                                fs.writeFileSync(presetJson, JSON.stringify(generatedBambuPrinterSettings(printerPreset), null, 2));
+                                args.push('--load-settings', presetJson);
+                            }
                         }
-                        // BambuSliceOptions flags
+                        // Bambu-compatible slicer flags
                         if (bambuOptions?.uptodate)
                             args.push('--uptodate');
                         if (bambuOptions?.ensureOnBed)
@@ -862,7 +951,7 @@ export class STLManipulator extends EventEmitter {
                         if (bambuOptions?.loadFilamentIds)
                             args.push('--load-filament-ids', bambuOptions.loadFilamentIds);
                         args.push(stlFilePath);
-                        // Override outputFilePath for bambustudio since it produces 3MF, not gcode
+                        // Override outputFilePath because Bambu-compatible slicers produce 3MF, not G-code.
                         outputFilePath = bambuOutputPath;
                     }
                     break;

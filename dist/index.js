@@ -8,13 +8,15 @@ import fs from "fs";
 import path from "path";
 import { createServer as createHttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { STLManipulator } from "./stl/stl-manipulator.js";
+import { STLManipulator, SLICER_TYPES, normalizeSlicerType, } from "./stl/stl-manipulator.js";
+import { BambuNetworkBridge } from "./bambu-network-bridge.js";
 import { parse3MF } from './3mf_parser.js';
 import { BambuImplementation } from "./printers/bambu.js";
 dotenv.config();
 const DEFAULT_HOST = process.env.PRINTER_HOST || "localhost";
 const DEFAULT_BAMBU_SERIAL = process.env.BAMBU_SERIAL || "";
 const DEFAULT_BAMBU_TOKEN = process.env.BAMBU_TOKEN || "";
+const DEFAULT_BAMBU_DEV_ID = process.env.BAMBU_DEV_ID || DEFAULT_BAMBU_SERIAL;
 const TEMP_DIR = process.env.TEMP_DIR || path.join(process.cwd(), "temp");
 // Printer model and bed type
 const DEFAULT_BAMBU_MODEL = process.env.BAMBU_MODEL?.trim().toLowerCase() || "";
@@ -48,8 +50,48 @@ function resolveBedType(argsBedType) {
 }
 // Slicer configuration (defaults to bambustudio)
 const DEFAULT_SLICER_TYPE = process.env.SLICER_TYPE || "bambustudio";
-const DEFAULT_SLICER_PATH = process.env.SLICER_PATH || "/Applications/BambuStudio.app/Contents/MacOS/BambuStudio";
 const DEFAULT_SLICER_PROFILE = process.env.SLICER_PROFILE || "";
+const SLICER_SCHEMA_VALUES = [
+    ...SLICER_TYPES,
+    "fulu-orca",
+    "fulu-orcaslicer",
+    "orca-studio",
+    "orca-bambulab",
+];
+function firstExistingPath(paths, fallback) {
+    return paths.find((candidate) => fs.existsSync(candidate)) || fallback;
+}
+function defaultSlicerPathFor(slicerType) {
+    if (slicerType === "orcaslicer" || slicerType === "orcaslicer-bambulab") {
+        if (process.platform === "darwin") {
+            return firstExistingPath([
+                "/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer",
+                "/Applications/Orca Studio.app/Contents/MacOS/Orca Studio",
+                "/Applications/OrcaSlicer-BMCU.app/Contents/MacOS/OrcaSlicer",
+            ], "/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer");
+        }
+        if (process.platform === "win32") {
+            return "C:\\Program Files\\OrcaSlicer\\OrcaSlicer.exe";
+        }
+        return "OrcaSlicer";
+    }
+    if (slicerType === "bambustudio") {
+        if (process.platform === "darwin") {
+            return "/Applications/BambuStudio.app/Contents/MacOS/BambuStudio";
+        }
+        if (process.platform === "win32") {
+            return "C:\\Program Files\\Bambu Studio\\bambu-studio.exe";
+        }
+        return "BambuStudio";
+    }
+    return slicerType;
+}
+function resolveSlicerConfig(args) {
+    const slicerType = normalizeSlicerType(String(args?.slicer_type || DEFAULT_SLICER_TYPE));
+    const slicerPath = String(args?.slicer_path || process.env.SLICER_PATH || defaultSlicerPathFor(slicerType));
+    const slicerProfile = String(args?.slicer_profile || DEFAULT_SLICER_PROFILE);
+    return { slicerType, slicerPath, slicerProfile };
+}
 function parseBooleanEnv(rawValue, fallback) {
     if (rawValue === undefined)
         return fallback;
@@ -96,6 +138,37 @@ function readRuntimeConfig() {
         blenderBridgeCommand: process.env.BLENDER_MCP_BRIDGE_COMMAND?.trim() || undefined,
     };
 }
+const BAMBU_NETWORK_PRINT_METHODS = [
+    "start_print",
+    "start_local_print",
+    "start_local_print_with_record",
+    "start_send_gcode_to_sdcard",
+    "start_sdcard_print",
+];
+function resolveBambuNetworkPrintMethod(rawMethod, connectionType) {
+    const defaultMethod = connectionType === "lan" ? "start_local_print" : "start_print";
+    const method = (rawMethod || defaultMethod).trim();
+    if (!BAMBU_NETWORK_PRINT_METHODS.includes(method)) {
+        throw new Error(`Invalid bambu_network_method: "${method}". Valid methods: ${BAMBU_NETWORK_PRINT_METHODS.join(", ")}`);
+    }
+    return method;
+}
+function toBridgeMethod(method) {
+    return `net.${method}`;
+}
+function stringifyBridgeJson(value) {
+    if (value === undefined || value === null)
+        return undefined;
+    if (typeof value === "string")
+        return value;
+    return JSON.stringify(value);
+}
+function redactPrintParams(params) {
+    return {
+        ...params,
+        password: params.password ? "[redacted]" : "",
+    };
+}
 if (!fs.existsSync(TEMP_DIR)) {
     fs.mkdirSync(TEMP_DIR, { recursive: true });
 }
@@ -112,6 +185,7 @@ class BambuPrinterMCPServer {
             }
         });
         this.bambu = new BambuImplementation();
+        this.bambuNetwork = new BambuNetworkBridge();
         this.stlManipulator = new STLManipulator(TEMP_DIR);
         this.setupHandlers();
         this.setupErrorHandling();
@@ -134,7 +208,7 @@ class BambuPrinterMCPServer {
         if (fromArgs) {
             return validateBambuModel(fromArgs);
         }
-        // No model from args or env — ask the user via elicitation
+        // No model from args or env - ask the user via elicitation
         try {
             const result = await this.server.elicitInput({
                 mode: "form",
@@ -167,7 +241,7 @@ class BambuPrinterMCPServer {
             throw new Error("Printer model selection was cancelled. Cannot proceed without knowing the printer model.");
         }
         catch (elicitError) {
-            // Elicitation not supported by this client — fall back to a clear error
+            // Elicitation not supported by this client - fall back to a clear error
             const msg = elicitError?.message || String(elicitError);
             if (elicitError?.code === -32601 || elicitError?.code === -32600 ||
                 msg.includes("does not support") || msg.includes("elicitation")) {
@@ -177,6 +251,182 @@ class BambuPrinterMCPServer {
             }
             throw elicitError;
         }
+    }
+    bridgeOptionsFromArgs(args) {
+        return {
+            bridgeCommand: args?.bridge_command !== undefined ? String(args.bridge_command) : undefined,
+            configDir: args?.bambu_network_config_dir !== undefined ? String(args.bambu_network_config_dir) : undefined,
+            countryCode: args?.country_code !== undefined ? String(args.country_code) : undefined,
+            userInfo: args?.user_info !== undefined ? String(args.user_info) : undefined,
+            timeoutMs: args?.timeout_ms !== undefined ? Number(args.timeout_ms) : undefined,
+        };
+    }
+    async ensurePrintableThreeMFPath(args, printModel, printPreset) {
+        const { slicerType, slicerPath, slicerProfile } = resolveSlicerConfig(args);
+        let threeMFPath = String(args.three_mf_path);
+        const JSZip = (await import('jszip')).default;
+        const zipData = fs.readFileSync(threeMFPath);
+        const zip = await JSZip.loadAsync(zipData);
+        const hasGcode = Object.keys(zip.files).some(f => f.match(/Metadata\/plate_\d+\.gcode/i) || f.endsWith('.gcode'));
+        if (hasGcode) {
+            return { threeMFPath, autoSliced: false };
+        }
+        console.log(`3MF has no gcode - auto-slicing with ${slicerType} for ${printModel}`);
+        const autoSliceOptions = {
+            uptodate: true,
+            ensureOnBed: true,
+            minSave: true,
+            skipModifiedGcodes: true,
+        };
+        threeMFPath = await this.stlManipulator.sliceSTL(threeMFPath, slicerType, slicerPath, slicerProfile || undefined, undefined, printPreset, autoSliceOptions);
+        console.log("Auto-sliced to: " + threeMFPath);
+        return { threeMFPath, autoSliced: true };
+    }
+    async resolveAmsPrintSettings(threeMFPath, args) {
+        const parsed3MFData = await parse3MF(threeMFPath);
+        let parsedAmsMapping;
+        if (parsed3MFData.slicerConfig?.ams_mapping) {
+            const slots = Object.values(parsed3MFData.slicerConfig.ams_mapping)
+                .filter(v => typeof v === 'number');
+            if (slots.length > 0) {
+                parsedAmsMapping = slots.sort((a, b) => a - b);
+            }
+        }
+        let finalAmsMapping = parsedAmsMapping;
+        const explicitUseAMS = args?.use_ams !== undefined;
+        let useAMS = explicitUseAMS ? Boolean(args.use_ams) : (!!finalAmsMapping && finalAmsMapping.length > 0);
+        if (args?.ams_mapping) {
+            let userMappingOverride;
+            if (Array.isArray(args.ams_mapping)) {
+                userMappingOverride = args.ams_mapping.filter((v) => typeof v === 'number');
+            }
+            else if (typeof args.ams_mapping === 'object') {
+                userMappingOverride = Object.values(args.ams_mapping)
+                    .filter((v) => typeof v === 'number')
+                    .sort((a, b) => a - b);
+            }
+            if (userMappingOverride && userMappingOverride.length > 0) {
+                finalAmsMapping = userMappingOverride;
+                useAMS = true;
+            }
+        }
+        if (args?.use_ams === false) {
+            finalAmsMapping = undefined;
+            useAMS = false;
+        }
+        if ((!finalAmsMapping || finalAmsMapping.length === 0) && !explicitUseAMS) {
+            useAMS = false;
+        }
+        return { useAMS, finalAmsMapping };
+    }
+    async print3mfViaBambuNetwork(args, host, bambuSerial, bambuToken) {
+        if (!args?.three_mf_path) {
+            throw new Error("Missing required parameter: three_mf_path");
+        }
+        const printModel = await this.resolveBambuModel(args?.bambu_model);
+        const printBedType = resolveBedType(args?.bed_type);
+        const printNozzle = String(args?.nozzle_diameter || DEFAULT_NOZZLE_DIAMETER);
+        const printPreset = BAMBU_MODEL_PRESETS[printModel]?.(printNozzle);
+        const plateIndex = args?.plate_index !== undefined ? Number(args.plate_index) : 0;
+        if (!Number.isInteger(plateIndex) || plateIndex < 0) {
+            throw new Error("plate_index must be a non-negative integer.");
+        }
+        const connectionType = String(args?.connection_type || "cloud").trim().toLowerCase();
+        if (!["cloud", "lan"].includes(connectionType)) {
+            throw new Error('connection_type must be "cloud" or "lan".');
+        }
+        const bridgePrintMethod = resolveBambuNetworkPrintMethod(args?.bambu_network_method !== undefined ? String(args.bambu_network_method) : undefined, connectionType);
+        const bridgeMethod = toBridgeMethod(bridgePrintMethod);
+        const isLocalBridgePrint = bridgePrintMethod !== "start_print";
+        const devId = String(args?.dev_id || bambuSerial || DEFAULT_BAMBU_DEV_ID).trim();
+        if (!devId) {
+            throw new Error("dev_id is required for FULU BambuNetwork printing. Pass dev_id or set BAMBU_DEV_ID/BAMBU_SERIAL.");
+        }
+        const devIp = String(args?.dev_ip || args?.host || host || "").trim();
+        const explicitPassword = String(args?.password || args?.bambu_token || "").trim();
+        const password = isLocalBridgePrint ? (explicitPassword || String(bambuToken || "").trim()) : explicitPassword;
+        if (isLocalBridgePrint && (!devIp || devIp === "localhost")) {
+            throw new Error("dev_ip or host is required for FULU BambuNetwork LAN/local print methods.");
+        }
+        if (isLocalBridgePrint && !password) {
+            throw new Error("bambu_token/access code is required for FULU BambuNetwork LAN/local print methods.");
+        }
+        const { threeMFPath, autoSliced } = await this.ensurePrintableThreeMFPath(args, printModel, printPreset);
+        const { useAMS, finalAmsMapping } = await this.resolveAmsPrintSettings(threeMFPath, args);
+        const threeMfFilename = path.basename(threeMFPath);
+        const projectName = String(args?.project_name || threeMfFilename.replace(/\.3mf$/i, ''));
+        const presetName = String(args?.preset_name || `${projectName}_plate_${plateIndex + 1}`);
+        const clientJobId = args?.client_job_id !== undefined ? Number(args.client_job_id) : Date.now();
+        const amsMapping = stringifyBridgeJson(args?.ams_mapping_bridge ?? finalAmsMapping);
+        const params = {
+            dev_id: devId,
+            task_name: String(args?.task_name || projectName),
+            project_name: projectName,
+            preset_name: presetName,
+            filename: threeMFPath,
+            config_filename: String(args?.config_filename || threeMFPath),
+            plate_index: plateIndex + 1,
+            ftp_folder: String(args?.ftp_folder || ""),
+            ftp_file: String(args?.ftp_file || ""),
+            ftp_file_md5: String(args?.ftp_file_md5 || ""),
+            nozzle_mapping: stringifyBridgeJson(args?.nozzle_mapping) || "",
+            ams_mapping: amsMapping || "",
+            ams_mapping2: stringifyBridgeJson(args?.ams_mapping2) || "",
+            ams_mapping_info: stringifyBridgeJson(args?.ams_mapping_info) || "",
+            nozzles_info: stringifyBridgeJson(args?.nozzles_info) || "",
+            connection_type: connectionType,
+            comments: String(args?.comments || ""),
+            origin_profile_id: args?.origin_profile_id !== undefined ? Number(args.origin_profile_id) : 0,
+            stl_design_id: args?.stl_design_id !== undefined ? Number(args.stl_design_id) : 0,
+            origin_model_id: String(args?.origin_model_id || ""),
+            print_type: String(args?.print_type || "from_normal"),
+            dst_file: String(args?.dst_file || ""),
+            dev_name: String(args?.dev_name || ""),
+            dev_ip: devIp,
+            use_ssl_for_ftp: args?.use_ssl_for_ftp !== undefined ? Boolean(args.use_ssl_for_ftp) : true,
+            use_ssl_for_mqtt: args?.use_ssl_for_mqtt !== undefined ? Boolean(args.use_ssl_for_mqtt) : true,
+            username: String(args?.username || "bblp"),
+            password,
+            task_bed_leveling: args?.bed_leveling !== undefined ? Boolean(args.bed_leveling) : true,
+            task_flow_cali: args?.flow_calibration !== undefined ? Boolean(args.flow_calibration) : true,
+            task_vibration_cali: args?.vibration_calibration !== undefined ? Boolean(args.vibration_calibration) : true,
+            task_layer_inspect: args?.layer_inspect !== undefined ? Boolean(args.layer_inspect) : false,
+            task_record_timelapse: args?.timelapse !== undefined ? Boolean(args.timelapse) : false,
+            task_use_ams: useAMS,
+            task_bed_type: printBedType,
+            extra_options: stringifyBridgeJson(args?.extra_options) || "",
+            auto_bed_leveling: args?.auto_bed_leveling !== undefined ? Number(args.auto_bed_leveling) : 0,
+            auto_flow_cali: args?.auto_flow_cali !== undefined ? Number(args.auto_flow_cali) : 0,
+            auto_offset_cali: args?.auto_offset_cali !== undefined ? Number(args.auto_offset_cali) : 0,
+            extruder_cali_manual_mode: args?.extruder_cali_manual_mode !== undefined ? Number(args.extruder_cali_manual_mode) : -1,
+            task_ext_change_assist: args?.external_change_assist !== undefined ? Boolean(args.external_change_assist) : false,
+            try_emmc_print: args?.try_emmc_print !== undefined ? Boolean(args.try_emmc_print) : false,
+        };
+        const bridgeResult = await this.bambuNetwork.callWithAgent(bridgeMethod, { client_job_id: clientJobId, params }, this.bridgeOptionsFromArgs(args));
+        if (typeof bridgeResult === "object" && bridgeResult !== null && bridgeResult.ok === false) {
+            throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} failed: ${String(bridgeResult.error || "unknown bridge error")}`);
+        }
+        if (typeof bridgeResult === "object" &&
+            bridgeResult !== null &&
+            typeof bridgeResult.value === "number" &&
+            bridgeResult.value !== 0) {
+            const value = bridgeResult.value;
+            throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} returned non-zero result ${value}.`);
+        }
+        return {
+            status: "success",
+            message: `FULU BambuNetwork ${bridgePrintMethod} command for ${threeMfFilename} sent successfully.`,
+            bridgeMethod,
+            bridgeResult,
+            clientJobId,
+            autoSliced,
+            projectName,
+            plateIndex,
+            bridgePlateIndex: plateIndex + 1,
+            useAMS,
+            amsMapping: finalAmsMapping,
+            params: redactPrintParams(params),
+        };
     }
     setupResourceHandlers() {
         this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
@@ -329,12 +579,13 @@ class BambuPrinterMCPServer {
                                 },
                                 slicer_type: {
                                     type: "string",
-                                    description: "Type of slicer to use (bambustudio, prusaslicer, cura, slic3r, orcaslicer) (default: bambustudio)"
+                                    enum: SLICER_SCHEMA_VALUES,
+                                    description: "Type of slicer to use. Bambu-compatible choices (bambustudio, orcaslicer, orcaslicer-bambulab) export sliced 3MF; aliases such as fulu-orca and orca-studio are accepted."
                                 },
-                                slicer_path: { type: "string", description: "Path to the slicer executable (default: value from env)" },
+                                slicer_path: { type: "string", description: "Path to the slicer executable (default: value from env or a platform default)" },
                                 slicer_profile: { type: "string", description: "Path to the slicer profile/config file (optional, overrides bambu_model preset)" },
                                 nozzle_diameter: { type: "string", description: "Nozzle diameter in mm (default: 0.4)" },
-                                uptodate: { type: "boolean", description: "Refresh 3MF preset configs to match the latest BambuStudio version. Use when slicing downloaded or older 3MF files to prevent stale-config failures." },
+                                uptodate: { type: "boolean", description: "Refresh 3MF preset configs to match the latest Bambu-compatible slicer presets. Use when slicing downloaded or older 3MF files to prevent stale-config failures." },
                                 repetitions: { type: "number", description: "Print N identical copies of the model. Each copy gets its own plate placement. Example: 3 prints three copies." },
                                 orient: { type: "boolean", description: "Auto-orient the model for optimal printability (minimize supports, maximize bed adhesion). Recommended for raw STL imports that lack a pre-set orientation." },
                                 arrange: { type: "boolean", description: "Auto-arrange all objects on the build plate with optimal spacing. Recommended when importing STLs or adding multiple objects. Set false to preserve existing plate layout." },
@@ -366,6 +617,97 @@ class BambuPrinterMCPServer {
                                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
                                 bambu_token: { type: "string", description: "Access token (default: value from env)" }
                             }
+                        }
+                    },
+                    {
+                        name: "bambu_network_bridge_status",
+                        description: "Inspect or probe the FULU OrcaSlicer-bambulab BambuNetwork bridge runtime used for cloud and restored BambuNetwork printing.",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                connect: { type: "boolean", description: "When true, start the bridge command and run a handshake plus agent initialization probe." },
+                                bridge_command: { type: "string", description: "Override command for the FULU bridge host or macOS/WSL wrapper; defaults to BAMBU_NETWORK_BRIDGE_COMMAND." },
+                                bambu_network_config_dir: { type: "string", description: "Config/log directory used by the BambuNetwork agent; defaults to BAMBU_NETWORK_CONFIG_DIR or a user config directory." },
+                                country_code: { type: "string", description: "BambuNetwork country code, such as US, used by the agent during startup." },
+                                user_info: { type: "string", description: "Optional BambuNetwork user_info JSON string to pass to net.change_user after the agent starts." },
+                                timeout_ms: { type: "number", description: "Bridge request timeout in milliseconds for the connect probe." }
+                            }
+                        }
+                    },
+                    {
+                        name: "bambu_network_call",
+                        description: "Call a raw FULU OrcaSlicer-bambulab BambuNetwork bridge method, optionally with an initialized network agent injected into the payload.",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                method: { type: "string", description: "FULU bridge method name, for example bridge.handshake, net.is_user_login, or net.get_user_selected_machine." },
+                                payload: { type: "object", description: "JSON payload passed to the bridge method." },
+                                with_agent: { type: "boolean", description: "When true, initialize a BambuNetwork agent and add its agent id to the payload before calling the method." },
+                                bridge_command: { type: "string", description: "Override command for the FULU bridge host or macOS/WSL wrapper; defaults to BAMBU_NETWORK_BRIDGE_COMMAND." },
+                                bambu_network_config_dir: { type: "string", description: "Config/log directory used by the BambuNetwork agent; defaults to BAMBU_NETWORK_CONFIG_DIR or a user config directory." },
+                                country_code: { type: "string", description: "BambuNetwork country code, such as US, used by the agent during startup." },
+                                user_info: { type: "string", description: "Optional BambuNetwork user_info JSON string to pass to net.change_user after the agent starts." },
+                                timeout_ms: { type: "number", description: "Bridge request timeout in milliseconds." }
+                            },
+                            required: ["method"]
+                        }
+                    },
+                    {
+                        name: "print_3mf_bambu_network",
+                        description: "Print a 3MF through FULU OrcaSlicer-bambulab's restored BambuNetwork path instead of the MCP LAN MQTT/FTPS path.",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                three_mf_path: { type: "string", description: "Path to the 3MF file to print; unsliced 3MFs are auto-sliced before sending." },
+                                bambu_model: {
+                                    type: "string",
+                                    enum: ["p1s", "p1p", "x1c", "x1e", "a1", "a1mini", "h2d"],
+                                    description: "REQUIRED: Bambu Lab printer model. Ask the user if not known. Using the wrong model can damage the printer."
+                                },
+                                connection_type: { type: "string", enum: ["cloud", "lan"], description: "BambuNetwork connection type to put in FULU PrintParams; cloud uses restored internet printing, lan uses local bridge printing." },
+                                bambu_network_method: { type: "string", enum: BAMBU_NETWORK_PRINT_METHODS, description: "FULU print method to invoke; defaults to start_print for cloud and start_local_print for lan." },
+                                dev_id: { type: "string", description: "Bambu device id used by BambuNetwork; defaults to BAMBU_DEV_ID or BAMBU_SERIAL." },
+                                dev_ip: { type: "string", description: "Printer IP address for LAN/local bridge methods; defaults to host when provided." },
+                                host: { type: "string", description: "Printer host or IP address, used as dev_ip for LAN/local bridge methods." },
+                                bambu_serial: { type: "string", description: "Fallback Bambu device id when dev_id is not supplied." },
+                                bambu_token: { type: "string", description: "Printer access code/password for LAN/local bridge methods." },
+                                username: { type: "string", description: "Printer username for LAN/local bridge methods; defaults to bblp." },
+                                password: { type: "string", description: "Printer password/access code override for LAN/local bridge methods." },
+                                bed_type: { type: "string", enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"], description: "Bed plate type currently installed (default: textured_plate)." },
+                                plate_index: { type: "number", description: "Zero-based plate index to print from the sliced 3MF; converted to FULU's one-based PrintParams plate_index." },
+                                project_name: { type: "string", description: "Optional project name sent in FULU PrintParams; defaults to the 3MF filename without extension." },
+                                preset_name: { type: "string", description: "Optional preset name sent in FULU PrintParams; defaults to project plus one-based plate index." },
+                                task_name: { type: "string", description: "Optional BambuNetwork task name; defaults to the project name." },
+                                config_filename: { type: "string", description: "Optional config 3MF path for cloud print; defaults to the same 3MF path." },
+                                bridge_command: { type: "string", description: "Override command for the FULU bridge host or macOS/WSL wrapper; defaults to BAMBU_NETWORK_BRIDGE_COMMAND." },
+                                bambu_network_config_dir: { type: "string", description: "Config/log directory used by the BambuNetwork agent; defaults to BAMBU_NETWORK_CONFIG_DIR or a user config directory." },
+                                country_code: { type: "string", description: "BambuNetwork country code, such as US, used by the agent during startup." },
+                                user_info: { type: "string", description: "Optional BambuNetwork user_info JSON string to pass to net.change_user after the agent starts." },
+                                timeout_ms: { type: "number", description: "Bridge request timeout in milliseconds." },
+                                slicer_type: { type: "string", enum: SLICER_SCHEMA_VALUES, description: "Slicer to use only if auto-slicing an unsliced 3MF; use orcaslicer-bambulab for FULU's fork." },
+                                slicer_path: { type: "string", description: "Path to the slicer executable for auto-slicing; defaults to value from env or a platform default." },
+                                slicer_profile: { type: "string", description: "Path to an optional slicer profile/config file for auto-slicing." },
+                                nozzle_diameter: { type: "string", description: "Nozzle diameter in mm for auto-slicing (default: 0.4)." },
+                                use_ams: { type: "boolean", description: "Whether to use the AMS; defaults to auto-detect from the 3MF mapping." },
+                                ams_mapping: { type: "array", description: "AMS slot mapping array used by both local MCP printing and FULU PrintParams.", items: { type: "number" } },
+                                ams_mapping_bridge: { type: "string", description: "Raw JSON string override for FULU PrintParams ams_mapping when the automatic array is not enough." },
+                                ams_mapping2: { type: "string", description: "Raw JSON string for FULU PrintParams ams_mapping2, matching OrcaSlicer-bambulab's v1 AMS mapping field." },
+                                ams_mapping_info: { type: "string", description: "Raw JSON string for FULU PrintParams ams_mapping_info, matching OrcaSlicer-bambulab's detailed AMS mapping field." },
+                                nozzle_mapping: { type: "string", description: "Raw JSON string for FULU PrintParams nozzle_mapping." },
+                                nozzles_info: { type: "string", description: "Raw JSON string for FULU PrintParams nozzles_info." },
+                                bed_leveling: { type: "boolean", description: "Enable auto bed leveling in FULU PrintParams (default: true)." },
+                                flow_calibration: { type: "boolean", description: "Enable flow calibration in FULU PrintParams (default: true)." },
+                                vibration_calibration: { type: "boolean", description: "Enable vibration calibration in FULU PrintParams (default: true)." },
+                                layer_inspect: { type: "boolean", description: "Enable first-layer inspection where supported (default: false for BambuNetwork bridge)." },
+                                timelapse: { type: "boolean", description: "Enable timelapse recording in FULU PrintParams (default: false)." },
+                                use_ssl_for_ftp: { type: "boolean", description: "Whether FULU local print should use SSL for FTP (default: true)." },
+                                use_ssl_for_mqtt: { type: "boolean", description: "Whether FULU local print should use SSL for MQTT (default: true)." },
+                                external_change_assist: { type: "boolean", description: "Enable FULU PrintParams task_ext_change_assist for external filament change assistance." },
+                                try_emmc_print: { type: "boolean", description: "Enable FULU PrintParams try_emmc_print for printers that support internal storage printing." },
+                                extra_options: { type: "string", description: "Raw JSON string or text for FULU PrintParams extra_options." },
+                                client_job_id: { type: "number", description: "Optional client job id sent to the bridge; defaults to the current timestamp." }
+                            },
+                            required: ["three_mf_path", "bambu_model"]
                         }
                     },
                     {
@@ -452,14 +794,35 @@ class BambuPrinterMCPServer {
                                     enum: ["p1s", "p1p", "x1c", "x1e", "a1", "a1mini", "h2d"],
                                     description: "REQUIRED: Bambu Lab printer model. Ask the user if not known. Using the wrong model can damage the printer."
                                 },
+                                connection_mode: {
+                                    type: "string",
+                                    enum: ["lan_mqtt_ftps", "bambu_network"],
+                                    description: "Print path to use: lan_mqtt_ftps uses this MCP's direct local MQTT/FTPS path; bambu_network uses FULU OrcaSlicer-bambulab's restored BambuNetwork bridge."
+                                },
+                                connection_type: { type: "string", enum: ["cloud", "lan"], description: "BambuNetwork connection type when connection_mode is bambu_network; cloud uses restored internet printing, lan uses local bridge printing." },
+                                bambu_network_method: { type: "string", enum: BAMBU_NETWORK_PRINT_METHODS, description: "FULU print method when connection_mode is bambu_network; defaults to start_print for cloud and start_local_print for lan." },
+                                dev_id: { type: "string", description: "Bambu device id for FULU BambuNetwork printing; defaults to BAMBU_DEV_ID or BAMBU_SERIAL." },
+                                dev_ip: { type: "string", description: "Printer IP address for FULU BambuNetwork LAN/local print methods; defaults to host when provided." },
+                                bridge_command: { type: "string", description: "Override command for the FULU bridge host or macOS/WSL wrapper; defaults to BAMBU_NETWORK_BRIDGE_COMMAND." },
+                                bambu_network_config_dir: { type: "string", description: "Config/log directory used by the FULU BambuNetwork agent." },
+                                country_code: { type: "string", description: "BambuNetwork country code, such as US, used by the FULU bridge agent." },
+                                user_info: { type: "string", description: "Optional BambuNetwork user_info JSON string passed to net.change_user for the FULU bridge." },
                                 bed_type: {
                                     type: "string",
                                     enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"],
                                     description: "Bed plate type currently installed (default: textured_plate)"
                                 },
+                                plate_index: { type: "number", description: "Zero-based plate index to print from the sliced 3MF (default: 0)" },
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
                                 bambu_token: { type: "string", description: "Access token (default: value from env)" },
+                                slicer_type: {
+                                    type: "string",
+                                    enum: SLICER_SCHEMA_VALUES,
+                                    description: "Slicer to use only if auto-slicing an unsliced 3MF. Use orcaslicer-bambulab for FULU's OrcaSlicer-bambulab fork; aliases such as fulu-orca and orca-studio are accepted."
+                                },
+                                slicer_path: { type: "string", description: "Path to the slicer executable for auto-slicing (default: value from env or a platform default)" },
+                                slicer_profile: { type: "string", description: "Path to an optional slicer profile/config file for auto-slicing" },
                                 use_ams: { type: "boolean", description: "Whether to use the AMS (default: auto-detect from 3MF)" },
                                 ams_mapping: {
                                     type: "array",
@@ -469,6 +832,7 @@ class BambuPrinterMCPServer {
                                 bed_leveling: { type: "boolean", description: "Enable auto bed leveling (default: true)" },
                                 flow_calibration: { type: "boolean", description: "Enable flow calibration (default: true)" },
                                 vibration_calibration: { type: "boolean", description: "Enable vibration calibration (default: true)" },
+                                layer_inspect: { type: "boolean", description: "Enable first-layer inspection where supported (default: printer/profile behavior)" },
                                 timelapse: { type: "boolean", description: "Enable timelapse recording (default: false)" },
                                 nozzle_diameter: { type: "string", description: "Nozzle diameter in mm for auto-slicing (default: 0.4)" }
                             },
@@ -535,9 +899,6 @@ class BambuPrinterMCPServer {
             const host = String(args?.host || DEFAULT_HOST);
             const bambuSerial = String(args?.bambu_serial || DEFAULT_BAMBU_SERIAL);
             const bambuToken = String(args?.bambu_token || DEFAULT_BAMBU_TOKEN);
-            const slicerType = String(args?.slicer_type || DEFAULT_SLICER_TYPE);
-            const slicerPath = String(args?.slicer_path || DEFAULT_SLICER_PATH);
-            const slicerProfile = String(args?.slicer_profile || DEFAULT_SLICER_PROFILE);
             try {
                 let result;
                 switch (name) {
@@ -547,6 +908,39 @@ class BambuPrinterMCPServer {
                     case "list_printer_files":
                         result = await this.bambu.getFiles(host, bambuSerial, bambuToken);
                         break;
+                    case "bambu_network_bridge_status": {
+                        const bridgeArgs = args;
+                        const options = this.bridgeOptionsFromArgs(bridgeArgs);
+                        result = this.bambuNetwork.getStatus(options);
+                        if (Boolean(bridgeArgs?.connect)) {
+                            const probe = await this.bambuNetwork.ensureAgent(options);
+                            result = {
+                                ...this.bambuNetwork.getStatus(options),
+                                connected: true,
+                                agent: probe.agent,
+                                handshake: probe.handshake,
+                            };
+                        }
+                        break;
+                    }
+                    case "bambu_network_call": {
+                        if (!args?.method) {
+                            throw new Error("Missing required parameter: method");
+                        }
+                        const bridgeArgs = args;
+                        const payload = bridgeArgs.payload && typeof bridgeArgs.payload === "object"
+                            ? bridgeArgs.payload
+                            : {};
+                        const options = this.bridgeOptionsFromArgs(bridgeArgs);
+                        result = bridgeArgs.with_agent === false
+                            ? await this.bambuNetwork.request(String(bridgeArgs.method), payload, options)
+                            : await this.bambuNetwork.callWithAgent(String(bridgeArgs.method), payload, options);
+                        break;
+                    }
+                    case "print_3mf_bambu_network": {
+                        result = await this.print3mfViaBambuNetwork(args, host, bambuSerial, bambuToken);
+                        break;
+                    }
                     case "upload_gcode": {
                         if (!args?.filename || !args?.gcode) {
                             throw new Error("Missing required parameters: filename and gcode");
@@ -613,6 +1007,7 @@ class BambuPrinterMCPServer {
                         if (!args?.stl_path) {
                             throw new Error("Missing required parameter: stl_path");
                         }
+                        const { slicerType, slicerPath, slicerProfile } = resolveSlicerConfig(args);
                         const sliceModel = await this.resolveBambuModel(args?.bambu_model);
                         const nozzleDiam = String(args?.nozzle_diameter || DEFAULT_NOZZLE_DIAMETER);
                         // Resolve printer preset for BambuStudio slicer
@@ -662,13 +1057,22 @@ class BambuPrinterMCPServer {
                         if (!args?.three_mf_path) {
                             throw new Error("Missing required parameter: three_mf_path");
                         }
+                        if (String(args?.connection_mode || "lan_mqtt_ftps") === "bambu_network") {
+                            result = await this.print3mfViaBambuNetwork(args, host, bambuSerial, bambuToken);
+                            break;
+                        }
                         if (!bambuSerial || !bambuToken) {
                             throw new Error("Bambu serial number and access token are required for print_3mf.");
                         }
+                        const { slicerType, slicerPath, slicerProfile } = resolveSlicerConfig(args);
                         const printModel = await this.resolveBambuModel(args?.bambu_model);
                         const printBedType = resolveBedType(args?.bed_type);
                         const printNozzle = String(args?.nozzle_diameter || DEFAULT_NOZZLE_DIAMETER);
                         const printPreset = BAMBU_MODEL_PRESETS[printModel]?.(printNozzle);
+                        const plateIndex = args?.plate_index !== undefined ? Number(args.plate_index) : 0;
+                        if (!Number.isInteger(plateIndex) || plateIndex < 0) {
+                            throw new Error("plate_index must be a non-negative integer.");
+                        }
                         let threeMFPath = String(args.three_mf_path);
                         // Auto-slice if 3MF has no gcode
                         try {
@@ -677,7 +1081,7 @@ class BambuPrinterMCPServer {
                             const zip = await JSZip.loadAsync(zipData);
                             const hasGcode = Object.keys(zip.files).some(f => f.match(/Metadata\/plate_\d+\.gcode/i) || f.endsWith('.gcode'));
                             if (!hasGcode) {
-                                console.log(`3MF has no gcode — auto-slicing with ${slicerType} for ${printModel}`);
+                                console.log(`3MF has no gcode - auto-slicing with ${slicerType} for ${printModel}`);
                                 const autoSliceOptions = {
                                     uptodate: true,
                                     ensureOnBed: true,
@@ -702,7 +1106,8 @@ class BambuPrinterMCPServer {
                             }
                         }
                         let finalAmsMapping = parsedAmsMapping;
-                        let useAMS = args?.use_ams !== undefined ? Boolean(args.use_ams) : (!!finalAmsMapping && finalAmsMapping.length > 0);
+                        const explicitUseAMS = args?.use_ams !== undefined;
+                        let useAMS = explicitUseAMS ? Boolean(args.use_ams) : (!!finalAmsMapping && finalAmsMapping.length > 0);
                         if (args?.ams_mapping) {
                             let userMappingOverride;
                             if (Array.isArray(args.ams_mapping)) {
@@ -722,7 +1127,7 @@ class BambuPrinterMCPServer {
                             finalAmsMapping = undefined;
                             useAMS = false;
                         }
-                        if (!finalAmsMapping || finalAmsMapping.length === 0) {
+                        if ((!finalAmsMapping || finalAmsMapping.length === 0) && !explicitUseAMS) {
                             useAMS = false;
                         }
                         const threeMfFilename = path.basename(threeMFPath);
@@ -730,7 +1135,7 @@ class BambuPrinterMCPServer {
                         result = await this.bambu.print3mf(host, bambuSerial, bambuToken, {
                             projectName,
                             filePath: threeMFPath,
-                            plateIndex: 0,
+                            plateIndex,
                             useAMS: useAMS,
                             amsMapping: finalAmsMapping,
                             bedType: printBedType,

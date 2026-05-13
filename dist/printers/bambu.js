@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import JSZip from "jszip";
 import { Client as FTPClient } from "basic-ftp";
+import { Readable } from "node:stream";
 import { BambuPrinter } from "bambu-js";
 import { BambuClient, GCodeFileCommand, GCodeLineCommand, PushAllCommand, UpdateStateCommand, } from "bambu-node";
 class BambuClientStore {
@@ -170,7 +171,7 @@ export class BambuImplementation {
             print: {
                 command: "project_file",
                 param: `Metadata/${projectMetadata.plateFileName}`,
-                url: `file:///sdcard/${remoteProjectPath}`,
+                url: `ftp://${remoteFileName}`,
                 subtask_name: options.projectName,
                 md5,
                 flow_cali: options.flowCalibration ?? true,
@@ -192,7 +193,7 @@ export class BambuImplementation {
         await new Promise((resolve) => setTimeout(resolve, 300));
         return {
             status: "success",
-            message: `Uploaded and started 3MF print: ${options.projectName}`,
+            message: `Uploaded 3MF and sent project_file print command: ${options.projectName}`,
             remoteProjectPath,
             plateFile: projectMetadata.plateFileName,
             platePath: projectMetadata.plateInternalPath,
@@ -323,7 +324,7 @@ export class BambuImplementation {
      * again, resulting in e.g. /cache/cache/file.3mf).
      */
     async ftpUpload(host, token, localPath, remotePath) {
-        const client = new FTPClient(15000);
+        const client = new FTPClient(30000);
         try {
             await client.access({
                 host,
@@ -333,12 +334,9 @@ export class BambuImplementation {
                 secure: "implicit",
                 secureOptions: { rejectUnauthorized: false },
             });
-            // Use absolute path to avoid CWD side-effects
             const absoluteRemote = remotePath.startsWith("/") ? remotePath : `/${remotePath}`;
-            const remoteDir = path.posix.dirname(absoluteRemote);
-            await client.ensureDir(remoteDir);
-            // uploadFrom with just the basename since we're already in the right dir
-            await client.uploadFrom(localPath, path.posix.basename(absoluteRemote));
+            const fileData = await fs.readFile(localPath);
+            await client.uploadFrom(Readable.from(fileData), absoluteRemote);
         }
         finally {
             client.close();
