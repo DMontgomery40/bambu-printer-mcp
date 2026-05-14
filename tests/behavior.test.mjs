@@ -87,6 +87,10 @@ function assertCommonToolPresence(listToolsResult) {
   assert.ok(names.includes("blender_mcp_edit_model"));
   assert.ok(names.includes("print_3mf"), "print_3mf tool must be registered");
   assert.ok(names.includes("print_3mf_bambu_network"), "print_3mf_bambu_network tool must be registered");
+  assert.ok(names.includes("upload_gcode"), "upload_gcode tool must be registered");
+  assert.ok(names.includes("start_print"), "start_print compatibility tool must be registered");
+  assert.ok(names.includes("start_print_job"), "start_print_job tool must be registered");
+  assert.ok(names.includes("cancel_print"), "cancel_print tool must be registered");
   assert.ok(names.includes("bambu_network_bridge_status"), "bambu_network_bridge_status tool must be registered");
   assert.ok(names.includes("bambu_network_call"), "bambu_network_call tool must be registered");
   assert.ok(names.includes("slice_stl"), "slice_stl tool must be registered");
@@ -144,6 +148,23 @@ function optionValue(args, option) {
   assert.notEqual(index, -1, `Expected ${option} in args: ${args.join(" ")}`);
   assert.ok(index + 1 < args.length, `Expected value after ${option}`);
   return args[index + 1];
+}
+
+function sortedUnique(values) {
+  return [...new Set(values)].sort();
+}
+
+async function extractCallToolHandlerNames() {
+  const source = await fs.readFile(SERVER_ENTRY, "utf8");
+  const switchStart = source.indexOf("switch (name)");
+  assert.notEqual(switchStart, -1, "compiled server must contain CallTool switch (name)");
+  const defaultStart = source.indexOf("default:", switchStart);
+  assert.notEqual(defaultStart, -1, "compiled CallTool switch must have a default case");
+
+  const callToolSwitch = source.slice(switchStart, defaultStart);
+  return sortedUnique(
+    [...callToolSwitch.matchAll(/case\s+["']([^"']+)["']\s*:/g)].map((match) => match[1])
+  );
 }
 
 function shellQuote(value) {
@@ -307,6 +328,7 @@ const BAMBU_SLICER_OPTION_CONTRACTS = [
   ["clone_objects",         "string",  "clone"],
   ["skip_objects",          "string",  "skip"],
   ["load_filaments",        "string",  "filament"],
+  ["filament_profile",      "string",  "filament"],
   ["load_filament_ids",     "string",  "filament"],
   ["enable_timelapse",      "boolean", "timelapse"],
   ["allow_mix_temp",        "boolean", "temperature"],
@@ -495,6 +517,126 @@ test("stdio transport: initialize, list tools, call success + structured failure
   assert.equal(failure.isError, true);
   assert.equal(failure.structuredContent?.status, "error");
   assert.equal(typeof failure.structuredContent?.suggestion, "string");
+});
+
+test("MCP registry contract: every advertised tool has a CallTool handler", async (t) => {
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+    },
+    stderr: "pipe",
+  });
+
+  const client = createClient();
+  t.after(async () => { await closeTransport(transport); });
+
+  await client.connect(transport);
+
+  const listedNames = sortedUnique((await client.listTools()).tools.map((tool) => tool.name));
+  const handledNames = await extractCallToolHandlerNames();
+
+  assert.deepEqual(
+    handledNames.filter((name) => !listedNames.includes(name)),
+    [],
+    "CallTool handlers must not be hidden from tools/list"
+  );
+  assert.deepEqual(
+    listedNames.filter((name) => !handledNames.includes(name)),
+    [],
+    "tools/list entries must have a CallTool handler"
+  );
+});
+
+test("print-path tool schemas expose upstream-compatible names and local G-code path upload", async (t) => {
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+    },
+    stderr: "pipe",
+  });
+
+  const client = createClient();
+  t.after(async () => { await closeTransport(transport); });
+
+  await client.connect(transport);
+
+  const listToolsResult = await client.listTools();
+  const names = listToolsResult.tools.map((tool) => tool.name);
+  for (const requiredTool of ["upload_gcode", "start_print", "start_print_job", "cancel_print"]) {
+    assert.ok(names.includes(requiredTool), `${requiredTool} must be advertised`);
+  }
+
+  const uploadTool = listToolsResult.tools.find((tool) => tool.name === "upload_gcode");
+  assert.ok(uploadTool, "upload_gcode tool must exist");
+  assert.ok(uploadTool.inputSchema.properties.gcode_path, "upload_gcode must accept a local gcode_path");
+  assert.deepEqual(uploadTool.inputSchema.required, ["filename"], "upload_gcode requires filename plus gcode or gcode_path");
+
+  const uploadFileTool = listToolsResult.tools.find((tool) => tool.name === "upload_file");
+  assert.ok(uploadFileTool?.inputSchema.properties.bambu_model, "upload_file must expose bambu_model for print=true safety");
+
+  for (const toolName of ["start_print", "start_print_job"]) {
+    const tool = listToolsResult.tools.find((entry) => entry.name === toolName);
+    assert.ok(tool?.inputSchema.properties.bambu_model, `${toolName} must expose bambu_model`);
+    assert.ok(tool.inputSchema.required.includes("bambu_model"), `${toolName} must require bambu_model`);
+  }
+
+  for (const toolName of ["start_print", "start_print_job"]) {
+    const result = await client.callTool({ name: toolName, arguments: {} });
+    assert.equal(result.isError, true, `${toolName} without filename must fail before printer I/O`);
+    assert.match(result.content?.[0]?.text || "", /filename/);
+
+    const badModelResult = await client.callTool({
+      name: toolName,
+      arguments: { filename: "cache/example.gcode", bambu_model: "ender3" },
+    });
+    assert.equal(badModelResult.isError, true, `${toolName} with invalid model must fail before printer I/O`);
+    assert.match(badModelResult.content?.[0]?.text || "", /Invalid bambu_model/);
+  }
+
+  const badUploadPrintModel = await client.callTool({
+    name: "upload_file",
+    arguments: {
+      file_path: path.join(os.tmpdir(), "bambu-mcp-missing-upload-file.gcode"),
+      filename: "missing.gcode",
+      print: true,
+      bambu_model: "ender3",
+    },
+  });
+  assert.equal(badUploadPrintModel.isError, true);
+  assert.match(badUploadPrintModel.content?.[0]?.text || "", /Invalid bambu_model/);
+
+  const missingPathResult = await client.callTool({
+    name: "upload_gcode",
+    arguments: {
+      filename: "missing.gcode",
+      gcode_path: path.join(os.tmpdir(), "bambu-mcp-missing-upload.gcode"),
+    },
+  });
+  assert.equal(missingPathResult.isError, true);
+  assert.match(missingPathResult.content?.[0]?.text || "", /gcode_path/);
+
+  const pathLikeContentResult = await client.callTool({
+    name: "upload_gcode",
+    arguments: {
+      filename: "missing.gcode",
+      gcode: path.join(os.tmpdir(), "bambu-mcp-missing-upload-via-gcode.gcode"),
+    },
+  });
+  assert.equal(pathLikeContentResult.isError, true);
+  assert.match(pathLikeContentResult.content?.[0]?.text || "", /local G-code path/);
+
+  const missingPayloadResult = await client.callTool({
+    name: "upload_gcode",
+    arguments: { filename: "missing.gcode" },
+  });
+  assert.equal(missingPayloadResult.isError, true);
+  assert.match(missingPayloadResult.content?.[0]?.text || "", /gcode or gcode_path/);
 });
 
 test("FULU BambuNetwork bridge: status probe and raw calls use framed bridge protocol", async (t) => {
@@ -1054,6 +1196,64 @@ test("slice_stl uses Bambu-compatible 3MF CLI for Orca and FULU aliases", async 
     assert.equal(generatedSettings.name, "Bambu Lab P1S 0.4 nozzle");
     assert.equal(generatedSettings.printer_settings_id, "Bambu Lab P1S 0.4 nozzle");
   }
+});
+
+test("slice_stl accepts filament_profile as an Orca-compatible filament alias", async (t) => {
+  const { fakeSlicerPath, argsOutPath, tempDir } = await createFakeBambuCompatibleSlicer(t);
+  const profileSearchDir = path.join(tempDir, "empty-profile-search");
+  await fs.mkdir(profileSearchDir, { recursive: true });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+      BAMBU_MODEL: "p1s",
+      FAKE_SLICER_ARGS_OUT: argsOutPath,
+      BAMBU_SLICER_PROFILE_DIRS: profileSearchDir,
+    },
+    stderr: "pipe",
+  });
+
+  const client = createClient();
+  t.after(async () => { await closeTransport(transport); });
+
+  await client.connect(transport);
+
+  for (const slicerType of ["orcaslicer", "orcaslicer-bambulab", "fulu-orca"]) {
+    await fs.rm(argsOutPath, { force: true });
+
+    const result = await client.callTool({
+      name: "slice_stl",
+      arguments: {
+        stl_path: SAMPLE_STL,
+        bambu_model: "p1s",
+        slicer_type: slicerType,
+        slicer_path: fakeSlicerPath,
+        filament_profile: "nylon-flat.json;asa-flat.json",
+      },
+    });
+
+    assert.equal(result.isError, undefined, `slice_stl should accept filament_profile with ${slicerType}`);
+    const args = JSON.parse(await fs.readFile(argsOutPath, "utf8"));
+    assert.equal(optionValue(args, "--load-filaments"), "nylon-flat.json;asa-flat.json");
+    assert.ok(!args.includes("filament_profile"), "filament_profile must be translated before invoking slicer CLI");
+  }
+
+  const conflict = await client.callTool({
+    name: "slice_stl",
+    arguments: {
+      stl_path: SAMPLE_STL,
+      bambu_model: "p1s",
+      slicer_type: "orcaslicer",
+      slicer_path: fakeSlicerPath,
+      load_filaments: "pla.json",
+      filament_profile: "abs.json",
+    },
+  });
+
+  assert.equal(conflict.isError, true);
+  assert.match(conflict.content?.[0]?.text || "", /load_filaments or filament_profile/);
 });
 
 test("slice_stl uses installed Bambu printer profile when available", async (t) => {
