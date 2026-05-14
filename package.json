@@ -13,7 +13,8 @@
     "start:stdio": "MCP_TRANSPORT=stdio node dist/index.js",
     "start:http": "MCP_TRANSPORT=streamable-http node dist/index.js",
     "build": "tsc",
-    "test": "npm run build && node --test tests/**/*.test.mjs"
+    "test": "npm run build && node --test tests/**/*.test.mjs",
+    "postinstall": "patch-package"
   },
   "bin": {
     "bambu-printer-mcp": "dist/index.js"
@@ -21,6 +22,7 @@
   "files": [
     "dist",
     "src",
+    "patches",
     "README.md",
     "LICENSE"
   ],
@@ -42,6 +44,7 @@
     "basic-ftp": "^5.0.5",
     "dotenv": "^16.3.1",
     "jszip": "^3.10.1",
+    "patch-package": "^8.0.1",
     "three": "^0.173.0",
     "xml2js": "^0.6.2"
   },

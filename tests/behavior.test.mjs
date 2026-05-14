@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import net from "node:net";
@@ -20,6 +20,7 @@ const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, "..");
 const SERVER_ENTRY = path.join(REPO_ROOT, "dist", "index.js");
 const SAMPLE_STL = path.join(REPO_ROOT, "test", "sample_cube.stl");
+const EXPECTED_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d"];
 
 function createClient() {
   return new Client({
@@ -111,6 +112,42 @@ function assertBambuStudioSlicerSupport(listToolsResult) {
   const enumValues = sliceTool.inputSchema?.properties?.slicer_type?.enum || [];
   assert.ok(enumValues.includes("fulu-orca"), "slice_stl schema must expose the FULU alias");
 }
+
+test("package metadata: dependency patches are available to published installs", async () => {
+  const packageJson = JSON.parse(await fs.readFile(path.join(REPO_ROOT, "package.json"), "utf8"));
+
+  assert.equal(packageJson.scripts?.postinstall, "patch-package");
+  assert.equal(
+    packageJson.dependencies?.["patch-package"],
+    "^8.0.1",
+    "postinstall runtime must not rely on a devDependency-only patch-package binary"
+  );
+  assert.equal(
+    packageJson.devDependencies?.["patch-package"],
+    undefined,
+    "patch-package must not drift back into devDependencies while postinstall needs it"
+  );
+  assert.ok(
+    packageJson.files?.includes("patches"),
+    "published package whitelist must include patch-package patch files"
+  );
+
+  const packResult = spawnSync("npm", ["pack", "--dry-run", "--json"], {
+    cwd: REPO_ROOT,
+    encoding: "utf8",
+  });
+
+  assert.equal(
+    packResult.status,
+    0,
+    `npm pack --dry-run must succeed. stderr: ${packResult.stderr}`
+  );
+  const packedFiles = JSON.parse(packResult.stdout)[0].files.map((file) => file.path);
+  assert.ok(
+    packedFiles.includes("patches/bambu-node+3.22.21.patch"),
+    "published tarball must include the bambu-node patch consumed by postinstall"
+  );
+});
 
 async function createFakeBambuCompatibleSlicer(t) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-mcp-fake-slicer-"));
@@ -363,7 +400,7 @@ test("printer model safety: schema requires bambu_model, rejects missing/invalid
   const listToolsResult = await client.listTools();
   assertBambuStudioSlicerSupport(listToolsResult);
 
-  // --- Schema validation: bambu_model must be required on print_3mf and slice_stl ---
+  // --- Schema validation: bambu_model must be required and consistent on every printer-targeting tool ---
   const print3mfTool = listToolsResult.tools.find((t) => t.name === "print_3mf");
   assert.ok(print3mfTool, "print_3mf tool must exist");
   assert.ok(
@@ -382,22 +419,33 @@ test("printer model safety: schema requires bambu_model, rejects missing/invalid
     print3mfTool.inputSchema.properties.bed_type,
     "print_3mf must have bed_type property"
   );
+  const toolsWithModel = listToolsResult.tools
+    .filter((tool) => tool.inputSchema?.properties?.bambu_model)
+    .map((tool) => tool.name)
+    .sort();
   assert.deepEqual(
-    print3mfTool.inputSchema.properties.bambu_model.enum,
-    ["p1s", "p1p", "x1c", "x1e", "a1", "a1mini", "h2d"],
-    "print_3mf bambu_model must enumerate all valid models"
+    toolsWithModel,
+    ["print_3mf", "print_3mf_bambu_network", "slice_stl", "start_print", "start_print_job", "upload_file"],
+    "all tools that expose bambu_model must be covered by the model enum invariant"
   );
 
-  const sliceTool = listToolsResult.tools.find((t) => t.name === "slice_stl");
-  assert.ok(sliceTool, "slice_stl tool must exist");
-  assert.ok(
-    sliceTool.inputSchema.properties.bambu_model,
-    "slice_stl must have bambu_model property"
-  );
-  assert.ok(
-    sliceTool.inputSchema.required.includes("bambu_model"),
-    "slice_stl must list bambu_model as required"
-  );
+  for (const toolName of toolsWithModel) {
+    const tool = listToolsResult.tools.find((t) => t.name === toolName);
+    assert.ok(tool, `${toolName} tool must exist`);
+    assert.deepEqual(
+      tool.inputSchema.properties.bambu_model.enum,
+      EXPECTED_BAMBU_MODELS,
+      `${toolName} bambu_model must enumerate all valid models`
+    );
+  }
+
+  for (const toolName of ["slice_stl", "print_3mf_bambu_network", "print_3mf", "start_print", "start_print_job"]) {
+    const tool = listToolsResult.tools.find((t) => t.name === toolName);
+    assert.ok(
+      tool.inputSchema.required.includes("bambu_model"),
+      `${toolName} must list bambu_model as required`
+    );
+  }
 
   // No 'type' param should exist on any tool (Bambu-only)
   for (const tool of listToolsResult.tools) {
@@ -433,17 +481,19 @@ test("printer model safety: schema requires bambu_model, rejects missing/invalid
     `Error must reject invalid model, got: ${badModelError}`
   );
 
-  // --- Runtime validation: print_3mf with valid model but missing file errors on file, not model ---
-  const validModelResult = await client.callTool({
-    name: "print_3mf",
-    arguments: { three_mf_path: "/tmp/nonexistent_test.3mf", bambu_model: "p1s" },
-  });
-  assert.equal(validModelResult.isError, true, "Missing file should still error");
-  const validModelError = validModelResult.content?.[0]?.text || "";
-  assert.ok(
-    !validModelError.includes("bambu_model"),
-    `Error with valid model should not be about model, got: ${validModelError}`
-  );
+  // --- Runtime validation: every valid model, including newly added models, passes model validation ---
+  for (const bambuModel of EXPECTED_BAMBU_MODELS) {
+    const validModelResult = await client.callTool({
+      name: "print_3mf",
+      arguments: { three_mf_path: "/tmp/nonexistent_test.3mf", bambu_model: bambuModel },
+    });
+    assert.equal(validModelResult.isError, true, "Missing file should still error");
+    const validModelError = validModelResult.content?.[0]?.text || "";
+    assert.ok(
+      !validModelError.includes("bambu_model"),
+      `Error with valid model ${bambuModel} should not be about model, got: ${validModelError}`
+    );
+  }
 });
 
 test("printer model safety: BAMBU_MODEL env var accepted as default", async (t) => {
