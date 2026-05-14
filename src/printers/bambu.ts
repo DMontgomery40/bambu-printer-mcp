@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { Readable } from "node:stream";
 import JSZip from "jszip";
 import { Client as FTPClient } from "basic-ftp";
 import { BambuPrinter } from "bambu-js";
@@ -267,6 +268,14 @@ class BambuClientStore {
     this.resolveInitialReport(key);
   }
 
+  private clearPrinterState(key: string): void {
+    this.printers.delete(key);
+    this.initialConnectionPromises.delete(key);
+    this.reportSnapshots.delete(key);
+    this.initialReportPromises.delete(key);
+    this.initialReportResolvers.delete(key);
+  }
+
   getCachedReport(host: string, serial: string, token: string): Record<string, any> | null {
     return this.reportSnapshots.get(getPrinterKey(host, serial, token)) || null;
   }
@@ -349,17 +358,11 @@ class BambuClientStore {
     });
 
     printer.on("client:error", () => {
-      this.printers.delete(key);
-      this.initialConnectionPromises.delete(key);
-      this.initialReportPromises.delete(key);
-      this.initialReportResolvers.delete(key);
+      this.clearPrinterState(key);
     });
 
     printer.on("client:disconnect", () => {
-      this.printers.delete(key);
-      this.initialConnectionPromises.delete(key);
-      this.initialReportPromises.delete(key);
-      this.initialReportResolvers.delete(key);
+      this.clearPrinterState(key);
     });
 
     const connectPromise = printer.connect().then(() => {});
@@ -369,7 +372,7 @@ class BambuClientStore {
       await connectPromise;
       return printer;
     } catch (error) {
-      this.initialConnectionPromises.delete(key);
+      this.clearPrinterState(key);
       throw error;
     }
   }
@@ -392,6 +395,7 @@ class BambuClientStore {
     await Promise.allSettled(disconnectPromises);
     this.printers.clear();
     this.initialConnectionPromises.clear();
+    this.reportSnapshots.clear();
     this.initialReportPromises.clear();
     this.initialReportResolvers.clear();
   }
@@ -678,8 +682,8 @@ export class BambuImplementation {
       );
       amsMapping2 = amsMapping.map((v) => {
         if (v < 0 || v === 255) return { ams_id: 255, slot_id: 255 };
-        if (v >= 128) return { ams_id: 128, slot_id: v - 128 };
         if (v === 254) return { ams_id: 254, slot_id: 254 };
+        if (v >= 128) return { ams_id: 128, slot_id: v - 128 };
         return { ams_id: Math.floor(v / 4), slot_id: v % 4 };
       });
     } else {
@@ -1260,6 +1264,12 @@ export class BambuImplementation {
       "h2", "h2s", "h2d", "h2c", "h2dpro",
     ]);
 
+    if (!model) {
+      throw new Error(
+        "camera_snapshot requires bambu_model or BAMBU_MODEL so it can choose the correct Bambu camera protocol."
+      );
+    }
+
     if (RTSP_MODELS.has(model)) {
       const jpeg = await this.fetchRtspCameraFrame(host, token, timeoutMs, options.ffmpegPath);
       const result: any = {
@@ -1507,9 +1517,9 @@ export class BambuImplementation {
     _serial: string,
     token: string,
     filename: string,
-    confirm: boolean
+    confirm: unknown
   ): Promise<{ status: string; deleted: boolean; remotePath: string; message?: string }> {
-    if (!confirm) {
+    if (confirm !== true) {
       return {
         status: "skipped",
         deleted: false,
@@ -1603,10 +1613,8 @@ export class BambuImplementation {
       await this.waitForTlsSession(client);
       // Use absolute path to avoid CWD side-effects
       const absoluteRemote = remotePath.startsWith("/") ? remotePath : `/${remotePath}`;
-      const remoteDir = path.posix.dirname(absoluteRemote);
-      await client.ensureDir(remoteDir);
-      // uploadFrom with just the basename since we're already in the right dir
-      await client.uploadFrom(localPath, path.posix.basename(absoluteRemote));
+      const fileData = await fs.readFile(localPath);
+      await client.uploadFrom(Readable.from(fileData), absoluteRemote);
     } finally {
       client.close();
     }

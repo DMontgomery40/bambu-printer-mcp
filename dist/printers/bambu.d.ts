@@ -160,7 +160,7 @@ export declare class BambuImplementation {
      * accepted as parents to avoid letting an agent wander further into the
      * filesystem than expected.
      */
-    deleteFile(host: string, _serial: string, token: string, filename: string, confirm: boolean): Promise<{
+    deleteFile(host: string, _serial: string, token: string, filename: string, confirm: unknown): Promise<{
         status: string;
         deleted: boolean;
         remotePath: string;

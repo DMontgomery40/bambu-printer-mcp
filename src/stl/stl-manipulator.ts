@@ -3,6 +3,7 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import * as BufferGeometryUtils from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
 import { EventEmitter } from 'events';
@@ -51,7 +52,106 @@ export type TransformationParams = {
   selectionBounds?: THREE.Box3;
 };
 
-// BambuStudio CLI flags exposed via the slice_stl tool
+export const SLICER_TYPES = [
+  'bambustudio',
+  'orcaslicer',
+  'orcaslicer-bambulab',
+  'prusaslicer',
+  'cura',
+  'slic3r',
+] as const;
+
+export type SlicerType = typeof SLICER_TYPES[number];
+
+const SLICER_TYPE_ALIASES: Record<string, SlicerType> = {
+  bambustudio: 'bambustudio',
+  'bambu-studio': 'bambustudio',
+  bblstudio: 'bambustudio',
+  orcaslicer: 'orcaslicer',
+  'orca-slicer': 'orcaslicer',
+  orca: 'orcaslicer',
+  'orcaslicer-bambulab': 'orcaslicer-bambulab',
+  'orca-slicer-bambulab': 'orcaslicer-bambulab',
+  'orca-bambulab': 'orcaslicer-bambulab',
+  'fulu-orca': 'orcaslicer-bambulab',
+  'fulu-orcaslicer': 'orcaslicer-bambulab',
+  'fulu-orca-slicer': 'orcaslicer-bambulab',
+  'orca-studio': 'orcaslicer-bambulab',
+  orcastudio: 'orcaslicer-bambulab',
+  'orcaslicer-bmcu': 'orcaslicer-bambulab',
+  'orca-bmcu': 'orcaslicer-bambulab',
+  prusaslicer: 'prusaslicer',
+  'prusa-slicer': 'prusaslicer',
+  cura: 'cura',
+  curaengine: 'cura',
+  slic3r: 'slic3r',
+};
+
+export function normalizeSlicerType(rawSlicerType: string): SlicerType {
+  const key = rawSlicerType.trim().toLowerCase().replace(/_/g, '-');
+  const normalized = SLICER_TYPE_ALIASES[key];
+
+  if (!normalized) {
+    throw new Error(
+      `Unsupported slicer_type: "${rawSlicerType}". Valid values: ${SLICER_TYPES.join(', ')}`
+    );
+  }
+
+  return normalized;
+}
+
+export function isBambuCompatibleSlicer(slicerType: SlicerType): boolean {
+  return (
+    slicerType === 'bambustudio' ||
+    slicerType === 'orcaslicer' ||
+    slicerType === 'orcaslicer-bambulab'
+  );
+}
+
+function isPathLikeExecutable(slicerPath: string): boolean {
+  return (
+    path.isAbsolute(slicerPath) ||
+    slicerPath.startsWith("./") ||
+    slicerPath.startsWith("../") ||
+    slicerPath.includes("/") ||
+    slicerPath.includes("\\") ||
+    /^[A-Za-z]:/.test(slicerPath)
+  );
+}
+
+function configuredBambuProfileDirs(): string[] {
+  const override = process.env.BAMBU_SLICER_PROFILE_DIRS;
+  if (override !== undefined) {
+    return override.split(path.delimiter).filter(Boolean);
+  }
+
+  const home = os.homedir();
+  const macAppSupport = path.join(home, 'Library', 'Application Support');
+  const linuxConfig = path.join(home, '.config');
+  const appData = process.env.APPDATA;
+  const localAppData = process.env.LOCALAPPDATA;
+  const appNames = [
+    'BambuStudio',
+    'Bambu Studio',
+    'OrcaSlicer',
+    'Orca Slicer',
+    'OrcaStudio',
+    'Orca Studio',
+  ];
+
+  const roots = [
+    macAppSupport,
+    linuxConfig,
+    ...(appData ? [appData] : []),
+    ...(localAppData ? [localAppData] : []),
+  ];
+
+  return roots.flatMap((root) =>
+    appNames.map((appName) => path.join(root, appName, 'system', 'BBL'))
+  );
+}
+
+// Bambu-compatible slicer CLI flags exposed via the slice_stl tool
 export interface BambuSliceOptions {
   uptodate?: boolean;          // --uptodate: update 3MF configs to latest presets
   repetitions?: number;        // --repetitions N: print N copies
@@ -95,7 +195,7 @@ export class STLManipulator extends EventEmitter {
   }
 
   private getAvailableProfileRoots(): string[] {
-    return BAMBU_PROFILE_ROOTS.filter((root) => fs.existsSync(root));
+    return [...BAMBU_PROFILE_ROOTS, ...configuredBambuProfileDirs()].filter((root) => fs.existsSync(root));
   }
 
   private findProfileFile(
@@ -206,7 +306,7 @@ export class STLManipulator extends EventEmitter {
 
   private resolveBambuLikeSettingsBundle(
     outputBase: string,
-    slicerType: 'orcaslicer' | 'bambustudio',
+    slicerType: 'orcaslicer' | 'orcaslicer-bambulab' | 'bambustudio',
     slicerProfile?: string,
     printerPreset?: string,
     bambuOptions?: BambuSliceOptions
@@ -352,7 +452,8 @@ export class STLManipulator extends EventEmitter {
    */
   private async maybeFlattenBundle(
     bundle: { settingsArg?: string; filamentPaths: string[] },
-    bambuOptions?: BambuSliceOptions
+    bambuOptions?: BambuSliceOptions,
+    activeSlicerPath?: string
   ): Promise<{ settingsArg?: string; filamentPaths: string[] }> {
     const flag = process.env.BAMBU_CLI_FLATTEN;
     if (flag !== 'true' && flag !== '1') return bundle;
@@ -382,7 +483,7 @@ export class STLManipulator extends EventEmitter {
     const bedType = this.resolveBambuStudioBedType(bambuOptions?.bedType);
 
     try {
-      const profilesRoot = detectProfilesRoot(process.env.SLICER_PATH);
+      const profilesRoot = detectProfilesRoot(activeSlicerPath || process.env.SLICER_PATH);
       const flat = await flattenForCli({
         machineLeaf,
         processLeaf,
@@ -1338,7 +1439,7 @@ export class STLManipulator extends EventEmitter {
    */
   async sliceSTL(
     stlFilePath: string,
-    slicerType: 'prusaslicer' | 'cura' | 'slic3r' | 'orcaslicer' | 'bambustudio',
+    slicerType: SlicerType,
     slicerPath: string,
     slicerProfile?: string,
     progressCallback?: ProgressCallback,
@@ -1348,7 +1449,7 @@ export class STLManipulator extends EventEmitter {
     const operationId = this.generateOperationId();
     this.activeOperations.set(operationId, true);
 
-    if (!fs.existsSync(slicerPath)) {
+    if (isPathLikeExecutable(slicerPath) && !fs.existsSync(slicerPath)) {
       throw new Error(`Slicer executable not found at: ${slicerPath}`);
     }
     if (slicerProfile && !fs.existsSync(slicerProfile)) {
@@ -1392,9 +1493,11 @@ export class STLManipulator extends EventEmitter {
           }
           break;
 
-        case 'orcaslicer':
         case 'bambustudio':
-          // Bambu Studio CLI: slice and export as 3MF with embedded gcode
+        case 'orcaslicer':
+        case 'orcaslicer-bambulab':
+          // Bambu-compatible CLI: slice and export as 3MF with embedded gcode.
+          // FULU's OrcaSlicer-bambulab fork keeps this Bambu-style path.
           // For 3MF input: slice in place and export sliced 3MF
           // For STL input: slice and export as 3MF
           {
@@ -1413,7 +1516,7 @@ export class STLManipulator extends EventEmitter {
             // CLI accepts what we hand it. See maybeFlattenBundle docstring.
             const settingsBundle =
               slicerType === 'bambustudio'
-                ? await this.maybeFlattenBundle(rawBundle, bambuOptions)
+                ? await this.maybeFlattenBundle(rawBundle, bambuOptions, slicerPath)
                 : rawBundle;
             args = [
               '--slice', String(bambuOptions?.slicePlate ?? 0),

@@ -6,11 +6,13 @@ import os from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { flattenForCli, detectProfilesRoot } from "../../dist/slicer/profile-flatten.js";
+import { STLManipulator } from "../../dist/stl/stl-manipulator.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, "..", "..");
 const FIXTURES = path.join(REPO_ROOT, "tests", "fixtures");
+const SAMPLE_STL = path.join(REPO_ROOT, "test", "sample_cube.stl");
 
 /* --- Synthetic profile tree helpers -------------------------------------- */
 
@@ -27,6 +29,10 @@ async function writeProfile(dir, kind, data) {
   const p = path.join(dir, kind, `${data.name}.json`);
   await fs.writeFile(p, JSON.stringify(data, null, 2), "utf8");
   return p;
+}
+
+function shQuote(value) {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 /* --- Tests --------------------------------------------------------------- */
@@ -58,6 +64,114 @@ test("flattenForCli errors clearly when profilesRoot is wrong", async () => {
     }),
     /does not contain "BBL\/machine"/
   );
+});
+
+test("STLManipulator flattening uses the active slicer_path profile root", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("fake BambuStudio executable is a POSIX shell shim");
+    return;
+  }
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "active-slicer-root-"));
+  const activeApp = path.join(tempDir, "ActiveBambuStudio.app");
+  const activeProfilesRoot = path.join(activeApp, "Contents", "Resources", "profiles");
+  const activeBbl = path.join(activeProfilesRoot, "BBL");
+  const activeBin = path.join(activeApp, "Contents", "MacOS");
+  const activeSlicerPath = path.join(activeBin, "BambuStudio");
+  const wrongSlicerPath = path.join(tempDir, "WrongBambuStudio.app", "Contents", "MacOS", "BambuStudio");
+  const argsFile = path.join(tempDir, "slicer-args.txt");
+  const originalEnv = {
+    BAMBU_CLI_FLATTEN: process.env.BAMBU_CLI_FLATTEN,
+    BAMBU_SLICER_PROFILE_DIRS: process.env.BAMBU_SLICER_PROFILE_DIRS,
+    BAMBU_PROFILES_ROOT: process.env.BAMBU_PROFILES_ROOT,
+    SLICER_PATH: process.env.SLICER_PATH,
+  };
+  t.after(async () => {
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+    await fs.rm(tempDir, { recursive: true, force: true });
+  });
+
+  for (const sub of ["machine", "process", "filament"]) {
+    await fs.mkdir(path.join(activeBbl, sub), { recursive: true });
+  }
+  await fs.mkdir(activeBin, { recursive: true });
+
+  await writeProfile(activeBbl, "machine", {
+    name: "Bambu Lab TEST 0.4 nozzle",
+    inherits: null,
+    printer_model: "Bambu Lab TEST",
+    printer_settings_id: "Bambu Lab TEST 0.4 nozzle",
+    default_print_profile: "0.20mm @TEST",
+    default_filament_profile: ["PLA @TEST"],
+    nozzle_diameter: ["0.4"],
+    default_nozzle_volume_type: ["Standard"],
+  });
+  await writeProfile(activeBbl, "process", {
+    name: "0.20mm @TEST",
+    inherits: null,
+    layer_height: 0.2,
+  });
+  await writeProfile(activeBbl, "filament", {
+    name: "PLA @TEST",
+    inherits: null,
+    filament_type: ["PLA"],
+  });
+
+  await fs.writeFile(
+    activeSlicerPath,
+    [
+      "#!/bin/sh",
+      `: > ${shQuote(argsFile)}`,
+      "outdir=''",
+      "export_name=''",
+      "while [ \"$#\" -gt 0 ]; do",
+      `  printf '%s\\n' "$1" >> ${shQuote(argsFile)}`,
+      "  if [ \"$1\" = \"--outputdir\" ]; then",
+      "    shift",
+      "    outdir=\"$1\"",
+      "  elif [ \"$1\" = \"--export-3mf\" ]; then",
+      "    shift",
+      "    export_name=\"$1\"",
+      "  fi",
+      "  shift",
+      "done",
+      "mkdir -p \"$outdir\"",
+      "printf 'fake 3mf\\n' > \"$outdir/$export_name\"",
+      "",
+    ].join("\n"),
+    { mode: 0o755 }
+  );
+  await fs.chmod(activeSlicerPath, 0o755);
+
+  process.env.BAMBU_CLI_FLATTEN = "true";
+  process.env.BAMBU_SLICER_PROFILE_DIRS = activeBbl;
+  delete process.env.BAMBU_PROFILES_ROOT;
+  process.env.SLICER_PATH = wrongSlicerPath;
+
+  const manipulator = new STLManipulator(path.join(tempDir, "slice-out"));
+  await manipulator.sliceSTL(
+    SAMPLE_STL,
+    "bambustudio",
+    activeSlicerPath,
+    undefined,
+    undefined,
+    "Bambu Lab TEST 0.4 nozzle",
+    { uptodate: true }
+  );
+
+  const args = (await fs.readFile(argsFile, "utf8")).trim().split("\n");
+  const loadSettingsIndex = args.indexOf("--load-settings");
+  assert.notEqual(loadSettingsIndex, -1, "slicer should receive flattened load-settings");
+  const loadSettings = args[loadSettingsIndex + 1];
+  assert.match(loadSettings, /flat-machine-/);
+  assert.match(loadSettings, /flat-process-/);
+  assert.doesNotMatch(loadSettings, /Contents\/Resources\/profiles\/BBL\/machine/);
 });
 
 test("inherits chain: child wins on key collision, root parent fills the rest", async () => {
@@ -314,13 +428,22 @@ test("end-to-end against real BBL tree: H2S 0.4 nozzle flattens to a populated p
   }
 
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "flat-h2s-"));
-  const result = await flattenForCli({
-    machineLeaf: "Bambu Lab H2S 0.4 nozzle",
-    processLeaf: "0.20mm Standard @BBL H2S",
-    filamentLeaves: ["Bambu PLA Basic @BBL H2S"],
-    profilesRoot,
-    tempDir,
-  });
+  let result;
+  try {
+    result = await flattenForCli({
+      machineLeaf: "Bambu Lab H2S 0.4 nozzle",
+      processLeaf: "0.20mm Standard @BBL H2S",
+      filamentLeaves: ["Bambu PLA Basic @BBL H2S"],
+      profilesRoot,
+      tempDir,
+    });
+  } catch (error) {
+    if (/not found in index/i.test(error?.message || "")) {
+      t.skip("Installed BambuStudio profiles do not include H2S presets");
+      return;
+    }
+    throw error;
+  }
 
   const flat = JSON.parse(await fs.readFile(result.machinePath, "utf8"));
 

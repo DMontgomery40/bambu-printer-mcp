@@ -263,10 +263,10 @@ const COLLAR_CHARM_ROLE_AMS_SLOTS = {
     // - inner/smaller object -> AMS 1 slot 1 black
     // - outer/larger object -> AMS 2 slot 1 white
     // Internal absolute tray indices are 0-based:
-    // AMS 1 slot 1 -> absolute tray 1
-    // AMS 2 slot 1 -> absolute tray 5
-    inner: 1,
-    outer: 5,
+    // AMS 1 slot 1 -> absolute tray 0
+    // AMS 2 slot 1 -> absolute tray 4
+    inner: 0,
+    outer: 4,
 } as const;
 
 export async function analyzeCollarCharm3MF(
@@ -394,34 +394,39 @@ export async function analyze3MFAmsRequirements(
     const filamentById = new Map<number, { tray_info_idx: string | null; type: string | null; color: string | null }>();
 
     if (sliceInfo) {
-        const parsed = await parseStringPromise(await sliceInfo.async('string'), {
-            explicitArray: false,
-            mergeAttrs: true,
-        });
-        const plateNodes = parsed?.config?.plate
-            ? Array.isArray(parsed.config.plate) ? parsed.config.plate : [parsed.config.plate]
-            : [];
-        const selectedPlate =
-            plateNodes.find((plate: any) => {
-                const metadata = Array.isArray(plate?.metadata)
-                    ? plate.metadata
-                    : plate?.metadata
-                        ? [plate.metadata]
-                        : [];
-                return metadata.some((item: any) => item?.key === 'index' && Number(item?.value) === plateNumber);
-            }) || plateNodes[plateIndex] || plateNodes[0];
-
-        const filamentNodes = selectedPlate?.filament
-            ? Array.isArray(selectedPlate.filament) ? selectedPlate.filament : [selectedPlate.filament]
-            : [];
-        for (const filament of filamentNodes) {
-            const id = Number.parseInt(String(filament?.id ?? ''), 10);
-            if (!Number.isFinite(id)) continue;
-            filamentById.set(id, {
-                tray_info_idx: typeof filament?.tray_info_idx === 'string' ? filament.tray_info_idx : null,
-                type: typeof filament?.type === 'string' ? filament.type : null,
-                color: typeof filament?.color === 'string' ? filament.color : null,
+        try {
+            const parsed = await parseStringPromise(await sliceInfo.async('string'), {
+                explicitArray: false,
+                mergeAttrs: true,
             });
+            const plateNodes = parsed?.config?.plate
+                ? Array.isArray(parsed.config.plate) ? parsed.config.plate : [parsed.config.plate]
+                : [];
+            const selectedPlate =
+                plateNodes.find((plate: any) => {
+                    const metadata = Array.isArray(plate?.metadata)
+                        ? plate.metadata
+                        : plate?.metadata
+                            ? [plate.metadata]
+                            : [];
+                    return metadata.some((item: any) => item?.key === 'index' && Number(item?.value) === plateNumber);
+                }) || plateNodes[plateIndex] || plateNodes[0];
+
+            const filamentNodes = selectedPlate?.filament
+                ? Array.isArray(selectedPlate.filament) ? selectedPlate.filament : [selectedPlate.filament]
+                : [];
+            for (const filament of filamentNodes) {
+                const id = Number.parseInt(String(filament?.id ?? ''), 10);
+                if (!Number.isFinite(id)) continue;
+                filamentById.set(id, {
+                    tray_info_idx: typeof filament?.tray_info_idx === 'string' ? filament.tray_info_idx : null,
+                    type: typeof filament?.type === 'string' ? filament.type : null,
+                    color: typeof filament?.color === 'string' ? filament.color : null,
+                });
+            }
+        } catch {
+            // plate_N.json already gives the project filament order. Bad
+            // slice_info should degrade metadata only, not block AMS planning.
         }
     }
 
@@ -459,16 +464,54 @@ export async function analyze3MFPlateObjects(
 
     const plateJson = JSON.parse(await plateFile.async('string'));
     const bboxObjects = Array.isArray(plateJson?.bbox_objects) ? plateJson.bbox_objects : [];
+    const sliceInfoObjects: Array<{ id: number; name: string | null }> = [];
+    const sliceInfo = zip.file('Metadata/slice_info.config');
+
+    if (sliceInfo) {
+        try {
+            const parsed = await parseStringPromise(await sliceInfo.async('string'), {
+                explicitArray: false,
+                mergeAttrs: true,
+            });
+            const plateNodes = parsed?.config?.plate
+                ? Array.isArray(parsed.config.plate) ? parsed.config.plate : [parsed.config.plate]
+                : [];
+            const plateNumber = plateIndex + 1;
+            const selectedPlate =
+                plateNodes.find((plate: any) => {
+                    const metadata = Array.isArray(plate?.metadata)
+                        ? plate.metadata
+                        : plate?.metadata
+                            ? [plate.metadata]
+                            : [];
+                    return metadata.some((item: any) => item?.key === 'index' && Number(item?.value) === plateNumber);
+                }) || plateNodes[plateIndex] || plateNodes[0];
+            const objectNodes = selectedPlate?.object
+                ? Array.isArray(selectedPlate.object) ? selectedPlate.object : [selectedPlate.object]
+                : [];
+            for (const object of objectNodes) {
+                const id = Number.parseInt(String(object?.identify_id ?? ''), 10);
+                if (!Number.isInteger(id)) continue;
+                sliceInfoObjects.push({
+                    id,
+                    name: typeof object?.name === 'string' ? object.name : null,
+                });
+            }
+        } catch {
+            // Fall back to bbox IDs for older or malformed 3MFs.
+        }
+    }
 
     return {
         plateIndex,
         objects: bboxObjects
-            .map((object: any) => {
-                const id = Number(object?.id);
+            .map((object: any, index: number) => {
+                const sliceObject = sliceInfoObjects[index];
+                const id = sliceObject?.id ?? Number(object?.id);
                 if (!Number.isInteger(id)) return null;
                 return {
                     id,
-                    name: typeof object?.name === 'string' ? object.name : `object_${id}`,
+                    name: sliceObject?.name || (typeof object?.name === 'string' ? object.name : `object_${id}`),
                     area: Number.isFinite(Number(object?.area)) ? Number(object.area) : null,
                     bbox: object?.bbox ?? null,
                 };

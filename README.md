@@ -1,11 +1,11 @@
 # bambu-printer-mcp
 
-[![npm version](https://img.shields.io/npm/v/%40rowbotik%2Fbambu-printer-mcp.svg)](https://www.npmjs.com/package/@rowbotik/bambu-printer-mcp)
+[![npm version](https://img.shields.io/npm/v/bambu-printer-mcp.svg)](https://www.npmjs.com/package/bambu-printer-mcp)
 [![License: GPL-2.0](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](https://www.gnu.org/licenses/old-licenses/gpl-2.0.en.html)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.0%2B-blue)](https://www.typescriptlang.org/)
 [![Node.js Version](https://img.shields.io/badge/node-%3E%3D%2018.0.0-green.svg)](https://nodejs.org/en/download/)
-[![GitHub stars](https://img.shields.io/github/stars/rowbotik/bambu-printer-mcp.svg?style=social&label=Star)](https://github.com/rowbotik/bambu-printer-mcp)
-[![Downloads](https://img.shields.io/npm/dm/%40rowbotik%2Fbambu-printer-mcp.svg)](https://www.npmjs.com/package/@rowbotik/bambu-printer-mcp)
+[![GitHub stars](https://img.shields.io/github/stars/DMontgomery40/bambu-printer-mcp.svg?style=social&label=Star)](https://github.com/DMontgomery40/bambu-printer-mcp)
+[![Downloads](https://img.shields.io/npm/dm/bambu-printer-mcp.svg)](https://www.npmjs.com/package/bambu-printer-mcp)
 
 A Bambu Lab-focused MCP server for controlling Bambu printers, manipulating STL files, and managing end-to-end 3MF print workflows from Claude Desktop, Claude Code, or any MCP-compatible client.
 
@@ -15,7 +15,7 @@ Local handoff note: see [REMOTE-DEPLOYMENT.md](./REMOTE-DEPLOYMENT.md) for the c
 
 ---
 
-## What's new in @rowbotik/bambu-printer-mcp
+## What's new in bambu-printer-mcp
 
 This fork adds a substantial set of printer control tools beyond the upstream `mcp-3D-printer-server`. Everything listed below is unique to this package.
 

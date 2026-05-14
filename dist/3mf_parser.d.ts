@@ -9,8 +9,8 @@ export declare function getCollarCharmRolePolicy(): {
         readonly outer: "white";
     };
     amsSlots: {
-        readonly inner: 1;
-        readonly outer: 5;
+        readonly inner: 0;
+        readonly outer: 4;
     };
 };
 export declare function analyze3MFAmsRequirements(filePath: string, plateIndex?: number): Promise<ThreeMFAmsRequirements>;

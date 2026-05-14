@@ -1,11 +1,11 @@
 {
-  "name": "@rowbotik/bambu-printer-mcp",
+  "name": "bambu-printer-mcp",
   "version": "1.1.1",
   "description": "MCP server for Bambu Lab 3D printers with STL manipulation, slicing, and print management",
   "main": "dist/index.js",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rowbotik/bambu-printer-mcp.git"
+    "url": "git+https://github.com/DMontgomery40/bambu-printer-mcp.git"
   },
   "type": "module",
   "scripts": {
@@ -13,17 +13,16 @@
     "start:stdio": "MCP_TRANSPORT=stdio node dist/index.js",
     "start:http": "MCP_TRANSPORT=streamable-http node dist/index.js",
     "build": "tsc",
-    "test": "npm run build && node --test tests/*.test.mjs tests/**/*.test.mjs"
+    "test": "npm run build && node --test tests/*.test.mjs tests/**/*.test.mjs",
+    "postinstall": "patch-package"
   },
   "bin": {
     "bambu-printer-mcp": "dist/index.js"
   },
-  "publishConfig": {
-    "access": "public"
-  },
   "files": [
     "dist",
     "src",
+    "patches",
     "README.md",
     "LICENSE"
   ],
@@ -36,7 +35,7 @@
     "stl",
     "3mf"
   ],
-  "author": "Rowbotik",
+  "author": "David Montgomery",
   "license": "GPL-2.0",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.0",
@@ -46,6 +45,7 @@
     "dotenv": "^16.3.1",
     "jszip": "^3.10.1",
     "mqtt": "^5.15.1",
+    "patch-package": "^8.0.1",
     "three": "^0.173.0",
     "xml2js": "^0.6.2"
   },

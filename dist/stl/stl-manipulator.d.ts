@@ -22,6 +22,10 @@ export type TransformationParams = {
     relative?: boolean;
     selectionBounds?: THREE.Box3;
 };
+export declare const SLICER_TYPES: readonly ["bambustudio", "orcaslicer", "orcaslicer-bambulab", "prusaslicer", "cura", "slic3r"];
+export type SlicerType = typeof SLICER_TYPES[number];
+export declare function normalizeSlicerType(rawSlicerType: string): SlicerType;
+export declare function isBambuCompatibleSlicer(slicerType: SlicerType): boolean;
 export interface BambuSliceOptions {
     uptodate?: boolean;
     repetitions?: number;
@@ -158,7 +162,7 @@ export declare class STLManipulator extends EventEmitter {
      * @param bambuOptions Optional BambuStudio-specific CLI flags
      * @returns Path to the generated G-code or sliced 3MF file
      */
-    sliceSTL(stlFilePath: string, slicerType: 'prusaslicer' | 'cura' | 'slic3r' | 'orcaslicer' | 'bambustudio', slicerPath: string, slicerProfile?: string, progressCallback?: ProgressCallback, printerPreset?: string, bambuOptions?: BambuSliceOptions): Promise<string>;
+    sliceSTL(stlFilePath: string, slicerType: SlicerType, slicerPath: string, slicerProfile?: string, progressCallback?: ProgressCallback, printerPreset?: string, bambuOptions?: BambuSliceOptions): Promise<string>;
     /**
      * Enhanced version of confirmTemperatures with better error handling
      * @param gcodePath Path to the G-code file
