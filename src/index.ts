@@ -200,6 +200,104 @@ type StructuredToolError = {
   tool: string;
 };
 
+type UploadGcodeSource = {
+  filePath: string;
+  cleanupDir?: string;
+};
+
+function expandUserPath(rawPath: string): string {
+  const trimmed = rawPath.trim();
+  if (trimmed === "~") {
+    return process.env.HOME || trimmed;
+  }
+  if (trimmed.startsWith("~/")) {
+    return path.join(process.env.HOME || "", trimmed.slice(2));
+  }
+  return path.resolve(trimmed);
+}
+
+function readableFilePathFromString(value: string): string | undefined {
+  if (!value.trim() || value.includes("\n") || value.includes("\r")) {
+    return undefined;
+  }
+
+  const candidate = expandUserPath(value);
+  try {
+    return fs.statSync(candidate).isFile() ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function looksLikeGcodeFilePath(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes("\n") || trimmed.includes("\r")) {
+    return false;
+  }
+  return (
+    trimmed.startsWith("/") ||
+    trimmed.startsWith("./") ||
+    trimmed.startsWith("../") ||
+    trimmed.startsWith("~/") ||
+    trimmed.includes("\\") ||
+    /\.(gcode|gco|gc)$/i.test(trimmed)
+  );
+}
+
+function requireReadableFilePath(rawPath: string, label: string): string {
+  const candidate = expandUserPath(rawPath);
+  try {
+    if (!fs.statSync(candidate).isFile()) {
+      throw new Error(`${label} is not a file: ${candidate}`);
+    }
+  } catch (error) {
+    if ((error as Error).message.startsWith(`${label} is not a file:`)) {
+      throw error;
+    }
+    throw new Error(`${label} does not exist or is not readable: ${candidate}`);
+  }
+  return candidate;
+}
+
+function writeGcodeContentToTempFile(filename: string, gcode: string): UploadGcodeSource {
+  fs.mkdirSync(TEMP_DIR, { recursive: true });
+  const cleanupDir = fs.mkdtempSync(path.join(TEMP_DIR, "upload-gcode-"));
+  const safeName = path.basename(filename.replace(/^\/+/, "")) || "upload.gcode";
+  const filePath = path.join(cleanupDir, safeName);
+  fs.writeFileSync(filePath, gcode);
+  return { filePath, cleanupDir };
+}
+
+function resolveUploadGcodeSource(args: Record<string, unknown>): UploadGcodeSource {
+  const gcodePath = args.gcode_path !== undefined ? String(args.gcode_path) : "";
+  const gcode = args.gcode !== undefined ? String(args.gcode) : "";
+
+  if (gcodePath && gcode) {
+    throw new Error("Provide either gcode_path or gcode, not both.");
+  }
+
+  if (gcodePath) {
+    return { filePath: requireReadableFilePath(gcodePath, "gcode_path") };
+  }
+
+  if (!gcode) {
+    throw new Error("Missing required parameter: gcode or gcode_path");
+  }
+
+  const detectedPath = readableFilePathFromString(gcode);
+  if (detectedPath) {
+    return { filePath: detectedPath };
+  }
+  if (looksLikeGcodeFilePath(gcode)) {
+    throw new Error(
+      "gcode looks like a local G-code path, but the file is not readable. " +
+      "Pass readable gcode_path or literal G-code content."
+    );
+  }
+
+  return writeGcodeContentToTempFile(String(args.filename), gcode);
+}
+
 const BAMBU_NETWORK_PRINT_METHODS = [
   "start_print",
   "start_local_print",
@@ -748,6 +846,7 @@ class BambuPrinterMCPServer {
                 clone_objects: { type: "string", description: "Duplicate specific objects on the plate. Comma-separated clone counts per object index, e.g. '1,3,1,10' clones object 0 once, object 1 three times, etc." },
                 skip_objects: { type: "string", description: "Skip specific objects during slicing by index. Comma-separated, e.g. '3,5,10'. Useful for multi-object 3MFs where you only want to print some parts." },
                 load_filaments: { type: "string", description: "Override filament profiles. Semicolon-separated paths to filament JSON configs, e.g. 'pla_basic.json;petg_cf.json'." },
+                filament_profile: { type: "string", description: "Compatibility alias for load_filaments. Semicolon-separated Orca/Bambu filament profile JSON paths; flat self-contained profiles are safest because Orca does not resolve every inherited system filament setting from arbitrary file paths." },
                 load_filament_ids: { type: "string", description: "Map filaments to objects/parts. Comma-separated IDs matching load_filaments order, e.g. '1,2,3,1' assigns filament 1 to objects 0 and 3." },
                 enable_timelapse: { type: "boolean", description: "Insert timelapse parking moves into gcode. The toolhead parks at a fixed position each layer for camera capture. Adds ~10% print time." },
                 allow_mix_temp: { type: "boolean", description: "Allow filaments with different temperature requirements on the same plate. Required for multi-material prints mixing e.g. PLA and PETG." },
@@ -872,12 +971,17 @@ class BambuPrinterMCPServer {
               type: "object",
               properties: {
                 filename: { type: "string", description: "Name for the file on the printer" },
-                gcode: { type: "string", description: "G-code content to upload" },
+                gcode: { type: "string", description: "G-code content to upload, or a readable local .gcode path. For large files, prefer gcode_path." },
+                gcode_path: { type: "string", description: "Local path to a .gcode file to upload. This avoids sending large G-code bodies through the MCP request." },
                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
                 bambu_token: { type: "string", description: "Access token (default: value from env)" }
               },
-              required: ["filename", "gcode"]
+              required: ["filename"],
+              anyOf: [
+                { required: ["gcode"] },
+                { required: ["gcode_path"] }
+              ]
             }
           },
           {
@@ -889,11 +993,35 @@ class BambuPrinterMCPServer {
                 file_path: { type: "string", description: "Local path to the file to upload" },
                 filename: { type: "string", description: "Name for the file on the printer" },
                 print: { type: "boolean", description: "Start printing after upload (default: false)" },
+                bambu_model: {
+                  type: "string",
+                  enum: ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d"],
+                  description: "Required when print is true. Bambu Lab printer model used as a safety confirmation before starting the uploaded file."
+                },
                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
                 bambu_token: { type: "string", description: "Access token (default: value from env)" }
               },
               required: ["file_path", "filename"]
+            }
+          },
+          {
+            name: "start_print",
+            description: "Start printing a G-code file already on the Bambu Lab printer. Alias of start_print_job for upstream MCP compatibility.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                filename: { type: "string", description: "Name of the file to print" },
+                bambu_model: {
+                  type: "string",
+                  enum: ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d"],
+                  description: "REQUIRED: Bambu Lab printer model. Ask the user if not known. Starting G-code for the wrong model can damage the printer."
+                },
+                host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
+                bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
+                bambu_token: { type: "string", description: "Access token (default: value from env)" }
+              },
+              required: ["filename", "bambu_model"]
             }
           },
           {
@@ -903,11 +1031,16 @@ class BambuPrinterMCPServer {
               type: "object",
               properties: {
                 filename: { type: "string", description: "Name of the file to print" },
+                bambu_model: {
+                  type: "string",
+                  enum: ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d"],
+                  description: "REQUIRED: Bambu Lab printer model. Ask the user if not known. Starting G-code for the wrong model can damage the printer."
+                },
                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
                 bambu_token: { type: "string", description: "Access token (default: value from env)" }
               },
-              required: ["filename"]
+              required: ["filename", "bambu_model"]
             }
           },
           {
@@ -1105,20 +1238,28 @@ class BambuPrinterMCPServer {
           }
 
           case "upload_gcode": {
-            if (!args?.filename || !args?.gcode) {
-              throw new Error("Missing required parameters: filename and gcode");
+            if (!args?.filename) {
+              throw new Error("Missing required parameter: filename");
             }
-            const tmpPath = path.join(TEMP_DIR, String(args.filename));
-            fs.writeFileSync(tmpPath, String(args.gcode));
-            result = await this.bambu.uploadFile(
-              host, bambuSerial, bambuToken, tmpPath, String(args.filename), false
-            );
+            const uploadSource = resolveUploadGcodeSource(args as Record<string, unknown>);
+            try {
+              result = await this.bambu.uploadFile(
+                host, bambuSerial, bambuToken, uploadSource.filePath, String(args.filename), false
+              );
+            } finally {
+              if (uploadSource.cleanupDir) {
+                fs.rmSync(uploadSource.cleanupDir, { recursive: true, force: true });
+              }
+            }
             break;
           }
 
           case "upload_file":
             if (!args?.file_path || !args?.filename) {
               throw new Error("Missing required parameters: file_path and filename");
+            }
+            if (Boolean(args.print ?? false)) {
+              await this.resolveBambuModel(args?.bambu_model as string | undefined);
             }
             result = await this.bambu.uploadFile(
               host, bambuSerial, bambuToken,
@@ -1127,10 +1268,12 @@ class BambuPrinterMCPServer {
             );
             break;
 
+          case "start_print":
           case "start_print_job":
             if (!args?.filename) {
               throw new Error("Missing required parameter: filename");
             }
+            await this.resolveBambuModel(args?.bambu_model as string | undefined);
             result = await this.bambu.startJob(host, bambuSerial, bambuToken, String(args.filename));
             break;
 
@@ -1210,7 +1353,18 @@ class BambuPrinterMCPServer {
             if (args?.ensure_on_bed !== undefined) sliceBambuOptions.ensureOnBed = Boolean(args.ensure_on_bed);
             if (args?.clone_objects !== undefined) sliceBambuOptions.cloneObjects = String(args.clone_objects);
             if (args?.skip_objects !== undefined) sliceBambuOptions.skipObjects = String(args.skip_objects);
-            if (args?.load_filaments !== undefined) sliceBambuOptions.loadFilaments = String(args.load_filaments);
+            if (
+              args?.load_filaments !== undefined &&
+              args?.filament_profile !== undefined &&
+              String(args.load_filaments) !== String(args.filament_profile)
+            ) {
+              throw new Error("Provide either load_filaments or filament_profile, not conflicting values.");
+            }
+            if (args?.load_filaments !== undefined) {
+              sliceBambuOptions.loadFilaments = String(args.load_filaments);
+            } else if (args?.filament_profile !== undefined) {
+              sliceBambuOptions.loadFilaments = String(args.filament_profile);
+            }
             if (args?.load_filament_ids !== undefined) sliceBambuOptions.loadFilamentIds = String(args.load_filament_ids);
             if (args?.enable_timelapse !== undefined) sliceBambuOptions.enableTimelapse = Boolean(args.enable_timelapse);
             if (args?.allow_mix_temp !== undefined) sliceBambuOptions.allowMixTemp = Boolean(args.allow_mix_temp);
