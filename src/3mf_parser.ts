@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import { parseStringPromise } from 'xml2js';
-import { ThreeMFData, BambuSlicerConfig, ThreeMFMetadata, ThreeMFObject, ThreeMFBuildItem, AMSFilamentMapping } from './types.js';
+import { ThreeMFData, BambuSlicerConfig, ThreeMFMetadata, ThreeMFObject, ThreeMFBuildItem, AMSFilamentMapping, CollarCharmAnalysis, CollarCharmRole, ThreeMFAmsRequirements, ThreeMFPlateObjects } from './types.js';
 import * as fs from 'fs/promises';
 
 // Parses Bambu Studio's JSON config data
@@ -72,7 +72,12 @@ function parseBambuJSONConfig(jsonData: any): Partial<BambuSlicerConfig> {
 
 async function parseBambuConfig(zip: JSZip): Promise<Partial<BambuSlicerConfig>> {
     // Look for common Bambu config file names
-    const potentialFiles = ['Metadata/project_settings.config', 'Metadata/model_settings.config', 'Metadata/slice_info.config'];
+    const potentialFiles = [
+        'Metadata/project_settings.config',
+        'Metadata/Slic3r_PE.config',
+        'Metadata/model_settings.config',
+        'Metadata/slice_info.config'
+    ];
     let configFile = null;
     let configContent = '';
 
@@ -220,4 +225,297 @@ export async function parse3MF(filePath: string): Promise<ThreeMFData> {
         console.error(`Error parsing 3MF file ${filePath}:`, error);
         throw new Error(`Failed to parse 3MF file: ${error.message}`);
     }
-} 
+}
+
+export async function extractBambuTemplateSettings(
+    filePath: string,
+    outputDir: string
+): Promise<string> {
+    const data = await fs.readFile(filePath);
+    const zip = await JSZip.loadAsync(data);
+    const potentialFiles = [
+        'Metadata/project_settings.config',
+        'Metadata/Slic3r_PE.config',
+        'Metadata/model_settings.config',
+        'Metadata/slice_info.config'
+    ];
+
+    for (const name of potentialFiles) {
+        const file = zip.file(name);
+        if (!file) continue;
+
+        const content = await file.async('string');
+        const outputPath = `${outputDir}/${name.replace(/\//g, '_')}`;
+        await fs.writeFile(outputPath, content, 'utf8');
+        return outputPath;
+    }
+
+    throw new Error(`No slicer settings config found in template 3MF: ${filePath}`);
+}
+
+const COLLAR_CHARM_ROLE_COLORS = {
+    inner: 'black',
+    outer: 'white',
+} as const;
+
+const COLLAR_CHARM_ROLE_AMS_SLOTS = {
+    // User-facing convention:
+    // - inner/smaller object -> AMS 1 slot 1 black
+    // - outer/larger object -> AMS 2 slot 1 white
+    // Internal absolute tray indices are 0-based:
+    // AMS 1 slot 1 -> absolute tray 0
+    // AMS 2 slot 1 -> absolute tray 4
+    inner: 0,
+    outer: 4,
+} as const;
+
+export async function analyzeCollarCharm3MF(
+    filePath: string,
+    plateIndex: number = 0
+): Promise<CollarCharmAnalysis> {
+    const data = await fs.readFile(filePath);
+    const zip = await JSZip.loadAsync(data);
+    const plateName = `Metadata/plate_${plateIndex + 1}.json`;
+    const plateFile = zip.file(plateName);
+
+    if (!plateFile) {
+        throw new Error(`Prepared collar charm 3MF is missing ${plateName}. Slice the project first or export a printable 3MF.`);
+    }
+
+    const plateJson = JSON.parse(await plateFile.async('string'));
+    const bboxObjects = Array.isArray(plateJson?.bbox_objects) ? plateJson.bbox_objects : [];
+    const usedFilamentPositions = Array.isArray(plateJson?.filament_ids)
+        ? plateJson.filament_ids.filter((value: unknown) => Number.isInteger(value)).map((value: number) => value)
+        : [];
+
+    if (bboxObjects.length !== 2) {
+        throw new Error(`Collar charm wrapper requires exactly 2 plate objects; found ${bboxObjects.length} in ${plateName}.`);
+    }
+    if (usedFilamentPositions.length !== 2) {
+        throw new Error(`Collar charm wrapper requires exactly 2 used filament positions; found ${usedFilamentPositions.length} in ${plateName}.`);
+    }
+    if (bboxObjects.length !== usedFilamentPositions.length) {
+        throw new Error(`Collar charm wrapper requires object count and used filament count to match; found ${bboxObjects.length} objects and ${usedFilamentPositions.length} filament positions in ${plateName}.`);
+    }
+
+    const normalizedObjects = bboxObjects.map((object: any, objectIndex: number) => {
+        const area = Number(object?.area);
+        if (!Number.isFinite(area) || area <= 0) {
+            throw new Error(`Collar charm object ${objectIndex} in ${plateName} has invalid area metadata.`);
+        }
+        const name = typeof object?.name === 'string' && object.name.trim().length > 0
+            ? object.name.trim()
+            : `object_${objectIndex + 1}`;
+        return {
+            objectIndex,
+            name,
+            area,
+            filamentPosition: usedFilamentPositions[objectIndex],
+        };
+    });
+
+    const sortedByArea = [...normalizedObjects].sort((a, b) => a.area - b.area);
+    if (sortedByArea[0].area === sortedByArea[1].area) {
+        throw new Error(`Collar charm wrapper could not distinguish inner vs outer object because both plate objects have the same reported area in ${plateName}.`);
+    }
+
+    const roles: CollarCharmRole[] = [
+        {
+            role: 'inner',
+            objectIndex: sortedByArea[0].objectIndex,
+            name: sortedByArea[0].name,
+            area: sortedByArea[0].area,
+            filamentPosition: sortedByArea[0].filamentPosition,
+        },
+        {
+            role: 'outer',
+            objectIndex: sortedByArea[1].objectIndex,
+            name: sortedByArea[1].name,
+            area: sortedByArea[1].area,
+            filamentPosition: sortedByArea[1].filamentPosition,
+        },
+    ];
+
+    const trayByFilamentPosition = new Map<number, number>();
+    for (const role of roles) {
+        trayByFilamentPosition.set(
+            role.filamentPosition,
+            COLLAR_CHARM_ROLE_AMS_SLOTS[role.role]
+        );
+    }
+
+    const amsSlots = usedFilamentPositions.map((position: number) => {
+        const tray = trayByFilamentPosition.get(position);
+        if (tray === undefined) {
+            throw new Error(`Collar charm wrapper could not assign a tray to project filament position ${position}.`);
+        }
+        return tray;
+    });
+
+    return {
+        plateIndex,
+        usedFilamentPositions,
+        amsSlots,
+        roles,
+    };
+}
+
+export function getCollarCharmRolePolicy() {
+    return {
+        colors: COLLAR_CHARM_ROLE_COLORS,
+        amsSlots: COLLAR_CHARM_ROLE_AMS_SLOTS,
+    };
+}
+
+export async function analyze3MFAmsRequirements(
+    filePath: string,
+    plateIndex: number = 0
+): Promise<ThreeMFAmsRequirements> {
+    const data = await fs.readFile(filePath);
+    const zip = await JSZip.loadAsync(data);
+    const plateNumber = plateIndex + 1;
+    const plateName = `Metadata/plate_${plateNumber}.json`;
+    const plateFile = zip.file(plateName);
+
+    if (!plateFile) {
+        throw new Error(`3MF is missing ${plateName}; cannot derive AMS filament order.`);
+    }
+
+    const plateJson = JSON.parse(await plateFile.async('string'));
+    const usedFilamentPositions = Array.isArray(plateJson?.filament_ids)
+        ? plateJson.filament_ids.filter((value: unknown) => Number.isInteger(value)).map((value: number) => value)
+        : [];
+
+    if (usedFilamentPositions.length === 0) {
+        throw new Error(`${plateName} does not declare filament_ids; cannot derive AMS filament order.`);
+    }
+
+    const sliceInfo = zip.file('Metadata/slice_info.config');
+    const filamentById = new Map<number, { tray_info_idx: string | null; type: string | null; color: string | null }>();
+
+    if (sliceInfo) {
+        try {
+            const parsed = await parseStringPromise(await sliceInfo.async('string'), {
+                explicitArray: false,
+                mergeAttrs: true,
+            });
+            const plateNodes = parsed?.config?.plate
+                ? Array.isArray(parsed.config.plate) ? parsed.config.plate : [parsed.config.plate]
+                : [];
+            const selectedPlate =
+                plateNodes.find((plate: any) => {
+                    const metadata = Array.isArray(plate?.metadata)
+                        ? plate.metadata
+                        : plate?.metadata
+                            ? [plate.metadata]
+                            : [];
+                    return metadata.some((item: any) => item?.key === 'index' && Number(item?.value) === plateNumber);
+                }) || plateNodes[plateIndex] || plateNodes[0];
+
+            const filamentNodes = selectedPlate?.filament
+                ? Array.isArray(selectedPlate.filament) ? selectedPlate.filament : [selectedPlate.filament]
+                : [];
+            for (const filament of filamentNodes) {
+                const id = Number.parseInt(String(filament?.id ?? ''), 10);
+                if (!Number.isFinite(id)) continue;
+                filamentById.set(id, {
+                    tray_info_idx: typeof filament?.tray_info_idx === 'string' ? filament.tray_info_idx : null,
+                    type: typeof filament?.type === 'string' ? filament.type : null,
+                    color: typeof filament?.color === 'string' ? filament.color : null,
+                });
+            }
+        } catch {
+            // plate_N.json already gives the project filament order. Bad
+            // slice_info should degrade metadata only, not block AMS planning.
+        }
+    }
+
+    return {
+        plateIndex,
+        usedFilamentPositions,
+        filaments: usedFilamentPositions.map((position: number, order: number) => {
+            const filamentId = position + 1;
+            const byOneBasedId = filamentById.get(filamentId);
+            const byOrder = Array.from(filamentById.values())[order];
+            const filament = byOneBasedId || byOrder || null;
+            return {
+                filamentPosition: position,
+                filamentId,
+                tray_info_idx: filament?.tray_info_idx ?? null,
+                type: filament?.type ?? null,
+                color: filament?.color ?? null,
+            };
+        }),
+    };
+}
+
+export async function analyze3MFPlateObjects(
+    filePath: string,
+    plateIndex: number = 0
+): Promise<ThreeMFPlateObjects> {
+    const data = await fs.readFile(filePath);
+    const zip = await JSZip.loadAsync(data);
+    const plateName = `Metadata/plate_${plateIndex + 1}.json`;
+    const plateFile = zip.file(plateName);
+
+    if (!plateFile) {
+        throw new Error(`3MF is missing ${plateName}; cannot list plate objects.`);
+    }
+
+    const plateJson = JSON.parse(await plateFile.async('string'));
+    const bboxObjects = Array.isArray(plateJson?.bbox_objects) ? plateJson.bbox_objects : [];
+    const sliceInfoObjects: Array<{ id: number; name: string | null }> = [];
+    const sliceInfo = zip.file('Metadata/slice_info.config');
+
+    if (sliceInfo) {
+        try {
+            const parsed = await parseStringPromise(await sliceInfo.async('string'), {
+                explicitArray: false,
+                mergeAttrs: true,
+            });
+            const plateNodes = parsed?.config?.plate
+                ? Array.isArray(parsed.config.plate) ? parsed.config.plate : [parsed.config.plate]
+                : [];
+            const plateNumber = plateIndex + 1;
+            const selectedPlate =
+                plateNodes.find((plate: any) => {
+                    const metadata = Array.isArray(plate?.metadata)
+                        ? plate.metadata
+                        : plate?.metadata
+                            ? [plate.metadata]
+                            : [];
+                    return metadata.some((item: any) => item?.key === 'index' && Number(item?.value) === plateNumber);
+                }) || plateNodes[plateIndex] || plateNodes[0];
+            const objectNodes = selectedPlate?.object
+                ? Array.isArray(selectedPlate.object) ? selectedPlate.object : [selectedPlate.object]
+                : [];
+            for (const object of objectNodes) {
+                const id = Number.parseInt(String(object?.identify_id ?? ''), 10);
+                if (!Number.isInteger(id)) continue;
+                sliceInfoObjects.push({
+                    id,
+                    name: typeof object?.name === 'string' ? object.name : null,
+                });
+            }
+        } catch {
+            // Fall back to bbox IDs for older or malformed 3MFs.
+        }
+    }
+
+    return {
+        plateIndex,
+        objects: bboxObjects
+            .map((object: any, index: number) => {
+                const sliceObject = sliceInfoObjects[index];
+                const id = sliceObject?.id ?? Number(object?.id);
+                if (!Number.isInteger(id)) return null;
+                return {
+                    id,
+                    name: sliceObject?.name || (typeof object?.name === 'string' ? object.name : `object_${id}`),
+                    area: Number.isFinite(Number(object?.area)) ? Number(object.area) : null,
+                    bbox: object?.bbox ?? null,
+                };
+            })
+            .filter((object: unknown): object is NonNullable<typeof object> => object !== null),
+    };
+}

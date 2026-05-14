@@ -36,6 +36,7 @@ export interface BambuSliceOptions {
     skipObjects?: string;
     loadFilaments?: string;
     loadFilamentIds?: string;
+    bedType?: string;
     enableTimelapse?: boolean;
     allowMixTemp?: boolean;
     scale?: number;
@@ -54,6 +55,33 @@ export declare class STLManipulator extends EventEmitter {
      * Generate a unique operation ID
      */
     private generateOperationId;
+    private getAvailableProfileRoots;
+    private findProfileFile;
+    private buildFilamentIdIndex;
+    private readJsonFile;
+    private stripAbsoluteExtruderResets;
+    private sanitizeProcessForOrca;
+    private writeTempJson;
+    private resolveBambuLikeSettingsBundle;
+    /**
+     * Optionally rewrite a Bambu-like settings bundle so the paths point at
+     * fully-flattened temp configs instead of the BBL-shipped leaf JSONs.
+     *
+     * BambuStudio's CLI does not resolve the `inherits` chain when loading
+     * profiles via --load-settings / --load-filaments, which causes a
+     * cluster of upstream bugs (see https://github.com/bambulab/BambuStudio/issues/9636
+     * and #9968). Our flattener (src/slicer/profile-flatten.ts) reproduces
+     * what the GUI does at slice time so the CLI accepts the configs.
+     *
+     * Opt-in via `BAMBU_CLI_FLATTEN=true`. When the env var is unset or
+     * not "true"/"1", returns the bundle unchanged so behavior is
+     * backward-compatible. When enabled, only BBL-shipped leaves get
+     * flattened; user-provided custom configs pass through untouched.
+     */
+    private maybeFlattenBundle;
+    private resolveBambuStudioBedType;
+    /** Read a profile JSON's top-level `name` field, or null if unreadable. */
+    private readLeafName;
     /**
      * Load STL file and return geometry and bounding box
      */
@@ -126,12 +154,12 @@ export declare class STLManipulator extends EventEmitter {
     /**
      * Slice an STL or 3MF file using the specified slicer
      * @param stlFilePath Path to the input STL or 3MF file
-     * @param slicerType Type of slicer (prusaslicer, cura, slic3r, orcaslicer, orcaslicer-bambulab, bambustudio)
+     * @param slicerType Type of slicer (prusaslicer, cura, slic3r, orcaslicer, bambustudio)
      * @param slicerPath Path to the slicer executable
      * @param slicerProfile Optional path to the slicer profile/config file
      * @param progressCallback Optional callback for progress updates
-     * @param printerPreset Optional Bambu-compatible printer preset name (e.g., "Bambu Lab P1S 0.4 nozzle")
-     * @param bambuOptions Optional Bambu-compatible CLI flags
+     * @param printerPreset Optional BambuStudio printer preset name (e.g., "Bambu Lab P1S 0.4 nozzle")
+     * @param bambuOptions Optional BambuStudio-specific CLI flags
      * @returns Path to the generated G-code or sliced 3MF file
      */
     sliceSTL(stlFilePath: string, slicerType: SlicerType, slicerPath: string, slicerProfile?: string, progressCallback?: ProgressCallback, printerPreset?: string, bambuOptions?: BambuSliceOptions): Promise<string>;

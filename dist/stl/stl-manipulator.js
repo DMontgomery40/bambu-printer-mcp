@@ -9,8 +9,19 @@ import { promisify } from 'util';
 import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
 import { execFile } from 'child_process';
+import { flattenForCli, detectProfilesRoot } from '../slicer/profile-flatten.js';
 const readFileAsync = promisify(fs.readFile);
 const writeFileAsync = promisify(fs.writeFile);
+const BAMBU_PROFILE_ROOTS = [
+    '/Applications/BambuStudio.app/Contents/Resources/profiles/BBL',
+    '/Applications/OrcaSlicer.app/Contents/Resources/profiles/BBL',
+];
+const BAMBU_CLI_BED_TYPES = {
+    textured_plate: 'Textured PEI Plate',
+    cool_plate: 'Cool Plate',
+    engineering_plate: 'Engineering Plate',
+    hot_plate: 'High Temp Plate',
+};
 export const SLICER_TYPES = [
     'bambustudio',
     'orcaslicer',
@@ -55,8 +66,13 @@ export function isBambuCompatibleSlicer(slicerType) {
         slicerType === 'orcaslicer' ||
         slicerType === 'orcaslicer-bambulab');
 }
-function isPathLikeExecutable(executable) {
-    return path.isAbsolute(executable) || /[\\/]/.test(executable);
+function isPathLikeExecutable(slicerPath) {
+    return (path.isAbsolute(slicerPath) ||
+        slicerPath.startsWith("./") ||
+        slicerPath.startsWith("../") ||
+        slicerPath.includes("/") ||
+        slicerPath.includes("\\") ||
+        /^[A-Za-z]:/.test(slicerPath));
 }
 function configuredBambuProfileDirs() {
     const override = process.env.BAMBU_SLICER_PROFILE_DIRS;
@@ -82,28 +98,7 @@ function configuredBambuProfileDirs() {
         ...(appData ? [appData] : []),
         ...(localAppData ? [localAppData] : []),
     ];
-    return roots.flatMap((root) => appNames.map((appName) => path.join(root, appName, 'system', 'BBL', 'machine')));
-}
-function resolveBambuPrinterProfile(printerPreset) {
-    if (printerPreset.includes('/') || printerPreset.includes('\\')) {
-        return undefined;
-    }
-    for (const profileDir of configuredBambuProfileDirs()) {
-        const profilePath = path.join(profileDir, `${printerPreset}.json`);
-        if (fs.existsSync(profilePath)) {
-            return profilePath;
-        }
-    }
-    return undefined;
-}
-function generatedBambuPrinterSettings(printerPreset) {
-    return {
-        type: 'machine',
-        from: 'system',
-        name: printerPreset,
-        inherits: printerPreset,
-        printer_settings_id: printerPreset,
-    };
+    return roots.flatMap((root) => appNames.map((appName) => path.join(root, appName, 'system', 'BBL')));
 }
 export class STLManipulator extends EventEmitter {
     constructor(tempDir = path.join(process.cwd(), 'temp')) {
@@ -120,6 +115,266 @@ export class STLManipulator extends EventEmitter {
      */
     generateOperationId() {
         return crypto.randomUUID();
+    }
+    getAvailableProfileRoots() {
+        return [...BAMBU_PROFILE_ROOTS, ...configuredBambuProfileDirs()].filter((root) => fs.existsSync(root));
+    }
+    findProfileFile(category, profileName) {
+        if (!profileName) {
+            return undefined;
+        }
+        for (const root of this.getAvailableProfileRoots()) {
+            const candidate = path.join(root, category, `${profileName}.json`);
+            if (fs.existsSync(candidate)) {
+                return candidate;
+            }
+        }
+        return undefined;
+    }
+    buildFilamentIdIndex() {
+        const index = new Map();
+        for (const root of this.getAvailableProfileRoots()) {
+            const filamentDir = path.join(root, 'filament');
+            if (!fs.existsSync(filamentDir)) {
+                continue;
+            }
+            for (const entry of fs.readdirSync(filamentDir)) {
+                if (!entry.endsWith('.json')) {
+                    continue;
+                }
+                const filePath = path.join(filamentDir, entry);
+                try {
+                    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                    const filamentId = typeof parsed?.filament_id === 'string' ? parsed.filament_id.trim() : '';
+                    if (filamentId && !index.has(filamentId)) {
+                        index.set(filamentId, filePath);
+                    }
+                }
+                catch {
+                    // Ignore malformed JSON.
+                }
+            }
+        }
+        return index;
+    }
+    readJsonFile(filePath) {
+        return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    }
+    stripAbsoluteExtruderResets(value) {
+        if (typeof value === 'string') {
+            return value
+                .split(/\r?\n/)
+                .filter((line) => line.trim().toUpperCase() !== 'G92 E0')
+                .join('\n');
+        }
+        if (Array.isArray(value)) {
+            return value.filter((line) => String(line).trim().toUpperCase() !== 'G92 E0');
+        }
+        return value;
+    }
+    sanitizeProcessForOrca(processConfig, printerPreset) {
+        const sanitized = { ...processConfig };
+        sanitized.type = 'process';
+        if (!sanitized.from || sanitized.from === 'project') {
+            sanitized.from = 'User';
+        }
+        if (printerPreset) {
+            sanitized.compatible_printers = [printerPreset];
+        }
+        if (sanitized.prime_tower_brim_width !== undefined &&
+            Number(sanitized.prime_tower_brim_width) < 0) {
+            sanitized.prime_tower_brim_width = '0';
+        }
+        else if (sanitized.prime_tower_brim_width !== undefined) {
+            sanitized.prime_tower_brim_width = String(sanitized.prime_tower_brim_width);
+        }
+        sanitized.use_relative_e_distances = '0';
+        sanitized.before_layer_change_gcode = this.stripAbsoluteExtruderResets(sanitized.before_layer_change_gcode);
+        sanitized.layer_gcode = this.stripAbsoluteExtruderResets(sanitized.layer_gcode);
+        sanitized.layer_change_gcode = this.stripAbsoluteExtruderResets(sanitized.layer_change_gcode);
+        return sanitized;
+    }
+    writeTempJson(outputBase, suffix, value) {
+        const outPath = path.join(this.tempDir, `${outputBase}_${suffix}.json`);
+        fs.writeFileSync(outPath, JSON.stringify(value, null, 2));
+        return outPath;
+    }
+    resolveBambuLikeSettingsBundle(outputBase, slicerType, slicerProfile, printerPreset, bambuOptions) {
+        const machinePath = this.findProfileFile('machine', printerPreset);
+        const machineConfig = machinePath ? this.readJsonFile(machinePath) : null;
+        const hasSlicerProfile = !!slicerProfile && fs.existsSync(slicerProfile);
+        const filamentPaths = [];
+        let processPath;
+        let parsedProfile = null;
+        if (hasSlicerProfile) {
+            try {
+                parsedProfile = this.readJsonFile(slicerProfile);
+            }
+            catch {
+                parsedProfile = null;
+            }
+        }
+        if (parsedProfile && typeof parsedProfile === 'object') {
+            const inheritedProcessName = (typeof parsedProfile.inherits === 'string' && parsedProfile.inherits) ||
+                (typeof parsedProfile.print_settings_id === 'string' &&
+                    parsedProfile.print_settings_id !== parsedProfile.name
+                    ? parsedProfile.print_settings_id
+                    : undefined) ||
+                (typeof parsedProfile.default_print_profile === 'string'
+                    ? parsedProfile.default_print_profile
+                    : undefined) ||
+                (typeof machineConfig?.default_print_profile === 'string'
+                    ? machineConfig.default_print_profile
+                    : undefined);
+            const inheritedProcessPath = this.findProfileFile('process', inheritedProcessName);
+            const inheritedProcess = inheritedProcessPath && fs.existsSync(inheritedProcessPath)
+                ? this.readJsonFile(inheritedProcessPath)
+                : {};
+            const mergedProcess = {
+                ...inheritedProcess,
+                ...parsedProfile,
+                type: 'process',
+            };
+            processPath = this.writeTempJson(outputBase, slicerType === 'orcaslicer' ? 'process_orca' : 'process', slicerType === 'orcaslicer'
+                ? this.sanitizeProcessForOrca(mergedProcess, printerPreset)
+                : mergedProcess);
+            const defaultFilamentProfiles = Array.isArray(parsedProfile.default_filament_profile)
+                ? parsedProfile.default_filament_profile
+                : [];
+            for (const profileName of defaultFilamentProfiles) {
+                const filamentPath = this.findProfileFile('filament', String(profileName));
+                if (filamentPath) {
+                    filamentPaths.push(filamentPath);
+                }
+            }
+            if (filamentPaths.length === 0 && Array.isArray(parsedProfile.filament_ids)) {
+                const filamentIdIndex = this.buildFilamentIdIndex();
+                for (const filamentId of parsedProfile.filament_ids) {
+                    const filamentPath = filamentIdIndex.get(String(filamentId));
+                    if (filamentPath) {
+                        filamentPaths.push(filamentPath);
+                    }
+                }
+            }
+        }
+        else if (hasSlicerProfile) {
+            processPath = slicerProfile;
+        }
+        if (!processPath) {
+            const defaultProcessName = typeof machineConfig?.default_print_profile === 'string'
+                ? machineConfig.default_print_profile
+                : undefined;
+            const defaultProcessPath = this.findProfileFile('process', defaultProcessName);
+            if (defaultProcessPath) {
+                processPath =
+                    slicerType === 'orcaslicer'
+                        ? this.writeTempJson(outputBase, 'process_default_orca', this.sanitizeProcessForOrca(this.readJsonFile(defaultProcessPath), printerPreset))
+                        : defaultProcessPath;
+            }
+        }
+        if (!bambuOptions?.loadFilaments &&
+            filamentPaths.length === 0 &&
+            Array.isArray(machineConfig?.default_filament_profile)) {
+            for (const profileName of machineConfig.default_filament_profile) {
+                const filamentPath = this.findProfileFile('filament', String(profileName));
+                if (filamentPath) {
+                    filamentPaths.push(filamentPath);
+                }
+            }
+        }
+        if (bambuOptions?.loadFilaments) {
+            filamentPaths.length = 0;
+            for (const filamentPath of bambuOptions.loadFilaments.split(';')) {
+                const trimmed = filamentPath.trim();
+                if (trimmed) {
+                    filamentPaths.push(trimmed);
+                }
+            }
+        }
+        const settingsParts = [machinePath, processPath].filter((entry) => Boolean(entry));
+        return {
+            settingsArg: settingsParts.length > 0 ? settingsParts.join(';') : undefined,
+            filamentPaths: Array.from(new Set(filamentPaths)),
+        };
+    }
+    /**
+     * Optionally rewrite a Bambu-like settings bundle so the paths point at
+     * fully-flattened temp configs instead of the BBL-shipped leaf JSONs.
+     *
+     * BambuStudio's CLI does not resolve the `inherits` chain when loading
+     * profiles via --load-settings / --load-filaments, which causes a
+     * cluster of upstream bugs (see https://github.com/bambulab/BambuStudio/issues/9636
+     * and #9968). Our flattener (src/slicer/profile-flatten.ts) reproduces
+     * what the GUI does at slice time so the CLI accepts the configs.
+     *
+     * Opt-in via `BAMBU_CLI_FLATTEN=true`. When the env var is unset or
+     * not "true"/"1", returns the bundle unchanged so behavior is
+     * backward-compatible. When enabled, only BBL-shipped leaves get
+     * flattened; user-provided custom configs pass through untouched.
+     */
+    async maybeFlattenBundle(bundle, bambuOptions, activeSlicerPath) {
+        const flag = process.env.BAMBU_CLI_FLATTEN;
+        if (flag !== 'true' && flag !== '1')
+            return bundle;
+        if (!bundle.settingsArg)
+            return bundle;
+        // settingsArg is "machine.json;process.json".
+        const parts = bundle.settingsArg.split(';').filter(Boolean);
+        if (parts.length < 2)
+            return bundle;
+        const [machinePath, processPath] = parts;
+        // Pull leaf names from each JSON's `name` field. If any is missing or
+        // looks non-BBL (e.g. a user-saved custom config), bail out and
+        // return the original bundle untouched.
+        const machineLeaf = this.readLeafName(machinePath);
+        const processLeaf = this.readLeafName(processPath);
+        const filamentLeaves = bundle.filamentPaths
+            .map((p) => this.readLeafName(p))
+            .filter((n) => Boolean(n));
+        if (!machineLeaf || !processLeaf || filamentLeaves.length === 0) {
+            console.log('[cli-flatten] skipping: could not derive BBL leaf names from bundle paths');
+            return bundle;
+        }
+        const bedType = this.resolveBambuStudioBedType(bambuOptions?.bedType);
+        try {
+            const profilesRoot = detectProfilesRoot(activeSlicerPath || process.env.SLICER_PATH);
+            const flat = await flattenForCli({
+                machineLeaf,
+                processLeaf,
+                filamentLeaves,
+                profilesRoot,
+                tempDir: this.tempDir,
+                bedType,
+            });
+            console.log(`[cli-flatten] applied for ${machineLeaf} (cliOverlay=${flat.meta.cliOverlayApplied})`);
+            return {
+                settingsArg: `${flat.machinePath};${flat.processPath}`,
+                filamentPaths: flat.filamentPaths,
+            };
+        }
+        catch (err) {
+            console.error(`[cli-flatten] failed, falling back to unflattened bundle: ${err?.message ?? err}`);
+            return bundle;
+        }
+    }
+    resolveBambuStudioBedType(bedType) {
+        if (!bedType)
+            return undefined;
+        const normalized = bedType.trim().toLowerCase();
+        if (normalized === 'supertack_plate') {
+            throw new Error('BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF or choose textured_plate, cool_plate, engineering_plate, or hot_plate.');
+        }
+        return BAMBU_CLI_BED_TYPES[normalized] || bedType;
+    }
+    /** Read a profile JSON's top-level `name` field, or null if unreadable. */
+    readLeafName(filePath) {
+        try {
+            const data = this.readJsonFile(filePath);
+            return typeof data?.name === 'string' && data.name.length > 0 ? data.name : null;
+        }
+        catch {
+            return null;
+        }
     }
     /**
      * Load STL file and return geometry and bounding box
@@ -828,12 +1083,12 @@ export class STLManipulator extends EventEmitter {
     /**
      * Slice an STL or 3MF file using the specified slicer
      * @param stlFilePath Path to the input STL or 3MF file
-     * @param slicerType Type of slicer (prusaslicer, cura, slic3r, orcaslicer, orcaslicer-bambulab, bambustudio)
+     * @param slicerType Type of slicer (prusaslicer, cura, slic3r, orcaslicer, bambustudio)
      * @param slicerPath Path to the slicer executable
      * @param slicerProfile Optional path to the slicer profile/config file
      * @param progressCallback Optional callback for progress updates
-     * @param printerPreset Optional Bambu-compatible printer preset name (e.g., "Bambu Lab P1S 0.4 nozzle")
-     * @param bambuOptions Optional Bambu-compatible CLI flags
+     * @param printerPreset Optional BambuStudio printer preset name (e.g., "Bambu Lab P1S 0.4 nozzle")
+     * @param bambuOptions Optional BambuStudio-specific CLI flags
      * @returns Path to the generated G-code or sliced 3MF file
      */
     async sliceSTL(stlFilePath, slicerType, slicerPath, slicerProfile, progressCallback, printerPreset, bambuOptions) {
@@ -882,40 +1137,31 @@ export class STLManipulator extends EventEmitter {
                 case 'orcaslicer':
                 case 'orcaslicer-bambulab':
                     // Bambu-compatible CLI: slice and export as 3MF with embedded gcode.
-                    // FULU's OrcaSlicer-bambulab fork keeps OrcaSlicer's Bambu-style
-                    // --slice/--export-3mf path, so it must not use the generic Prusa
-                    // --output G-code flow.
+                    // FULU's OrcaSlicer-bambulab fork keeps this Bambu-style path.
                     // For 3MF input: slice in place and export sliced 3MF
                     // For STL input: slice and export as 3MF
                     {
                         const is3mf = stlFilePath.toLowerCase().endsWith('.3mf');
                         const outputBase = path.basename(stlFilePath, is3mf ? '.3mf' : '.stl');
                         const bambuOutputPath = path.join(this.tempDir, outputBase + '_sliced.3mf');
+                        const outputDir = path.dirname(bambuOutputPath);
+                        const rawBundle = this.resolveBambuLikeSettingsBundle(outputBase, slicerType, slicerProfile, printerPreset, bambuOptions);
+                        // Opt-in flatten step: walks the BBL `inherits` chain so the
+                        // CLI accepts what we hand it. See maybeFlattenBundle docstring.
+                        const settingsBundle = slicerType === 'bambustudio'
+                            ? await this.maybeFlattenBundle(rawBundle, bambuOptions, slicerPath)
+                            : rawBundle;
                         args = [
                             '--slice', String(bambuOptions?.slicePlate ?? 0),
-                            '--export-3mf', bambuOutputPath,
+                            '--outputdir', outputDir,
+                            '--export-3mf', path.basename(bambuOutputPath),
                         ];
-                        if (slicerProfile) {
-                            args.push('--load-settings', slicerProfile);
+                        if (settingsBundle.settingsArg) {
+                            args.push('--load-settings', settingsBundle.settingsArg);
                         }
                         // Always allow newer-version 3MF files (the CLI rejects them by default)
                         args.push('--allow-newer-file');
-                        // If a printer preset name is given AND no explicit profile was provided,
-                        // prefer the slicer's installed machine profile. Real BambuStudio rejects
-                        // skeletal JSON without profile metadata, so only fall back to generated
-                        // settings when no installed profile can be found.
-                        if (printerPreset && !slicerProfile) {
-                            const installedProfile = resolveBambuPrinterProfile(printerPreset);
-                            if (installedProfile) {
-                                args.push('--load-settings', installedProfile);
-                            }
-                            else {
-                                const presetJson = path.join(this.tempDir, '_printer_preset.json');
-                                fs.writeFileSync(presetJson, JSON.stringify(generatedBambuPrinterSettings(printerPreset), null, 2));
-                                args.push('--load-settings', presetJson);
-                            }
-                        }
-                        // Bambu-compatible slicer flags
+                        // BambuSliceOptions flags
                         if (bambuOptions?.uptodate)
                             args.push('--uptodate');
                         if (bambuOptions?.ensureOnBed)
@@ -946,12 +1192,14 @@ export class STLManipulator extends EventEmitter {
                             args.push('--clone-objects', bambuOptions.cloneObjects);
                         if (bambuOptions?.skipObjects)
                             args.push('--skip-objects', bambuOptions.skipObjects);
-                        if (bambuOptions?.loadFilaments)
-                            args.push('--load-filaments', bambuOptions.loadFilaments);
+                        if (settingsBundle.filamentPaths.length > 0) {
+                            args.push('--load-filaments', settingsBundle.filamentPaths.join(';'));
+                            args.push('--load-defaultfila');
+                        }
                         if (bambuOptions?.loadFilamentIds)
                             args.push('--load-filament-ids', bambuOptions.loadFilamentIds);
                         args.push(stlFilePath);
-                        // Override outputFilePath because Bambu-compatible slicers produce 3MF, not G-code.
+                        // Override outputFilePath for bambustudio since it produces 3MF, not gcode
                         outputFilePath = bambuOutputPath;
                     }
                     break;

@@ -5,6 +5,18 @@
 - **Always bump the npm version** (`npm version patch`) and `npm publish` after any change that gets pushed to main -- code, docs, config, anything.
 - Commit the version bump and push it as part of the same push.
 
+## Changelog & Release Notes
+
+- **Every commit that changes src/, scripts/, or printer behavior must include a CHANGELOG.md entry** under the `## Unreleased` heading.
+- Entries go under the appropriate subsection (`### Added`, `### Fixed`, `### Changed`, `### Removed`, `### Known issues`).
+- Each entry is a bullet describing what changed and why, in present tense. Include PR/issue links when relevant.
+- If the commit is a standalone CHANGELOG update (e.g. retroactive entry for a prior commit), the commit message should start with `docs(changelog):`.
+- **When cutting a release** (bump + push to main), create a GitHub Release with the accumulated `## Unreleased` entries as the body:
+  ```
+  gh release create v<version> --title "v<version>" --notes "$(cat CHANGELOG.md | awk '/^## Unreleased/{flag=1; next} /^## \[/{flag=0} flag' | sed '/^$/d')"
+  ```
+  This extracts everything under `## Unreleased` (stopping at the next `##` heading) and passes it as the release body.
+
 ## Build & Test
 
 - `npm run build` must pass clean (zero tsc errors) before committing.

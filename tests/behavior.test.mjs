@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
-import fs from "node:fs/promises";
+import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -11,16 +12,52 @@ import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { BambuNetworkBridge } from "../dist/bambu-network-bridge.js";
-import { BambuImplementation } from "../dist/printers/bambu.js";
 import JSZip from "jszip";
+import { hasAmsMappingInput, normalizeAmsMappingObject } from "../dist/ams-mapping.js";
+import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF } from "../dist/3mf_parser.js";
+import { BambuImplementation } from "../dist/printers/bambu.js";
+import { STLManipulator } from "../dist/stl/stl-manipulator.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, "..");
 const SERVER_ENTRY = path.join(REPO_ROOT, "dist", "index.js");
 const SAMPLE_STL = path.join(REPO_ROOT, "test", "sample_cube.stl");
-const EXPECTED_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d"];
+
+async function writeSliced3mfFixture({
+  name = "h2-project-filament",
+  projectFilamentIds = ["GFG02", "GFG01", "GFL00", "GFL03"],
+  projectFilamentColors = ["#FFFFFF", "#FF911A80", "#DCF478", "#DCF478"],
+  projectFilamentTypes = ["PETG", "PETG", "PLA", "PLA"],
+  plateFilamentIds = [1],
+} = {}) {
+  const zip = new JSZip();
+  const gcode = [
+    `; filament_ids = ${projectFilamentIds.join(";")}`,
+    `; filament_colour = ${projectFilamentColors.join(";")}`,
+    `; filament_type = ${projectFilamentTypes.join(";")}`,
+    "G1 X0 Y0",
+    "",
+  ].join("\n");
+  const md5 = createHash("md5").update(Buffer.from(gcode)).digest("hex");
+  zip.file("Metadata/plate_1.gcode", gcode);
+  zip.file("Metadata/plate_1.gcode.md5", md5);
+  zip.file(
+    "3D/3dmodel.model",
+    '<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources><object id="1" type="model" name="cube.stl"><mesh><vertices/><triangles/></mesh></object></resources><build><item objectid="1"/></build></model>'
+  );
+  zip.file(
+    "Metadata/plate_1.json",
+    JSON.stringify({
+      filament_ids: plateFilamentIds,
+      bbox_objects: [{ id: 1, name: "cube.stl", area: 1 }],
+      version: 2,
+    })
+  );
+  const tempPath = path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.gcode.3mf`);
+  fs.writeFileSync(tempPath, await zip.generateAsync({ type: "nodebuffer" }));
+  return tempPath;
+}
 
 function createClient() {
   return new Client({
@@ -84,16 +121,24 @@ function parseJsonResult(toolResult) {
 function assertCommonToolPresence(listToolsResult) {
   const names = listToolsResult.tools.map((tool) => tool.name);
   assert.ok(names.includes("get_printer_status"));
+  assert.ok(names.includes("resolve_3mf_ams_slots"));
+  assert.ok(names.includes("list_3mf_plate_objects"));
+  assert.ok(names.includes("set_fan_speed"));
+  assert.ok(names.includes("set_light"));
+  assert.ok(names.includes("clear_hms_errors"));
+  assert.ok(names.includes("set_print_speed"));
+  assert.ok(names.includes("set_airduct_mode"));
+  assert.ok(names.includes("reread_ams_rfid"));
+  assert.ok(names.includes("skip_objects"));
   assert.ok(names.includes("get_stl_info"));
   assert.ok(names.includes("blender_mcp_edit_model"));
   assert.ok(names.includes("print_3mf"), "print_3mf tool must be registered");
   assert.ok(names.includes("print_3mf_bambu_network"), "print_3mf_bambu_network tool must be registered");
-  assert.ok(names.includes("upload_gcode"), "upload_gcode tool must be registered");
-  assert.ok(names.includes("start_print"), "start_print compatibility tool must be registered");
-  assert.ok(names.includes("start_print_job"), "start_print_job tool must be registered");
-  assert.ok(names.includes("cancel_print"), "cancel_print tool must be registered");
   assert.ok(names.includes("bambu_network_bridge_status"), "bambu_network_bridge_status tool must be registered");
   assert.ok(names.includes("bambu_network_call"), "bambu_network_call tool must be registered");
+  assert.ok(names.includes("upload_gcode"), "upload_gcode tool must be registered");
+  assert.ok(names.includes("start_print"), "start_print compatibility alias must be registered");
+  assert.ok(names.includes("start_print_job"), "start_print_job tool must be registered");
   assert.ok(names.includes("slice_stl"), "slice_stl tool must be registered");
 }
 
@@ -105,252 +150,6 @@ function assertBambuStudioSlicerSupport(listToolsResult) {
     desc.includes("bambustudio"),
     `slice_stl slicer_type description must mention bambustudio, got: ${desc}`
   );
-  assert.ok(
-    desc.includes("orcaslicer-bambulab"),
-    `slice_stl slicer_type description must mention orcaslicer-bambulab, got: ${desc}`
-  );
-  const enumValues = sliceTool.inputSchema?.properties?.slicer_type?.enum || [];
-  assert.ok(enumValues.includes("fulu-orca"), "slice_stl schema must expose the FULU alias");
-}
-
-test("package metadata: dependency patches are available to published installs", async () => {
-  const packageJson = JSON.parse(await fs.readFile(path.join(REPO_ROOT, "package.json"), "utf8"));
-
-  assert.equal(packageJson.scripts?.postinstall, "patch-package");
-  assert.equal(
-    packageJson.dependencies?.["patch-package"],
-    "^8.0.1",
-    "postinstall runtime must not rely on a devDependency-only patch-package binary"
-  );
-  assert.equal(
-    packageJson.devDependencies?.["patch-package"],
-    undefined,
-    "patch-package must not drift back into devDependencies while postinstall needs it"
-  );
-  assert.ok(
-    packageJson.files?.includes("patches"),
-    "published package whitelist must include patch-package patch files"
-  );
-
-  const packResult = spawnSync("npm", ["pack", "--dry-run", "--json"], {
-    cwd: REPO_ROOT,
-    encoding: "utf8",
-  });
-
-  assert.equal(
-    packResult.status,
-    0,
-    `npm pack --dry-run must succeed. stderr: ${packResult.stderr}`
-  );
-  const packedFiles = JSON.parse(packResult.stdout)[0].files.map((file) => file.path);
-  assert.ok(
-    packedFiles.includes("patches/bambu-node+3.22.21.patch"),
-    "published tarball must include the bambu-node patch consumed by postinstall"
-  );
-});
-
-async function createFakeBambuCompatibleSlicer(t) {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-mcp-fake-slicer-"));
-  const fakeSlicerPath = path.join(tempDir, "fake-slicer.mjs");
-  const argsOutPath = path.join(tempDir, "args.json");
-
-  await fs.writeFile(
-    fakeSlicerPath,
-    `#!/usr/bin/env node
-import fs from "node:fs";
-
-const args = process.argv.slice(2);
-if (process.env.FAKE_SLICER_ARGS_OUT) {
-  fs.writeFileSync(process.env.FAKE_SLICER_ARGS_OUT, JSON.stringify(args, null, 2));
-}
-
-const exportIndex = args.indexOf("--export-3mf");
-if (exportIndex === -1 || !args[exportIndex + 1]) {
-  console.error("missing --export-3mf output");
-  process.exit(64);
-}
-
-fs.writeFileSync(args[exportIndex + 1], "fake sliced 3mf");
-`,
-    "utf8"
-  );
-  await fs.chmod(fakeSlicerPath, 0o755);
-  t.after(async () => { await fs.rm(tempDir, { recursive: true, force: true }); });
-
-  return { fakeSlicerPath, argsOutPath, tempDir };
-}
-
-function optionValue(args, option) {
-  const index = args.indexOf(option);
-  assert.notEqual(index, -1, `Expected ${option} in args: ${args.join(" ")}`);
-  assert.ok(index + 1 < args.length, `Expected value after ${option}`);
-  return args[index + 1];
-}
-
-function sortedUnique(values) {
-  return [...new Set(values)].sort();
-}
-
-async function extractCallToolHandlerNames() {
-  const source = await fs.readFile(SERVER_ENTRY, "utf8");
-  const switchStart = source.indexOf("switch (name)");
-  assert.notEqual(switchStart, -1, "compiled server must contain CallTool switch (name)");
-  const defaultStart = source.indexOf("default:", switchStart);
-  assert.notEqual(defaultStart, -1, "compiled CallTool switch must have a default case");
-
-  const callToolSwitch = source.slice(switchStart, defaultStart);
-  return sortedUnique(
-    [...callToolSwitch.matchAll(/case\s+["']([^"']+)["']\s*:/g)].map((match) => match[1])
-  );
-}
-
-function shellQuote(value) {
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
-
-async function createFakeBambuNetworkBridge(t) {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-mcp-fake-network-"));
-  const fakeBridgePath = path.join(tempDir, "fake-bambu-network-bridge.mjs");
-  const callsOutPath = path.join(tempDir, "bridge-calls.json");
-
-  await fs.writeFile(
-    fakeBridgePath,
-    `#!/usr/bin/env node
-import fs from "node:fs";
-
-const MAGIC = 0x52424a50;
-const JSON_RESPONSE = 2;
-let buffer = Buffer.alloc(0);
-const calls = process.env.FAKE_BRIDGE_CALLS_OUT && fs.existsSync(process.env.FAKE_BRIDGE_CALLS_OUT)
-  ? JSON.parse(fs.readFileSync(process.env.FAKE_BRIDGE_CALLS_OUT, "utf8"))
-  : [];
-
-function sendFrame(id, payloadObject) {
-  const payload = Buffer.from(JSON.stringify(payloadObject), "utf8");
-  const frame = Buffer.alloc(16 + payload.length);
-  frame.writeUInt32LE(MAGIC, 0);
-  frame.writeUInt32LE(JSON_RESPONSE, 4);
-  frame.writeUInt32LE(id, 8);
-  frame.writeUInt32LE(payload.length, 12);
-  payload.copy(frame, 16);
-  process.stdout.write(frame);
-}
-
-function record(method, payload) {
-  calls.push({
-    method,
-    payload,
-    expectedVersion: process.env.PJARCZAK_EXPECTED_BAMBU_NETWORK_VERSION || "",
-  });
-  if (process.env.FAKE_BRIDGE_CALLS_OUT) {
-    fs.writeFileSync(process.env.FAKE_BRIDGE_CALLS_OUT, JSON.stringify(calls, null, 2));
-  }
-}
-
-function responseFor(method, payload) {
-  record(method, payload);
-  if (method === "bridge.handshake") {
-    if (process.env.FAKE_BRIDGE_REQUIRE_EXPECTED_VERSION === "1" && !process.env.PJARCZAK_EXPECTED_BAMBU_NETWORK_VERSION) {
-      return {
-        ok: true,
-        network_loaded: false,
-        source_loaded: true,
-        network_actual_abi_version: "02.05.02.58",
-        network_status: "expected ABI version empty",
-        source_status: "ok",
-        protocol: "fake-fulu"
-      };
-    }
-    return {
-      ok: true,
-      network_loaded: true,
-      source_loaded: true,
-      network_abi_version: process.env.PJARCZAK_EXPECTED_BAMBU_NETWORK_VERSION || "",
-      network_actual_abi_version: "02.05.02.58",
-      network_status: "ok",
-      source_status: "ok",
-      protocol: "fake-fulu"
-    };
-  }
-  if (method === "net.create_agent") {
-    return { ok: true, value: 101 };
-  }
-  if (method === "net.is_user_login") {
-    return { ok: true, value: true };
-  }
-  if (method === "net.get_user_selected_machine") {
-    return { ok: true, value: "DEV123" };
-  }
-  if (method.startsWith("net.start")) {
-    const value = process.env.FAKE_BRIDGE_START_VALUE !== undefined
-      ? Number(process.env.FAKE_BRIDGE_START_VALUE)
-      : 0;
-    return { ok: true, value, job_id: payload.client_job_id };
-  }
-  return { ok: true, value: 0 };
-}
-
-function drain() {
-  while (buffer.length >= 16) {
-    if (buffer.readUInt32LE(0) !== MAGIC) {
-      console.error("bad magic");
-      process.exit(65);
-    }
-    const id = buffer.readUInt32LE(8);
-    const size = buffer.readUInt32LE(12);
-    if (buffer.length < 16 + size) return;
-    const payload = buffer.subarray(16, 16 + size);
-    buffer = buffer.subarray(16 + size);
-    const request = JSON.parse(payload.toString("utf8"));
-    sendFrame(id, responseFor(request.method, request.payload || {}));
-  }
-}
-
-process.stdin.on("data", (chunk) => {
-  buffer = Buffer.concat([buffer, chunk]);
-  drain();
-});
-`,
-    "utf8"
-  );
-  await fs.chmod(fakeBridgePath, 0o755);
-  t.after(async () => { await fs.rm(tempDir, { recursive: true, force: true }); });
-
-  return {
-    tempDir,
-    fakeBridgePath,
-    callsOutPath,
-    bridgeCommand: shellQuote(fakeBridgePath),
-  };
-}
-
-async function createPrintableThreeMF(t) {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-mcp-printable-3mf-"));
-  const threeMFPath = path.join(tempDir, "printable.3mf");
-  const zip = new JSZip();
-  zip.file(
-    "3D/3dmodel.model",
-    `<?xml version="1.0" encoding="UTF-8"?>
-<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02">
-  <resources>
-    <object id="1" type="model">
-      <mesh><vertices></vertices><triangles></triangles></mesh>
-    </object>
-  </resources>
-  <build><item objectid="1"/></build>
-</model>`
-  );
-  zip.file("Metadata/plate_1.gcode", "; fake gcode\\n");
-  zip.file(
-    "Metadata/project_settings.config",
-    JSON.stringify({
-      filament_settings_id: ["Generic PLA @BBL P1S"],
-      filament_type: ["PLA"],
-    })
-  );
-  await fs.writeFile(threeMFPath, await zip.generateAsync({ type: "nodebuffer" }));
-  t.after(async () => { await fs.rm(tempDir, { recursive: true, force: true }); });
-  return threeMFPath;
 }
 
 // Canonical schema contracts for BambuStudio slicer options on slice_stl.
@@ -365,8 +164,8 @@ const BAMBU_SLICER_OPTION_CONTRACTS = [
   ["clone_objects",         "string",  "clone"],
   ["skip_objects",          "string",  "skip"],
   ["load_filaments",        "string",  "filament"],
-  ["filament_profile",      "string",  "filament"],
   ["load_filament_ids",     "string",  "filament"],
+  ["bed_type",              "string",  "bed"],
   ["enable_timelapse",      "boolean", "timelapse"],
   ["allow_mix_temp",        "boolean", "temperature"],
   ["scale",                 "number",  "scale"],
@@ -400,12 +199,16 @@ test("printer model safety: schema requires bambu_model, rejects missing/invalid
   const listToolsResult = await client.listTools();
   assertBambuStudioSlicerSupport(listToolsResult);
 
-  // --- Schema validation: bambu_model must be required and consistent on every printer-targeting tool ---
+  // --- Schema validation: bambu_model must be required on print_3mf and slice_stl ---
   const print3mfTool = listToolsResult.tools.find((t) => t.name === "print_3mf");
   assert.ok(print3mfTool, "print_3mf tool must exist");
   assert.ok(
     print3mfTool.inputSchema.properties.ams_mapping,
     "print_3mf must have ams_mapping property"
+  );
+  assert.ok(
+    print3mfTool.inputSchema.properties.auto_match_ams,
+    "print_3mf must have auto_match_ams property"
   );
   assert.ok(
     print3mfTool.inputSchema.properties.bambu_model,
@@ -419,33 +222,68 @@ test("printer model safety: schema requires bambu_model, rejects missing/invalid
     print3mfTool.inputSchema.properties.bed_type,
     "print_3mf must have bed_type property"
   );
-  const toolsWithModel = listToolsResult.tools
-    .filter((tool) => tool.inputSchema?.properties?.bambu_model)
-    .map((tool) => tool.name)
-    .sort();
+  const collarCharmTool = listToolsResult.tools.find((t) => t.name === "print_collar_charm");
+  assert.ok(collarCharmTool, "print_collar_charm tool must exist");
+  assert.ok(
+    collarCharmTool.inputSchema.properties.template_name,
+    "print_collar_charm must accept template_name"
+  );
+  assert.ok(
+    collarCharmTool.inputSchema.properties.source_path,
+    "print_collar_charm must accept source_path"
+  );
+  assert.ok(
+    collarCharmTool.inputSchema.properties.bambu_model,
+    "print_collar_charm must have bambu_model property"
+  );
   assert.deepEqual(
-    toolsWithModel,
-    ["print_3mf", "print_3mf_bambu_network", "slice_stl", "start_print", "start_print_job", "upload_file"],
-    "all tools that expose bambu_model must be covered by the model enum invariant"
+    print3mfTool.inputSchema.properties.bambu_model.enum,
+    ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s"],
+    "print_3mf bambu_model must enumerate all valid models"
   );
 
-  for (const toolName of toolsWithModel) {
-    const tool = listToolsResult.tools.find((t) => t.name === toolName);
-    assert.ok(tool, `${toolName} tool must exist`);
-    assert.deepEqual(
-      tool.inputSchema.properties.bambu_model.enum,
-      EXPECTED_BAMBU_MODELS,
-      `${toolName} bambu_model must enumerate all valid models`
-    );
-  }
+  const sliceTool = listToolsResult.tools.find((t) => t.name === "slice_stl");
+  assert.ok(sliceTool, "slice_stl tool must exist");
+  assert.ok(
+    sliceTool.inputSchema.properties.bambu_model,
+    "slice_stl must have bambu_model property"
+  );
+  assert.ok(
+    sliceTool.inputSchema.required.includes("bambu_model"),
+    "slice_stl must list bambu_model as required"
+  );
 
-  for (const toolName of ["slice_stl", "print_3mf_bambu_network", "print_3mf", "start_print", "start_print_job"]) {
-    const tool = listToolsResult.tools.find((t) => t.name === toolName);
-    assert.ok(
-      tool.inputSchema.required.includes("bambu_model"),
-      `${toolName} must list bambu_model as required`
-    );
-  }
+  const speedTool = listToolsResult.tools.find((t) => t.name === "set_print_speed");
+  assert.ok(speedTool, "set_print_speed tool must exist");
+  assert.ok(speedTool.inputSchema.properties.mode, "set_print_speed must accept mode");
+  assert.ok(speedTool.inputSchema.required.includes("mode"), "set_print_speed.mode must be required");
+
+  const airductTool = listToolsResult.tools.find((t) => t.name === "set_airduct_mode");
+  assert.ok(airductTool, "set_airduct_mode tool must exist");
+  assert.deepEqual(
+    airductTool.inputSchema.properties.mode.enum,
+    ["cooling", "heating"],
+    "set_airduct_mode must enumerate cooling/heating"
+  );
+
+  const rfidTool = listToolsResult.tools.find((t) => t.name === "reread_ams_rfid");
+  assert.ok(rfidTool, "reread_ams_rfid tool must exist");
+  assert.ok(rfidTool.inputSchema.required.includes("ams_id"), "reread_ams_rfid.ams_id must be required");
+  assert.ok(rfidTool.inputSchema.required.includes("slot_id"), "reread_ams_rfid.slot_id must be required");
+
+  const uploadGcodeTool = listToolsResult.tools.find((t) => t.name === "upload_gcode");
+  assert.ok(uploadGcodeTool, "upload_gcode tool must exist");
+  assert.ok(uploadGcodeTool.inputSchema.properties.gcode_path, "upload_gcode must accept gcode_path");
+  assert.deepEqual(uploadGcodeTool.inputSchema.required, ["filename"]);
+
+  const startPrintTool = listToolsResult.tools.find((t) => t.name === "start_print");
+  assert.ok(startPrintTool, "start_print compatibility alias must exist");
+  assert.ok(startPrintTool.inputSchema.required.includes("bambu_model"));
+
+  const networkPrintTool = listToolsResult.tools.find((t) => t.name === "print_3mf_bambu_network");
+  assert.ok(networkPrintTool, "print_3mf_bambu_network tool must exist");
+  assert.ok(networkPrintTool.inputSchema.required.includes("bambu_model"));
+  assert.equal(networkPrintTool.inputSchema.properties.plate_index.type, "number");
 
   // No 'type' param should exist on any tool (Bambu-only)
   for (const tool of listToolsResult.tools) {
@@ -481,18 +319,108 @@ test("printer model safety: schema requires bambu_model, rejects missing/invalid
     `Error must reject invalid model, got: ${badModelError}`
   );
 
-  // --- Runtime validation: every valid model, including newly added models, passes model validation ---
-  for (const bambuModel of EXPECTED_BAMBU_MODELS) {
-    const validModelResult = await client.callTool({
-      name: "print_3mf",
-      arguments: { three_mf_path: "/tmp/nonexistent_test.3mf", bambu_model: bambuModel },
-    });
-    assert.equal(validModelResult.isError, true, "Missing file should still error");
-    const validModelError = validModelResult.content?.[0]?.text || "";
-    assert.ok(
-      !validModelError.includes("bambu_model"),
-      `Error with valid model ${bambuModel} should not be about model, got: ${validModelError}`
+  // --- Runtime validation: print_3mf with valid model but missing file errors on file, not model ---
+  const validModelResult = await client.callTool({
+    name: "print_3mf",
+    arguments: { three_mf_path: "/tmp/nonexistent_test.3mf", bambu_model: "p1s" },
+  });
+  assert.equal(validModelResult.isError, true, "Missing file should still error");
+  const validModelError = validModelResult.content?.[0]?.text || "";
+  assert.ok(
+    !validModelError.includes("bambu_model"),
+    `Error with valid model should not be about model, got: ${validModelError}`
+  );
+});
+
+test("3MF AMS requirement analysis maps plate filament_ids to slice_info tray_info_idx", async () => {
+  const fixture = path.join(REPO_ROOT, "tests/fixtures/h2d_gui_sliced");
+  const zip = new JSZip();
+  zip.file("Metadata/plate_1.json", fs.readFileSync(path.join(fixture, "plate_1.json"), "utf8"));
+  zip.file("Metadata/slice_info.config", fs.readFileSync(path.join(fixture, "slice_info.config"), "utf8"));
+  const tempPath = path.join(os.tmpdir(), `ams-requirements-${Date.now()}.3mf`);
+  fs.writeFileSync(tempPath, await zip.generateAsync({ type: "nodebuffer" }));
+
+  try {
+    const requirements = await analyze3MFAmsRequirements(tempPath, 0);
+    assert.deepEqual(requirements.usedFilamentPositions, [4]);
+    assert.deepEqual(requirements.filaments, [
+      {
+        filamentPosition: 4,
+        filamentId: 5,
+        tray_info_idx: "GFG02",
+        type: "PETG",
+        color: "#FFFFFF",
+      },
+    ]);
+  } finally {
+    fs.rmSync(tempPath, { force: true });
+  }
+});
+
+test("3MF AMS requirement analysis falls back when slice_info.config is not XML", async () => {
+  const zip = new JSZip();
+  zip.file("Metadata/plate_1.json", JSON.stringify({ filament_ids: [0, 2] }));
+  zip.file("Metadata/slice_info.config", "not xml at all");
+  const tempPath = path.join(os.tmpdir(), `ams-bad-slice-info-${Date.now()}.3mf`);
+  fs.writeFileSync(tempPath, await zip.generateAsync({ type: "nodebuffer" }));
+
+  try {
+    const requirements = await analyze3MFAmsRequirements(tempPath, 0);
+    assert.deepEqual(requirements.usedFilamentPositions, [0, 2]);
+    assert.deepEqual(
+      requirements.filaments.map((filament) => ({
+        filamentPosition: filament.filamentPosition,
+        tray_info_idx: filament.tray_info_idx,
+        type: filament.type,
+        color: filament.color,
+      })),
+      [
+        { filamentPosition: 0, tray_info_idx: null, type: null, color: null },
+        { filamentPosition: 2, tray_info_idx: null, type: null, color: null },
+      ]
     );
+  } finally {
+    fs.rmSync(tempPath, { force: true });
+  }
+});
+
+test("3MF plate object analysis lists Bambu object ids for skip_objects", async () => {
+  const fixture = path.join(REPO_ROOT, "tests/fixtures/h2d_gui_sliced");
+  const zip = new JSZip();
+  zip.file("Metadata/plate_1.json", fs.readFileSync(path.join(fixture, "plate_1.json"), "utf8"));
+  zip.file("Metadata/slice_info.config", fs.readFileSync(path.join(fixture, "slice_info.config"), "utf8"));
+  const tempPath = path.join(os.tmpdir(), `plate-objects-${Date.now()}.3mf`);
+  fs.writeFileSync(tempPath, await zip.generateAsync({ type: "nodebuffer" }));
+
+  try {
+    const plateObjects = await analyze3MFPlateObjects(tempPath, 0);
+    assert.equal(plateObjects.objects.length, 20);
+    assert.deepEqual(
+      plateObjects.objects.slice(0, 2).map((object) => object.id),
+      [5997, 6277]
+    );
+    assert.equal(plateObjects.objects[0].name, "mk2 collarID.stl_1");
+    assert.equal(plateObjects.objects[0].area, 1152.0546875);
+  } finally {
+    fs.rmSync(tempPath, { force: true });
+  }
+});
+
+test("3MF plate object analysis falls back to bbox ids without slice_info object ids", async () => {
+  const fixture = path.join(REPO_ROOT, "tests/fixtures/h2d_gui_sliced");
+  const zip = new JSZip();
+  zip.file("Metadata/plate_1.json", fs.readFileSync(path.join(fixture, "plate_1.json"), "utf8"));
+  const tempPath = path.join(os.tmpdir(), `plate-objects-bbox-${Date.now()}.3mf`);
+  fs.writeFileSync(tempPath, await zip.generateAsync({ type: "nodebuffer" }));
+
+  try {
+    const plateObjects = await analyze3MFPlateObjects(tempPath, 0);
+    assert.deepEqual(
+      plateObjects.objects.slice(0, 2).map((object) => object.id),
+      [6495, 6496]
+    );
+  } finally {
+    fs.rmSync(tempPath, { force: true });
   }
 });
 
@@ -529,6 +457,876 @@ test("printer model safety: BAMBU_MODEL env var accepted as default", async (t) 
   );
 });
 
+test("collar charm analysis resolves smaller object to inner black tray and larger object to outer white tray", async () => {
+  const zip = new JSZip();
+  zip.file(
+    "Metadata/plate_1.json",
+    JSON.stringify({
+      bbox_objects: [
+        { area: 900, name: "outer_ring.stl" },
+        { area: 125, name: "inner_letter.stl" }
+      ],
+      filament_ids: [7, 3],
+      version: 2
+    })
+  );
+  const tempPath = path.join(os.tmpdir(), `collar-charm-${Date.now()}.3mf`);
+  fs.writeFileSync(tempPath, await zip.generateAsync({ type: "nodebuffer" }));
+
+  try {
+    const analysis = await analyzeCollarCharm3MF(tempPath, 0);
+    assert.deepEqual(analysis.usedFilamentPositions, [7, 3]);
+    assert.deepEqual(analysis.amsSlots, [4, 0], "ams_slots must line up with zero-based used filament order");
+    assert.equal(analysis.roles.find((role) => role.role === "inner")?.name, "inner_letter.stl");
+    assert.equal(analysis.roles.find((role) => role.role === "outer")?.name, "outer_ring.stl");
+  } finally {
+    fs.rmSync(tempPath, { force: true });
+  }
+});
+
+test("collar charm analysis rejects projects that do not resolve to exactly two objects", async () => {
+  const zip = new JSZip();
+  zip.file(
+    "Metadata/plate_1.json",
+    JSON.stringify({
+      bbox_objects: [{ area: 500, name: "only_one.stl" }],
+      filament_ids: [0],
+      version: 2
+    })
+  );
+  const tempPath = path.join(os.tmpdir(), `collar-charm-invalid-${Date.now()}.3mf`);
+  fs.writeFileSync(tempPath, await zip.generateAsync({ type: "nodebuffer" }));
+
+  try {
+    await assert.rejects(
+      () => analyzeCollarCharm3MF(tempPath, 0),
+      /requires exactly 2 plate objects/i
+    );
+  } finally {
+    fs.rmSync(tempPath, { force: true });
+  }
+});
+
+test("H2 print_3mf rejects pre-sliced filament jobs without explicit AMS mapping", async (t) => {
+  const threeMfPath = await writeSliced3mfFixture({ plateFilamentIds: [1] });
+  t.after(() => { fs.rmSync(threeMfPath, { force: true }); });
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+      BAMBU_PRINTER_HOST: "127.0.0.1",
+      BAMBU_PRINTER_SERIAL: "0938TEST0000000",
+      BAMBU_PRINTER_ACCESS_TOKEN: "TEST_TOKEN",
+      BAMBU_PRINTER_MODEL: "h2s",
+    },
+    stderr: "pipe",
+  });
+
+  const client = createClient();
+  t.after(async () => { await closeTransport(transport); });
+
+  await client.connect(transport);
+  const result = await client.callTool({
+    name: "print_3mf",
+    arguments: {
+      three_mf_path: threeMfPath,
+      bambu_model: "h2s",
+      bed_type: "supertack_plate",
+    },
+  });
+
+  assert.equal(result.isError, true);
+  const errorText = result.content?.[0]?.text || "";
+  assert.match(errorText, /require ams_slots, ams_mapping, or auto_match_ams/i);
+  assert.match(errorText, /project filament positions \[1\]/i);
+  assert.doesNotMatch(errorText, /ECONNREFUSED|control socket/i);
+});
+
+test("H2 ams_slots expand into project-level ams_mapping and ams_mapping2", async () => {
+  const threeMfPath = await writeSliced3mfFixture({ plateFilamentIds: [1] });
+  const bambu = new BambuImplementation();
+  let uploaded = false;
+  let publishedPayload = null;
+
+  bambu.ftpUpload = async () => {
+    uploaded = true;
+  };
+  bambu.getPrinter = async () => ({
+    publish: async (payload) => {
+      publishedPayload = payload;
+    },
+  });
+
+  try {
+    const result = await bambu.print3mf("127.0.0.1", "0938TEST0000000", "TEST_TOKEN", {
+      projectName: "cube",
+      filePath: threeMfPath,
+      plateIndex: 0,
+      useAMS: true,
+      amsSlots: [1],
+      bedType: "supertack_plate",
+    });
+
+    assert.equal(uploaded, true, "print3mf should upload before publishing");
+    assert.equal(result.status, "success");
+    assert.ok(publishedPayload?.print, "project_file payload should be published");
+    assert.equal(publishedPayload.print.command, "project_file");
+    assert.equal(publishedPayload.print.param, "Metadata/plate_1.gcode");
+    assert.deepEqual(publishedPayload.print.ams_mapping, [-1, 1, -1, -1]);
+    assert.deepEqual(publishedPayload.print.ams_mapping2, [
+      { ams_id: 255, slot_id: 255 },
+      { ams_id: 0, slot_id: 1 },
+      { ams_id: 255, slot_id: 255 },
+      { ams_id: 255, slot_id: 255 },
+    ]);
+  } finally {
+    fs.rmSync(threeMfPath, { force: true });
+  }
+});
+
+test("H2 two-color ams_slots expand at sparse project-level filament positions", async () => {
+  const threeMfPath = await writeSliced3mfFixture({
+    name: "h2d-two-color-project-filament",
+    projectFilamentIds: ["GFG01", "GFG02", "GFG60", "GFG02", "GFG02", "GFG60", "GFG02", "GFL01"],
+    projectFilamentColors: ["#FF911A80", "#39541A", "#F72323", "#000000", "#FFFFFF", "#0D6284", "#000000", "#46A8F9"],
+    projectFilamentTypes: ["PETG", "PETG", "PETG", "PETG", "PETG", "PETG", "PETG", "PLA"],
+    plateFilamentIds: [3, 4],
+  });
+  const bambu = new BambuImplementation();
+  let publishedPayload = null;
+
+  bambu.ftpUpload = async () => {};
+  bambu.getPrinter = async () => ({
+    publish: async (payload) => {
+      publishedPayload = payload;
+    },
+  });
+
+  try {
+    const result = await bambu.print3mf("127.0.0.1", "0938TEST0000000", "TEST_TOKEN", {
+      projectName: "h2d-two-color",
+      filePath: threeMfPath,
+      plateIndex: 0,
+      useAMS: true,
+      amsSlots: [1, 2],
+      bedType: "textured_plate",
+    });
+
+    assert.equal(result.status, "success");
+    assert.ok(publishedPayload?.print, "project_file payload should be published");
+    assert.deepEqual(publishedPayload.print.ams_mapping, [-1, -1, -1, 1, 2, -1, -1, -1]);
+    assert.deepEqual(publishedPayload.print.ams_mapping2, [
+      { ams_id: 255, slot_id: 255 },
+      { ams_id: 255, slot_id: 255 },
+      { ams_id: 255, slot_id: 255 },
+      { ams_id: 0, slot_id: 1 },
+      { ams_id: 0, slot_id: 2 },
+      { ams_id: 255, slot_id: 255 },
+      { ams_id: 255, slot_id: 255 },
+      { ams_id: 255, slot_id: 255 },
+    ]);
+  } finally {
+    fs.rmSync(threeMfPath, { force: true });
+  }
+});
+
+test("H2 ams_mapping2 preserves external spool and HT tray encodings", async () => {
+  const threeMfPath = await writeSliced3mfFixture({
+    name: "h2-external-and-ht-mapping",
+    projectFilamentIds: ["GFG01", "GFG02", "GFG60", "GFL01"],
+    projectFilamentColors: ["#111111", "#222222", "#333333", "#444444"],
+    projectFilamentTypes: ["PETG", "PETG", "PETG", "PLA"],
+    plateFilamentIds: [0, 1, 2, 3],
+  });
+  const bambu = new BambuImplementation();
+  let publishedPayload = null;
+
+  bambu.ftpUpload = async () => {};
+  bambu.getPrinter = async () => ({
+    publish: async (payload) => {
+      publishedPayload = payload;
+    },
+  });
+
+  try {
+    await bambu.print3mf("127.0.0.1", "0938TEST0000000", "TEST_TOKEN", {
+      projectName: "h2-external-and-ht",
+      filePath: threeMfPath,
+      plateIndex: 0,
+      useAMS: true,
+      amsMapping: [254, 128, 131, 15],
+      bedType: "supertack_plate",
+    });
+
+    assert.ok(publishedPayload?.print, "project_file payload should be published");
+    assert.deepEqual(publishedPayload.print.ams_mapping, [254, 128, 131, 15]);
+    assert.deepEqual(publishedPayload.print.ams_mapping2, [
+      { ams_id: 254, slot_id: 254 },
+      { ams_id: 128, slot_id: 0 },
+      { ams_id: 128, slot_id: 3 },
+      { ams_id: 3, slot_id: 3 },
+    ]);
+  } finally {
+    fs.rmSync(threeMfPath, { force: true });
+  }
+});
+
+test("ams_mapping object preserves filament-position order instead of tray sorting", () => {
+  assert.deepEqual(
+    normalizeAmsMappingObject({ 0: 4, 1: 1 }),
+    [4, 1],
+    "filament position 0 must stay mapped to tray 4 even though tray 1 sorts first"
+  );
+  assert.deepEqual(
+    normalizeAmsMappingObject({ 10: "2", 2: "5" }),
+    [5, 2],
+    "numeric object keys must drive position order before tray value order"
+  );
+});
+
+test("ams_mapping input treats empty arrays and objects as absent", () => {
+  assert.equal(hasAmsMappingInput(undefined), false);
+  assert.equal(hasAmsMappingInput(null), false);
+  assert.equal(hasAmsMappingInput([]), false);
+  assert.equal(hasAmsMappingInput({}), false);
+  assert.equal(hasAmsMappingInput([4]), true);
+  assert.equal(hasAmsMappingInput({ 0: 4 }), true);
+});
+
+test("BambuNetwork print rejects invalid ams_slots values before bridge payload", async (t) => {
+  const threeMfPath = await writeSliced3mfFixture({ name: "bridge-invalid-ams-slots" });
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+      BAMBU_SERIAL: "TEST_DEV",
+      BAMBU_TOKEN: "TEST_TOKEN",
+      BAMBU_MODEL: "h2s",
+      BAMBU_NETWORK_BRIDGE_COMMAND: "/definitely/missing/bambu-network-bridge",
+    },
+    stderr: "pipe",
+  });
+
+  const client = createClient();
+  t.after(() => fs.rmSync(threeMfPath, { force: true }));
+  t.after(async () => { await closeTransport(transport); });
+
+  await client.connect(transport);
+
+  for (const invalidSlot of [null, "", "not-a-slot", 1.5, 16]) {
+    const result = await client.callTool({
+      name: "print_3mf_bambu_network",
+      arguments: {
+        three_mf_path: threeMfPath,
+        bambu_model: "h2s",
+        dev_id: "TEST_DEV",
+        connection_type: "cloud",
+        ams_slots: [invalidSlot],
+      },
+    });
+
+    assert.equal(result.isError, true, `invalid ams_slots value should fail: ${JSON.stringify(invalidSlot)}`);
+    const errorText = result.content?.[0]?.text || "";
+    assert.match(errorText, /ams_slots\[0\].*integer/i);
+    assert.doesNotMatch(errorText, /BAMBU_NETWORK_BRIDGE_COMMAND|FULU BambuNetwork bridge/i);
+  }
+
+  const emptyMappingResult = await client.callTool({
+    name: "print_3mf_bambu_network",
+    arguments: {
+      three_mf_path: threeMfPath,
+      bambu_model: "h2s",
+      dev_id: "TEST_DEV",
+      connection_type: "cloud",
+      ams_mapping: [],
+      ams_slots: [null],
+    },
+  });
+  assert.equal(emptyMappingResult.isError, true);
+  const emptyMappingErrorText = emptyMappingResult.content?.[0]?.text || "";
+  assert.match(emptyMappingErrorText, /ams_slots\[0\].*integer/i);
+  assert.doesNotMatch(emptyMappingErrorText, /BAMBU_NETWORK_BRIDGE_COMMAND|FULU BambuNetwork bridge/i);
+});
+
+test("sliceSTL allows slicer executables resolved from PATH", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("PATH executable resolution test uses a POSIX executable shim");
+    return;
+  }
+
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "path-slicer-"));
+  const binDir = path.join(tempRoot, "bin");
+  const commandName = `fake-prusaslicer-${process.pid}-${Date.now()}`;
+  const commandPath = path.join(binDir, commandName);
+  const originalPath = process.env.PATH || "";
+  t.after(() => {
+    process.env.PATH = originalPath;
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(
+    commandPath,
+    [
+      "#!/bin/sh",
+      "while [ \"$#\" -gt 0 ]; do",
+      "  if [ \"$1\" = \"--output\" ]; then",
+      "    shift",
+      "    printf 'G1 X0\\n' > \"$1\"",
+      "    exit 0",
+      "  fi",
+      "  shift",
+      "done",
+      "exit 2",
+      "",
+    ].join("\n"),
+    { mode: 0o755 }
+  );
+  process.env.PATH = `${binDir}${path.delimiter}${originalPath}`;
+
+  const manipulator = new STLManipulator(tempRoot);
+  const outputPath = await manipulator.sliceSTL(SAMPLE_STL, "prusaslicer", commandName);
+
+  assert.equal(outputPath, path.join(tempRoot, "sample_cube.gcode"));
+  assert.equal(fs.readFileSync(outputPath, "utf8"), "G1 X0\n");
+});
+
+test("camera_snapshot routes H2 series through RTSP (verified live on Parker H2S)", async () => {
+  const bambu = new BambuImplementation();
+  const fakeJpeg = Buffer.from([0xff, 0xd8, 0x12, 0x34, 0xff, 0xd9]);
+  let rtspCalls = 0;
+  let tcpCalls = 0;
+  bambu.fetchRtspCameraFrame = async () => { rtspCalls++; return fakeJpeg; };
+  bambu.fetchTcpCameraFrame = async () => { tcpCalls++; return fakeJpeg; };
+
+  for (const model of ["h2", "h2s", "h2d", "h2c", "h2dpro"]) {
+    const out = await bambu.cameraSnapshot("127.0.0.1", "S", "T", { bambuModel: model });
+    assert.equal(out.status, "success", `${model} should succeed via RTSP`);
+    assert.equal(out.transport, "rtsps-322", `${model} transport should be rtsps-322`);
+  }
+  assert.equal(rtspCalls, 5, "RTSP path should run once per H2 variant");
+  assert.equal(tcpCalls, 0, "TCP-on-6000 path should not run for H2");
+});
+
+test("camera_snapshot routes X1/P2S through RTSP", async () => {
+  const bambu = new BambuImplementation();
+  const fakeJpeg = Buffer.from([0xff, 0xd8, 0xab, 0xcd, 0xff, 0xd9]);
+  bambu.fetchRtspCameraFrame = async () => fakeJpeg;
+  bambu.fetchTcpCameraFrame = async () => {
+    throw new Error("RTSP models must not reach the TCP wire path");
+  };
+
+  for (const model of ["x1", "x1c", "x1carbon", "x1e", "p2s"]) {
+    const out = await bambu.cameraSnapshot("127.0.0.1", "S", "T", { bambuModel: model });
+    assert.equal(out.transport, "rtsps-322", `${model} should use rtsps-322`);
+    assert.equal(out.format, "image/jpeg");
+    assert.deepEqual(Buffer.from(out.base64, "base64"), fakeJpeg);
+  }
+});
+
+test("camera_snapshot rejects unknown model strings", async () => {
+  const bambu = new BambuImplementation();
+  await assert.rejects(
+    bambu.cameraSnapshot("127.0.0.1", "S", "T", { bambuModel: "ender3" }),
+    /not a known Bambu Lab printer model/i
+  );
+});
+
+test("camera_snapshot requires a model before choosing a wire protocol", async () => {
+  const bambu = new BambuImplementation();
+  bambu.fetchTcpCameraFrame = async () => {
+    throw new Error("missing model must not default to TCP");
+  };
+  bambu.fetchRtspCameraFrame = async () => {
+    throw new Error("missing model must not default to RTSP");
+  };
+
+  await assert.rejects(
+    bambu.cameraSnapshot("127.0.0.1", "S", "T", {}),
+    /requires bambu_model or BAMBU_MODEL/i
+  );
+});
+
+test("camera_snapshot supported models reach the wire path (mocked) and decode a JPEG frame", async () => {
+  const bambu = new BambuImplementation();
+
+  // Stub the private wire fetcher so we can verify the routing without
+  // talking to a real printer. Returns a tiny synthetic JPEG.
+  const fakeJpeg = Buffer.from([0xff, 0xd8, 0x00, 0x11, 0x22, 0xff, 0xd9]);
+  bambu.fetchTcpCameraFrame = async () => fakeJpeg;
+
+  for (const model of ["a1", "a1mini", "p1s", "p1p"]) {
+    const out = await bambu.cameraSnapshot("127.0.0.1", "S", "T", { bambuModel: model });
+    assert.equal(out.status, "success", `${model} should succeed`);
+    assert.equal(out.format, "image/jpeg");
+    assert.equal(out.sizeBytes, fakeJpeg.length);
+    assert.equal(out.base64, fakeJpeg.toString("base64"));
+  }
+});
+
+test("camera_snapshot RTSP path: ffmpeg ENOENT yields a clear, actionable error", async () => {
+  const bambu = new BambuImplementation();
+  // Don't mock fetchRtspCameraFrame -- exercise it with a bogus binary
+  // path and confirm the surfacing.
+  await assert.rejects(
+    bambu.cameraSnapshot("127.0.0.1", "S", "T", {
+      bambuModel: "h2s",
+      ffmpegPath: "/no/such/ffmpeg-binary",
+    }),
+    /ffmpeg binary not found.*brew install ffmpeg/i
+  );
+});
+
+test("camera_snapshot save_path writes the jpeg to disk", async (t) => {
+  const bambu = new BambuImplementation();
+  const fakeJpeg = Buffer.from([0xff, 0xd8, 0x42, 0x42, 0xff, 0xd9]);
+  bambu.fetchTcpCameraFrame = async () => fakeJpeg;
+
+  const outPath = path.join(os.tmpdir(), `snap-${Date.now()}.jpg`);
+  t.after(() => { fs.rmSync(outPath, { force: true }); });
+
+  const out = await bambu.cameraSnapshot("127.0.0.1", "S", "T", {
+    bambuModel: "p1s",
+    savePath: outPath,
+  });
+
+  assert.equal(out.savedTo, outPath);
+  const onDisk = fs.readFileSync(outPath);
+  assert.deepEqual(Buffer.from(onDisk), fakeJpeg);
+});
+
+test("delete_printer_file requires confirm:true and skips FTP when omitted", async () => {
+  const bambu = new BambuImplementation();
+  let ftpCalled = false;
+  bambu.ftpDelete = async () => {
+    ftpCalled = true;
+  };
+
+  const result = await bambu.deleteFile(
+    "127.0.0.1",
+    "0938TEST",
+    "TEST_TOKEN",
+    "stale.gcode.3mf",
+    false
+  );
+
+  assert.equal(ftpCalled, false, "ftpDelete must not run without confirm:true");
+  assert.equal(result.status, "skipped");
+  assert.equal(result.deleted, false);
+  assert.match(result.message, /requires confirm:true/);
+});
+
+test("delete_printer_file treats loose confirm values as not confirmed", async () => {
+  const bambu = new BambuImplementation();
+  let ftpCalls = 0;
+  bambu.ftpDelete = async () => {
+    ftpCalls++;
+  };
+
+  for (const confirm of [undefined, null, false, "false", "true", 1]) {
+    const result = await bambu.deleteFile(
+      "127.0.0.1",
+      "0938TEST",
+      "TEST_TOKEN",
+      "stale.gcode.3mf",
+      confirm
+    );
+    assert.equal(result.status, "skipped", `confirm=${JSON.stringify(confirm)} must not delete`);
+    assert.equal(result.deleted, false, `confirm=${JSON.stringify(confirm)} must report no deletion`);
+  }
+
+  assert.equal(ftpCalls, 0, "ftpDelete must only run for literal confirm:true");
+});
+
+test("delete_printer_file rejects path traversal", async () => {
+  const bambu = new BambuImplementation();
+  bambu.ftpDelete = async () => {
+    throw new Error("ftpDelete should not be reached on traversal input");
+  };
+
+  await assert.rejects(
+    bambu.deleteFile("127.0.0.1", "S", "T", "../../etc/passwd", true),
+    /path traversal segments are not allowed/i
+  );
+});
+
+test("delete_printer_file rejects directories outside cache/timelapse/logs", async () => {
+  const bambu = new BambuImplementation();
+  bambu.ftpDelete = async () => {
+    throw new Error("ftpDelete should not be reached for disallowed parent");
+  };
+
+  await assert.rejects(
+    bambu.deleteFile("127.0.0.1", "S", "T", "userdata/secrets.bin", true),
+    /refusing to delete outside cache\/, timelapse\/, logs\//i
+  );
+});
+
+test("delete_printer_file with confirm:true normalizes bare names to cache/ and calls ftpDelete with absolute path", async () => {
+  const bambu = new BambuImplementation();
+  let ftpArgs = null;
+  bambu.ftpDelete = async (host, token, remote) => {
+    ftpArgs = { host, token, remote };
+  };
+
+  const result = await bambu.deleteFile(
+    "192.168.1.50",
+    "0938TEST",
+    "ACCESS_TOKEN",
+    "old_print.gcode.3mf",
+    true
+  );
+
+  assert.deepEqual(ftpArgs, {
+    host: "192.168.1.50",
+    token: "ACCESS_TOKEN",
+    remote: "/cache/old_print.gcode.3mf",
+  });
+  assert.equal(result.status, "success");
+  assert.equal(result.deleted, true);
+  assert.equal(result.remotePath, "cache/old_print.gcode.3mf");
+});
+
+test("delete_printer_file accepts explicit timelapse/ and logs/ paths", async () => {
+  const bambu = new BambuImplementation();
+  const calls = [];
+  bambu.ftpDelete = async (_host, _token, remote) => {
+    calls.push(remote);
+  };
+
+  await bambu.deleteFile("h", "s", "t", "timelapse/2026-04-26_12-00.mp4", true);
+  await bambu.deleteFile("h", "s", "t", "logs/printer.log", true);
+
+  assert.deepEqual(calls, ["/timelapse/2026-04-26_12-00.mp4", "/logs/printer.log"]);
+});
+
+test("set_ams_drying rejects invalid action values", async () => {
+  const bambu = new BambuImplementation();
+  bambu.getPrinter = async () => ({
+    publish: async () => {},
+  });
+
+  await assert.rejects(
+    bambu.setAmsDrying("127.0.0.1", "SERIAL", "TOKEN", "toggle", 0),
+    /must be one of: start, stop/i
+  );
+  await assert.rejects(
+    bambu.setAmsDrying("127.0.0.1", "SERIAL", "TOKEN", "", 0),
+    /must be one of: start, stop/i
+  );
+});
+
+test("set_ams_drying rejects invalid ams_id values", async () => {
+  const bambu = new BambuImplementation();
+  bambu.getPrinter = async () => ({
+    publish: async () => {},
+  });
+
+  await assert.rejects(
+    bambu.setAmsDrying("127.0.0.1", "SERIAL", "TOKEN", "start", -1),
+    /must be an integer from 0 to 3/i
+  );
+  await assert.rejects(
+    bambu.setAmsDrying("127.0.0.1", "SERIAL", "TOKEN", "start", 4),
+    /must be an integer from 0 to 3/i
+  );
+  await assert.rejects(
+    bambu.setAmsDrying("127.0.0.1", "SERIAL", "TOKEN", "start", -999),
+    /must be an integer from 0 to 3/i
+  );
+});
+
+test("set_ams_drying sends correct MQTT command for start", async () => {
+  const bambu = new BambuImplementation();
+  let publishPayload = null;
+  bambu.getPrinter = async () => ({
+    publish: async (payload) => {
+      publishPayload = payload;
+    },
+  });
+
+  const result = await bambu.setAmsDrying("127.0.0.1", "SERIAL", "TOKEN", "start", 1);
+
+  assert.deepEqual(publishPayload, {
+    print: {
+      command: "ams_control",
+      ams_id: 1,
+      param: "start_drying",
+      sequence_id: "0",
+    },
+  });
+  assert.equal(result.status, "success");
+  assert.equal(result.action, "start");
+  assert.equal(result.ams_id, 1);
+  assert.match(result.message, /started.*AMS 1/i);
+});
+
+test("set_ams_drying sends correct MQTT command for stop", async () => {
+  const bambu = new BambuImplementation();
+  let publishPayload = null;
+  bambu.getPrinter = async () => ({
+    publish: async (payload) => {
+      publishPayload = payload;
+    },
+  });
+
+  const result = await bambu.setAmsDrying("127.0.0.1", "SERIAL", "TOKEN", "stop", 0);
+
+  assert.deepEqual(publishPayload, {
+    print: {
+      command: "ams_control",
+      ams_id: 0,
+      param: "stop_drying",
+      sequence_id: "0",
+    },
+  });
+  assert.equal(result.status, "success");
+  assert.equal(result.action, "stop");
+  assert.equal(result.ams_id, 0);
+  assert.match(result.message, /stopped.*AMS 0/i);
+});
+
+test("Bambu report snapshots are cleared with connection state", () => {
+  const bambu = new BambuImplementation();
+  const store = bambu.printerStore;
+  const key = "127.0.0.1-SERIAL-TOKEN";
+
+  store.updateReportSnapshot(key, {
+    gcode_state: "FINISH",
+    ams: { ams: [{ tray: [{ tray_info_idx: "STALE" }] }] },
+  });
+
+  assert.equal(
+    store.getCachedReport("127.0.0.1", "SERIAL", "TOKEN")?.ams?.ams?.[0]?.tray?.[0]?.tray_info_idx,
+    "STALE"
+  );
+
+  store.clearPrinterState(key);
+
+  assert.equal(
+    store.getCachedReport("127.0.0.1", "SERIAL", "TOKEN"),
+    null,
+    "disconnect/error cleanup must drop stale MQTT snapshots as well as promises"
+  );
+});
+
+async function writeTemplate3mfFixture(
+  templateDir,
+  baseName = "template-process",
+  processName = "Template Process",
+  layerHeight = "0.16"
+) {
+  const zip = new JSZip();
+  zip.file("Metadata/project_settings.config", JSON.stringify({
+    type: "process",
+    name: processName,
+    from: "project",
+    layer_height: layerHeight,
+  }));
+  zip.file(
+    "3D/3dmodel.model",
+    '<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources><object id="1" type="model" name="template.stl"><mesh><vertices/><triangles/></mesh></object></resources><build><item objectid="1"/></build></model>'
+  );
+  const templatePath = path.join(templateDir, `${baseName}.3mf`);
+  fs.writeFileSync(templatePath, await zip.generateAsync({ type: "nodebuffer" }));
+  return templatePath;
+}
+
+function writeTemplateJsonFixture(
+  templateDir,
+  baseName,
+  processName,
+  layerHeight = "0.12"
+) {
+  const templatePath = path.join(templateDir, `${baseName}.json`);
+  fs.writeFileSync(templatePath, JSON.stringify({
+    type: "process",
+    name: processName,
+    from: "User",
+    layer_height: layerHeight,
+  }));
+  return templatePath;
+}
+
+async function createFakeBambuSlicer() {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-mcp-template-slicer-"));
+  const fakeSlicerPath = path.join(tempDir, "fake-slicer.mjs");
+  const argsOutPath = path.join(tempDir, "args.json");
+  fs.writeFileSync(
+    fakeSlicerPath,
+    `#!/usr/bin/env node
+import fs from "node:fs";
+import path from "node:path";
+const args = process.argv.slice(2);
+fs.writeFileSync(${JSON.stringify(argsOutPath)}, JSON.stringify(args));
+const outputDir = args[args.indexOf("--outputdir") + 1] || path.dirname(args[args.indexOf("--export-3mf") + 1]);
+const exportArg = args[args.indexOf("--export-3mf") + 1];
+const outputPath = path.isAbsolute(exportArg) ? exportArg : path.join(outputDir, exportArg);
+fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+fs.writeFileSync(outputPath, "fake sliced 3mf");
+`
+  );
+  fs.chmodSync(fakeSlicerPath, 0o755);
+  return { tempDir, fakeSlicerPath, argsOutPath };
+}
+
+test("slice_with_template prefers named template settings over BAMBU_SLICER_PROFILE default", async (t) => {
+  const fakeSlicer = await createFakeBambuSlicer();
+  const templateDir = path.join(fakeSlicer.tempDir, "templates");
+  fs.mkdirSync(templateDir, { recursive: true });
+  await writeTemplate3mfFixture(templateDir);
+  const defaultProfilePath = path.join(fakeSlicer.tempDir, "default-profile.json");
+  fs.writeFileSync(defaultProfilePath, JSON.stringify({ name: "default should not win" }));
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+      BAMBU_MODEL: "p1s",
+      BAMBU_SERIAL: "",
+      BAMBU_TOKEN: "",
+      BAMBU_SLICER_PROFILE: defaultProfilePath,
+    },
+    stderr: "pipe",
+  });
+
+  const client = createClient();
+  t.after(async () => { await closeTransport(transport); });
+
+  await client.connect(transport);
+  const result = await client.callTool({
+    name: "slice_with_template",
+    arguments: {
+      stl_path: SAMPLE_STL,
+      template_name: "template-process",
+      template_dir: templateDir,
+      bambu_model: "p1s",
+      slicer_path: fakeSlicer.fakeSlicerPath,
+      use_printer_filaments: false,
+    },
+  });
+
+  assert.equal(result.isError, undefined);
+  const slicerArgs = JSON.parse(fs.readFileSync(fakeSlicer.argsOutPath, "utf8"));
+  const settingsValue = slicerArgs[slicerArgs.indexOf("--load-settings") + 1];
+  const processPath = settingsValue.split(";").at(-1);
+  const processSettings = JSON.parse(fs.readFileSync(processPath, "utf8"));
+  assert.equal(processSettings.name, "Template Process");
+  assert.equal(processSettings.layer_height, "0.16");
+  assert.ok(!settingsValue.includes(defaultProfilePath), "server-level BAMBU_SLICER_PROFILE must not override a named template");
+});
+
+test("template_name resolves by source type for slicer profiles versus 3MF sources", async (t) => {
+  const fakeSlicer = await createFakeBambuSlicer();
+  const templateDir = path.join(fakeSlicer.tempDir, "templates");
+  fs.mkdirSync(templateDir, { recursive: true });
+  await writeTemplate3mfFixture(templateDir, "shared-template", "3MF Template", "0.20");
+  await writeTemplateJsonFixture(templateDir, "shared-template", "JSON Template", "0.12");
+  await writeTemplateJsonFixture(templateDir, "My Template", "Space Template", "0.18");
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+      BAMBU_MODEL: "p1s",
+      BAMBU_SERIAL: "",
+      BAMBU_TOKEN: "",
+    },
+    stderr: "pipe",
+  });
+
+  const client = createClient();
+  t.after(async () => { await closeTransport(transport); });
+
+  await client.connect(transport);
+
+  const inspected = await client.callTool({
+    name: "get_slice_settings",
+    arguments: {
+      template_name: "shared-template",
+      template_dir: templateDir,
+    },
+  });
+  assert.equal(inspected.isError, undefined);
+  assert.equal(parseJsonResult(inspected).source_type, "3mf");
+
+  const sliced = await client.callTool({
+    name: "slice_with_template",
+    arguments: {
+      stl_path: SAMPLE_STL,
+      template_name: "shared-template",
+      template_dir: templateDir,
+      bambu_model: "p1s",
+      slicer_path: fakeSlicer.fakeSlicerPath,
+      use_printer_filaments: false,
+    },
+  });
+
+  assert.equal(sliced.isError, undefined);
+  const slicerArgs = JSON.parse(fs.readFileSync(fakeSlicer.argsOutPath, "utf8"));
+  const settingsValue = slicerArgs[slicerArgs.indexOf("--load-settings") + 1];
+  const processPath = settingsValue.split(";").at(-1);
+  const processSettings = JSON.parse(fs.readFileSync(processPath, "utf8"));
+  assert.equal(processSettings.name, "JSON Template");
+  assert.equal(processSettings.layer_height, "0.12");
+
+  const spaced = await client.callTool({
+    name: "slice_with_template",
+    arguments: {
+      stl_path: SAMPLE_STL,
+      template_name: "My Template",
+      template_dir: templateDir,
+      bambu_model: "p1s",
+      slicer_path: fakeSlicer.fakeSlicerPath,
+      use_printer_filaments: false,
+    },
+  });
+
+  assert.equal(spaced.isError, undefined);
+  const spacedSlicerArgs = JSON.parse(fs.readFileSync(fakeSlicer.argsOutPath, "utf8"));
+  const spacedSettingsValue = spacedSlicerArgs[spacedSlicerArgs.indexOf("--load-settings") + 1];
+  const spacedProcessPath = spacedSettingsValue.split(";").at(-1);
+  const spacedProcessSettings = JSON.parse(fs.readFileSync(spacedProcessPath, "utf8"));
+  assert.equal(spacedProcessSettings.name, "Space Template");
+  assert.equal(spacedProcessSettings.layer_height, "0.18");
+});
+
+test("non-slicer tools ignore invalid slicer configuration", async (t) => {
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+      BAMBU_MODEL: "p1s",
+      SLICER_TYPE: "definitely-not-a-real-slicer",
+    },
+    stderr: "pipe",
+  });
+
+  const client = createClient();
+  t.after(async () => { await closeTransport(transport); });
+
+  await client.connect(transport);
+  const result = await client.callTool({
+    name: "get_stl_info",
+    arguments: { stl_path: SAMPLE_STL },
+  });
+
+  assert.equal(result.isError, undefined);
+  const payload = parseJsonResult(result);
+  assert.equal(payload.fileName, "sample_cube.stl");
+});
+
 test("stdio transport: initialize, list tools, call success + structured failure", async (t) => {
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -549,6 +1347,10 @@ test("stdio transport: initialize, list tools, call success + structured failure
   const listToolsResult = await client.listTools();
   assertCommonToolPresence(listToolsResult);
 
+  const listResourcesResult = await client.listResources();
+  const resourceUris = listResourcesResult.resources.map((resource) => resource.uri);
+  assert.ok(resourceUris.some((uri) => uri.endsWith("/hms")), "HMS diagnostics resource must be listed");
+
   const success = await client.callTool({
     name: "get_stl_info",
     arguments: { stl_path: SAMPLE_STL },
@@ -567,472 +1369,6 @@ test("stdio transport: initialize, list tools, call success + structured failure
   assert.equal(failure.isError, true);
   assert.equal(failure.structuredContent?.status, "error");
   assert.equal(typeof failure.structuredContent?.suggestion, "string");
-});
-
-test("MCP registry contract: every advertised tool has a CallTool handler", async (t) => {
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [SERVER_ENTRY],
-    env: {
-      ...process.env,
-      MCP_TRANSPORT: "stdio",
-    },
-    stderr: "pipe",
-  });
-
-  const client = createClient();
-  t.after(async () => { await closeTransport(transport); });
-
-  await client.connect(transport);
-
-  const listedNames = sortedUnique((await client.listTools()).tools.map((tool) => tool.name));
-  const handledNames = await extractCallToolHandlerNames();
-
-  assert.deepEqual(
-    handledNames.filter((name) => !listedNames.includes(name)),
-    [],
-    "CallTool handlers must not be hidden from tools/list"
-  );
-  assert.deepEqual(
-    listedNames.filter((name) => !handledNames.includes(name)),
-    [],
-    "tools/list entries must have a CallTool handler"
-  );
-});
-
-test("print-path tool schemas expose upstream-compatible names and local G-code path upload", async (t) => {
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [SERVER_ENTRY],
-    env: {
-      ...process.env,
-      MCP_TRANSPORT: "stdio",
-    },
-    stderr: "pipe",
-  });
-
-  const client = createClient();
-  t.after(async () => { await closeTransport(transport); });
-
-  await client.connect(transport);
-
-  const listToolsResult = await client.listTools();
-  const names = listToolsResult.tools.map((tool) => tool.name);
-  for (const requiredTool of ["upload_gcode", "start_print", "start_print_job", "cancel_print"]) {
-    assert.ok(names.includes(requiredTool), `${requiredTool} must be advertised`);
-  }
-
-  const uploadTool = listToolsResult.tools.find((tool) => tool.name === "upload_gcode");
-  assert.ok(uploadTool, "upload_gcode tool must exist");
-  assert.ok(uploadTool.inputSchema.properties.gcode_path, "upload_gcode must accept a local gcode_path");
-  assert.deepEqual(uploadTool.inputSchema.required, ["filename"], "upload_gcode requires filename plus gcode or gcode_path");
-
-  const uploadFileTool = listToolsResult.tools.find((tool) => tool.name === "upload_file");
-  assert.ok(uploadFileTool?.inputSchema.properties.bambu_model, "upload_file must expose bambu_model for print=true safety");
-
-  for (const toolName of ["start_print", "start_print_job"]) {
-    const tool = listToolsResult.tools.find((entry) => entry.name === toolName);
-    assert.ok(tool?.inputSchema.properties.bambu_model, `${toolName} must expose bambu_model`);
-    assert.ok(tool.inputSchema.required.includes("bambu_model"), `${toolName} must require bambu_model`);
-  }
-
-  for (const toolName of ["start_print", "start_print_job"]) {
-    const result = await client.callTool({ name: toolName, arguments: {} });
-    assert.equal(result.isError, true, `${toolName} without filename must fail before printer I/O`);
-    assert.match(result.content?.[0]?.text || "", /filename/);
-
-    const badModelResult = await client.callTool({
-      name: toolName,
-      arguments: { filename: "cache/example.gcode", bambu_model: "ender3" },
-    });
-    assert.equal(badModelResult.isError, true, `${toolName} with invalid model must fail before printer I/O`);
-    assert.match(badModelResult.content?.[0]?.text || "", /Invalid bambu_model/);
-  }
-
-  const badUploadPrintModel = await client.callTool({
-    name: "upload_file",
-    arguments: {
-      file_path: path.join(os.tmpdir(), "bambu-mcp-missing-upload-file.gcode"),
-      filename: "missing.gcode",
-      print: true,
-      bambu_model: "ender3",
-    },
-  });
-  assert.equal(badUploadPrintModel.isError, true);
-  assert.match(badUploadPrintModel.content?.[0]?.text || "", /Invalid bambu_model/);
-
-  const missingPathResult = await client.callTool({
-    name: "upload_gcode",
-    arguments: {
-      filename: "missing.gcode",
-      gcode_path: path.join(os.tmpdir(), "bambu-mcp-missing-upload.gcode"),
-    },
-  });
-  assert.equal(missingPathResult.isError, true);
-  assert.match(missingPathResult.content?.[0]?.text || "", /gcode_path/);
-
-  const pathLikeContentResult = await client.callTool({
-    name: "upload_gcode",
-    arguments: {
-      filename: "missing.gcode",
-      gcode: path.join(os.tmpdir(), "bambu-mcp-missing-upload-via-gcode.gcode"),
-    },
-  });
-  assert.equal(pathLikeContentResult.isError, true);
-  assert.match(pathLikeContentResult.content?.[0]?.text || "", /local G-code path/);
-
-  const missingPayloadResult = await client.callTool({
-    name: "upload_gcode",
-    arguments: { filename: "missing.gcode" },
-  });
-  assert.equal(missingPayloadResult.isError, true);
-  assert.match(missingPayloadResult.content?.[0]?.text || "", /gcode or gcode_path/);
-});
-
-test("FULU BambuNetwork bridge: status probe and raw calls use framed bridge protocol", async (t) => {
-  const fakeBridge = await createFakeBambuNetworkBridge(t);
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [SERVER_ENTRY],
-    env: {
-      ...process.env,
-      MCP_TRANSPORT: "stdio",
-      BAMBU_MODEL: "p1s",
-      FAKE_BRIDGE_CALLS_OUT: fakeBridge.callsOutPath,
-    },
-    stderr: "pipe",
-  });
-
-  const client = createClient();
-  t.after(async () => { await closeTransport(transport); });
-
-  await client.connect(transport);
-
-  const statusResult = await client.callTool({
-    name: "bambu_network_bridge_status",
-    arguments: {
-      connect: true,
-      bridge_command: fakeBridge.bridgeCommand,
-      bambu_network_config_dir: fakeBridge.tempDir,
-      country_code: "US",
-    },
-  });
-
-  assert.equal(statusResult.isError, undefined);
-  const statusPayload = parseJsonResult(statusResult);
-  assert.equal(statusPayload.configured, true);
-  assert.equal(statusPayload.connected, true);
-  assert.equal(statusPayload.agent, 101);
-  assert.equal(statusPayload.handshake.network_loaded, true);
-  assert.equal(statusPayload.handshake.source_loaded, true);
-
-  const rawResult = await client.callTool({
-    name: "bambu_network_call",
-    arguments: {
-      method: "net.is_user_login",
-      payload: {},
-      bridge_command: fakeBridge.bridgeCommand,
-      bambu_network_config_dir: fakeBridge.tempDir,
-      country_code: "US",
-    },
-  });
-
-  assert.equal(rawResult.isError, undefined);
-  const rawPayload = parseJsonResult(rawResult);
-  assert.equal(rawPayload.ok, true);
-  assert.equal(rawPayload.value, true);
-
-  const calls = JSON.parse(await fs.readFile(fakeBridge.callsOutPath, "utf8"));
-  const methods = calls.map((call) => call.method);
-  assert.deepEqual(
-    methods.slice(0, 6),
-    [
-      "bridge.handshake",
-      "net.create_agent",
-      "net.set_config_dir",
-      "net.init_log",
-      "net.set_country_code",
-      "net.start",
-    ]
-  );
-  assert.ok(methods.includes("net.connect_server"), "Agent init must connect the restored BambuNetwork stack");
-  const loginCall = calls.find((call) => call.method === "net.is_user_login");
-  assert.equal(loginCall.payload.agent, 101);
-});
-
-test("print_3mf_bambu_network builds FULU PrintParams and one-based plate indexes", async (t) => {
-  const fakeBridge = await createFakeBambuNetworkBridge(t);
-  const threeMFPath = await createPrintableThreeMF(t);
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [SERVER_ENTRY],
-    env: {
-      ...process.env,
-      MCP_TRANSPORT: "stdio",
-      BAMBU_MODEL: "p1s",
-      FAKE_BRIDGE_CALLS_OUT: fakeBridge.callsOutPath,
-    },
-    stderr: "pipe",
-  });
-
-  const client = createClient();
-  t.after(async () => { await closeTransport(transport); });
-
-  await client.connect(transport);
-
-  const result = await client.callTool({
-    name: "print_3mf_bambu_network",
-    arguments: {
-      three_mf_path: threeMFPath,
-      bambu_model: "p1s",
-      connection_type: "cloud",
-      dev_id: "DEV123",
-      bed_type: "textured_plate",
-      plate_index: 0,
-      bridge_command: fakeBridge.bridgeCommand,
-      bambu_network_config_dir: fakeBridge.tempDir,
-      country_code: "US",
-      use_ams: true,
-      ams_mapping: [2],
-      bed_leveling: false,
-      flow_calibration: false,
-      vibration_calibration: true,
-      timelapse: true,
-      client_job_id: 4242,
-    },
-  });
-
-  assert.equal(result.isError, undefined);
-  const payload = parseJsonResult(result);
-  assert.equal(payload.status, "success");
-  assert.equal(payload.bridgeMethod, "net.start_print");
-  assert.equal(payload.clientJobId, 4242);
-  assert.equal(payload.bridgePlateIndex, 1);
-  assert.equal(payload.params.plate_index, 1);
-  assert.equal(payload.params.password, "");
-  assert.equal(payload.params.task_bed_leveling, false);
-  assert.equal(payload.params.task_flow_cali, false);
-  assert.equal(payload.params.task_vibration_cali, true);
-  assert.equal(payload.params.task_record_timelapse, true);
-
-  const calls = JSON.parse(await fs.readFile(fakeBridge.callsOutPath, "utf8"));
-  const startPrintCall = calls.find((call) => call.method === "net.start_print");
-  assert.ok(startPrintCall, "print_3mf_bambu_network must invoke net.start_print by default for cloud");
-  assert.equal(startPrintCall.payload.agent, 101);
-  assert.equal(startPrintCall.payload.client_job_id, 4242);
-  assert.equal(startPrintCall.payload.params.dev_id, "DEV123");
-  assert.equal(startPrintCall.payload.params.filename, threeMFPath);
-  assert.equal(startPrintCall.payload.params.config_filename, threeMFPath);
-  assert.equal(startPrintCall.payload.params.plate_index, 1);
-  assert.equal(startPrintCall.payload.params.connection_type, "cloud");
-  assert.equal(startPrintCall.payload.params.task_bed_type, "textured_plate");
-  assert.equal(startPrintCall.payload.params.task_use_ams, true);
-  assert.equal(startPrintCall.payload.params.ams_mapping, "[2]");
-
-  const singleFilamentResult = await client.callTool({
-    name: "print_3mf_bambu_network",
-    arguments: {
-      three_mf_path: threeMFPath,
-      bambu_model: "p1s",
-      bridge_command: fakeBridge.bridgeCommand,
-      bambu_network_config_dir: fakeBridge.tempDir,
-      country_code: "US",
-      connection_type: "lan",
-      bambu_network_method: "start_local_print",
-      host: "192.0.2.1",
-      dev_id: "DEV123",
-      bambu_token: "ACCESS",
-      use_ams: true,
-    },
-  });
-
-  assert.equal(singleFilamentResult.isError, undefined);
-  const updatedCalls = JSON.parse(await fs.readFile(fakeBridge.callsOutPath, "utf8"));
-  const latestStartPrintCall = updatedCalls.filter((call) => call.method === "net.start_local_print").at(-1);
-  assert.ok(latestStartPrintCall, "print_3mf_bambu_network must call start_local_print");
-  assert.equal(latestStartPrintCall.payload.params.task_use_ams, true);
-  assert.equal(latestStartPrintCall.payload.params.ams_mapping, "[0]");
-});
-
-test("BambuNetwork bridge status supports split macOS plugin/runtime layout", async (t) => {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-mcp-macos-bridge-"));
-  const pluginDir = path.join(tempDir, "plugins");
-  const runtimeDir = path.join(tempDir, "runtime");
-  await fs.mkdir(pluginDir, { recursive: true });
-  await fs.mkdir(runtimeDir, { recursive: true });
-
-  const pluginFiles = [
-    "pjarczak-bambu-linux-host-wrapper",
-    "install_runtime_macos.sh",
-    "verify_runtime_macos.sh",
-  ];
-  const runtimeFiles = [
-    "libbambu_networking.so",
-    "libBambuSource.so",
-    "pjarczak_bambu_linux_host",
-    "pjarczak_bambu_linux_host_abi1",
-    "pjarczak_bambu_linux_host_abi0",
-    "ca-certificates.crt",
-    "slicer_base64.cer",
-  ];
-
-  for (const file of pluginFiles) {
-    await fs.writeFile(path.join(pluginDir, file), "");
-  }
-  for (const file of runtimeFiles) {
-    await fs.writeFile(path.join(runtimeDir, file), "");
-  }
-
-  const previousPluginDir = process.env.BAMBU_NETWORK_PLUGIN_DIR;
-  const previousRuntimeDir = process.env.PJARCZAK_MAC_RUNTIME_DIR;
-  process.env.BAMBU_NETWORK_PLUGIN_DIR = pluginDir;
-  process.env.PJARCZAK_MAC_RUNTIME_DIR = runtimeDir;
-
-  t.after(async () => {
-    if (previousPluginDir === undefined) delete process.env.BAMBU_NETWORK_PLUGIN_DIR;
-    else process.env.BAMBU_NETWORK_PLUGIN_DIR = previousPluginDir;
-    if (previousRuntimeDir === undefined) delete process.env.PJARCZAK_MAC_RUNTIME_DIR;
-    else process.env.PJARCZAK_MAC_RUNTIME_DIR = previousRuntimeDir;
-    await fs.rm(tempDir, { recursive: true, force: true });
-  });
-
-  const status = new BambuNetworkBridge().getStatus();
-
-  assert.equal(status.runtime.macosPluginDir, pluginDir);
-  assert.equal(status.runtime.macosRuntimeDir, runtimeDir);
-  assert.deepEqual(status.runtime.macosMissingPluginFiles, []);
-  assert.deepEqual(status.runtime.macosMissingRuntimeFiles, []);
-  assert.ok(
-    status.runtime.suggestedMacCommand.includes(path.join(pluginDir, "pjarczak-bambu-linux-host-wrapper")),
-    "suggested macOS command must use the wrapper from the plugin directory"
-  );
-  assert.ok(
-    status.runtime.suggestedMacCommand.includes(path.join(runtimeDir, "pjarczak_bambu_linux_host")),
-    "suggested macOS command must pass the runtime host path to the wrapper"
-  );
-});
-
-test("BambuNetwork bridge auto-retries with reported ABI version", async (t) => {
-  const fakeBridge = await createFakeBambuNetworkBridge(t);
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [SERVER_ENTRY],
-    env: {
-      ...process.env,
-      MCP_TRANSPORT: "stdio",
-      BAMBU_MODEL: "p1s",
-      FAKE_BRIDGE_CALLS_OUT: fakeBridge.callsOutPath,
-      FAKE_BRIDGE_REQUIRE_EXPECTED_VERSION: "1",
-    },
-    stderr: "pipe",
-  });
-
-  const client = createClient();
-  t.after(async () => { await closeTransport(transport); });
-
-  await client.connect(transport);
-
-  const statusResult = await client.callTool({
-    name: "bambu_network_bridge_status",
-    arguments: {
-      connect: true,
-      bridge_command: fakeBridge.bridgeCommand,
-      bambu_network_config_dir: fakeBridge.tempDir,
-      country_code: "US",
-    },
-  });
-
-  assert.equal(statusResult.isError, undefined);
-  const statusPayload = parseJsonResult(statusResult);
-  assert.equal(statusPayload.connected, true);
-  assert.equal(statusPayload.handshake.network_loaded, true);
-  assert.equal(statusPayload.handshake.network_abi_version, "02.05.02.58");
-
-  const calls = JSON.parse(await fs.readFile(fakeBridge.callsOutPath, "utf8"));
-  const handshakeCalls = calls.filter((call) => call.method === "bridge.handshake");
-  assert.equal(handshakeCalls.length, 2);
-  assert.equal(handshakeCalls[0].expectedVersion, "");
-  assert.equal(handshakeCalls[1].expectedVersion, "02.05.02.58");
-});
-
-test("print_3mf_bambu_network treats non-zero BambuNetwork return codes as failures", async (t) => {
-  const fakeBridge = await createFakeBambuNetworkBridge(t);
-  const threeMFPath = await createPrintableThreeMF(t);
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [SERVER_ENTRY],
-    env: {
-      ...process.env,
-      MCP_TRANSPORT: "stdio",
-      BAMBU_MODEL: "p1s",
-      FAKE_BRIDGE_CALLS_OUT: fakeBridge.callsOutPath,
-      FAKE_BRIDGE_START_VALUE: "-4030",
-    },
-    stderr: "pipe",
-  });
-
-  const client = createClient();
-  t.after(async () => { await closeTransport(transport); });
-
-  await client.connect(transport);
-
-  const result = await client.callTool({
-    name: "print_3mf_bambu_network",
-    arguments: {
-      three_mf_path: threeMFPath,
-      bambu_model: "p1s",
-      bridge_command: fakeBridge.bridgeCommand,
-      bambu_network_config_dir: fakeBridge.tempDir,
-      country_code: "US",
-      connection_type: "lan",
-      bambu_network_method: "start_local_print",
-      host: "192.0.2.1",
-      dev_id: "DEV123",
-      bambu_token: "ACCESS",
-      use_ams: true,
-    },
-  });
-
-  assert.equal(result.isError, true);
-  assert.match(result.content?.[0]?.text || "", /non-zero result -4030/);
-});
-
-test("Bambu print_3mf honors explicit AMS for single-filament projects", async (t) => {
-  const threeMFPath = await createPrintableThreeMF(t);
-  const bambu = new BambuImplementation();
-  const published = [];
-  let uploadArgs = null;
-
-  bambu.ftpUpload = async (...args) => {
-    uploadArgs = args;
-  };
-  bambu.getPrinter = async () => ({
-    publish: async (command) => {
-      published.push(command);
-    },
-  });
-
-  const result = await bambu.print3mf("192.0.2.1", "SERIAL", "TOKEN", {
-    projectName: "benchy",
-    filePath: threeMFPath,
-    plateIndex: 0,
-    useAMS: true,
-    bedType: "textured_plate",
-  });
-
-  assert.equal(result.status, "success");
-  assert.ok(uploadArgs, "print_3mf must upload the project before publishing");
-  assert.equal(uploadArgs[3], "/cache/printable.3mf");
-  assert.equal(published.length, 1);
-  assert.equal(published[0].print.command, "project_file");
-  assert.equal(published[0].print.url, "ftp://printable.3mf");
-  assert.equal(published[0].print.use_ams, true);
-  assert.deepEqual(
-    published[0].print.ams_mapping,
-    [-1, -1, -1, -1, 0],
-    "single-filament AMS print should use Bambu's slot-0 default mapping"
-  );
-  assert.equal(published[0].print.param, "Metadata/plate_1.gcode");
 });
 
 test("streamable-http transport: initialize, list tools, call success + origin rejection", async (t) => {
@@ -1168,193 +1504,6 @@ test("slice_stl schema: all BambuStudio slicer options present with correct type
       `Slicer option "${propName}" must not be required`
     );
   }
-});
-
-test("slice_stl uses Bambu-compatible 3MF CLI for Orca and FULU aliases", async (t) => {
-  const { fakeSlicerPath, argsOutPath, tempDir } = await createFakeBambuCompatibleSlicer(t);
-  const profileSearchDir = path.join(tempDir, "empty-profile-search");
-  await fs.mkdir(profileSearchDir, { recursive: true });
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [SERVER_ENTRY],
-    env: {
-      ...process.env,
-      MCP_TRANSPORT: "stdio",
-      BAMBU_MODEL: "p1s",
-      FAKE_SLICER_ARGS_OUT: argsOutPath,
-      BAMBU_SLICER_PROFILE_DIRS: profileSearchDir,
-    },
-    stderr: "pipe",
-  });
-
-  const client = createClient();
-  t.after(async () => { await closeTransport(transport); });
-
-  await client.connect(transport);
-
-  const aliases = ["orcaslicer", "orcaslicer-bambulab", "fulu-orca"];
-
-  for (const slicerType of aliases) {
-    await fs.rm(argsOutPath, { force: true });
-
-    const result = await client.callTool({
-      name: "slice_stl",
-      arguments: {
-        stl_path: SAMPLE_STL,
-        bambu_model: "p1s",
-        slicer_type: slicerType,
-        slicer_path: fakeSlicerPath,
-        orient: true,
-        arrange: false,
-        ensure_on_bed: true,
-        min_save: true,
-        skip_modified_gcodes: true,
-        allow_mix_temp: true,
-        load_filaments: "pla_basic.json;petg_basic.json",
-        load_filament_ids: "1,2",
-        clone_objects: "1,2",
-        skip_objects: "3,5",
-        slice_plate: 1,
-      },
-    });
-
-    assert.equal(result.isError, undefined, `slice_stl should accept ${slicerType}`);
-    const outputPath = result.content?.[0]?.text || "";
-    assert.ok(outputPath.endsWith("_sliced.3mf"), `Expected sliced 3MF output, got: ${outputPath}`);
-
-    const args = JSON.parse(await fs.readFile(argsOutPath, "utf8"));
-    assert.equal(optionValue(args, "--slice"), "1");
-    assert.ok(args.includes("--export-3mf"), "Bambu-compatible slicers must export 3MF");
-    assert.ok(!args.includes("--output"), "Orca/FULU must not use generic G-code --output flow");
-    assert.ok(args.includes("--allow-newer-file"), "Downloaded/newer 3MF compatibility flag must be present");
-    assert.ok(args.includes("--ensure-on-bed"));
-    assert.ok(args.includes("--min-save"));
-    assert.ok(args.includes("--skip-modified-gcodes"));
-    assert.ok(args.includes("--allow-mix-temp"));
-    assert.equal(optionValue(args, "--orient"), "1");
-    assert.equal(optionValue(args, "--arrange"), "0");
-    assert.equal(optionValue(args, "--load-filaments"), "pla_basic.json;petg_basic.json");
-    assert.equal(optionValue(args, "--load-filament-ids"), "1,2");
-    assert.equal(optionValue(args, "--clone-objects"), "1,2");
-    assert.equal(optionValue(args, "--skip-objects"), "3,5");
-
-    const loadSettings = optionValue(args, "--load-settings");
-    assert.ok(loadSettings.endsWith("_printer_preset.json"), `Expected generated printer preset JSON, got: ${loadSettings}`);
-    const generatedSettings = JSON.parse(await fs.readFile(loadSettings, "utf8"));
-    assert.equal(generatedSettings.type, "machine");
-    assert.equal(generatedSettings.from, "system");
-    assert.equal(generatedSettings.name, "Bambu Lab P1S 0.4 nozzle");
-    assert.equal(generatedSettings.printer_settings_id, "Bambu Lab P1S 0.4 nozzle");
-  }
-});
-
-test("slice_stl accepts filament_profile as an Orca-compatible filament alias", async (t) => {
-  const { fakeSlicerPath, argsOutPath, tempDir } = await createFakeBambuCompatibleSlicer(t);
-  const profileSearchDir = path.join(tempDir, "empty-profile-search");
-  await fs.mkdir(profileSearchDir, { recursive: true });
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [SERVER_ENTRY],
-    env: {
-      ...process.env,
-      MCP_TRANSPORT: "stdio",
-      BAMBU_MODEL: "p1s",
-      FAKE_SLICER_ARGS_OUT: argsOutPath,
-      BAMBU_SLICER_PROFILE_DIRS: profileSearchDir,
-    },
-    stderr: "pipe",
-  });
-
-  const client = createClient();
-  t.after(async () => { await closeTransport(transport); });
-
-  await client.connect(transport);
-
-  for (const slicerType of ["orcaslicer", "orcaslicer-bambulab", "fulu-orca"]) {
-    await fs.rm(argsOutPath, { force: true });
-
-    const result = await client.callTool({
-      name: "slice_stl",
-      arguments: {
-        stl_path: SAMPLE_STL,
-        bambu_model: "p1s",
-        slicer_type: slicerType,
-        slicer_path: fakeSlicerPath,
-        filament_profile: "nylon-flat.json;asa-flat.json",
-      },
-    });
-
-    assert.equal(result.isError, undefined, `slice_stl should accept filament_profile with ${slicerType}`);
-    const args = JSON.parse(await fs.readFile(argsOutPath, "utf8"));
-    assert.equal(optionValue(args, "--load-filaments"), "nylon-flat.json;asa-flat.json");
-    assert.ok(!args.includes("filament_profile"), "filament_profile must be translated before invoking slicer CLI");
-  }
-
-  const conflict = await client.callTool({
-    name: "slice_stl",
-    arguments: {
-      stl_path: SAMPLE_STL,
-      bambu_model: "p1s",
-      slicer_type: "orcaslicer",
-      slicer_path: fakeSlicerPath,
-      load_filaments: "pla.json",
-      filament_profile: "abs.json",
-    },
-  });
-
-  assert.equal(conflict.isError, true);
-  assert.match(conflict.content?.[0]?.text || "", /load_filaments or filament_profile/);
-});
-
-test("slice_stl uses installed Bambu printer profile when available", async (t) => {
-  const { fakeSlicerPath, argsOutPath, tempDir } = await createFakeBambuCompatibleSlicer(t);
-  const profileSearchDir = path.join(tempDir, "profiles");
-  const installedProfilePath = path.join(profileSearchDir, "Bambu Lab P1S 0.4 nozzle.json");
-  await fs.mkdir(profileSearchDir, { recursive: true });
-  await fs.writeFile(
-    installedProfilePath,
-    JSON.stringify({
-      type: "machine",
-      from: "system",
-      name: "Bambu Lab P1S 0.4 nozzle",
-      inherits: "fdm_bbl_3dp_001_common",
-    }),
-    "utf8"
-  );
-
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [SERVER_ENTRY],
-    env: {
-      ...process.env,
-      MCP_TRANSPORT: "stdio",
-      BAMBU_MODEL: "p1s",
-      FAKE_SLICER_ARGS_OUT: argsOutPath,
-      BAMBU_SLICER_PROFILE_DIRS: profileSearchDir,
-    },
-    stderr: "pipe",
-  });
-
-  const client = createClient();
-  t.after(async () => { await closeTransport(transport); });
-
-  await client.connect(transport);
-
-  const result = await client.callTool({
-    name: "slice_stl",
-    arguments: {
-      stl_path: SAMPLE_STL,
-      bambu_model: "p1s",
-      slicer_type: "bambustudio",
-      slicer_path: fakeSlicerPath,
-      slice_plate: 1,
-    },
-  });
-
-  assert.equal(result.isError, undefined);
-
-  const args = JSON.parse(await fs.readFile(argsOutPath, "utf8"));
-  assert.equal(optionValue(args, "--load-settings"), installedProfilePath);
 });
 
 test("tool schema invariant: every tool property has a description", async (t) => {

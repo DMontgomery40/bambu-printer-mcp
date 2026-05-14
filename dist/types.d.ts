@@ -55,3 +55,38 @@ export interface ThreeMFData {
     };
     slicerConfig?: Partial<BambuSlicerConfig>;
 }
+export interface CollarCharmRole {
+    role: 'inner' | 'outer';
+    objectIndex: number;
+    name: string;
+    area: number;
+    filamentPosition: number;
+}
+export interface CollarCharmAnalysis {
+    plateIndex: number;
+    usedFilamentPositions: number[];
+    amsSlots: number[];
+    roles: CollarCharmRole[];
+}
+export interface ThreeMFFilamentRequirement {
+    filamentPosition: number;
+    filamentId: number;
+    tray_info_idx: string | null;
+    type: string | null;
+    color: string | null;
+}
+export interface ThreeMFAmsRequirements {
+    plateIndex: number;
+    usedFilamentPositions: number[];
+    filaments: ThreeMFFilamentRequirement[];
+}
+export interface ThreeMFPlateObject {
+    id: number;
+    name: string;
+    area: number | null;
+    bbox: unknown;
+}
+export interface ThreeMFPlateObjects {
+    plateIndex: number;
+    objects: ThreeMFPlateObject[];
+}
