@@ -1923,11 +1923,7 @@ class BambuPrinterMCPServer {
                   type: "string",
                   description: "Optional template directory override when resolving template_name."
                 }
-              },
-              anyOf: [
-                { required: ["source_path"] },
-                { required: ["template_name"] }
-              ]
+              }
             }
           },
           {
@@ -2179,17 +2175,13 @@ class BambuPrinterMCPServer {
               type: "object",
               properties: {
                 filename: { type: "string", description: "Name for the file on the printer" },
-                gcode: { type: "string", description: "G-code content to upload, or a readable local .gcode path. For large files, prefer gcode_path." },
-                gcode_path: { type: "string", description: "Local path to a .gcode file to upload. This avoids sending large G-code bodies through the MCP request." },
+                gcode: { type: "string", description: "G-code content to upload, or a readable local .gcode path. Required unless gcode_path is provided. For large files, prefer gcode_path." },
+                gcode_path: { type: "string", description: "Local path to a .gcode file to upload. Required unless gcode is provided. This avoids sending large G-code bodies through the MCP request." },
                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
                 bambu_token: { type: "string", description: "Access token (default: value from env)" }
               },
-              required: ["filename"],
-              anyOf: [
-                { required: ["gcode"] },
-                { required: ["gcode_path"] }
-              ]
+              required: ["filename"]
             }
           },
           {
@@ -2519,8 +2511,8 @@ class BambuPrinterMCPServer {
             inputSchema: {
               type: "object",
               properties: {
-                source_path: { type: "string", description: "Path to a prepared collar charm .3mf project or sliced 3MF." },
-                template_name: { type: "string", description: "Named collar charm template from the local registry. Resolves source_path automatically." },
+                source_path: { type: "string", description: "Path to a prepared collar charm .3mf project or sliced 3MF. Required unless template_name is provided." },
+                template_name: { type: "string", description: "Named collar charm template from the local registry. Required unless source_path is provided; resolves source_path automatically." },
                 template_dir: { type: "string", description: "Optional template directory override when resolving template_name." },
                 bambu_model: {
                   type: "string",
@@ -2542,10 +2534,7 @@ class BambuPrinterMCPServer {
                 slicer_profile: { type: "string", description: "Path to the slicer profile/config file for auto-slicing (optional)." },
                 nozzle_diameter: { type: "string", description: "Nozzle diameter in mm for auto-slicing (default: 0.4)" }
               },
-              anyOf: [
-                { required: ["source_path", "bambu_model"] },
-                { required: ["template_name", "bambu_model"] }
-              ]
+              required: ["bambu_model"]
             }
           },
           {
