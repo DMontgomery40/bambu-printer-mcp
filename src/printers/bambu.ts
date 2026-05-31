@@ -42,6 +42,8 @@ const CLIENT_CREDS = loadClientCreds();
 const COMMAND_SETTLE_MS = 300;
 
 const MODEL_ID_TO_NAME: Record<string, string> = {
+  O1C: "H2C",
+  O1C2: "H2C",
   O1D: "H2D",
   O1E: "H2D Pro",
   O1S: "H2S",
@@ -54,9 +56,16 @@ const MODEL_ID_TO_NAME: Record<string, string> = {
   C13: "X1E",
 };
 
+const H2_MODEL_NAMES = new Set(["h2", "h2c", "h2d", "h2dpro", "h2d pro", "h2s"]);
+
+function isH2ModelName(model: unknown): boolean {
+  return H2_MODEL_NAMES.has(String(model ?? "").trim().toLowerCase().replace(/\s+/g, " "));
+}
+
 interface BambuPrintOptionsInternal {
   projectName: string;
   filePath: string;
+  bambuModel?: string;
   useAMS?: boolean;
   plateIndex?: number;
   bedType?: string;
@@ -128,7 +137,7 @@ class TolerantBambuClient extends BambuClient {
   }
 
   /**
-   * H2S/H2D printers don't respond to get_version with module info.
+   * H2-series printers don't respond to get_version with module info.
    * Infer model from serial number prefix so downstream code (Job, status
    * parsing, etc.) has a valid printerModel instead of undefined.
    */
@@ -205,7 +214,7 @@ class TolerantBambuClient extends BambuClient {
         reject(err);
       });
     });
-    // H2S/H2D printers don't respond to get_version with module info.
+    // H2-series printers don't respond to get_version with module info.
     // Infer model from serial number prefix so downstream code works.
     if (!this.data.model) {
       const inferred = this.inferModelFromSerial();
@@ -562,9 +571,12 @@ export class BambuImplementation {
     let remoteFileName = path.basename(options.filePath);
     remoteFileName = remoteFileName.replace(/\.gcode\.3mf\.gcode\.3mf$/i, ".gcode.3mf");
 
-    // H2S/H2D land files at the FTP root and reference them via ftp:///<name>.
+    // H2-series printers land files at the FTP root and reference them via ftp:///<name>.
     // P1/A1/X1 use /cache/<name> and file:///sdcard/cache/<name>.
-    const isH2 = serial.startsWith("093") || serial.startsWith("094");
+    const isH2 =
+      serial.startsWith("093") ||
+      serial.startsWith("094") ||
+      isH2ModelName(options.bambuModel);
     const remoteProjectPath = isH2 ? remoteFileName : `cache/${remoteFileName}`;
     const remoteUploadPath = isH2 ? `/${remoteFileName}` : `/cache/${remoteFileName}`;
     const projectUrl = isH2
@@ -577,7 +589,7 @@ export class BambuImplementation {
     // Pre-sliced .gcode.3mf files: routing depends on firmware generation.
     // P1/A1/X1 series: project_file returns 405004002 for .gcode.3mf (firmware
     // doesn't recognise the container), so use gcode_file instead.
-    // H2S/H2D: gcode_file is not supported; project_file works because the
+    // H2-series: gcode_file is not supported; project_file works because the
     // firmware can open the zip and find Metadata/plate_<n>.gcode directly.
     if (options.filePath.toLowerCase().endsWith(".gcode.3mf")) {
       if (!isH2) {
@@ -589,7 +601,7 @@ export class BambuImplementation {
           remoteProjectPath,
         };
       }
-      // H2S/H2D: fall through to project_file path below
+      // H2-series: fall through to project_file path below
     }
 
     const projectMetadata = await this.resolveProjectFileMetadata(
@@ -1210,7 +1222,7 @@ export class BambuImplementation {
    *     [16..16+payloadSize] JPEG (FF D8 ... FF D9)
    *
    * Verified models per upstream docs: A1, A1 mini, P1S, P1P. X1/X1C/X1E
-   * and P2S use RTSP on port 322 instead -- not implemented yet. H2/H2S/H2D
+   * and P2S use RTSP on port 322 instead. H2/H2S/H2D/H2C
    * are not documented; we fail fast rather than guess at the protocol.
    *
    * Read-only; no confirm gate. Default 8s timeout for cold-start latency.

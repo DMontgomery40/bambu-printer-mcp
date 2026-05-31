@@ -25,7 +25,8 @@ const DEFAULT_BAMBU_MODEL = process.env.BAMBU_PRINTER_MODEL?.trim().toLowerCase(
     "";
 const DEFAULT_BED_TYPE = process.env.BED_TYPE?.trim().toLowerCase() || "textured_plate";
 const DEFAULT_NOZZLE_DIAMETER = process.env.NOZZLE_DIAMETER?.trim() || "0.4";
-const VALID_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s"];
+const VALID_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s", "h2c"];
+const H2_BAMBU_MODELS = new Set(["h2d", "h2s", "h2c"]);
 const VALID_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"];
 const VALID_BAMBUSTUDIO_CLI_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"];
 // Map model IDs to BambuStudio --load-machine preset names
@@ -39,6 +40,7 @@ const BAMBU_MODEL_PRESETS = {
     a1mini: (n) => `Bambu Lab A1 mini ${n} nozzle`,
     h2d: (n) => `Bambu Lab H2D ${n} nozzle`,
     h2s: (n) => `Bambu Lab H2S ${n} nozzle`,
+    h2c: (n) => `Bambu Lab H2C ${n} nozzle`,
 };
 const FILAMENT_PROFILE_DIR = "/Applications/BambuStudio.app/Contents/Resources/profiles/BBL/filament";
 const FILAMENT_MODEL_CODES = {
@@ -51,6 +53,7 @@ const FILAMENT_MODEL_CODES = {
     a1mini: "A1M",
     h2d: "H2D",
     h2s: "H2S",
+    h2c: "H2C",
 };
 const COLLAR_CHARM_POLICY = getCollarCharmRolePolicy();
 let filamentProfileIndexCache = null;
@@ -794,6 +797,7 @@ class BambuPrinterMCPServer {
                                 { const: "a1mini", title: "A1 Mini" },
                                 { const: "h2d", title: "H2D" },
                                 { const: "h2s", title: "H2S" },
+                                { const: "h2c", title: "H2C" },
                             ],
                         },
                     },
@@ -1311,7 +1315,7 @@ class BambuPrinterMCPServer {
                                 },
                                 bambu_model: {
                                     type: "string",
-                                    enum: ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s"],
+                                    enum: [...VALID_BAMBU_MODELS],
                                     description: "Optional model hint used to resolve Bambu/Orca filament profile JSONs for each tray."
                                 },
                                 nozzle_diameter: {
@@ -1331,7 +1335,7 @@ class BambuPrinterMCPServer {
                                 plate_index: { type: "number", description: "0-based plate index to inspect (default: 0)" },
                                 bambu_model: {
                                     type: "string",
-                                    enum: ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s"],
+                                    enum: [...VALID_BAMBU_MODELS],
                                     description: "Optional model hint used to resolve Bambu/Orca filament profile JSONs for each tray."
                                 },
                                 nozzle_diameter: { type: "string", description: "Nozzle diameter in mm (default: 0.4)" },
@@ -1472,7 +1476,7 @@ class BambuPrinterMCPServer {
                                 template_dir: { type: "string", description: "Optional template directory override when resolving template_name." },
                                 bambu_model: {
                                     type: "string",
-                                    enum: ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s"],
+                                    enum: [...VALID_BAMBU_MODELS],
                                     description: "REQUIRED: Bambu Lab printer model. Ask the user if not known. Using the wrong model can damage the printer."
                                 },
                                 slicer_type: {
@@ -1518,7 +1522,7 @@ class BambuPrinterMCPServer {
                                 stl_path: { type: "string", description: "Path to the STL or 3MF file to slice" },
                                 bambu_model: {
                                     type: "string",
-                                    enum: ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s"],
+                                    enum: [...VALID_BAMBU_MODELS],
                                     description: "REQUIRED: Bambu Lab printer model. Ask the user if not known. Using the wrong model can damage the printer."
                                 },
                                 slicer_type: {
@@ -1615,7 +1619,7 @@ class BambuPrinterMCPServer {
                                 three_mf_path: { type: "string", description: "Path to the 3MF file to print; unsliced 3MFs are auto-sliced before sending." },
                                 bambu_model: {
                                     type: "string",
-                                    enum: ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s"],
+                                    enum: [...VALID_BAMBU_MODELS],
                                     description: "REQUIRED: Bambu Lab printer model. Ask the user if not known. Using the wrong model can damage the printer."
                                 },
                                 connection_type: { type: "string", enum: ["cloud", "lan"], description: "BambuNetwork connection type to put in FULU PrintParams; cloud uses restored internet printing, lan uses local bridge printing." },
@@ -1730,7 +1734,7 @@ class BambuPrinterMCPServer {
                                 print: { type: "boolean", description: "Start printing after upload (default: false)" },
                                 bambu_model: {
                                     type: "string",
-                                    enum: ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s"],
+                                    enum: [...VALID_BAMBU_MODELS],
                                     description: "Required when print is true. Bambu Lab printer model used as a safety confirmation before starting the uploaded file."
                                 },
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
@@ -1749,7 +1753,7 @@ class BambuPrinterMCPServer {
                                 filename: { type: "string", description: "Name of the file to print" },
                                 bambu_model: {
                                     type: "string",
-                                    enum: ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s"],
+                                    enum: [...VALID_BAMBU_MODELS],
                                     description: "REQUIRED: Bambu Lab printer model. Ask the user if not known. Starting G-code for the wrong model can damage the printer."
                                 },
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
@@ -1768,7 +1772,7 @@ class BambuPrinterMCPServer {
                                 filename: { type: "string", description: "Name of the file to print" },
                                 bambu_model: {
                                     type: "string",
-                                    enum: ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s"],
+                                    enum: [...VALID_BAMBU_MODELS],
                                     description: "REQUIRED: Bambu Lab printer model. Ask the user if not known. Starting G-code for the wrong model can damage the printer."
                                 },
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
@@ -1981,7 +1985,7 @@ class BambuPrinterMCPServer {
                                 three_mf_path: { type: "string", description: "Path to the 3MF file to print" },
                                 bambu_model: {
                                     type: "string",
-                                    enum: ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s"],
+                                    enum: [...VALID_BAMBU_MODELS],
                                     description: "REQUIRED: Bambu Lab printer model. Ask the user if not known. Using the wrong model can damage the printer."
                                 },
                                 connection_mode: {
@@ -2051,8 +2055,8 @@ class BambuPrinterMCPServer {
                                 template_dir: { type: "string", description: "Optional template directory override when resolving template_name." },
                                 bambu_model: {
                                     type: "string",
-                                    enum: ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s"],
-                                    description: "REQUIRED: Bambu Lab printer model. H2D and H2S are the primary intended paths."
+                                    enum: [...VALID_BAMBU_MODELS],
+                                    description: "REQUIRED: Bambu Lab printer model. H2D, H2S, and H2C are the primary intended paths."
                                 },
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
@@ -2590,7 +2594,7 @@ class BambuPrinterMCPServer {
                             console.warn("Could not check/slice 3MF, proceeding with original:", sliceCheckErr.message);
                         }
                         const parsed3MFData = await parse3MF(threeMFPath);
-                        const isH2Print = printModel === "h2s" || printModel === "h2d";
+                        const isH2Print = H2_BAMBU_MODELS.has(printModel);
                         let parsedAmsMapping;
                         if (!isH2Print && parsed3MFData.slicerConfig?.ams_mapping) {
                             const slots = normalizeAmsMappingObject(parsed3MFData.slicerConfig.ams_mapping);
@@ -2661,6 +2665,7 @@ class BambuPrinterMCPServer {
                         result = await this.bambu.print3mf(host, bambuSerial, bambuToken, {
                             projectName,
                             filePath: threeMFPath,
+                            bambuModel: printModel,
                             plateIndex,
                             useAMS: useAMS,
                             amsMapping: finalAmsMapping,
@@ -2696,6 +2701,7 @@ class BambuPrinterMCPServer {
                         result = await this.bambu.print3mf(host, bambuSerial, bambuToken, {
                             projectName,
                             filePath: preparedThreeMFPath,
+                            bambuModel: printModel,
                             plateIndex: collarAnalysis.plateIndex,
                             useAMS: true,
                             amsSlots: collarAnalysis.amsSlots,

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [1.1.3] – 2026-05-31
+
+### Added
+- **H2C model support** — `BAMBU_MODEL=h2c` is now accepted by validation, elicitation, tool schemas, BambuStudio preset mapping, filament profile resolution, and the H2 project-file print path. H2C should not use `h2d` as a fallback; the explicit model is required for safe slicer preset selection and H2 AMS mapping behavior.
+
 ## [1.1.1] – 2026-04-29
 
 ### Fixed
@@ -50,6 +55,7 @@
 
 Initial public release with core print, upload, slice, and status tooling.
 
+[1.1.3]: https://github.com/rowbotik/bambu-printer-mcp/compare/v1.1.2...v1.1.3
 [1.1.1]: https://github.com/rowbotik/bambu-printer-mcp/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/rowbotik/bambu-printer-mcp/compare/v1.0.5...v1.1.0
 [1.0.5]: https://github.com/rowbotik/bambu-printer-mcp/releases/tag/v1.0.5

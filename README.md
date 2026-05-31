@@ -11,7 +11,7 @@ A Bambu Lab-focused MCP server for controlling Bambu printers, manipulating STL 
 
 This is a stripped-down, Bambu-only fork of [mcp-3D-printer-server](https://github.com/DMontgomery40/mcp-3D-printer-server). All OctoPrint, Klipper, Duet, Repetier, Prusa Connect, and Creality Cloud support has been removed. What remains is a focused, lean implementation for Bambu Lab hardware.
 
-Local handoff note: see [REMOTE-DEPLOYMENT.md](./REMOTE-DEPLOYMENT.md) for the custom H2D/H2S patches, per-printer MCP split, and remote deployment plan used in this clone.
+Local handoff note: see [REMOTE-DEPLOYMENT.md](./REMOTE-DEPLOYMENT.md) for the custom H2D/H2S/H2C patches, per-printer MCP split, and remote deployment plan used in this clone.
 
 ---
 
@@ -29,7 +29,7 @@ This fork adds a substantial set of printer control tools beyond the upstream `m
 - **Skip objects** (`skip_objects`) — skip specific object IDs during a running multi-object print. IDs from `list_3mf_plate_objects`.
 - **HMS diagnostics** (`printer://{host}/hms` MCP resource) — read-only error summary with automatic settle retry.
 - **Utility controls** — `set_print_speed` (silent/standard/sport/ludicrous), `clear_hms_errors`, `reread_ams_rfid`, `set_airduct_mode` (cooling/heating for H2/P2).
-- **H2/H2D-safe print path** — correct `project_file` format with `ams_mapping2` parallel array, H2 firmware quirks handled.
+- **H2-family-safe print path** — correct `project_file` format with `ams_mapping2` parallel array, H2 firmware quirks handled.
 - **BambuStudio CLI auto-flatten** (`BAMBU_CLI_FLATTEN=true`) — works around upstream profile inheritance bugs.
 - **Print collar charm** (`print_collar_charm`) — specialized two-color wrapper with fixed tray policy.
 
@@ -100,8 +100,8 @@ This fork adds a substantial set of printer control tools beyond the upstream `m
 - List, upload, and delete files on the printer's SD card via FTPS
 - Capture a JPEG snapshot from the chamber camera. Supports A1, A1 mini, P1S, P1P (TCP-on-6000), and X1, X1C, X1E, P2S, H2, H2S, H2D, H2C, H2D Pro (RTSP via ffmpeg). Requires ffmpeg in PATH for the RTSP path.
 - Upload and print pre-sliced `.gcode.3mf` files with full plate selection and calibration flag control (recommended path — see [docs/SLICING.md](./docs/SLICING.md))
-- Optional single-color auto-slice path via BambuStudio CLI. Set `BAMBU_CLI_FLATTEN=true` to enable a workaround that flattens BBL profile inheritance before invoking the CLI — works around upstream bugs in BambuStudio CLI mode ([#9636](https://github.com/bambulab/BambuStudio/issues/9636), [#9968](https://github.com/bambulab/BambuStudio/issues/9968)). Single-color smoke is verified on H2S/H2D/X1C/P1S. H2D two-color CLI slicing is blocked upstream ([#10408](https://github.com/bambulab/BambuStudio/issues/10408)); use a GUI-sliced `.gcode.3mf` for that workflow. Default off; Path A (GUI-slice) remains the recommended workflow for non-BBL profiles, multi-color H2D jobs, or first-time prints. See [docs/SLICING.md](./docs/SLICING.md).
-- Parse AMS mapping from the 3MF's embedded slicer metadata (`Metadata/plate_<n>.json` + gcode filament header) and send it correctly formatted per the OpenBambuAPI spec, with correct H2S/H2D `ams_mapping2` parallel array format
+- Optional single-color auto-slice path via BambuStudio CLI. Set `BAMBU_CLI_FLATTEN=true` to enable a workaround that flattens BBL profile inheritance before invoking the CLI — works around upstream bugs in BambuStudio CLI mode ([#9636](https://github.com/bambulab/BambuStudio/issues/9636), [#9968](https://github.com/bambulab/BambuStudio/issues/9968)). Single-color smoke is verified on H2S/H2D/X1C/P1S; H2C requires Bambu Studio 2.4.0 or newer and should use `BAMBU_MODEL=h2c`, not an H2D fallback. H2D two-color CLI slicing is blocked upstream ([#10408](https://github.com/bambulab/BambuStudio/issues/10408)); use a GUI-sliced `.gcode.3mf` for that workflow. Default off; Path A (GUI-slice) remains the recommended workflow for non-BBL profiles, multi-color H2 jobs, or first-time prints. See [docs/SLICING.md](./docs/SLICING.md).
+- Parse AMS mapping from the 3MF's embedded slicer metadata (`Metadata/plate_<n>.json` + gcode filament header) and send it correctly formatted per the OpenBambuAPI spec, with correct H2S/H2D/H2C `ams_mapping2` parallel array format
 - **Auto-match AMS slots by RFID** (`auto_match_ams` flag on `print_3mf`). Resolves required `tray_info_idx` from the sliced 3MF against live AMS inventory. Handles same-SKU different-color filaments by matching on `(tray_info_idx, tray_color)` and tracking already-claimed slots. Dry-run with `resolve_3mf_ams_slots` before printing.
 - Cancel, pause, and resume in-progress print jobs via MQTT
 - Skip specific objects during a running multi-object print via `skip_objects` (use `list_3mf_plate_objects` to find object IDs first)
@@ -178,7 +178,7 @@ BAMBU_TOKEN=your_access_token     # LAN access token from printer touchscreen
 # BAMBU_PRINTER_HOST / BAMBU_PRINTER_SERIAL / BAMBU_PRINTER_ACCESS_TOKEN
 
 # --- Printer model (CRITICAL for safe operation) ---
-BAMBU_MODEL=p1s                   # Your printer model: p1s, p1p, x1c, x1e, a1, a1mini, h2d, h2s
+BAMBU_MODEL=p1s                   # Your printer model: p1s, p1p, p2s, x1c, x1e, a1, a1mini, h2d, h2s, h2c
 # Alias also accepted: BAMBU_PRINTER_MODEL
 BED_TYPE=textured_plate           # Bed plate type: textured_plate, cool_plate, engineering_plate, hot_plate, supertack_plate
 NOZZLE_DIAMETER=0.4               # Nozzle diameter in mm (default: 0.4)
@@ -215,7 +215,7 @@ BLENDER_MCP_BRIDGE_COMMAND=       # Shell command to invoke your Blender MCP bri
 | `PRINTER_HOST` | `localhost` | Yes | IP address of the Bambu printer. Alias: `BAMBU_PRINTER_HOST` |
 | `BAMBU_SERIAL` | | Yes | Printer serial number. Alias: `BAMBU_PRINTER_SERIAL` |
 | `BAMBU_TOKEN` | | Yes | LAN access token. Alias: `BAMBU_PRINTER_ACCESS_TOKEN` |
-| `BAMBU_MODEL` | | **Yes** | Printer model: `p1s`, `p1p`, `x1c`, `x1e`, `a1`, `a1mini`, `h2d`, `h2s`. **Required for safe operation** -- determines the correct G-code generation. Alias: `BAMBU_PRINTER_MODEL`. If omitted and the MCP client supports elicitation, the server will ask you interactively. |
+| `BAMBU_MODEL` | | **Yes** | Printer model: `p1s`, `p1p`, `p2s`, `x1c`, `x1e`, `a1`, `a1mini`, `h2d`, `h2s`, `h2c`. **Required for safe operation** -- determines the correct G-code generation. Alias: `BAMBU_PRINTER_MODEL`. If omitted and the MCP client supports elicitation, the server will ask you interactively. Use `h2c` for H2C; do not use `h2d` as a fallback. |
 | `BED_TYPE` | `textured_plate` | No | Bed plate type: `textured_plate`, `cool_plate`, `engineering_plate`, `hot_plate`, `supertack_plate` |
 | `NOZZLE_DIAMETER` | `0.4` | No | Nozzle diameter in mm. Used to select the correct BambuStudio machine preset. |
 | `SLICER_TYPE` | `bambustudio` | No | Slicer to use for slicing operations |
@@ -230,7 +230,7 @@ BLENDER_MCP_BRIDGE_COMMAND=       # Shell command to invoke your Blender MCP bri
 | `MCP_HTTP_JSON_RESPONSE` | `true` | No | Return structured JSON alongside text responses |
 | `MCP_HTTP_ALLOWED_ORIGINS` | | No | Comma-separated list of allowed CORS origins |
 | `BLENDER_MCP_BRIDGE_COMMAND` | | No | Command to invoke Blender MCP bridge |
-| `BAMBU_CLI_FLATTEN` | `false` | No | When `true`, the MCP flattens BBL profile inheritance before invoking the BambuStudio CLI. Workaround for upstream issues [#9636](https://github.com/bambulab/BambuStudio/issues/9636) / [#9968](https://github.com/bambulab/BambuStudio/issues/9968). BBL printers only. Single-color smoke verified on H2S/H2D/X1C/P1S; H2D two-color CLI slicing remains blocked by [#10408](https://github.com/bambulab/BambuStudio/issues/10408). See [docs/SLICING.md](./docs/SLICING.md). |
+| `BAMBU_CLI_FLATTEN` | `false` | No | When `true`, the MCP flattens BBL profile inheritance before invoking the BambuStudio CLI. Workaround for upstream issues [#9636](https://github.com/bambulab/BambuStudio/issues/9636) / [#9968](https://github.com/bambulab/BambuStudio/issues/9968). BBL printers only. Single-color smoke verified on H2S/H2D/X1C/P1S; H2C requires Bambu Studio 2.4.0 or newer. H2D two-color CLI slicing remains blocked by [#10408](https://github.com/bambulab/BambuStudio/issues/10408). See [docs/SLICING.md](./docs/SLICING.md). |
 | `BAMBU_PROFILES_ROOT` | derived from `SLICER_PATH` | No | Override path to the BambuStudio `Resources/profiles` directory used by the CLI flattener. Useful for non-standard installs or dev environments. |
 
 SuperTack can be passed for pre-sliced print jobs, but BambuStudio CLI slicing currently fails fast for `supertack_plate` because the accepted CLI bed identifier is not verified. Use a pre-sliced 3MF for SuperTack until this is confirmed.
@@ -513,7 +513,7 @@ This fork sends the `project_file` command directly via `bambu-node` (bypassing 
 // P1/A1/X1-series: 5-element project lookup table
 ams_mapping = [0, -1, -1, -1, -1];
 
-// H2S/H2D: project-length lookup table + parallel ams_mapping2
+// H2S/H2D/H2C: project-length lookup table + parallel ams_mapping2
 ams_mapping = [-1, 1, -1, -1];
 ams_mapping2 = [
   { ams_id: 255, slot_id: 255 },
@@ -1026,7 +1026,7 @@ The primary tool for starting a Bambu print. **Recommended input: a pre-sliced `
 3. Parses the sliced 3MF to extract the correct plate file and compute its MD5 hash.
 4. Also parses `Metadata/project_settings.config` to read AMS mapping embedded by Bambu Studio.
 5. Uploads the 3MF to the printer's `cache/` directory via FTPS using `basic-ftp` directly (avoiding the bambu-js double-path bug).
-6. Sends the correct MQTT print command for the target printer family. For H2S/H2D that means `project_file` with project-length `ams_mapping`, parallel `ams_mapping2`, and H2-compatible calibration flags.
+6. Sends the correct MQTT print command for the target printer family. For H2S/H2D/H2C that means `project_file` with project-length `ams_mapping`, parallel `ams_mapping2`, and H2-compatible calibration flags.
 
 ```json
 {

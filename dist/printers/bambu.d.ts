@@ -1,6 +1,7 @@
 interface BambuPrintOptionsInternal {
     projectName: string;
     filePath: string;
+    bambuModel?: string;
     useAMS?: boolean;
     plateIndex?: number;
     bedType?: string;
@@ -94,7 +95,7 @@ export declare class BambuImplementation {
      *     [16..16+payloadSize] JPEG (FF D8 ... FF D9)
      *
      * Verified models per upstream docs: A1, A1 mini, P1S, P1P. X1/X1C/X1E
-     * and P2S use RTSP on port 322 instead -- not implemented yet. H2/H2S/H2D
+     * and P2S use RTSP on port 322 instead. H2/H2S/H2D/H2C
      * are not documented; we fail fast rather than guess at the protocol.
      *
      * Read-only; no confirm gate. Default 8s timeout for cold-start latency.

@@ -23,6 +23,7 @@ const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, "..");
 const SERVER_ENTRY = path.join(REPO_ROOT, "dist", "index.js");
 const SAMPLE_STL = path.join(REPO_ROOT, "test", "sample_cube.stl");
+const EXPECTED_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s", "h2c"];
 
 async function writeSliced3mfFixture({
   name = "h2-project-filament",
@@ -238,9 +239,38 @@ test("printer model safety: schema requires bambu_model, rejects missing/invalid
   );
   assert.deepEqual(
     print3mfTool.inputSchema.properties.bambu_model.enum,
-    ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s"],
+    EXPECTED_BAMBU_MODELS,
     "print_3mf bambu_model must enumerate all valid models"
   );
+  const toolsWithModel = listToolsResult.tools
+    .filter((tool) => Array.isArray(tool.inputSchema?.properties?.bambu_model?.enum))
+    .map((tool) => tool.name)
+    .sort();
+  assert.deepEqual(
+    toolsWithModel,
+    [
+      "get_printer_filaments",
+      "print_3mf",
+      "print_3mf_bambu_network",
+      "print_collar_charm",
+      "resolve_3mf_ams_slots",
+      "slice_stl",
+      "slice_with_template",
+      "start_print",
+      "start_print_job",
+      "upload_file",
+    ],
+    "all tools that expose bambu_model must be covered by the model enum invariant"
+  );
+  for (const toolName of toolsWithModel) {
+    const tool = listToolsResult.tools.find((t) => t.name === toolName);
+    assert.ok(tool, `${toolName} tool must exist`);
+    assert.deepEqual(
+      tool.inputSchema.properties.bambu_model.enum,
+      EXPECTED_BAMBU_MODELS,
+      `${toolName} bambu_model must enumerate all valid models`
+    );
+  }
 
   const sliceTool = listToolsResult.tools.find((t) => t.name === "slice_stl");
   assert.ok(sliceTool, "slice_stl tool must exist");
@@ -319,17 +349,19 @@ test("printer model safety: schema requires bambu_model, rejects missing/invalid
     `Error must reject invalid model, got: ${badModelError}`
   );
 
-  // --- Runtime validation: print_3mf with valid model but missing file errors on file, not model ---
-  const validModelResult = await client.callTool({
-    name: "print_3mf",
-    arguments: { three_mf_path: "/tmp/nonexistent_test.3mf", bambu_model: "p1s" },
-  });
-  assert.equal(validModelResult.isError, true, "Missing file should still error");
-  const validModelError = validModelResult.content?.[0]?.text || "";
-  assert.ok(
-    !validModelError.includes("bambu_model"),
-    `Error with valid model should not be about model, got: ${validModelError}`
-  );
+  // --- Runtime validation: every valid model, including H2C, passes model validation ---
+  for (const bambuModel of EXPECTED_BAMBU_MODELS) {
+    const validModelResult = await client.callTool({
+      name: "print_3mf",
+      arguments: { three_mf_path: "/tmp/nonexistent_test.3mf", bambu_model: bambuModel },
+    });
+    assert.equal(validModelResult.isError, true, "Missing file should still error");
+    const validModelError = validModelResult.content?.[0]?.text || "";
+    assert.ok(
+      !validModelError.includes("bambu_model"),
+      `Error with valid model ${bambuModel} should not be about model, got: ${validModelError}`
+    );
+  }
 });
 
 test("3MF AMS requirement analysis maps plate filament_ids to slice_info tray_info_idx", async () => {
@@ -507,7 +539,7 @@ test("collar charm analysis rejects projects that do not resolve to exactly two 
   }
 });
 
-test("H2 print_3mf rejects pre-sliced filament jobs without explicit AMS mapping", async (t) => {
+test("H2 family print_3mf rejects pre-sliced filament jobs without explicit AMS mapping", async (t) => {
   const threeMfPath = await writeSliced3mfFixture({ plateFilamentIds: [1] });
   t.after(() => { fs.rmSync(threeMfPath, { force: true }); });
 
@@ -529,20 +561,22 @@ test("H2 print_3mf rejects pre-sliced filament jobs without explicit AMS mapping
   t.after(async () => { await closeTransport(transport); });
 
   await client.connect(transport);
-  const result = await client.callTool({
-    name: "print_3mf",
-    arguments: {
-      three_mf_path: threeMfPath,
-      bambu_model: "h2s",
-      bed_type: "supertack_plate",
-    },
-  });
+  for (const bambuModel of ["h2s", "h2d", "h2c"]) {
+    const result = await client.callTool({
+      name: "print_3mf",
+      arguments: {
+        three_mf_path: threeMfPath,
+        bambu_model: bambuModel,
+        bed_type: "supertack_plate",
+      },
+    });
 
-  assert.equal(result.isError, true);
-  const errorText = result.content?.[0]?.text || "";
-  assert.match(errorText, /require ams_slots, ams_mapping, or auto_match_ams/i);
-  assert.match(errorText, /project filament positions \[1\]/i);
-  assert.doesNotMatch(errorText, /ECONNREFUSED|control socket/i);
+    assert.equal(result.isError, true, `${bambuModel} should reject unmapped filament jobs`);
+    const errorText = result.content?.[0]?.text || "";
+    assert.match(errorText, /require ams_slots, ams_mapping, or auto_match_ams/i);
+    assert.match(errorText, /project filament positions \[1\]/i);
+    assert.doesNotMatch(errorText, /ECONNREFUSED|control socket/i);
+  }
 });
 
 test("H2 ams_slots expand into project-level ams_mapping and ams_mapping2", async () => {
@@ -575,6 +609,49 @@ test("H2 ams_slots expand into project-level ams_mapping and ams_mapping2", asyn
     assert.ok(publishedPayload?.print, "project_file payload should be published");
     assert.equal(publishedPayload.print.command, "project_file");
     assert.equal(publishedPayload.print.param, "Metadata/plate_1.gcode");
+    assert.deepEqual(publishedPayload.print.ams_mapping, [-1, 1, -1, -1]);
+    assert.deepEqual(publishedPayload.print.ams_mapping2, [
+      { ams_id: 255, slot_id: 255 },
+      { ams_id: 0, slot_id: 1 },
+      { ams_id: 255, slot_id: 255 },
+      { ams_id: 255, slot_id: 255 },
+    ]);
+  } finally {
+    fs.rmSync(threeMfPath, { force: true });
+  }
+});
+
+test("H2C model routes project files through the H2 print path independent of serial prefix", async () => {
+  const threeMfPath = await writeSliced3mfFixture({ plateFilamentIds: [1] });
+  const bambu = new BambuImplementation();
+  let uploadedPath = null;
+  let publishedPayload = null;
+
+  bambu.ftpUpload = async (_host, _token, _filePath, remotePath) => {
+    uploadedPath = remotePath;
+  };
+  bambu.getPrinter = async () => ({
+    publish: async (payload) => {
+      publishedPayload = payload;
+    },
+  });
+
+  try {
+    const result = await bambu.print3mf("127.0.0.1", "01P00TEST0000000", "TEST_TOKEN", {
+      projectName: "h2c-cube",
+      filePath: threeMfPath,
+      bambuModel: "h2c",
+      plateIndex: 0,
+      useAMS: true,
+      amsSlots: [1],
+      bedType: "textured_plate",
+    });
+
+    assert.equal(result.status, "success");
+    assert.equal(uploadedPath, `/${path.basename(threeMfPath)}`);
+    assert.ok(publishedPayload?.print, "H2C should publish a project_file payload");
+    assert.equal(publishedPayload.print.command, "project_file");
+    assert.match(publishedPayload.print.url, /^ftp:\/\/\//);
     assert.deepEqual(publishedPayload.print.ams_mapping, [-1, 1, -1, -1]);
     assert.deepEqual(publishedPayload.print.ams_mapping2, [
       { ams_id: 255, slot_id: 255 },

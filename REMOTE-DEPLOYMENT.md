@@ -10,6 +10,7 @@ This branch extends the previously dormant project so it can work reliably with 
 
 - H2D
 - H2S
+- H2C
 - AMS-backed `.gcode.3mf` and project-based `3mf` print flows
 - template-driven slicing workflows
 - read-only diagnostics and basic live controls
@@ -72,9 +73,10 @@ Files:
 
 Changes:
 
-- Added `h2s` to model validation.
+- Added `h2s` and `h2c` to model validation.
 - Added H2-series slicer preset mapping.
-- Extended tool schema enums and validation so H2D/H2S can be used directly in slicing and print calls.
+- Extended tool schema enums and validation so H2D/H2S/H2C can be used directly in slicing and print calls.
+- H2C must use `BAMBU_MODEL=h2c`; do not use `h2d` as a fallback because the model controls slicer preset selection and H2 print-path safety.
 
 Why it matters:
 
@@ -95,7 +97,7 @@ Changes:
 
 Why it matters:
 
-- This is the core fix that allows local FTPS + MQTT printing to work reliably on H2D/H2S with AMS.
+- This is the core fix that allows local FTPS + MQTT printing to work reliably on H2D/H2S/H2C with AMS.
 
 ### Live filament inventory resolution
 
@@ -162,6 +164,7 @@ This branch has been verified locally for:
 - `npm run build`
 - `npm test` (19/19 passing)
 - BambuStudio CLI smoke slicing for H2S, H2D, X1C, and P1S
+- H2C schema, validation, and H2 project-file routing through regression tests. H2C CLI slicing requires Bambu Studio 2.4.0 or newer; this local machine's installed profile tree did not include H2C when the docs were updated.
 - MCP stdio `slice_stl` with `BAMBU_CLI_FLATTEN=true`
 - H2-class AMS mapping behavior through regression tests
 - local H2 print dispatch logic for project-based prints
@@ -181,7 +184,7 @@ Still not live-validated:
 
 - `print_3mf auto_match_ams`
 - `skip_objects`
-- a full physical H2S/H2D print from this branch after the latest feature additions
+- a full physical H2S/H2D/H2C print from this branch after the latest feature additions
 
 ## Safe Deployment Guidance
 
