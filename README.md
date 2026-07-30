@@ -771,7 +771,7 @@ Two transports are wired in, picked by `bambu_model`:
 - **TCP-on-6000** for **A1, A1 mini, P1S, P1P**. Native protocol per [OpenBambuAPI/video.md](https://github.com/Doridian/OpenBambuAPI/blob/main/video.md): TLS on port 6000, 80-byte auth packet (`bblp` + access token), repeating 16-byte frame header + JPEG payload.
 - **RTSP** for **X1, X1 Carbon, X1E, P2S** and **H2, H2S, H2D, H2C, H2D Pro**. Shells out to ffmpeg with `rtsps://bblp:<token>@<host>:322/streaming/live/1 -frames:v 1`. The H2 series wasn't documented in OpenBambuAPI's `video.md` but its firmware uses the same RTSP endpoint as X1 (verified live against an H2S, 2026-04-27).
 
-**Requires ffmpeg in PATH** for the RTSP path. Install with `brew install ffmpeg` on macOS. Override the binary location with the `ffmpeg_path` tool argument if it lives elsewhere. The TCP-on-6000 path uses native Node TLS and does not require ffmpeg.
+**Requires ffmpeg in PATH** for the RTSP path. Install with `brew install ffmpeg` on macOS. Configure a trusted custom binary with the server-side `FFMPEG_PATH` environment variable, or set `MCP_ALLOW_EXECUTABLE_ARG=1` before using the `ffmpeg_path` tool argument. The TCP-on-6000 path uses native Node TLS and does not require ffmpeg.
 
 ```json
 {
@@ -1191,7 +1191,7 @@ Slice an STL or 3MF file using an external slicer and return the path to the out
 
 `slicer_type` options: `bambustudio`, `orcaslicer`, `prusaslicer`, `cura`, `slic3r`. When omitted, the value from the `SLICER_TYPE` environment variable is used (default: `bambustudio`).
 
-`slicer_path` and `slicer_profile` fall back to the `SLICER_PATH` and `SLICER_PROFILE` environment variables when omitted.
+`slicer_path` and `slicer_profile` fall back to the `SLICER_PATH` and `SLICER_PROFILE` environment variables when omitted. Per-call `slicer_path` overrides require `MCP_ALLOW_EXECUTABLE_ARG=1`.
 
 You can provide either `template_3mf_path` or `template_name` when you want to slice from a saved template. `template_name` resolves through the local template registry directory configured for the server.
 
@@ -1257,7 +1257,7 @@ Send a set of named edit operations (remesh, boolean, decimate, etc.) to a Blend
 
 When `execute` is `false` (the default), the tool returns the payload that would be sent without running anything -- useful for previewing what would be dispatched.
 
-When `execute` is `true`, the server invokes the configured bridge command with the payload as a JSON-encoded environment variable (`MCP_BLENDER_PAYLOAD`). The bridge command must be set via the `BLENDER_MCP_BRIDGE_COMMAND` environment variable or passed inline as `bridge_command`.
+When `execute` is `true`, the server invokes the configured bridge command with the payload as a JSON-encoded environment variable (`MCP_BLENDER_PAYLOAD`). Configure it with `BLENDER_MCP_BRIDGE_COMMAND`; per-call `bridge_command` overrides require `MCP_ALLOW_EXECUTABLE_ARG=1`.
 
 ```json
 {

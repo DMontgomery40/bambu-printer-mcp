@@ -1270,6 +1270,7 @@ test("slice_with_template prefers named template settings over BAMBU_SLICER_PROF
       BAMBU_SERIAL: "",
       BAMBU_TOKEN: "",
       BAMBU_SLICER_PROFILE: defaultProfilePath,
+      MCP_ALLOW_EXECUTABLE_ARG: "1",
     },
     stderr: "pipe",
   });
@@ -1317,6 +1318,7 @@ test("template_name resolves by source type for slicer profiles versus 3MF sourc
       BAMBU_MODEL: "p1s",
       BAMBU_SERIAL: "",
       BAMBU_TOKEN: "",
+      MCP_ALLOW_EXECUTABLE_ARG: "1",
     },
     stderr: "pipe",
   });
@@ -1402,6 +1404,262 @@ test("non-slicer tools ignore invalid slicer configuration", async (t) => {
   assert.equal(result.isError, undefined);
   const payload = parseJsonResult(result);
   assert.equal(payload.fileName, "sample_cube.stl");
+});
+
+test("per-call executable selectors are rejected before any process can start", async (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-executable-selector-gate-"));
+  const executable = path.join(tempDir, "unexpected-executable");
+  const markerPath = path.join(tempDir, "executed");
+  fs.writeFileSync(
+    executable,
+    `#!/bin/sh\nprintf executed > '${markerPath}'\nexit 17\n`,
+    { mode: 0o755 }
+  );
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+      BAMBU_MODEL: "",
+      BAMBU_SERIAL: "TEST_SERIAL",
+      BAMBU_TOKEN: "TEST_TOKEN",
+      BAMBU_NETWORK_BRIDGE_COMMAND: "",
+      BLENDER_MCP_BRIDGE_COMMAND: "",
+      MCP_ALLOW_EXECUTABLE_ARG: "",
+      MCP_ALLOW_BRIDGE_COMMAND_ARG: "",
+    },
+    stderr: "pipe",
+  });
+  const client = createClient();
+
+  t.after(async () => {
+    await closeTransport(transport);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  await client.connect(transport);
+
+  for (const call of [
+    {
+      name: "slice_stl",
+      argumentName: "slicer_path",
+      arguments: {
+        stl_path: SAMPLE_STL,
+        slicer_type: "orcaslicer",
+        slicer_path: executable,
+        bambu_model: "p1s",
+      },
+    },
+    {
+      name: "bambu_network_bridge_status",
+      argumentName: "bridge_command",
+      arguments: { connect: true, bridge_command: executable },
+    },
+    {
+      name: "blender_mcp_edit_model",
+      argumentName: "bridge_command",
+      arguments: {
+        stl_path: SAMPLE_STL,
+        operations: ["remesh"],
+        execute: true,
+        bridge_command: executable,
+      },
+    },
+    {
+      name: "camera_snapshot",
+      argumentName: "ffmpeg_path",
+      arguments: {
+        bambu_model: "h2s",
+        ffmpeg_path: executable,
+        timeout_ms: 100,
+      },
+    },
+  ]) {
+    fs.rmSync(markerPath, { force: true });
+    const rejected = await client.callTool({
+      name: call.name,
+      arguments: call.arguments,
+    });
+    assert.equal(rejected.isError, true, `${call.name} must reject ${call.argumentName}`);
+    assert.match(rejected.content?.[0]?.text || "", new RegExp(call.argumentName));
+    assert.match(rejected.content?.[0]?.text || "", /MCP_ALLOW_EXECUTABLE_ARG/);
+    assert.equal(
+      fs.existsSync(markerPath),
+      false,
+      `${call.name} must reject ${call.argumentName} before executing it`
+    );
+  }
+});
+
+test("legacy bridge opt-in does not authorize slicer or ffmpeg executables", async (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-legacy-bridge-gate-"));
+  const executable = path.join(tempDir, "unexpected-executable");
+  const markerPath = path.join(tempDir, "executed");
+  const bridgeExecutable = path.join(tempDir, "trusted-legacy-bridge");
+  const bridgeMarkerPath = path.join(tempDir, "bridge-executed");
+  fs.writeFileSync(
+    executable,
+    `#!/bin/sh\nprintf executed > '${markerPath}'\nexit 17\n`,
+    { mode: 0o755 }
+  );
+  fs.writeFileSync(
+    bridgeExecutable,
+    `#!/bin/sh\nprintf executed > '${bridgeMarkerPath}'\nexit 0\n`,
+    { mode: 0o755 }
+  );
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+      BAMBU_MODEL: "",
+      BAMBU_SERIAL: "TEST_SERIAL",
+      BAMBU_TOKEN: "TEST_TOKEN",
+      MCP_ALLOW_EXECUTABLE_ARG: "",
+      MCP_ALLOW_BRIDGE_COMMAND_ARG: "1",
+    },
+    stderr: "pipe",
+  });
+  const client = createClient();
+
+  t.after(async () => {
+    await closeTransport(transport);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  await client.connect(transport);
+  for (const call of [
+    {
+      name: "slice_stl",
+      argumentName: "slicer_path",
+      arguments: {
+        stl_path: SAMPLE_STL,
+        slicer_type: "orcaslicer",
+        slicer_path: executable,
+        bambu_model: "p1s",
+      },
+    },
+    {
+      name: "camera_snapshot",
+      argumentName: "ffmpeg_path",
+      arguments: {
+        bambu_model: "h2s",
+        ffmpeg_path: executable,
+        timeout_ms: 100,
+      },
+    },
+  ]) {
+    fs.rmSync(markerPath, { force: true });
+    const rejected = await client.callTool({
+      name: call.name,
+      arguments: call.arguments,
+    });
+    assert.equal(rejected.isError, true);
+    assert.match(rejected.content?.[0]?.text || "", new RegExp(call.argumentName));
+    assert.match(rejected.content?.[0]?.text || "", /MCP_ALLOW_EXECUTABLE_ARG/);
+    assert.equal(
+      fs.existsSync(markerPath),
+      false,
+      `${call.argumentName} must remain blocked by the legacy bridge-only flag`
+    );
+  }
+
+  const bridgeResult = await client.callTool({
+    name: "blender_mcp_edit_model",
+    arguments: {
+      stl_path: SAMPLE_STL,
+      operations: ["remesh"],
+      execute: true,
+      bridge_command: bridgeExecutable,
+    },
+  });
+  assert.equal(bridgeResult.isError, undefined, "the legacy flag must still authorize bridge_command");
+  assert.equal(
+    fs.existsSync(bridgeMarkerPath),
+    true,
+    "the legacy bridge-only compatibility path must remain functional"
+  );
+});
+
+test("empty slicer_path preserves env fallback without executable opt-in", async (t) => {
+  const fakeSlicer = await createFakeBambuSlicer();
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+      BAMBU_MODEL: "p1s",
+      BAMBU_SERIAL: "",
+      BAMBU_TOKEN: "",
+      SLICER_PATH: fakeSlicer.fakeSlicerPath,
+      MCP_ALLOW_EXECUTABLE_ARG: "",
+      MCP_ALLOW_BRIDGE_COMMAND_ARG: "",
+    },
+    stderr: "pipe",
+  });
+  const client = createClient();
+  t.after(async () => {
+    await closeTransport(transport);
+    fs.rmSync(fakeSlicer.tempDir, { recursive: true, force: true });
+  });
+
+  await client.connect(transport);
+  const result = await client.callTool({
+    name: "slice_stl",
+    arguments: {
+      stl_path: SAMPLE_STL,
+      slicer_path: "",
+      bambu_model: "p1s",
+    },
+  });
+  assert.doesNotMatch(result.content?.[0]?.text || "", /MCP_ALLOW_EXECUTABLE_ARG/);
+});
+
+test("camera_snapshot uses trusted FFMPEG_PATH without opening per-call selectors", async (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "trusted-ffmpeg-path-"));
+  const fakeFfmpeg = path.join(tempDir, "fake-ffmpeg.mjs");
+  fs.writeFileSync(
+    fakeFfmpeg,
+    `#!/usr/bin/env node
+import fs from "node:fs";
+fs.writeFileSync(process.argv.at(-1), Buffer.from([0xff, 0xd8, 0x00, 0x11, 0xff, 0xd9]));
+`,
+    { mode: 0o755 }
+  );
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+      BAMBU_MODEL: "",
+      BAMBU_SERIAL: "TEST_SERIAL",
+      BAMBU_TOKEN: "TEST_TOKEN",
+      FFMPEG_PATH: fakeFfmpeg,
+      MCP_ALLOW_EXECUTABLE_ARG: "",
+      MCP_ALLOW_BRIDGE_COMMAND_ARG: "",
+    },
+    stderr: "pipe",
+  });
+  const client = createClient();
+  t.after(async () => {
+    await closeTransport(transport);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  await client.connect(transport);
+  const result = await client.callTool({
+    name: "camera_snapshot",
+    arguments: { bambu_model: "h2s", timeout_ms: 500 },
+  });
+  assert.equal(result.isError, undefined);
+  assert.equal(parseJsonResult(result).transport, "rtsps-322");
 });
 
 test("stdio transport: initialize, list tools, call success + structured failure", async (t) => {
