@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Security
+- Per-call `slicer_path`, `ffmpeg_path`, and `bridge_command` executable selectors are now rejected by default. Trusted server-side environment configuration remains available, including `FFMPEG_PATH` for RTSP camera snapshots; set `MCP_ALLOW_EXECUTABLE_ARG=1` only when intentional per-call overrides are required. `MCP_ALLOW_BRIDGE_COMMAND_ARG` remains a compatibility alias for `bridge_command` only.
+
 ## [1.1.3] – 2026-05-31
 
 ### Added
