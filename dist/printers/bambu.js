@@ -9,6 +9,7 @@ import { Client as FTPClient } from "basic-ftp";
 import { BambuPrinter } from "bambu-js";
 import * as mqtt from "mqtt";
 import { BambuClient, GCodeFileCommand, GCodeLineCommand, PushAllCommand, UpdateFanCommand, UpdateLightCommand, UpdateStateCommand, } from "bambu-node";
+import { usesRootFtpPrintPath } from "./model-capabilities.js";
 /**
  * Post-Jan-2025 H2D firmware requires mTLS with a Bambu-issued client cert.
  * Loads cert+key once from:
@@ -45,10 +46,6 @@ const MODEL_ID_TO_NAME = {
     "BL-P002": "X1",
     C13: "X1E",
 };
-const H2_MODEL_NAMES = new Set(["h2", "h2c", "h2d", "h2dpro", "h2d pro", "h2s"]);
-function isH2ModelName(model) {
-    return H2_MODEL_NAMES.has(String(model ?? "").trim().toLowerCase().replace(/\s+/g, " "));
-}
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -88,6 +85,14 @@ class TolerantBambuClient extends BambuClient {
             return "H2S";
         if (sn.startsWith("094"))
             return "H2D";
+        if (sn.startsWith("239"))
+            return "H2D Pro";
+        if (sn.startsWith("31B"))
+            return "H2C";
+        if (sn.startsWith("22E"))
+            return "P2S";
+        if (sn.startsWith("20P"))
+            return "X2D";
         if (sn.startsWith("00M"))
             return "X1C";
         if (sn.startsWith("00W"))
@@ -456,14 +461,11 @@ export class BambuImplementation {
         // the container format from the extension.
         let remoteFileName = path.basename(options.filePath);
         remoteFileName = remoteFileName.replace(/\.gcode\.3mf\.gcode\.3mf$/i, ".gcode.3mf");
-        // H2-series printers land files at the FTP root and reference them via ftp:///<name>.
-        // P1/A1/X1 use /cache/<name> and file:///sdcard/cache/<name>.
-        const isH2 = serial.startsWith("093") ||
-            serial.startsWith("094") ||
-            isH2ModelName(options.bambuModel);
-        const remoteProjectPath = isH2 ? remoteFileName : `cache/${remoteFileName}`;
-        const remoteUploadPath = isH2 ? `/${remoteFileName}` : `/cache/${remoteFileName}`;
-        const projectUrl = isH2
+        // p2/h2/x2 -> ftp root; x1/p1/a1 -> /cache
+        const useRootProjectFile = usesRootFtpPrintPath(options.bambuModel, serial);
+        const remoteProjectPath = useRootProjectFile ? remoteFileName : `cache/${remoteFileName}`;
+        const remoteUploadPath = useRootProjectFile ? `/${remoteFileName}` : `/cache/${remoteFileName}`;
+        const projectUrl = useRootProjectFile
             ? `ftp:///${remoteFileName}`
             : `file:///sdcard/${remoteProjectPath}`;
         // Upload via basic-ftp directly (bypasses bambu-js double-path bug)
@@ -474,7 +476,7 @@ export class BambuImplementation {
         // H2-series: gcode_file is not supported; project_file works because the
         // firmware can open the zip and find Metadata/plate_<n>.gcode directly.
         if (options.filePath.toLowerCase().endsWith(".gcode.3mf")) {
-            if (!isH2) {
+            if (!useRootProjectFile) {
                 const printer = await this.getPrinter(host, serial, token);
                 await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath }));
                 return {
@@ -538,8 +540,8 @@ export class BambuImplementation {
             });
         }
         else {
-            if (isH2 && projectMetadata.usedFilamentPositions.length > 0) {
-                throw new Error(`H2 project_file requires amsSlots or amsMapping for sliced files with declared filaments. Plate uses project filament positions ${JSON.stringify(projectMetadata.usedFilamentPositions)}.`);
+            if (useRootProjectFile && projectMetadata.usedFilamentPositions.length > 0) {
+                throw new Error(`amsSlots or amsMapping required for this print path when the 3mf declares filaments. plate uses positions ${JSON.stringify(projectMetadata.usedFilamentPositions)}.`);
             }
             const positions = projectMetadata.usedFilamentPositions;
             const projectLen = Math.max(projectMetadata.projectFilamentCount, ...positions.map((p) => p + 1), 1);
@@ -550,7 +552,7 @@ export class BambuImplementation {
         }
         let amsMapping;
         let amsMapping2;
-        if (isH2) {
+        if (useRootProjectFile) {
             const projLen = Math.max(projectMetadata.projectFilamentCount, baseMapping.length, 1);
             amsMapping = Array.from({ length: projLen }, (_, i) => i < baseMapping.length ? baseMapping[i] : -1);
             amsMapping2 = amsMapping.map((v) => {
@@ -569,7 +571,7 @@ export class BambuImplementation {
         }
         const b = (v) => (v ? 1 : 0);
         let projectFileCmd;
-        if (isH2) {
+        if (useRootProjectFile) {
             const submissionId = String(Date.now() & 0x7fffffff);
             projectFileCmd = {
                 print: {
