@@ -28,6 +28,7 @@ import { hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayVa
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, parse3MF } from './3mf_parser.js';
 import type { ThreeMFAmsRequirements } from "./types.js";
 import { BambuImplementation } from "./printers/bambu.js";
+import { usesRootFtpPrintPath } from "./printers/model-capabilities.js";
 
 dotenv.config();
 
@@ -48,7 +49,6 @@ const DEFAULT_NOZZLE_DIAMETER = process.env.NOZZLE_DIAMETER?.trim() || "0.4";
 
 const VALID_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s", "h2c"] as const;
 type BambuModel = typeof VALID_BAMBU_MODELS[number];
-const H2_BAMBU_MODELS = new Set<string>(["h2d", "h2s", "h2c"]);
 
 const VALID_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"] as const;
 const VALID_BAMBUSTUDIO_CLI_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"] as const;
@@ -3283,9 +3283,9 @@ class BambuPrinterMCPServer {
             }
 
             const parsed3MFData = await parse3MF(threeMFPath);
-            const isH2Print = H2_BAMBU_MODELS.has(printModel);
+            const useRootProjectFile = usesRootFtpPrintPath(printModel);
             let parsedAmsMapping: number[] | undefined;
-            if (!isH2Print && parsed3MFData.slicerConfig?.ams_mapping) {
+            if (!useRootProjectFile && parsed3MFData.slicerConfig?.ams_mapping) {
               const slots = normalizeAmsMappingObject(parsed3MFData.slicerConfig.ams_mapping as Record<string, unknown>);
               if (slots.length > 0) {
                 parsedAmsMapping = slots;
@@ -3342,7 +3342,7 @@ class BambuPrinterMCPServer {
               useAMS = finalAmsSlots.length > 0;
             }
             if (
-              isH2Print &&
+              useRootProjectFile &&
               !hasUserAmsMapping &&
               !hasUserAmsSlots &&
               args?.auto_match_ams !== true &&
@@ -3352,7 +3352,7 @@ class BambuPrinterMCPServer {
               const requirements = await analyze3MFAmsRequirements(threeMFPath, plateIndex);
               if (requirements.usedFilamentPositions.length > 0) {
                 throw new Error(
-                  `H2 ${printModel.toUpperCase()} pre-sliced jobs with declared filaments require ams_slots, ams_mapping, or auto_match_ams: true. Plate uses project filament positions ${JSON.stringify(requirements.usedFilamentPositions)}; pass one physical tray per used filament, for example ams_slots: [0] for AMS 0 slot 0 or [1] for AMS 0 slot 1.`
+                  `${printModel.toUpperCase()} pre-sliced jobs with declared filaments require ams_slots, ams_mapping, or auto_match_ams: true. Plate uses project filament positions ${JSON.stringify(requirements.usedFilamentPositions)}; pass one physical tray per used filament, for example ams_slots: [0] for AMS 0 slot 0 or [1] for AMS 0 slot 1.`
                 );
               }
             }
