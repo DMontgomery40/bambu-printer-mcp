@@ -10,7 +10,9 @@
  *
  * This module:
  *   1. Indexes every BBL profile JSON by its `name` field.
- *   2. Recursively walks `inherits`, deep-merging parent into child.
+ *   2. Recursively walks `inherits`, deep-merging parent into child, and
+ *      applies each level's `include` templates (machine profiles keep their
+ *      real start/end/change-filament G-code in separate template files).
  *   3. Derives `nozzle_volume_type` from `default_nozzle_volume_type[0]`
  *      (the GUI does this implicitly; the CLI doesn't).
  *   4. Merges CLI-specific machine_limits from `BBL/cli_config.json` so the
@@ -84,6 +86,60 @@ async function buildNameIndex(profilesRoot, vendor) {
 /* -------------------------------------------------------------------------- */
 /* Inheritance walk + merge                                                    */
 /* -------------------------------------------------------------------------- */
+/** Identity/structural keys a template must never leak into its host. */
+const TEMPLATE_ONLY_KEYS = [
+    "name",
+    "instantiation",
+    "type",
+    "from",
+    "inherits",
+    "include",
+];
+/**
+ * Apply an entry's `include` templates into `target`.
+ *
+ * Machine profiles do not define their machine G-code inline. `Bambu Lab A1
+ * 0.4 nozzle.json` has no `machine_start_gcode` key at all -- it ships an
+ * `include` array naming five template files that hold the real start, end,
+ * time-lapse, change-filament and layer-change G-code. Resolving only
+ * `inherits` therefore silently falls back to the generic
+ * `fdm_machine_common` start block: 577 bytes instead of 12310 on the A1,
+ * and 577 instead of 6551 on the P1S.
+ *
+ * The practical damage is invisible at slice time. The generic block hard-codes
+ * `M109 S205` and emits no `M620 S<n>A`, so the print runs at 205 C whatever
+ * the filament profile asks for, never selects the mapped AMS slot, and never
+ * gets pressure advance loaded (the firmware sets it as part of the M620
+ * sequence). It also retracts 10 mm cold and probes the bed with an unheated
+ * nozzle.
+ *
+ * Templates layer ABOVE the inherited chain but BELOW the including profile's
+ * own keys, which mirrors how the GUI resolves them.
+ */
+function applyIncludes(entry, index, target) {
+    const includes = entry["include"];
+    if (!Array.isArray(includes)) {
+        return;
+    }
+    for (const ref of includes) {
+        if (typeof ref !== "string" || ref.length === 0) {
+            continue;
+        }
+        const tpl = index.get(ref);
+        if (!tpl) {
+            // Tolerate a missing template rather than failing the whole slice: a
+            // partial profile tree is still better than no slice, and the caller's
+            // sanity checks will catch a genuinely empty start G-code.
+            continue;
+        }
+        for (const [key, value] of Object.entries(tpl.data)) {
+            if (TEMPLATE_ONLY_KEYS.includes(key)) {
+                continue;
+            }
+            target[key] = value;
+        }
+    }
+}
 /**
  * Resolve the full inheritance chain for `leafName` and return a single
  * deep-merged object. Child wins on key collision.
@@ -111,9 +167,11 @@ function flattenByName(leafName, index) {
         const parent = entry.data["inherits"];
         cursor = typeof parent === "string" && parent.length > 0 ? parent : undefined;
     }
-    // Merge root-most parent first, leaf last (so leaf wins).
+    // Merge root-most parent first, leaf last (so leaf wins). Each level's
+    // `include` templates go in just under that level's own keys.
     const merged = {};
     for (let i = chain.length - 1; i >= 0; i--) {
+        applyIncludes(chain[i], index, merged);
         Object.assign(merged, chain[i]);
     }
     return merged;
@@ -311,6 +369,9 @@ function normalizeForCli(flat, kind, leafName) {
     delete flat["instantiation"];
     delete flat["setting_id"];
     delete flat["is_custom_defined"];
+    // Already merged by applyIncludes(); leaving it would hand the CLI a list of
+    // template names as if it were config.
+    delete flat["include"];
     // Always rewrite `from` to "User". "Project" is what the GUI uses when
     // embedding in a 3MF, but the CLI accepts "User" for --load-settings
     // paths and that's semantically what we are.

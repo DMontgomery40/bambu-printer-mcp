@@ -513,3 +513,156 @@ test("end-to-end: H2D matches GUI-sliced ground-truth shape for nozzle_volume_ty
   // printer_model must agree.
   assert.equal(flat.printer_model, "Bambu Lab H2D");
 });
+
+test("include templates are applied, layered under the profile's own keys", async () => {
+  const { root, bbl } = await makeSyntheticTree();
+
+  // Generic ancestor with a placeholder start gcode -- this is what leaks
+  // through when `include` is ignored.
+  await writeProfile(bbl, "machine", {
+    name: "root_common",
+    inherits: null,
+    instantiation: "false",
+    nozzle_diameter: ["0.4"],
+    default_nozzle_volume_type: ["Standard"],
+    machine_start_gcode: "G28 ;GENERIC",
+    machine_end_gcode: "M104 S0 ;GENERIC",
+    layer_change_gcode: ";GENERIC LAYER",
+  });
+
+  // Templates carrying the real machine gcode, as BBL ships them.
+  await writeProfile(bbl, "machine", {
+    name: "TEST template machine_start_gcode",
+    instantiation: "false",
+    type: "machine",
+    from: "system",
+    machine_start_gcode: "M620 S[initial_no_support_extruder]A\nM104 S140\nM1002 ;REAL",
+  });
+  await writeProfile(bbl, "machine", {
+    name: "TEST template machine_end_gcode",
+    instantiation: "false",
+    type: "machine",
+    from: "system",
+    machine_end_gcode: "M104 S0 ;REAL END",
+  });
+
+  // Leaf that does NOT define machine_start_gcode itself -- exactly how
+  // "Bambu Lab A1 0.4 nozzle.json" is shaped.
+  await writeProfile(bbl, "machine", {
+    name: "Bambu Lab TEST 0.4 nozzle",
+    inherits: "root_common",
+    include: [
+      "TEST template machine_start_gcode",
+      "TEST template machine_end_gcode",
+    ],
+    instantiation: "true",
+    printer_model: "Bambu Lab TEST",
+    // own key must still beat the template
+    layer_change_gcode: ";LEAF LAYER",
+  });
+
+  await writeProfile(bbl, "process", { name: "0.20mm @TEST", inherits: null, layer_height: 0.2 });
+  await writeProfile(bbl, "filament", { name: "PLA @TEST", inherits: null, filament_type: ["PLA"] });
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "flat-out-"));
+  const result = await flattenForCli({
+    machineLeaf: "Bambu Lab TEST 0.4 nozzle",
+    processLeaf: "0.20mm @TEST",
+    filamentLeaves: ["PLA @TEST"],
+    profilesRoot: root,
+    tempDir,
+  });
+  const flat = JSON.parse(await fs.readFile(result.machinePath, "utf8"));
+
+  // The template wins over the inherited generic block.
+  assert.ok(
+    flat.machine_start_gcode.includes("M620"),
+    "include template must supply the real start gcode, not the generic ancestor's"
+  );
+  assert.ok(!flat.machine_start_gcode.includes("GENERIC"), "generic start gcode leaked through");
+  assert.ok(flat.machine_end_gcode.includes("REAL END"), "end gcode template applied");
+
+  // Templates layer BELOW the including profile's own keys.
+  assert.equal(flat.layer_change_gcode, ";LEAF LAYER", "leaf key must beat the template");
+
+  // Template identity keys must not leak in.
+  assert.equal(flat.inherits, "Bambu Lab TEST 0.4 nozzle", "template `name`/`inherits` leaked");
+  assert.ok(!("include" in flat), "`include` must be stripped once merged");
+});
+
+test("a missing include template is tolerated, not fatal", async () => {
+  const { root, bbl } = await makeSyntheticTree();
+
+  await writeProfile(bbl, "machine", {
+    name: "Bambu Lab TEST 0.4 nozzle",
+    inherits: null,
+    include: ["template that does not exist"],
+    instantiation: "true",
+    nozzle_diameter: ["0.4"],
+    default_nozzle_volume_type: ["Standard"],
+    printer_model: "Bambu Lab TEST",
+    machine_start_gcode: "G28",
+  });
+  await writeProfile(bbl, "process", { name: "0.20mm @TEST", inherits: null, layer_height: 0.2 });
+  await writeProfile(bbl, "filament", { name: "PLA @TEST", inherits: null, filament_type: ["PLA"] });
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "flat-out-"));
+  const result = await flattenForCli({
+    machineLeaf: "Bambu Lab TEST 0.4 nozzle",
+    processLeaf: "0.20mm @TEST",
+    filamentLeaves: ["PLA @TEST"],
+    profilesRoot: root,
+    tempDir,
+  });
+  const flat = JSON.parse(await fs.readFile(result.machinePath, "utf8"));
+  assert.equal(flat.machine_start_gcode, "G28", "own gcode survives a broken include ref");
+});
+
+test("end-to-end against real BBL tree: A1 and P1S get their real start gcode", async () => {
+  let profilesRoot;
+  try {
+    profilesRoot = detectProfilesRoot();
+  } catch {
+    console.log("  (skipped: no BambuStudio profile tree on this machine)");
+    return;
+  }
+
+  // The generic fdm_machine_common fallback is 577 bytes; the real machine
+  // blocks are 6.5 KB (P1S) to 12.3 KB (A1). Anything under 8 KB means the
+  // `include` templates were not applied.
+  const MIN_REAL_START_GCODE = 8000;
+
+  for (const machineLeaf of ["Bambu Lab A1 0.4 nozzle", "Bambu Lab P1S 0.4 nozzle"]) {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "flat-real-"));
+    let result;
+    try {
+      result = await flattenForCli({
+        machineLeaf,
+        processLeaf: machineLeaf.includes("A1")
+          ? "0.20mm Standard @BBL A1"
+          : "0.20mm Standard @BBL P1S",
+        filamentLeaves: [
+          machineLeaf.includes("A1") ? "Bambu PLA Basic @BBL A1" : "Bambu PLA Basic @BBL P1S",
+        ],
+        profilesRoot,
+        tempDir,
+      });
+    } catch (err) {
+      console.log(`  (skipped ${machineLeaf}: ${err.message})`);
+      continue;
+    }
+
+    const flat = JSON.parse(await fs.readFile(result.machinePath, "utf8"));
+    const start = flat.machine_start_gcode ?? "";
+
+    assert.ok(
+      start.length > MIN_REAL_START_GCODE,
+      `${machineLeaf}: machine_start_gcode is ${start.length} bytes -- the ` +
+        `include templates were not applied and the generic block leaked through`
+    );
+    // Without these the print runs at a hard-coded temperature, never selects
+    // the mapped AMS slot and never loads pressure advance.
+    assert.ok(start.includes("M620"), `${machineLeaf}: no AMS slot selection in start gcode`);
+    assert.ok(start.includes("M104 S140"), `${machineLeaf}: no preheat before bed probing`);
+  }
+});
