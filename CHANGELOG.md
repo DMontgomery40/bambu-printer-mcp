@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- **`print_3mf` now starts pre-sliced `.gcode.3mf` prints on the A1 (LAN-Only + Developer Mode).** The non-H2 path diverted every `.gcode.3mf` to a `gcode_file` command (`cache/<name>`) and returned early, so a `project_file` was never sent and no print started. On a full-size A1 (fw 01.08.01.00) that diversion produced no print. Bambu Studio's own LAN print starts the exact same `.gcode.3mf` via `project_file`, and captured `.bbl` job manifests reference the file at the SD **root** (`/sdcard/<name>`), not `/sdcard/cache/<name>`. Non-H2 uploads now go to the SD root and `.gcode.3mf` falls through to the `project_file` command like any other `.3mf`. Verified on an A1: `print_3mf` returns `success` and the printer enters `RUNNING`. See the PR discussion for a try-`project_file`/fall-back-to-`gcode_file` variant if older firmware genuinely rejects `project_file` for `.gcode.3mf` (405004002).
+
 ### Security
 - Per-call `slicer_path`, `ffmpeg_path`, and `bridge_command` executable selectors are now rejected by default. Trusted server-side environment configuration remains available, including `FFMPEG_PATH` for RTSP camera snapshots; set `MCP_ALLOW_EXECUTABLE_ARG=1` only when intentional per-call overrides are required. `MCP_ALLOW_BRIDGE_COMMAND_ARG` remains a compatibility alias for `bridge_command` only.
 

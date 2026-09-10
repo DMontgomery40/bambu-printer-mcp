@@ -457,34 +457,26 @@ export class BambuImplementation {
         let remoteFileName = path.basename(options.filePath);
         remoteFileName = remoteFileName.replace(/\.gcode\.3mf\.gcode\.3mf$/i, ".gcode.3mf");
         // H2-series printers land files at the FTP root and reference them via ftp:///<name>.
-        // P1/A1/X1 use /cache/<name> and file:///sdcard/cache/<name>.
+        // P1/A1/X1 also upload to the SD root and reference file:///sdcard/<name>. This
+        // mirrors what Bambu Studio's own LAN print does on an A1 (fw 01.08.01.00): the
+        // .bbl job manifest the printer writes to its SD card points at /sdcard/<name>,
+        // NOT /sdcard/cache/<name>.
         const isH2 = serial.startsWith("093") ||
             serial.startsWith("094") ||
             isH2ModelName(options.bambuModel);
-        const remoteProjectPath = isH2 ? remoteFileName : `cache/${remoteFileName}`;
-        const remoteUploadPath = isH2 ? `/${remoteFileName}` : `/cache/${remoteFileName}`;
+        const remoteProjectPath = remoteFileName;
+        const remoteUploadPath = `/${remoteFileName}`;
         const projectUrl = isH2
             ? `ftp:///${remoteFileName}`
-            : `file:///sdcard/${remoteProjectPath}`;
+            : `file:///sdcard/${remoteFileName}`;
         // Upload via basic-ftp directly (bypasses bambu-js double-path bug)
         await this.ftpUpload(host, token, options.filePath, remoteUploadPath);
-        // Pre-sliced .gcode.3mf files: routing depends on firmware generation.
-        // P1/A1/X1 series: project_file returns 405004002 for .gcode.3mf (firmware
-        // doesn't recognise the container), so use gcode_file instead.
-        // H2-series: gcode_file is not supported; project_file works because the
-        // firmware can open the zip and find Metadata/plate_<n>.gcode directly.
-        if (options.filePath.toLowerCase().endsWith(".gcode.3mf")) {
-            if (!isH2) {
-                const printer = await this.getPrinter(host, serial, token);
-                await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath }));
-                return {
-                    status: "success",
-                    message: `Uploaded and started gcode.3mf print: ${options.projectName}`,
-                    remoteProjectPath,
-                };
-            }
-            // H2-series: fall through to project_file path below
-        }
+        // Pre-sliced .gcode.3mf files fall through to the project_file command below,
+        // same as any other .3mf. On an A1 (fw 01.08.01.00) this matches Bambu Studio's
+        // own LAN print exactly -- it starts a .gcode.3mf via project_file and it prints.
+        // (Older P1/A1/X1 firmware was reported to reject project_file for .gcode.3mf
+        // with 405004002; see the PR discussion for a try-project_file/fall-back-to-
+        // gcode_file variant if that must be supported.)
         const projectMetadata = await this.resolveProjectFileMetadata(options.filePath, options.plateIndex);
         // Send project_file command via bambu-node MQTT (bypasses bambu-js
         // hardcoded use_ams=true and missing ams_mapping support)
