@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+- Require the exact model/nozzle machine preset for FULU and Orca CLI slicing, including aliases and automatic slicing before printing. Reject missing or malformed presets before launching the slicer; process overrides cannot bypass the gate.
+- Resolve FULU/Orca BBL inheritance and include templates, validate model CLI configuration, and preserve custom process settings and complete filament-slot mappings through the same preparation path as BambuStudio.
+- Discover matching Orca/FULU profile trees beside the active executable and prevent fallback to another installation's bundled presets. Keep Orca extrusion normalization after inheritance resolution.
+- Update agent setup guidance for the shared safety gate. Regression checks cover preparation and side-effect prevention; live FULU/Orca slicing and physical printing remain separate validation.
+
 ## [1.1.10] – 2026-09-27
 
 ### Documentation

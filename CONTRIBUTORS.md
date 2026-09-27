@@ -19,7 +19,7 @@ Thank you to everyone who builds, tests, reports problems, and shares real print
 
 Thank you also to the existing contributors whose work the project builds on:
 
-- [David Montgomery (DMontgomery40)](https://github.com/DMontgomery40) — project maintainer.
+- [David Montgomery (DMontgomery40)](https://github.com/DMontgomery40) — project maintainer; flags the FULU/Orca missing-machine-preset safety gap during article review, prompting the 1.1.11 fix.
 - [rowbotik](https://github.com/rowbotik) — printer, AMS, slicing, and operational work across the existing release history.
 - [len-foss](https://github.com/len-foss) — project code contribution.
 - [thebitrock](https://github.com/thebitrock) — project code contribution.

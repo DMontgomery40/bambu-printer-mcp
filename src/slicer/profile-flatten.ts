@@ -751,7 +751,7 @@ async function writeTemp(
  *
  * Override via BAMBU_PROFILES_ROOT env.
  */
-export function detectProfilesRoot(slicerPath?: string): string {
+export function detectProfilesRoot(slicerPath?: string, slicerType = 'bambustudio'): string {
   if (process.env["BAMBU_PROFILES_ROOT"]) {
     return process.env["BAMBU_PROFILES_ROOT"];
   }
@@ -767,14 +767,18 @@ export function detectProfilesRoot(slicerPath?: string): string {
     // Package-manager launchers may be symlinks into the installation prefix.
     try { executable = realpathSync(executable); } catch { /* Probe the supplied path below. */ }
     const bin = path.dirname(executable);
+    const installNames = slicerType === 'bambustudio'
+      ? ['BambuStudio', 'bambu-studio']
+      : ['OrcaSlicer', 'orca-slicer', 'OrcaStudio', 'orca-studio'];
     const candidates = path.basename(bin) === 'MacOS'
       ? [path.resolve(bin, '..', 'Resources', 'profiles')]
       : [
           path.join(bin, 'resources', 'profiles'),
           path.join(bin, 'Resources', 'profiles'),
-          path.resolve(bin, '..', 'share', 'BambuStudio', 'profiles'),
-          path.resolve(bin, '..', 'share', 'bambu-studio', 'profiles'),
-          path.resolve(bin, '..', 'share', 'BambuStudio', 'resources', 'profiles'),
+          ...installNames.flatMap(name => [
+            path.resolve(bin, '..', 'share', name, 'profiles'),
+            path.resolve(bin, '..', 'share', name, 'resources', 'profiles'),
+          ]),
         ];
     const found = candidates.find(root => existsSync(path.join(root, 'BBL', 'machine')));
     // Do not select another installation if this executable has no profile tree.
@@ -783,5 +787,7 @@ export function detectProfilesRoot(slicerPath?: string): string {
   }
 
   // Default macOS install.
-  return "/Applications/BambuStudio.app/Contents/Resources/profiles";
+  return slicerType === 'bambustudio'
+    ? '/Applications/BambuStudio.app/Contents/Resources/profiles'
+    : '/Applications/OrcaSlicer.app/Contents/Resources/profiles';
 }
