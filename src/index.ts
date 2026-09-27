@@ -13,6 +13,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import dotenv from "dotenv";
 import fs from "fs";
+import os from "node:os";
 import path from "path";
 import { createServer as createHttpServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -24,6 +25,7 @@ import {
   type SlicerType,
 } from "./stl/stl-manipulator.js";
 import { BambuNetworkBridge, type BambuNetworkBridgeOptions } from "./bambu-network-bridge.js";
+import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
 import { hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue } from "./ams-mapping.js";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, parse3MF } from './3mf_parser.js';
 import type { ThreeMFAmsRequirements } from "./types.js";
@@ -36,7 +38,11 @@ const DEFAULT_BAMBU_SERIAL = process.env.BAMBU_PRINTER_SERIAL || process.env.BAM
 const DEFAULT_BAMBU_TOKEN =
   process.env.BAMBU_PRINTER_ACCESS_TOKEN || process.env.BAMBU_TOKEN || "";
 const DEFAULT_BAMBU_DEV_ID = process.env.BAMBU_DEV_ID || DEFAULT_BAMBU_SERIAL;
-const TEMP_DIR = process.env.TEMP_DIR || path.join(process.cwd(), "temp");
+// os.tmpdir(), not process.cwd() — a packaged Claude Desktop extension is
+// spawned with a cwd we don't control (and may not be writable), so a
+// cwd-relative default here can throw at module load via the mkdirSync
+// below and kill the server before it ever opens the stdio transport.
+const TEMP_DIR = process.env.TEMP_DIR || fs.mkdtempSync(path.join(os.tmpdir(), "bambu-printer-mcp-"));
 
 // Printer model and bed type
 const DEFAULT_BAMBU_MODEL =
@@ -1015,6 +1021,7 @@ class BambuPrinterMCPServer {
   private server: Server;
   private bambu: BambuImplementation;
   private bambuNetwork: BambuNetworkBridge;
+  private readonly blender = new BlenderMcpBridge();
   private stlManipulator: STLManipulator;
   private readonly runtimeConfig: RuntimeConfig;
   private httpRuntime?: { transport: StreamableHTTPServerTransport; httpServer: HttpServer };
@@ -1024,7 +1031,7 @@ class BambuPrinterMCPServer {
     this.server = new Server(
       {
         name: "bambu-printer-mcp",
-        version: "1.0.0"
+        version: JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version
       },
       {
         capabilities: {
@@ -2638,28 +2645,60 @@ class BambuPrinterMCPServer {
             }
           },
           {
+            name: "blender_mcp_status",
+            description: "Inspect Blender MCP configuration or connect and discover the remote server's tools and schemas. Connecting does not edit the scene; use get_scene_info through blender_mcp_call to check the Blender addon.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                connect: { type: "boolean", description: "Initialize the configured stdio MCP server and discover its tools (default false)." },
+                timeout_ms: { type: "integer", minimum: 100, maximum: 300000, description: "Total connection and discovery deadline in milliseconds; defaults to BLENDER_MCP_TIMEOUT_MS or 120000." }
+              },
+              additionalProperties: false
+            }
+          },
+          {
+            name: "blender_mcp_call",
+            description: "Call a discovered tool on the configured Blender MCP server, preserving its full MCP content and errors. Discover tool schemas with blender_mcp_status first; execute_blender_code accepts Python code and user_prompt. Calls can modify the active Blender scene and are never automatically retried.",
+            inputSchema: {
+              type: "object",
+              properties: {
+                tool_name: { type: "string", description: "Exact name advertised by Blender MCP, such as get_scene_info or execute_blender_code." },
+                arguments: { type: "object", description: "Arguments matching the remote tool's discovered input schema. Preserve the user's own words in user_prompt when the remote tool requests it." },
+                timeout_ms: { type: "integer", minimum: 100, maximum: 300000, description: "Total connection, discovery, and tool deadline in milliseconds; defaults to BLENDER_MCP_TIMEOUT_MS or 120000." }
+              },
+              required: ["tool_name"],
+              additionalProperties: false
+            }
+          },
+          {
             name: "blender_mcp_edit_model",
-            description: "Send STL-edit instructions to a Blender MCP bridge command for advanced model edits",
+            description: "Import, edit, and export a local STL through standard Blender MCP with verified output and existing scene objects preserved. Requires a shared local filesystem and Blender Object Mode. Also supports a separately configured legacy executable bridge.",
             inputSchema: {
               type: "object",
               properties: {
                 stl_path: { type: "string", description: "Path to the local STL file" },
                 operations: {
                   type: "array",
-                  description: "Ordered edit operations for Blender (e.g. remesh, boolean, decimate)",
+                  description: "Ordered operations: decimate:<ratio greater than 0 and at most 1>, remesh:<positive voxel size in STL units>, boolean_union:<STL path>. Legacy custom bridges define their own operations.",
+                  minItems: 1,
+                  maxItems: 64,
                   items: { type: "string" }
                 },
-                bridge_command: { type: "string", description: "Override command for invoking Blender MCP bridge. Per-call overrides require MCP_ALLOW_EXECUTABLE_ARG=1." },
-                execute: { type: "boolean", description: "Execute bridge command (true) or return payload only (false)" }
+                output_path: { type: "string", description: "New local STL output path for standard MCP editing; its parent must exist and existing files are never overwritten." },
+                user_prompt: { type: "string", description: "The user's own words describing the edit, passed unchanged to Blender MCP." },
+                timeout_ms: { type: "integer", minimum: 100, maximum: 300000, description: "Total Blender request deadline in milliseconds; defaults to BLENDER_MCP_TIMEOUT_MS or 120000." },
+                bridge_command: { type: "string", description: "Legacy custom bridge executable override, not a standard MCP command. Per-call overrides require MCP_ALLOW_EXECUTABLE_ARG=1." },
+                execute: { type: "boolean", description: "Apply edits and export (true) or validate and return the prepared request without connecting (false, default)." }
               },
-              required: ["stl_path", "operations"]
+              required: ["stl_path", "operations"],
+              additionalProperties: false
             }
           }
         ]
       };
     });
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    this.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       const { name, arguments: args } = request.params;
 
       const host = String(args?.host || DEFAULT_HOST);
@@ -3496,21 +3535,24 @@ class BambuPrinterMCPServer {
             result = await this.stlManipulator.layFlat(String(args.stl_path));
             break;
 
+          case "blender_mcp_status":
+            result = await this.blender.status(args ?? {}, extra.signal);
+            break;
+
+          case "blender_mcp_call":
+            return await this.blender.call(args ?? {}, extra.signal);
+
           case "blender_mcp_edit_model":
-            if (!args?.stl_path || !Array.isArray(args.operations)) {
-              throw new Error("Missing required parameters: stl_path and operations");
-            }
-            result = await this.invokeBlenderBridge({
-              stlPath: String(args.stl_path),
-              operations: args.operations.map((entry: any) => String(entry)),
-              execute: Boolean(args.execute ?? false),
-              bridgeCommand: this.resolveExecutableSelectorArg(
-                args.bridge_command,
+            result = await this.blender.edit(
+              args ?? {},
+              this.resolveExecutableSelectorArg(
+                args?.bridge_command,
                 "blender_mcp_edit_model",
                 "bridge_command",
                 true
-              ) ?? this.runtimeConfig.blenderBridgeCommand,
-            });
+              ) ?? (!process.env.BLENDER_MCP_COMMAND?.trim() ? this.runtimeConfig.blenderBridgeCommand : undefined),
+              extra.signal
+            );
             break;
 
           default:
@@ -3545,43 +3587,6 @@ class BambuPrinterMCPServer {
         };
       }
     });
-  }
-
-  private async invokeBlenderBridge(params: {
-    stlPath: string;
-    operations: string[];
-    execute: boolean;
-    bridgeCommand?: string;
-  }): Promise<any> {
-    const payload = {
-      stlPath: params.stlPath,
-      operations: params.operations,
-    };
-
-    if (!params.execute || !params.bridgeCommand) {
-      return {
-        status: "prepared",
-        payload,
-        note: params.bridgeCommand
-          ? "Set execute=true to run the Blender bridge command."
-          : "No BLENDER_MCP_BRIDGE_COMMAND configured. Set the env var or pass bridge_command.",
-      };
-    }
-
-    const { execFile } = await import("node:child_process");
-    const { promisify } = await import("node:util");
-    const execFileAsync = promisify(execFile);
-
-    const { stdout, stderr } = await execFileAsync(params.bridgeCommand, [], {
-      env: { ...process.env, MCP_BLENDER_PAYLOAD: JSON.stringify(payload) },
-      timeout: 120_000,
-    });
-
-    return {
-      status: "executed",
-      stdout: stdout.trim(),
-      stderr: stderr.trim(),
-    };
   }
 
   async startStdio() {

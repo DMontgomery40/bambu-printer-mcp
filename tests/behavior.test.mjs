@@ -1309,6 +1309,18 @@ async function createFakeBambuSlicer() {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-mcp-template-slicer-"));
   const fakeSlicerPath = path.join(tempDir, "fake-slicer.mjs");
   const argsOutPath = path.join(tempDir, "args.json");
+  // The fake executable has no app bundle. Give profile preparation a complete,
+  // explicit tree so these tests do not depend on an installed BambuStudio.
+  const profilesRoot = path.join(tempDir, "profiles");
+  for (const kind of ["machine", "process", "filament"]) {
+    fs.mkdirSync(path.join(profilesRoot, "BBL", kind), { recursive: true });
+  }
+  const writeProfile = (kind, profile) => fs.writeFileSync(
+    path.join(profilesRoot, "BBL", kind, `${profile.name}.json`), JSON.stringify(profile)
+  );
+  writeProfile("machine", { name: "Bambu Lab P1S 0.4 nozzle", nozzle_diameter: ["0.4"], default_print_profile: "Behavior process", default_filament_profile: ["Behavior filament"], machine_start_gcode: "fixture start" });
+  writeProfile("process", { name: "Behavior process", layer_height: "0.2" });
+  writeProfile("filament", { name: "Behavior filament", filament_type: ["PLA"] });
   fs.writeFileSync(
     fakeSlicerPath,
     `#!/usr/bin/env node
@@ -1324,7 +1336,7 @@ fs.writeFileSync(outputPath, "fake sliced 3mf");
 `
   );
   fs.chmodSync(fakeSlicerPath, 0o755);
-  return { tempDir, fakeSlicerPath, argsOutPath };
+  return { tempDir, fakeSlicerPath, argsOutPath, profilesRoot };
 }
 
 test("slice_with_template prefers named template settings over BAMBU_SLICER_PROFILE default", async (t) => {
@@ -1345,6 +1357,7 @@ test("slice_with_template prefers named template settings over BAMBU_SLICER_PROF
       BAMBU_SERIAL: "",
       BAMBU_TOKEN: "",
       BAMBU_SLICER_PROFILE: defaultProfilePath,
+      BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot,
       MCP_ALLOW_EXECUTABLE_ARG: "1",
     },
     stderr: "pipe",
@@ -1393,6 +1406,7 @@ test("template_name resolves by source type for slicer profiles versus 3MF sourc
       BAMBU_MODEL: "p1s",
       BAMBU_SERIAL: "",
       BAMBU_TOKEN: "",
+      BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot,
       MCP_ALLOW_EXECUTABLE_ARG: "1",
     },
     stderr: "pipe",

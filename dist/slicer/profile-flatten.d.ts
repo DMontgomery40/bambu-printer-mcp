@@ -61,6 +61,12 @@ export interface FlattenOptions {
     nozzleVolumeType?: "Standard" | "High Flow";
     /** BambuStudio display name, e.g. "Textured PEI Plate" or "Cool Plate". */
     bedType?: string;
+    /** Actual input configs, including user overrides on top of BBL parents. */
+    sourceProfiles?: {
+        machine?: Record<string, unknown>;
+        process?: Record<string, unknown>;
+        filaments?: (Record<string, unknown> | undefined)[];
+    };
 }
 /**
  * Flatten the leaf profiles, post-process for CLI, and write to temp files.
@@ -70,7 +76,7 @@ export interface FlattenOptions {
 export declare function flattenForCli(opts: FlattenOptions): Promise<FlattenedProfiles>;
 /**
  * Given the SLICER_PATH (path to BambuStudio executable), walk up to the
- * Resources/profiles directory. Falls back to common platform paths.
+ * profile directory for that installation (macOS, Windows, or Linux prefix).
  *
  * Override via BAMBU_PROFILES_ROOT env.
  */

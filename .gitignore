@@ -19,3 +19,6 @@ docs/mk2 collarID.gcode.3mf.3mf.gcode.3mf
 
 # BambuStudio CLI artifacts (drop-in next to current dir)
 result.json
+
+# Packed Claude Desktop extension bundle
+*.mcpb

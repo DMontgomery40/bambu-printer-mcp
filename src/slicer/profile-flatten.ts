@@ -25,6 +25,7 @@
  */
 
 import fs from "node:fs/promises";
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 
@@ -68,6 +69,12 @@ export interface FlattenOptions {
   nozzleVolumeType?: "Standard" | "High Flow";
   /** BambuStudio display name, e.g. "Textured PEI Plate" or "Cool Plate". */
   bedType?: string;
+  /** Actual input configs, including user overrides on top of BBL parents. */
+  sourceProfiles?: {
+    machine?: Record<string, unknown>;
+    process?: Record<string, unknown>;
+    filaments?: (Record<string, unknown> | undefined)[];
+  };
 }
 
 interface IndexedProfile {
@@ -148,43 +155,39 @@ async function buildNameIndex(
  *   - Unknown name (broken `inherits` reference).
  *   - Cycles (A -> B -> A).
  */
-function flattenByName(leafName: string, index: NameIndex): Record<string, unknown> {
-  const chain: Record<string, unknown>[] = [];
-  const visited = new Set<string>();
-  let cursor: string | undefined = leafName;
-
-  while (cursor) {
-    if (visited.has(cursor)) {
-      throw new Error(
-        `Profile inheritance cycle detected at "${cursor}" (chain: ${[...visited].join(" -> ")})`
-      );
-    }
-    visited.add(cursor);
-
-    const entry = index.get(cursor);
-    if (!entry) {
-      throw new Error(
-        `Profile "${cursor}" not found in index. ` +
-          `Inherits chain so far: ${[...visited].join(" -> ")}. ` +
-          `This usually means the leaf name is misspelled or the profile tree is incomplete.`
-      );
-    }
-
-    chain.push(entry.data);
-    const parent = entry.data["inherits"];
-    cursor = typeof parent === "string" && parent.length > 0 ? parent : undefined;
+function flattenByName(
+  leafName: string,
+  index: NameIndex,
+  visiting = new Set<string>()
+): Record<string, unknown> {
+  if (visiting.has(leafName)) {
+    throw new Error(`Profile inheritance cycle detected (inherits/include): ${[...visiting, leafName].join(" -> ")}`);
   }
-
-  // Merge root-most parent first, leaf last (so leaf wins). At each level,
-  // BambuStudio applies the profile's `include` templates on top of the
-  // resolved parent and under the profile's own keys
-  // (PresetBundle::load_vendor_configs_from_json).
-  const merged: Record<string, unknown> = {};
-  for (let i = chain.length - 1; i >= 0; i--) {
-    applyIncludes(merged, chain[i], index);
-    Object.assign(merged, chain[i]);
+  const entry = index.get(leafName);
+  if (!entry) {
+    throw new Error(`Profile "${leafName}" not found in index. The profile tree is incomplete or the name is misspelled.`);
   }
-  // Consumed here; the CLI does not resolve `include` itself.
+  visiting.add(leafName);
+  try {
+    return flattenData(entry.data, index, visiting);
+  } finally {
+    visiting.delete(leafName);
+  }
+}
+
+function flattenData(
+  data: Record<string, unknown>,
+  index: NameIndex,
+  visiting = new Set<string>()
+): Record<string, unknown> {
+  const parent = data["inherits"];
+  const merged = typeof parent === "string" && parent.length > 0
+    ? flattenByName(parent, index, visiting)
+    : {};
+  // Includes may themselves inherit or include templates. Each level wins
+  // over its parent, then the including profile's own settings win last.
+  applyIncludes(merged, data, index, visiting);
+  Object.assign(merged, data);
   delete merged["include"];
   return merged;
 }
@@ -203,12 +206,19 @@ const INCLUDE_METADATA_KEYS = new Set(["name", "type", "from", "instantiation", 
 function applyIncludes(
   target: Record<string, unknown>,
   profile: Record<string, unknown>,
-  index: NameIndex
+  index: NameIndex,
+  visiting: Set<string>
 ): void {
   const raw = profile["include"];
+  if (raw === undefined || raw === null) return;
+  if (typeof raw !== "string" && !Array.isArray(raw)) {
+    throw new Error(`Profile "${String(profile["name"])}" has an invalid include; expected a name or array of names.`);
+  }
   const names = typeof raw === "string" ? [raw] : Array.isArray(raw) ? raw : [];
   for (const name of names) {
-    if (typeof name !== "string" || name.length === 0) continue;
+    if (typeof name !== "string" || name.trim().length === 0) {
+      throw new Error(`Profile "${String(profile["name"])}" has an invalid include reference; every entry must be a nonempty name.`);
+    }
     const entry = index.get(name);
     if (!entry) {
       throw new Error(
@@ -216,7 +226,7 @@ function applyIncludes(
           `Refusing to fall back to inherited defaults (wrong G-code for this printer).`
       );
     }
-    for (const [key, value] of Object.entries(entry.data)) {
+    for (const [key, value] of Object.entries(flattenByName(name, index, visiting))) {
       if (!INCLUDE_METADATA_KEYS.has(key)) target[key] = value;
     }
   }
@@ -513,9 +523,19 @@ export async function flattenForCli(opts: FlattenOptions): Promise<FlattenedProf
   const index = await buildNameIndex(opts.profilesRoot, vendor);
 
   // Flatten each leaf.
-  const machineFlat = flattenByName(opts.machineLeaf, index);
-  const processFlat = flattenByName(opts.processLeaf, index);
-  const filamentFlats = opts.filamentLeaves.map((n) => flattenByName(n, index));
+  if (opts.sourceProfiles?.filaments && opts.sourceProfiles.filaments.length !== opts.filamentLeaves.length) {
+    throw new Error("Every filament slot must have a source profile.");
+  }
+  const machineFlat = opts.sourceProfiles?.machine
+    ? flattenData(opts.sourceProfiles.machine, index)
+    : flattenByName(opts.machineLeaf, index);
+  const processFlat = opts.sourceProfiles?.process
+    ? flattenData(opts.sourceProfiles.process, index)
+    : flattenByName(opts.processLeaf, index);
+  const filamentFlats = opts.filamentLeaves.map((n, i) => {
+    const source = opts.sourceProfiles?.filaments?.[i];
+    return source ? flattenData(source, index) : flattenByName(n, index);
+  });
 
   // CLI-specific post-processing on machine profile only.
   deriveNozzleVolumeType(machineFlat, opts.nozzleVolumeType);
@@ -536,8 +556,8 @@ export async function flattenForCli(opts: FlattenOptions): Promise<FlattenedProf
   ensureMachineInCompatList(processFlat, opts.machineLeaf);
   filamentFlats.forEach((f) => ensureMachineInCompatList(f, opts.machineLeaf));
 
-  // Write temp files. Hash the leaf name into the filename so concurrent
-  // slices for different printers don't collide.
+  // Hash the resolved content so concurrent jobs using the same preset with
+  // different overrides never overwrite each other's input files.
   await fs.mkdir(opts.tempDir, { recursive: true });
   const machinePath = await writeTemp(opts.tempDir, "machine", opts.machineLeaf, machineFlat);
   const processPath = await writeTemp(opts.tempDir, "process", opts.processLeaf, processFlat);
@@ -568,11 +588,12 @@ async function writeTemp(
   leafName: string,
   data: Record<string, unknown>
 ): Promise<string> {
-  const hash = crypto.createHash("sha1").update(leafName).digest("hex").slice(0, 8);
+  const serialized = JSON.stringify(data, null, 2);
+  const hash = crypto.createHash("sha256").update(leafName).update("\0").update(serialized).digest("hex").slice(0, 16);
   const safe = leafName.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 64);
   const filename = `flat-${kind}-${safe}-${hash}.json`;
   const out = path.join(tempDir, filename);
-  await fs.writeFile(out, JSON.stringify(data, null, 2), "utf8");
+  await fs.writeFile(out, serialized, "utf8");
   return out;
 }
 
@@ -582,7 +603,7 @@ async function writeTemp(
 
 /**
  * Given the SLICER_PATH (path to BambuStudio executable), walk up to the
- * Resources/profiles directory. Falls back to common platform paths.
+ * profile directory for that installation (macOS, Windows, or Linux prefix).
  *
  * Override via BAMBU_PROFILES_ROOT env.
  */
@@ -592,10 +613,29 @@ export function detectProfilesRoot(slicerPath?: string): string {
   }
 
   if (slicerPath) {
-    // macOS: /Applications/BambuStudio.app/Contents/MacOS/BambuStudio
-    //  -> /Applications/BambuStudio.app/Contents/Resources/profiles
-    const macGuess = path.resolve(path.dirname(slicerPath), "..", "Resources", "profiles");
-    return macGuess;
+    let executable = slicerPath;
+    if (!slicerPath.includes('/') && !slicerPath.includes('\\')) {
+      const located = (process.env.PATH ?? '').split(path.delimiter)
+        .map(dir => path.join(dir, slicerPath))
+        .find(candidate => existsSync(candidate));
+      if (located) executable = located;
+    }
+    // Package-manager launchers may be symlinks into the installation prefix.
+    try { executable = realpathSync(executable); } catch { /* Probe the supplied path below. */ }
+    const bin = path.dirname(executable);
+    const candidates = path.basename(bin) === 'MacOS'
+      ? [path.resolve(bin, '..', 'Resources', 'profiles')]
+      : [
+          path.join(bin, 'resources', 'profiles'),
+          path.join(bin, 'Resources', 'profiles'),
+          path.resolve(bin, '..', 'share', 'BambuStudio', 'profiles'),
+          path.resolve(bin, '..', 'share', 'bambu-studio', 'profiles'),
+          path.resolve(bin, '..', 'share', 'BambuStudio', 'resources', 'profiles'),
+        ];
+    const found = candidates.find(root => existsSync(path.join(root, 'BBL', 'machine')));
+    // Do not select another installation if this executable has no profile tree.
+    // flattenForCli reports the missing tree and asks for BAMBU_PROFILES_ROOT.
+    return found ?? candidates[0];
   }
 
   // Default macOS install.

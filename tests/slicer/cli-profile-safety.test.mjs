@@ -1,0 +1,232 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import JSZip from 'jszip';
+import { STLManipulator } from '../../dist/stl/stl-manipulator.js';
+import { flattenForCli, detectProfilesRoot } from '../../dist/slicer/profile-flatten.js';
+
+// Exercise profile preparation and the emitted CLI arguments; never run a real slicer.
+async function fixture(t) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cli-profile-safety-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const profiles = path.join(root, 'BambuStudio.app', 'Contents', 'Resources', 'profiles');
+  const bbl = path.join(profiles, 'BBL');
+  for (const kind of ['machine', 'process', 'filament']) await fs.mkdir(path.join(bbl, kind), { recursive: true });
+  const write = async (kind, value) => {
+    const file = path.join(bbl, kind, `${value.name}.json`);
+    await fs.writeFile(file, JSON.stringify(value));
+    return file;
+  };
+  await write('machine', { name: 'SAFETY base', nozzle_diameter: ['0.4'], machine_start_gcode: 'GENERIC' });
+  await write('machine', { name: 'SAFETY start', machine_start_gcode: 'M620 S0A ; correct machine' });
+  const machine = await write('machine', {
+    name: 'Bambu Lab SAFETY 0.4 nozzle', inherits: 'SAFETY base', include: ['SAFETY start'],
+    default_print_profile: 'SAFETY process', default_filament_profile: ['SAFETY filament'],
+  });
+  await write('process', { name: 'SAFETY process base', layer_height: '0.2', wall_loops: '2' });
+  const processFile = await write('process', { name: 'SAFETY process', inherits: 'SAFETY process base' });
+  const filament = await write('filament', { name: 'SAFETY filament', filament_type: ['PLA'], nozzle_temperature: ['220'] });
+  const executable = path.join(root, 'BambuStudio.app', 'Contents', 'MacOS', 'BambuStudio');
+  const capture = path.join(root, 'args.json');
+  await fs.mkdir(path.dirname(executable), { recursive: true });
+  await fs.writeFile(executable, `#!${process.execPath}\nconst fs = require('fs'); const path = require('path'); const args = process.argv.slice(2); fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify(args)); fs.writeFileSync(path.join(args[args.indexOf('--outputdir') + 1], args[args.indexOf('--export-3mf') + 1]), 'fixture output');\n`, { mode: 0o755 });
+  const saved = Object.fromEntries(['BAMBU_PROFILES_ROOT', 'BAMBU_SLICER_PROFILE_DIRS', 'BAMBU_CLI_FLATTEN'].map(k => [k, process.env[k]]));
+  t.after(() => { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } });
+  process.env.BAMBU_PROFILES_ROOT = profiles;
+  process.env.BAMBU_SLICER_PROFILE_DIRS = bbl;
+  delete process.env.BAMBU_CLI_FLATTEN;
+  const manipulator = new STLManipulator(path.join(root, 'out'));
+  const stl = path.join(root, 'model.stl');
+  await fs.writeFile(stl, 'fixture STL (only the fake CLI reads it)');
+  const slice = (options = {}, profile, input = stl) => manipulator.sliceSTL(input, 'bambustudio', executable, profile, undefined, 'Bambu Lab SAFETY 0.4 nozzle', options);
+  const args = async () => JSON.parse(await fs.readFile(capture, 'utf8'));
+  const loaded = async () => { const a = await args(); return a[a.indexOf('--load-filaments') + 1].split(';'); };
+  const project = async (count) => {
+    const zip = new JSZip();
+    zip.file('Metadata/project_settings.config', JSON.stringify({ filament_settings_id: Array(count).fill('Foreign @BBL OTHER'), filament_type: Array(count).fill('PLA') }));
+    const file = path.join(root, 'project.3mf');
+    await fs.writeFile(file, await zip.generateAsync({ type: 'nodebuffer' }));
+    return file;
+  };
+  return { root, profiles, write, machine, processFile, filament, executable, stl, slice, args, loaded, capture, project };
+}
+
+test('bundled profiles resolve include G-code with flatten flag unset or false', async t => {
+  const f = await fixture(t);
+  for (const flag of [undefined, 'false']) {
+    if (flag === undefined) delete process.env.BAMBU_CLI_FLATTEN; else process.env.BAMBU_CLI_FLATTEN = flag;
+    await f.slice();
+    const args = await f.args();
+    const machine = args[args.indexOf('--load-settings') + 1].split(';')[0];
+    assert.equal(JSON.parse(await fs.readFile(machine, 'utf8')).machine_start_gcode, 'M620 S0A ; correct machine');
+  }
+});
+
+test('missing machine include prevents CLI execution', async t => {
+  const f = await fixture(t);
+  process.env.BAMBU_CLI_FLATTEN = 'true';
+  await fs.unlink(path.join(f.profiles, 'BBL', 'machine', 'SAFETY start.json'));
+  await assert.rejects(f.slice(), /includes.*SAFETY start/);
+  await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+});
+
+test('an unreadable filament is rejected rather than removed from its position', async t => {
+  const f = await fixture(t);
+  process.env.BAMBU_CLI_FLATTEN = 'true';
+  await assert.rejects(f.slice({ loadFilaments: `${f.filament};${path.join(f.root, 'missing.json')}` }), /filament|missing.json/i);
+  await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+});
+
+test('missing named default filaments are rejected instead of shifting later slots', async t => {
+  const f = await fixture(t);
+  const machine = JSON.parse(await fs.readFile(f.machine, 'utf8'));
+  machine.default_filament_profile = ['SAFETY missing', 'SAFETY filament'];
+  await fs.writeFile(f.machine, JSON.stringify(machine));
+  await assert.rejects(f.slice(), /filament.*SAFETY missing/i);
+  await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+});
+
+test('bundled leaf settings come from the selected profile tree', async t => {
+  const f = await fixture(t);
+  const activeRoot = path.join(f.root, 'selected-profiles');
+  await fs.cp(f.profiles, activeRoot, { recursive: true });
+  const machinePath = path.join(activeRoot, 'BBL', 'machine', 'Bambu Lab SAFETY 0.4 nozzle.json');
+  const machine = JSON.parse(await fs.readFile(machinePath, 'utf8'));
+  machine.include = ['SAFETY selected start'];
+  await fs.writeFile(machinePath, JSON.stringify(machine));
+  await fs.writeFile(path.join(activeRoot, 'BBL', 'machine', 'SAFETY selected start.json'), JSON.stringify({ name: 'SAFETY selected start', machine_start_gcode: 'M620 S0A ; selected tree' }));
+  process.env.BAMBU_PROFILES_ROOT = activeRoot;
+  await f.slice();
+  const args = await f.args();
+  const loadedMachine = args[args.indexOf('--load-settings') + 1].split(';')[0];
+  assert.equal(JSON.parse(await fs.readFile(loadedMachine, 'utf8')).machine_start_gcode, 'M620 S0A ; selected tree');
+});
+
+test('custom process inheritance preserves its overrides while flattening the machine', async t => {
+  const f = await fixture(t);
+  const profile = path.join(f.root, 'custom-process.json');
+  await fs.writeFile(profile, JSON.stringify({ name: 'Custom process', inherits: 'SAFETY process', wall_loops: '7' }));
+  await f.slice({}, profile);
+  const args = await f.args();
+  const [machineFile, processFile] = args[args.indexOf('--load-settings') + 1].split(';');
+  assert.equal(JSON.parse(await fs.readFile(machineFile, 'utf8')).machine_start_gcode, 'M620 S0A ; correct machine');
+  const config = JSON.parse(await fs.readFile(processFile, 'utf8'));
+  assert.equal(config.wall_loops, '7');
+  assert.equal(config.layer_height, '0.2');
+});
+
+test('standalone custom process and filament settings survive alongside a resolved machine', async t => {
+  const f = await fixture(t);
+  const profile = path.join(f.root, 'standalone-process.json');
+  const filament = path.join(f.root, 'standalone-filament.json');
+  await fs.writeFile(profile, JSON.stringify({ name: 'Standalone process', from: 'User', layer_height: '0.12', wall_loops: '9' }));
+  await fs.writeFile(filament, JSON.stringify({ name: 'Standalone filament', from: 'User', filament_type: ['PETG'], nozzle_temperature: ['250'] }));
+  await f.slice({ loadFilaments: filament }, profile);
+  const args = await f.args();
+  const [machineFile, processFile] = args[args.indexOf('--load-settings') + 1].split(';');
+  assert.equal(JSON.parse(await fs.readFile(machineFile, 'utf8')).machine_start_gcode, 'M620 S0A ; correct machine');
+  assert.equal(JSON.parse(await fs.readFile(processFile, 'utf8')).wall_loops, '9');
+  assert.equal((await f.loaded())[0], filament);
+});
+
+test('an explicit filament override replaces unresolved defaults in a custom process', async t => {
+  const f = await fixture(t);
+  const profile = path.join(f.root, 'foreign-defaults.json');
+  await fs.writeFile(profile, JSON.stringify({ name: 'Custom process', inherits: 'SAFETY process', default_filament_profile: ['Foreign missing filament'] }));
+  await f.slice({ loadFilaments: f.filament }, profile);
+  assert.equal((await f.loaded()).length, 1);
+});
+
+test('explicit repeated filament paths retain every positional slot', async t => {
+  const f = await fixture(t);
+  await f.slice({ loadFilaments: `${f.filament};${f.filament};${f.filament}` });
+  assert.equal((await f.loaded()).length, 3);
+});
+
+test('a single filament override replaces all twelve declared project slots', async t => {
+  const f = await fixture(t);
+  await f.slice({ loadFilaments: f.filament }, undefined, await f.project(12));
+  const loaded = await f.loaded();
+  assert.equal(loaded.length, 12);
+  for (const file of loaded) assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')).nozzle_temperature, ['220']);
+});
+
+test('a partial multi-filament override is rejected before slicing a larger project', async t => {
+  const f = await fixture(t);
+  await assert.rejects(f.slice({ loadFilaments: `${f.filament};${f.filament}` }, undefined, await f.project(3)), /filament.*3|3.*filament/i);
+  await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+});
+
+test('include templates resolve inherited and nested settings', async t => {
+  const f = await fixture(t);
+  await f.write('machine', { name: 'SAFETY nested', inherits: 'SAFETY start', include: ['SAFETY end'] });
+  await f.write('machine', { name: 'SAFETY end', machine_end_gcode: 'M104 S0 ; correct end' });
+  await f.write('machine', { name: 'Bambu Lab SAFETY 0.4 nozzle', inherits: 'SAFETY base', include: ['SAFETY nested'] });
+  const result = await flattenForCli({ machineLeaf: 'Bambu Lab SAFETY 0.4 nozzle', processLeaf: 'SAFETY process', filamentLeaves: ['SAFETY filament'], profilesRoot: f.profiles, tempDir: path.join(f.root, 'out') });
+  const machine = JSON.parse(await fs.readFile(result.machinePath, 'utf8'));
+  assert.equal(machine.machine_start_gcode, 'M620 S0A ; correct machine');
+  assert.equal(machine.machine_end_gcode, 'M104 S0 ; correct end');
+});
+
+test('mixed include and inherits cycles reject instead of retaining generic G-code', async t => {
+  const f = await fixture(t);
+  await f.write('machine', { name: 'SAFETY start', inherits: 'SAFETY loop' });
+  await f.write('machine', { name: 'SAFETY loop', include: ['SAFETY start'] });
+  await assert.rejects(flattenForCli({ machineLeaf: 'Bambu Lab SAFETY 0.4 nozzle', processLeaf: 'SAFETY process', filamentLeaves: ['SAFETY filament'], profilesRoot: f.profiles, tempDir: path.join(f.root, 'out') }), /cycle/i);
+});
+
+test('malformed include references reject instead of retaining generic G-code', async t => {
+  const f = await fixture(t);
+  for (const include of [42, [42], ['']]) {
+    await f.write('machine', { name: 'Bambu Lab SAFETY 0.4 nozzle', inherits: 'SAFETY base', include });
+    await assert.rejects(flattenForCli({ machineLeaf: 'Bambu Lab SAFETY 0.4 nozzle', processLeaf: 'SAFETY process', filamentLeaves: ['SAFETY filament'], profilesRoot: f.profiles, tempDir: path.join(f.root, 'out') }), /include/i);
+  }
+});
+
+test('custom overrides inheriting the same parent keep separate immutable output files', async t => {
+  const f = await fixture(t);
+  const opts = { machineLeaf: 'Bambu Lab SAFETY 0.4 nozzle', processLeaf: 'SAFETY process', filamentLeaves: ['SAFETY filament'], profilesRoot: f.profiles, tempDir: path.join(f.root, 'out') };
+  const first = await flattenForCli({ ...opts, sourceProfiles: { process: { name: 'Custom', inherits: 'SAFETY process', wall_loops: '5' } } });
+  const second = await flattenForCli({ ...opts, sourceProfiles: { process: { name: 'Custom', inherits: 'SAFETY process', wall_loops: '9' } } });
+  assert.notEqual(first.processPath, second.processPath);
+  assert.equal(JSON.parse(await fs.readFile(first.processPath, 'utf8')).wall_loops, '5');
+  assert.equal(JSON.parse(await fs.readFile(second.processPath, 'utf8')).wall_loops, '9');
+});
+
+for (const [layout, binary, profiles] of [
+  ['Windows portable', 'portable/BambuStudio.exe', 'portable/resources/profiles'],
+  ['Linux prefix', 'prefix/bin/bambu-studio', 'prefix/share/BambuStudio/profiles'],
+]) {
+  test(`${layout} profile discovery follows the active executable`, async t => {
+    const f = await fixture(t);
+    const executable = path.join(f.root, binary);
+    const root = path.join(f.root, profiles);
+    await fs.mkdir(path.dirname(executable), { recursive: true });
+    await fs.copyFile(f.executable, executable);
+    await fs.chmod(executable, 0o755);
+    await fs.cp(f.profiles, root, { recursive: true });
+    delete process.env.BAMBU_PROFILES_ROOT;
+    delete process.env.BAMBU_SLICER_PROFILE_DIRS;
+    assert.equal(await fs.realpath(detectProfilesRoot(executable)), await fs.realpath(root));
+    const manipulator = new STLManipulator(path.join(f.root, 'portable-out'));
+    await manipulator.sliceSTL(f.stl, 'bambustudio', executable, undefined, undefined, 'Bambu Lab SAFETY 0.4 nozzle');
+    const args = await f.args();
+    const machineFile = args[args.indexOf('--load-settings') + 1].split(';')[0];
+    assert.equal(JSON.parse(await fs.readFile(machineFile, 'utf8')).machine_start_gcode, 'M620 S0A ; correct machine');
+  });
+}
+
+test('an unavailable active profile tree cannot silently slice with printer defaults', async t => {
+  const f = await fixture(t);
+  const executable = path.join(f.root, 'no-profiles', 'bambu-studio');
+  await fs.mkdir(path.dirname(executable));
+  await fs.copyFile(f.executable, executable);
+  await fs.chmod(executable, 0o755);
+  delete process.env.BAMBU_PROFILES_ROOT;
+  delete process.env.BAMBU_SLICER_PROFILE_DIRS;
+  const manipulator = new STLManipulator(path.join(f.root, 'no-profiles-out'));
+  await assert.rejects(manipulator.sliceSTL(f.stl, 'bambustudio', executable, undefined, undefined, 'Bambu Lab SAFETY 0.4 nozzle'), /profile|preset/i);
+  await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+});

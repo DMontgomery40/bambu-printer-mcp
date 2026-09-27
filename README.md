@@ -9,6 +9,8 @@
 
 A Bambu Lab-focused MCP server for controlling Bambu printers, manipulating STL files, and managing end-to-end 3MF print workflows from Claude Desktop, Claude Code, or any MCP-compatible client.
 
+Built with help from our [contributors](./CONTRIBUTORS.md). Huge thanks to everyone sharing fixes, careful bug reports, and real printer testing!
+
 This is a stripped-down, Bambu-only fork of [mcp-3D-printer-server](https://github.com/DMontgomery40/mcp-3D-printer-server). All OctoPrint, Klipper, Duet, Repetier, Prusa Connect, and Creality Cloud support has been removed. What remains is a focused, lean implementation for Bambu Lab hardware.
 
 Local handoff note: see [REMOTE-DEPLOYMENT.md](./REMOTE-DEPLOYMENT.md) for the custom H2D/H2S/H2C patches, per-printer MCP split, and remote deployment plan used in this clone.
@@ -30,10 +32,10 @@ This fork adds a substantial set of printer control tools beyond the upstream `m
 - **HMS diagnostics** (`printer://{host}/hms` MCP resource) — read-only error summary with automatic settle retry.
 - **Utility controls** — `set_print_speed` (silent/standard/sport/ludicrous), `clear_hms_errors`, `reread_ams_rfid`, `set_airduct_mode` (cooling/heating for H2/P2).
 - **H2-family-safe print path** — correct `project_file` format with `ams_mapping2` parallel array, H2 firmware quirks handled.
-- **BambuStudio CLI auto-flatten** (`BAMBU_CLI_FLATTEN=true`) — works around upstream profile inheritance bugs.
+- **BambuStudio CLI auto-flatten** (automatic for BBL profiles) — works around upstream profile inheritance bugs.
 - **Print collar charm** (`print_collar_charm`) — specialized two-color wrapper with fixed tray policy.
 
-### v1.1.1 — AMS dryer control (current)
+### v1.1.1 — AMS dryer control
 
 - **AMS dryer start/stop** (`set_ams_drying`) — sends `print.ams_control` MQTT command. Works on heated AMS units (AMS Pro / AMS-HT). Action: `start` or `stop`, target by AMS index 0–3.
 - Same-SKU different-color fix for `auto_match_ams`.
@@ -100,7 +102,7 @@ This fork adds a substantial set of printer control tools beyond the upstream `m
 - List, upload, and delete files on the printer's SD card via FTPS
 - Capture a JPEG snapshot from the chamber camera. Supports A1, A1 mini, P1S, P1P (TCP-on-6000), and X1, X1C, X1E, P2S, H2, H2S, H2D, H2C, H2D Pro (RTSP via ffmpeg). Requires ffmpeg in PATH for the RTSP path.
 - Upload and print pre-sliced `.gcode.3mf` files with full plate selection and calibration flag control (recommended path — see [docs/SLICING.md](./docs/SLICING.md))
-- Optional single-color auto-slice path via BambuStudio CLI. Set `BAMBU_CLI_FLATTEN=true` to enable a workaround that flattens BBL profile inheritance before invoking the CLI — works around upstream bugs in BambuStudio CLI mode ([#9636](https://github.com/bambulab/BambuStudio/issues/9636), [#9968](https://github.com/bambulab/BambuStudio/issues/9968)). Single-color smoke is verified on H2S/H2D/X1C/P1S; H2C requires Bambu Studio 2.4.0 or newer and should use `BAMBU_MODEL=h2c`, not an H2D fallback. H2D two-color CLI slicing is blocked upstream ([#10408](https://github.com/bambulab/BambuStudio/issues/10408)); use a GUI-sliced `.gcode.3mf` for that workflow. Default off; Path A (GUI-slice) remains the recommended workflow for non-BBL profiles, multi-color H2 jobs, or first-time prints. See [docs/SLICING.md](./docs/SLICING.md).
+- Optional single-color auto-slice path via BambuStudio CLI. BBL profile inheritance and include templates resolve automatically before slicing; missing dependencies stop the slice. Standalone custom configurations remain supported. H2C requires a compatible installed Bambu Studio profile tree and `BAMBU_MODEL=h2c`. The previously documented H2D multi-color CLI limitation remains; use a GUI-sliced `.gcode.3mf` for that workflow. See [docs/SLICING.md](./docs/SLICING.md).
 - Parse AMS mapping from the 3MF's embedded slicer metadata (`Metadata/plate_<n>.json` + gcode filament header) and send it correctly formatted per the OpenBambuAPI spec, with correct H2S/H2D/H2C `ams_mapping2` parallel array format
 - **Auto-match AMS slots by RFID** (`auto_match_ams` flag on `print_3mf`). Resolves required `tray_info_idx` from the sliced 3MF against live AMS inventory. Handles same-SKU different-color filaments by matching on `(tray_info_idx, tray_color)` and tracking already-claimed slots. Dry-run with `resolve_3mf_ams_slots` before printing.
 - Cancel, pause, and resume in-progress print jobs via MQTT
@@ -138,7 +140,7 @@ This fork adds a substantial set of printer control tools beyond the upstream `m
 The fastest way to get started. No global install required:
 
 ```bash
-npx @rowbotik/bambu-printer-mcp
+npx bambu-printer-mcp
 ```
 
 Set environment variables inline or via a `.env` file in your working directory (see [Configuration](#configuration)).
@@ -146,7 +148,7 @@ Set environment variables inline or via a `.env` file in your working directory 
 ### Install globally from npm
 
 ```bash
-npm install -g @rowbotik/bambu-printer-mcp
+npm install -g bambu-printer-mcp
 ```
 
 After installation, the `bambu-printer-mcp` command is available in your PATH.
@@ -154,7 +156,7 @@ After installation, the `bambu-printer-mcp` command is available in your PATH.
 ### Install from source
 
 ```bash
-git clone https://github.com/rowbotik/bambu-printer-mcp.git
+git clone https://github.com/DMontgomery40/bambu-printer-mcp.git
 cd bambu-printer-mcp
 npm install
 npm run build
@@ -204,8 +206,12 @@ MCP_HTTP_STATEFUL=true
 MCP_HTTP_JSON_RESPONSE=true
 MCP_HTTP_ALLOWED_ORIGINS=http://localhost
 
-# --- Optional Blender MCP bridge ---
-BLENDER_MCP_BRIDGE_COMMAND=       # Shell command to invoke your Blender MCP bridge executable
+# --- Optional standard Blender MCP server ---
+BLENDER_MCP_COMMAND=uvx          # Executable or full path; no shell command string
+BLENDER_MCP_ARGS='["blender-mcp"]'
+BLENDER_MCP_TIMEOUT_MS=120000
+# Start the matching MCP addon inside Blender.
+# Legacy custom executable bridge (optional): BLENDER_MCP_BRIDGE_COMMAND=
 ```
 
 ### Environment variables reference
@@ -221,7 +227,7 @@ BLENDER_MCP_BRIDGE_COMMAND=       # Shell command to invoke your Blender MCP bri
 | `SLICER_TYPE` | `bambustudio` | No | Slicer to use for slicing operations |
 | `SLICER_PATH` | BambuStudio macOS path | No | Full path to the slicer executable. Alias: `BAMBU_STUDIO_PATH` |
 | `SLICER_PROFILE` | | No | Path to a slicer profile or config file |
-| `TEMP_DIR` | `./temp` | No | Directory for intermediate files |
+| `TEMP_DIR` | private folder under the system temporary directory | No | Intermediate files; each server instance gets its own folder unless explicitly configured |
 | `MCP_TRANSPORT` | `stdio` | No | Transport mode: `stdio` or `streamable-http` |
 | `MCP_HTTP_HOST` | `127.0.0.1` | No | HTTP bind address (HTTP transport only) |
 | `MCP_HTTP_PORT` | `3000` | No | HTTP port (HTTP transport only) |
@@ -229,8 +235,11 @@ BLENDER_MCP_BRIDGE_COMMAND=       # Shell command to invoke your Blender MCP bri
 | `MCP_HTTP_STATEFUL` | `true` | No | Enable stateful HTTP sessions |
 | `MCP_HTTP_JSON_RESPONSE` | `true` | No | Return structured JSON alongside text responses |
 | `MCP_HTTP_ALLOWED_ORIGINS` | | No | Comma-separated list of allowed CORS origins |
-| `BLENDER_MCP_BRIDGE_COMMAND` | | No | Command to invoke Blender MCP bridge |
-| `BAMBU_CLI_FLATTEN` | `false` | No | When `true`, the MCP flattens BBL profile inheritance before invoking the BambuStudio CLI. Workaround for upstream issues [#9636](https://github.com/bambulab/BambuStudio/issues/9636) / [#9968](https://github.com/bambulab/BambuStudio/issues/9968). BBL printers only. Single-color smoke verified on H2S/H2D/X1C/P1S; H2C requires Bambu Studio 2.4.0 or newer. H2D two-color CLI slicing remains blocked by [#10408](https://github.com/bambulab/BambuStudio/issues/10408). See [docs/SLICING.md](./docs/SLICING.md). |
+| `BLENDER_MCP_COMMAND` | | No | Trusted executable for a standard stdio Blender MCP server, e.g. full path to `uvx` |
+| `BLENDER_MCP_ARGS` | `[]` | No | JSON array of server arguments, e.g. `["blender-mcp"]`; no shell parsing |
+| `BLENDER_MCP_TIMEOUT_MS` | `120000` | No | Connection/discovery/call deadline, 100–300000 ms; interrupted edits are never retried automatically |
+| `BLENDER_MCP_BRIDGE_COMMAND` | | No | Legacy custom executable receiving `MCP_BLENDER_PAYLOAD`; separate from the standard MCP integration |
+| `BAMBU_CLI_FLATTEN` | automatic | No | Legacy setting; BBL profile resolution now always runs when profiles contain inheritance or includes. A false/unset value cannot bypass required machine G-code. Standalone custom files without dependencies pass through. See [docs/SLICING.md](./docs/SLICING.md). |
 | `BAMBU_PROFILES_ROOT` | derived from `SLICER_PATH` | No | Override path to the BambuStudio `Resources/profiles` directory used by the CLI flattener. Useful for non-standard installs or dev environments. |
 
 SuperTack can be passed for pre-sliced print jobs, but BambuStudio CLI slicing currently fails fast for `supertack_plate` because the accepted CLI bed identifier is not verified. Use a pre-sliced 3MF for SuperTack until this is confirmed.
@@ -246,7 +255,7 @@ Add this server to your MCP client's config (Claude Desktop, Claude Code, Cursor
   "mcpServers": {
     "bambu-printer": {
       "command": "npx",
-      "args": ["-y", "@rowbotik/bambu-printer-mcp"],
+      "args": ["-y", "bambu-printer-mcp"],
       "env": {
         "PRINTER_HOST": "192.168.1.100",
         "BAMBU_SERIAL": "01P00A123456789",
@@ -272,6 +281,25 @@ Where this config lives depends on your client:
 | Codex CLI | MCP config per Codex docs |
 
 Restart your client after editing the config.
+
+### Alternative: Claude Desktop extension (.mcpb)
+
+You can install this server into Claude Desktop without editing JSON by using the `.mcpb` extension bundle. Download `bambu-printer-mcp.mcpb` from the [latest release](https://github.com/DMontgomery40/bambu-printer-mcp/releases), double-click it, and Claude Desktop's extension wizard will register the server. You'll be prompted for your printer IP, serial number, LAN access code, and printer model -- the same values as the `mcpServers` config above.
+
+If your org has disabled Claude Desktop extension installs, install unpacked instead:
+
+1. Clone the repo and run `npm ci && npm run build`.
+2. Open Claude Desktop -> **Settings** -> **Extensions** -> **Advanced Settings** -> **Extension Developer** -> **Install Unpacked**.
+3. Select the repo's root directory (the one containing `manifest.json`).
+
+To build the bundle yourself instead of downloading a release asset:
+
+```bash
+npm ci
+npm run package:mcpb
+```
+
+This produces `bambu-printer-mcp.mcpb` in the repo root using a pinned packaging tool. Packaging installs production dependencies in a temporary directory, retains licenses and source, excludes local credentials and models, and leaves your development dependencies intact.
 
 ### Recommended: use with codemode-mcp
 
@@ -1251,30 +1279,66 @@ These defaults keep you safe when printing downloaded models. When calling `slic
 
 ### Advanced Tools
 
+#### Blender MCP
+
+Use a standard stdio Blender MCP server with `BLENDER_MCP_COMMAND` and
+`BLENDER_MCP_ARGS`. For the common Blender MCP server, install `uv` and its
+matching Blender addon, enable the addon, and start its connection inside
+Blender. Set the command to your full `uvx` path and the argument array to
+`["blender-mcp"]`. The Claude Desktop extension also offers these two optional
+settings. Printer tools work without Blender configured.
+
+1. Call `blender_mcp_status` with `{"connect": true}` to initialize the server
+   and discover its tools and input schemas. A connected MCP server does not
+   by itself prove that the Blender addon is running.
+2. Call `blender_mcp_call` with a discovered tool name and its arguments. The
+   full MCP result, including images and errors, is returned. For example:
+
+```json
+{
+  "tool_name": "get_scene_info",
+  "arguments": {"user_prompt": "Inspect the scene before preparing a print."}
+}
+```
+
+For advanced Blender operations, forward `execute_blender_code` with `code`
+and the user's original `user_prompt`. These calls may edit the active scene.
+Use the discovered schema rather than assuming a tool exists.
+
 #### blender_mcp_edit_model
 
-Send a set of named edit operations (remesh, boolean, decimate, etc.) to a Blender MCP bridge command for advanced mesh work that goes beyond what the built-in STL tools support.
-
-When `execute` is `false` (the default), the tool returns the payload that would be sent without running anything -- useful for previewing what would be dispatched.
-
-When `execute` is `true`, the server invokes the configured bridge command with the payload as a JSON-encoded environment variable (`MCP_BLENDER_PAYLOAD`). Configure it with `BLENDER_MCP_BRIDGE_COMMAND`; per-call `bridge_command` overrides require `MCP_ALLOW_EXECUTABLE_ARG=1`.
+The standard MCP edit helper imports an STL, applies ordered edits, and exports
+an STL without replacing the input or an existing output. Supported operations
+are `decimate:<ratio>` (greater than 0 through 1), `remesh:<voxel size>` (positive,
+in STL coordinate units), and `boolean_union:<STL path>`. Other operations can
+use `blender_mcp_call`. Both processes must have access to the same file paths.
 
 ```json
 {
   "stl_path": "/path/to/model.stl",
-  "operations": ["remesh", "decimate:0.5", "boolean_union:/path/to/other.stl"],
+  "output_path": "/path/to/model-edited.stl",
+  "operations": ["decimate:0.5"],
+  "user_prompt": "Reduce the triangle count of this model for printing.",
   "execute": false
 }
 ```
 
-```json
-{
-  "stl_path": "/path/to/model.stl",
-  "operations": ["remesh"],
-  "bridge_command": "/usr/local/bin/blender-mcp-bridge",
-  "execute": true
-}
-```
+The default preview returns the plan and generated Python without launching
+Blender. Set `execute` to `true` to run it. A successful standard edit returns
+`output_verified: true`, `output_path`, byte count, and triangle count after
+checking the matching export receipt and a valid finite mesh. The helper
+preserves existing scene objects and requires Object Mode. Inspect the result
+before slicing; a valid STL is not a guarantee of printability.
+
+The bridge enforces request deadlines, closes child connections, and never
+replays interrupted editing requests. After a timeout, inspect Blender before
+trying the edit again because execution may already have started.
+
+Existing custom executables still work through `BLENDER_MCP_BRIDGE_COMMAND`.
+They receive `MCP_BLENDER_PAYLOAD` with the requested file and operations;
+their results explicitly report `output_verified: false`. A missing executable
+configuration is an error when execution is requested. Per-call legacy
+`bridge_command` overrides remain disabled unless `MCP_ALLOW_EXECUTABLE_ARG=1`.
 
 </details>
 

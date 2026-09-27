@@ -25,4 +25,5 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: node --test tests/behavior.test.mjs
+      - run: node --test tests/*.test.mjs tests/**/*.test.mjs
       - run: npm publish
