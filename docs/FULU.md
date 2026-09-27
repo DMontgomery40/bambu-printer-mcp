@@ -9,7 +9,6 @@ We support **[FULU Foundation](https://www.fulu.org/), Louis Rossmann, and the [
 | Workflow | What you need | Bambu software/services in the print path |
 |---|---|---|
 | **FULU GUI export → MCP direct LAN** | FULU slicer, sliced project, printer IP/serial/access code, supported LAN firmware | No Bambu Studio, Bambu Connect, or Bambu Cloud required by this workflow |
-| **FULU CLI → MCP direct LAN** | The same, plus a CLI-capable FULU executable and matching profiles | Same local transport; CLI support depends on your slicer build and profiles |
 | **FULU BambuNetwork bridge, LAN** | Separately installed bridge host/runtime, local credentials, shared file access | Uses Bambu's networking libraries through FULU's bridge |
 | **FULU BambuNetwork bridge, cloud** | Bridge runtime, internet access, authenticated BambuNetwork session, device ID | Still uses Bambu's networking libraries and cloud services |
 
@@ -46,28 +45,17 @@ For an external spool, follow the [no-AMS guidance](../README.md#printing-withou
 
 **X2D:** status and slicing with its own preset are supported. Direct X2D printing is rejected before slicing, connection, or upload because the native eMMC transport has not shipped. Neither a successful FULU slice nor bridge initialization changes that limit; do not substitute `h2d`.
 
-## Optional FULU CLI slicing
+<a id="optional-fulu-cli-slicing"></a>
 
-Configure the executable in the server environment. This macOS example assumes that exact app is installed; some builds are named **Orca Studio** or **OrcaSlicer-BMCU** instead:
+## FULU and Orca CLI safety limit
 
-```env
-SLICER_TYPE=orcaslicer-bambulab
-SLICER_PATH=/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer
-```
+**Use FULU/Orca GUI export for now; do not use their MCP CLI backends for unattended slicing or auto-slicing.** The server recognizes `SLICER_TYPE=orcaslicer-bambulab`, `orcaslicer`, and aliases such as `fulu-orca` and `orca-studio`, but accepting an alias is not sufficient machine-profile validation.
 
-On Windows, use the installed `.exe` path; on Linux, use the installed executable or an executable wrapper for your build. Inspect your slicer's `--help` before using the CLI. The MCP's Bambu-compatible flow uses flags including `--slice`, `--export-3mf`, and `--load-settings`; upstream Orca and FULU versions can differ. Accepted aliases include `fulu-orca` and `orca-studio`.
+The current implementation rejects a missing machine preset on the BambuStudio CLI path only. With FULU/Orca, a missing preset can leave the CLI using persisted/default printer settings even when the tool call includes `bambu_model`. This is an existing safety limitation in [`resolveBambuLikeSettingsBundle`](../src/stl/stl-manipulator.ts), not a limitation fixed by this documentation release. Setting `slicer_profile` or the model argument alone does not establish that the output targets the intended printer.
 
-Use `slice_stl` to prepare a file without starting a print:
+Use the GUI to select the exact model/nozzle/materials, inspect the preview, and export a sliced `.gcode.3mf`. Supply that pre-sliced file to either direct LAN or the optional bridge; do not give those print tools an unsliced project with a FULU/Orca CLI selected. No MCP-side slicer configuration is needed for the pre-sliced workflow. Agents should not configure FULU/Orca auto-slicing until equivalent machine-preset validation ships.
 
-```json
-{
-  "stl_path": "/absolute/path/bracket.stl",
-  "bambu_model": "p1s",
-  "slicer_type": "orcaslicer-bambulab"
-}
-```
-
-If the CLI rejects its flags or profiles, use the GUI export workflow above. BambuStudio-specific profile flattening and its tested version matrix are documented in the [slicing guide](./SLICING.md); those results are not evidence for every FULU/Orca build. `slicer_profile` is a process profile, not a way to select a different physical printer. Configure `SLICER_PATH` in the client environment; per-call executable overrides are disabled by default.
+For headless slicing today, the [BambuStudio CLI path](./SLICING.md#path-b-mechanics-cli-auto-flatten) requires the matching bundled machine preset and stops on profile preparation errors. Its tested version matrix does not establish safe FULU/Orca CLI behavior.
 
 ## Configure the bridge
 
@@ -209,7 +197,7 @@ Non-zero numeric bridge results are errors. A successful submission does not pro
 | Handshake works, file upload fails | Verify the project and config paths inside the host/VM/WSL process, including read/write permissions. |
 | Agent ready, cloud print rejected | Verify login, region, and device ID; `agentReady` is not an authenticated-session guarantee. |
 | Non-zero result or `send msg failed` | Inspect the redacted runtime error and printer diagnostics; do not blindly repeat a possible print submission. |
-| FULU CLI flags/profile failure | Use GUI slicing and export; report the exact slicer build and CLI error. |
+| FULU/Orca CLI slicing requested | Use GUI export while the missing-machine-preset safety gate is absent; see the limitation above. |
 | X2D direct-print rejection | Expected limitation. Use its own slicing preset and a supported slicer transport; do not relabel it as H2D. |
 
 The repository's automated tests exercise mocked bridge framing, initialization, method/parameter handling, and failure responses. They do not certify live FULU printing on Linux, Windows, or macOS. Earlier macOS experiments reached a handshake but encountered print-start failures; they are not current physical-print validation. No physical print is performed as part of this documentation sweep.

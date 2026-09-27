@@ -42,9 +42,10 @@ Keep credentials in local/private configuration; do not repeat access codes
 or tokens in chat. Never guess the printer model.
 
 Use direct LAN printing by default. Explain any LAN/Developer Mode setting
-I need to enable. Prefer FULU OrcaSlicer-bambulab for slicing; discover an
-existing slicer before asking me to install one. A slicer is not needed on
-this machine to print an already sliced file. Configure the optional FULU
+I need to enable. Prefer FULU OrcaSlicer-bambulab GUI slicing/export; discover
+an existing slicer before suggesting an install. Do not configure FULU/Orca
+CLI auto-slicing while its machine-preset safety gate is missing (see guide).
+A slicer is not needed here to print a pre-sliced file. Configure the optional FULU
 BambuNetwork bridge only if I choose it, and explain its runtime/auth needs.
 X2D supports status and slicing here, but direct printing is not supported.
 
@@ -122,7 +123,7 @@ See the [changelog](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main
 
 ## FULU and open-source printing
 
-[FULU OrcaSlicer-bambulab](https://github.com/FULU-Foundation/OrcaSlicer-bambulab) is a supported slicer target (`SLICER_TYPE=orcaslicer-bambulab`; aliases include `fulu-orca` and `orca-studio`). Use its GUI to export a sliced project for direct LAN printing, or configure its CLI when your build supports the required flags and profiles.
+[FULU OrcaSlicer-bambulab](https://github.com/FULU-Foundation/OrcaSlicer-bambulab) is a supported slicer target (`SLICER_TYPE=orcaslicer-bambulab`; aliases include `fulu-orca` and `orca-studio`). Use its GUI to export a sliced project for direct LAN printing. FULU/Orca CLI aliases are recognized, but **do not use them for unattended slicing or auto-slicing** while the [machine-preset safety gate is missing](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#fulu-and-orca-cli-safety-limit).
 
 The optional FULU **BambuNetwork bridge** exposes `bambu_network_bridge_status`, `bambu_network_call`, and `print_3mf_bambu_network`, also reachable through `print_3mf` with `connection_mode: "bambu_network"`. Slicer selection does not enable the bridge. It needs a separately installed FULU runtime and an explicit launch command; cloud printing also needs an authenticated BambuNetwork session.
 
@@ -151,7 +152,7 @@ The optional FULU **BambuNetwork bridge** exposes `bambu_network_bridge_status`,
 - Start G-code files already stored on the printer
 - **Collar charm print wrapper** (`print_collar_charm`) — specialized two-color workflow with fixed tray policy for inner (black, AMS 1 slot 1) and outer (white, AMS 2 slot 1) charm parts
 - STL manipulation: scale, rotate, extend base, merge vertices, center at origin, lay flat, and inspect model info
-- Slice STL or 3MF files using BambuStudio, OrcaSlicer, PrusaSlicer, Cura, or Slic3r
+- Slice STL or 3MF files using an external CLI. For Bambu headless workflows, use the validated BambuStudio profile path; FULU/Orca users should [GUI-export while the CLI safety limitation remains](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#fulu-and-orca-cli-safety-limit).
 - Inspect slicer settings from a saved 3MF template or extracted profile via `get_slice_settings`
 - Enumerate saved slicing templates from the local registry via `list_templates`
 - Save templates into the local registry via `save_template`
@@ -987,6 +988,8 @@ Slice an STL or 3MF file using an external slicer and return the path to the out
 ```
 
 `slicer_type` options: `bambustudio`, `orcaslicer`, `orcaslicer-bambulab` (FULU), `prusaslicer`, `cura`, `slic3r`. Aliases include `fulu-orca` and `orca-studio`. When omitted, the value from the `SLICER_TYPE` environment variable is used (default: `bambustudio`).
+
+**FULU/Orca CLI limitation:** recognized slicer names do not guarantee that a missing machine preset is rejected. Use GUI-exported sliced projects instead of those CLI backends until the [machine-preset gate is implemented](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#fulu-and-orca-cli-safety-limit).
 
 `slicer_path` and `slicer_profile` fall back to the `SLICER_PATH` and `SLICER_PROFILE` environment variables when omitted. Per-call `slicer_path` overrides require `MCP_ALLOW_EXECUTABLE_ARG=1`.
 

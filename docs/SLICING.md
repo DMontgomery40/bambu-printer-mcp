@@ -89,7 +89,7 @@ print routes remain unchanged.
 
 GUI slicing lets you inspect supports, colours, tool changes, and tower placement before printing. It is also the fallback when a CLI build rejects flags, cannot resolve the selected profiles, or crashes.
 
-BambuStudio CLI preparation supports bundled BBL presets and standalone custom process/filament overrides; custom BBL-derived settings are retained after dependency resolution. The selected model's bundled machine preset is still required. FULU/Orca CLI selection is supported too, but its build-specific flags and profile handling are not covered by the BambuStudio validation above. See [FULU CLI setup](./FULU.md#optional-fulu-cli-slicing).
+BambuStudio CLI preparation supports bundled BBL presets and standalone custom process/filament overrides; custom BBL-derived settings are retained after dependency resolution. The selected model's bundled machine preset is still required. FULU/Orca CLI aliases exist, but currently lack equivalent rejection of missing machine presets. Use GUI exports for those slicers, not unattended MCP auto-slicing. See the [FULU/Orca CLI safety limit](./FULU.md#fulu-and-orca-cli-safety-limit).
 
 A failed inspection or auto-slice stops before upload. The server never deliberately sends the original unsliced project as a fallback.
 

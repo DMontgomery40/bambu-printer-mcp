@@ -14,6 +14,8 @@ The README provides the copy-and-paste setup request. Use this reference for exa
 - **ffmpeg** *(only for RTSP camera snapshots)*, configured in `PATH` or through `FFMPEG_PATH`.
 
 
+**FULU/Orca:** use GUI-exported sliced files. Their MCP CLI backends currently lack the required missing-machine-preset gate; do not configure unattended auto-slicing through them. See the [CLI safety limit](./FULU.md#fulu-and-orca-cli-safety-limit).
+
 ### Run without installing (npx)
 
 The fastest way to get started. No global install required:
