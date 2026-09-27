@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## [1.1.10] – 2026-09-27
+
+### Documentation
+- Restore prominent thanks to FULU Foundation, Louis Rossmann, and the OrcaSlicer-bambulab community, including the project's commitment to open-source software and cloud-free local printing.
+- Add a dedicated FULU setup guide covering slicer/export and CLI use, Linux/WSL/macOS bridge configuration, cloud authentication, shared paths, probes, and validation limits.
+- Replace manual README onboarding with one copy-and-paste agent setup request; move installation, environment variables, and LAN instructions into a linked setup reference. Treat code mode as optional.
+- Document the existing FULU/Orca CLI missing-machine-preset safety limitation and direct users and setup agents to GUI-exported sliced projects until an equivalent validation gate ships.
+- Make the README's major reference sections collapsible while keeping the FULU acknowledgment and agent setup request visible.
+- Reorganize README navigation and correct stale client configuration, LAN/account requirements, firmware routing, AMS mapping, and bridge capability descriptions.
+
+## [1.1.9] – 2026-09-27
+
 ### Added
 - Recognize X2D (`N6`, serial prefix `20P`) for status, camera routing, and slicing with its own installed BambuStudio preset. Direct X2D printing remains deferred pending the native eMMC transport and stops before printer side effects. Contribution and hardware/status/slicing evidence: [#18](https://github.com/DMontgomery40/bambu-printer-mcp/pull/18), by Sebastian (@sebas1986).
 
@@ -90,7 +102,11 @@
 
 Initial public release with core print, upload, slice, and status tooling.
 
-[1.1.3]: https://github.com/rowbotik/bambu-printer-mcp/compare/v1.1.2...v1.1.3
-[1.1.1]: https://github.com/rowbotik/bambu-printer-mcp/compare/v1.1.0...v1.1.1
-[1.1.0]: https://github.com/rowbotik/bambu-printer-mcp/compare/v1.0.5...v1.1.0
-[1.0.5]: https://github.com/rowbotik/bambu-printer-mcp/releases/tag/v1.0.5
+[1.1.3]: https://github.com/DMontgomery40/bambu-printer-mcp/commit/d9742202bd931bf8ca39a348713efa6ef05f784c
+[1.1.1]: https://github.com/DMontgomery40/bambu-printer-mcp/tree/v1.1.1
+[1.1.0]: https://github.com/DMontgomery40/bambu-printer-mcp/commit/29b8ec4565ec4dd0858e14441b4fe1cd1d4d45a0
+[1.0.5]: https://github.com/DMontgomery40/bambu-printer-mcp/tree/v1.0.5
+
+[1.1.9]: https://github.com/DMontgomery40/bambu-printer-mcp/releases/tag/v1.1.9
+[1.1.8]: https://github.com/DMontgomery40/bambu-printer-mcp/releases/tag/v1.1.8
+[1.1.10]: https://github.com/DMontgomery40/bambu-printer-mcp/releases/tag/v1.1.10
