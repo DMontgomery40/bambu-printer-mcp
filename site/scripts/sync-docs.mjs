@@ -538,7 +538,7 @@ function renderHome() {
     'markdownStyles: false',
     'title: bambu-printer-mcp',
     `titleTemplate: ${JSON.stringify('MCP server for Bambu Lab printers')}`,
-    `description: ${JSON.stringify('An MCP server that lets Claude, Codex, and other MCP clients check, slice for, and print on Bambu Lab 3D printers over your local network.')}`,
+    `description: ${JSON.stringify('Send your agent a link, a photo, or a message from anywhere. An MCP server that lets Claude, Codex, and other agents adapt models, slice, and print on Bambu Lab printers.')}`,
     '---',
     '',
     '<HomeHero />',

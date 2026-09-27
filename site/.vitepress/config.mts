@@ -13,6 +13,10 @@ const base = process.env.SITE_BASE ?? '/bambu-printer-mcp/'
 const siteUrl = `https://dmontgomery40.github.io${base}`
 const description =
   'An MCP server that lets Claude, Codex, and other MCP clients check, slice for, and print on Bambu Lab 3D printers over your local network.'
+// Regenerate with `npm run social-card` after changing the design or copy.
+const socialImage = `${siteUrl}social-card.png`
+const socialImageAlt =
+  'bambu-printer-mcp: Print from a conversation. A chat asks an agent to fit a MakerWorld phone stand to the new iPhone and print it, beside a slicer preview of the first layer.'
 
 export default defineConfig({
   srcDir: 'content',
@@ -27,10 +31,28 @@ export default defineConfig({
     ['meta', { name: 'theme-color', content: '#0c6f6a' }],
     ['meta', { property: 'og:type', content: 'website' }],
     ['meta', { property: 'og:site_name', content: 'bambu-printer-mcp' }],
-    ['meta', { property: 'og:title', content: 'bambu-printer-mcp' }],
-    ['meta', { property: 'og:description', content: description }],
-    ['meta', { property: 'og:url', content: siteUrl }],
+    ['meta', { property: 'og:image', content: socialImage }],
+    ['meta', { property: 'og:image:type', content: 'image/png' }],
+    ['meta', { property: 'og:image:width', content: '1200' }],
+    ['meta', { property: 'og:image:height', content: '630' }],
+    ['meta', { property: 'og:image:alt', content: socialImageAlt }],
+    ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
+    ['meta', { name: 'twitter:image', content: socialImage }],
+    ['meta', { name: 'twitter:image:alt', content: socialImageAlt }],
   ],
+  // Per-page titles, descriptions, and canonical URLs for link previews.
+  transformHead({ pageData, title, description: pageDescription }) {
+    const route = pageData.relativePath.replace(/(^|\/)index\.md$/, '$1').replace(/\.md$/, '')
+    const url = `${siteUrl}${route}`
+    return [
+      ['meta', { property: 'og:title', content: title }],
+      ['meta', { property: 'og:description', content: pageDescription }],
+      ['meta', { property: 'og:url', content: url }],
+      ['meta', { name: 'twitter:title', content: title }],
+      ['meta', { name: 'twitter:description', content: pageDescription }],
+      ['link', { rel: 'canonical', href: url }],
+    ]
+  },
   sitemap: { hostname: siteUrl },
   markdown: {
     // Match GitHub's heading anchors so README deep links keep working here.

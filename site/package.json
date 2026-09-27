@@ -7,7 +7,8 @@
     "sync": "node scripts/sync-docs.mjs",
     "dev": "node scripts/sync-docs.mjs && vitepress dev",
     "build": "node scripts/sync-docs.mjs && vitepress build",
-    "preview": "vitepress preview"
+    "preview": "vitepress preview",
+    "social-card": "node scripts/social-card.mjs"
   },
   "devDependencies": {
     "@fontsource-variable/archivo": "5.3.0",

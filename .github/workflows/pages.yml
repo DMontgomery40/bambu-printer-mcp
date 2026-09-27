@@ -1,8 +1,9 @@
 name: Pages
 
 # Builds the documentation site from README.md, docs/, CHANGELOG.md, and
-# CONTRIBUTORS.md. Pull requests only build (the sync step fails on broken
-# links, missing anchors, or README content without a page); main deploys.
+# CONTRIBUTORS.md. Pull requests and other branches only build (the sync step
+# fails on broken links, missing anchors, or README content without a page).
+# Only main uploads and deploys, including manual runs.
 
 on:
   push:
@@ -54,13 +55,13 @@ jobs:
       - run: npm run build
 
       - name: Upload site artifact
-        if: github.event_name != 'pull_request'
+        if: github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v5
         with:
           path: site/dist
 
   deploy:
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
