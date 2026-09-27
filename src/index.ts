@@ -1463,7 +1463,7 @@ class BambuPrinterMCPServer {
     const presetName = String(args?.preset_name || `${projectName}_plate_${plateIndex + 1}`);
     const clientJobId = args?.client_job_id !== undefined ? Number(args.client_job_id) : Date.now();
 
-    return withPrinterOperation(devIp, devId, assertActive => withPrintSnapshot(threeMFPath, async snapshot => {
+    return withPrinterOperation(devIp, devId, assertActive => withPrintSnapshot(threeMFPath, async (snapshot, retainForDispatchedUpload) => {
       const inspection = await inspectPrintFile(snapshot, { model: printModel, nozzleDiameters: printNozzles, plateIndex, bedType: printBedType });
       let mapping = finalAmsMapping?.slice();
       if (finalAmsSlots) {
@@ -1545,6 +1545,7 @@ class BambuPrinterMCPServer {
             this.bambu.assertBedClearance(dispatchStatus, bedClearance);
           },
           assertDispatchAllowed: method => { if (method === bridgeMethod) assertActive(); },
+          onDispatched: method => { if (method === bridgeMethod) retainForDispatchedUpload(); },
         }
       );
 
@@ -1578,7 +1579,7 @@ class BambuPrinterMCPServer {
         amsMapping: mapping,
         params: redactPrintParams(params),
       };
-    }, true));
+    }));
   }
 
   private async getResolvedPrinterFilamentInventory(

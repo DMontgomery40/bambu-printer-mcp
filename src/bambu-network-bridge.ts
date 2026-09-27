@@ -29,6 +29,7 @@ export type BambuNetworkBridgeOptions = {
   /** Trusted in-process preflight; never populated from tool arguments. */
   beforeDispatch?: (method: string) => Promise<void>;
   assertDispatchAllowed?: (method: string) => void;
+  onDispatched?: (method: string) => void;
 };
 
 export type BambuNetworkBridgeStatus = {
@@ -276,6 +277,7 @@ export class BambuNetworkBridge {
             }
           }
         });
+        options.onDispatched?.(method);
       } catch (error) {
         clearTimeout(timer);
         this.pending.delete(id);

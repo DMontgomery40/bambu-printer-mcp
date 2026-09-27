@@ -1064,7 +1064,7 @@ class BambuPrinterMCPServer {
         const projectName = String(args?.project_name || args?.task_name || threeMfFilename.replace(/\.3mf$/i, ''));
         const presetName = String(args?.preset_name || `${projectName}_plate_${plateIndex + 1}`);
         const clientJobId = args?.client_job_id !== undefined ? Number(args.client_job_id) : Date.now();
-        return withPrinterOperation(devIp, devId, assertActive => withPrintSnapshot(threeMFPath, async (snapshot) => {
+        return withPrinterOperation(devIp, devId, assertActive => withPrintSnapshot(threeMFPath, async (snapshot, retainForDispatchedUpload) => {
             const inspection = await inspectPrintFile(snapshot, { model: printModel, nozzleDiameters: printNozzles, plateIndex, bedType: printBedType });
             let mapping = finalAmsMapping?.slice();
             if (finalAmsSlots) {
@@ -1145,6 +1145,8 @@ class BambuPrinterMCPServer {
                 },
                 assertDispatchAllowed: method => { if (method === bridgeMethod)
                     assertActive(); },
+                onDispatched: method => { if (method === bridgeMethod)
+                    retainForDispatchedUpload(); },
             });
             if (typeof bridgeResult === "object" && bridgeResult !== null && bridgeResult.ok === false) {
                 throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} failed: ${String(bridgeResult.error || "unknown bridge error")}`);
@@ -1172,7 +1174,7 @@ class BambuPrinterMCPServer {
                 amsMapping: mapping,
                 params: redactPrintParams(params),
             };
-        }, true));
+        }));
     }
     async getResolvedPrinterFilamentInventory(host, bambuSerial, bambuToken, bambuModel, nozzleDiameter) {
         const status = await this.bambu.getStatus(host, bambuSerial, bambuToken);

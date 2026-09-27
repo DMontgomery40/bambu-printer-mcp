@@ -376,7 +376,6 @@ export class BambuImplementation {
             `File SHA-256: ${inspection.sha256}. Confirm the physical spool labels and that the build plate is clear.` +
             (finishedJob !== undefined ? " The printer reports FINISH: remove the previous part and debris before confirming." : "") +
             (cleared ? ` Previously cleared hardware codes: ${cleared.join(", ")}. Confirm their physical causes have been resolved.` : ""), finishedJob !== undefined || !!cleared);
-        this.clearedErrors.delete(serial);
         return finishedJob;
     }
     assertBedClearance(status, confirmedFinishedJob) {
@@ -391,6 +390,7 @@ export class BambuImplementation {
     /** Internal handoff from a successful inspected transport; never exposed as an MCP tool. */
     recordCheckedJob(host, serial, remotePath, requirements) {
         this.checkedJobs.set(`${host}\n${serial}`, { remotePath, requirements: structuredClone(requirements) });
+        this.clearedErrors.delete(serial);
     }
     validateLoadedGcodeState(status, inspection) {
         const usedMaterials = inspection.usedFilamentPositions.map(position => inspection.materials[position]);
@@ -677,7 +677,7 @@ export class BambuImplementation {
         assertActive();
         if (legacyContainer) {
             await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath }));
-            this.checkedJobs.set(`${host}\n${serial}`, { remotePath: remoteProjectPath, requirements });
+            this.recordCheckedJob(host, serial, remoteProjectPath, requirements);
             return { status: "success", message: `Uploaded and started gcode.3mf print: ${options.projectName}`, remoteProjectPath };
         }
         const b = (v) => (v ? 1 : 0);
@@ -739,7 +739,7 @@ export class BambuImplementation {
             };
         }
         await printer.publish(projectFileCmd);
-        this.checkedJobs.set(`${host}\n${serial}`, { remotePath: remoteProjectPath, requirements });
+        this.recordCheckedJob(host, serial, remoteProjectPath, requirements);
         await new Promise((resolve) => setTimeout(resolve, 300));
         return {
             status: "success",
@@ -1136,7 +1136,7 @@ export class BambuImplementation {
         const printer = await this.getPrinter(host, serial, token);
         assertActive();
         await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remotePath }));
-        this.checkedJobs.set(`${host}\n${serial}`, { remotePath, requirements });
+        this.recordCheckedJob(host, serial, remotePath, requirements);
         return { status: "success", uploaded: true, printRequested: true, remotePath, message: `Checked and started ${remotePath}.` };
     }
     async startJob(host, serial, token, filename, bambuModel) {

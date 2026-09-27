@@ -10,6 +10,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import JSZip from "jszip";
 import { BambuImplementation } from "../dist/printers/bambu.js";
 import { BambuNetworkBridge } from "../dist/bambu-network-bridge.js";
+import { withPrintSnapshot } from "../dist/safety/artifact.js";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const host = "127.0.0.1";
@@ -621,10 +622,11 @@ test("bridge request writes a valid frame after both preflight hooks allow dispa
   const result = await bridge.request("net.start_print", { agent: 7, params: { plate_index: 1 } }, {
     beforeDispatch: async method => { checks.push(["fresh-state", method]); },
     assertDispatchAllowed: method => { checks.push(["cancellation", method]); },
+    onDispatched: method => { checks.push(["dispatched", method]); },
     timeoutMs: 1000,
   });
   assert.deepEqual(result, { ok: true, value: 0 });
-  assert.deepEqual(checks, [["fresh-state", "net.start_print"], ["cancellation", "net.start_print"]]);
+  assert.deepEqual(checks, [["fresh-state", "net.start_print"], ["cancellation", "net.start_print"], ["dispatched", "net.start_print"]]);
   assert.deepEqual(frames, [{ method: "net.start_print", payload: { agent: 7, params: { plate_index: 1 } } }]);
 });
 
@@ -727,4 +729,45 @@ test("changed hardware codes during confirmation are not cleared", async () => {
   printer.confirm = async () => { printer.getSafetyStatus = async () => safetyStatus({ print_error: 456, hms: [] }); return true; };
   await assert.rejects(printer.clearHmsErrors(host, serial, token), /errors changed/i);
   assertNoDispatch(events);
+});
+
+for (const failure of ["confirmation recheck", "upload", "dispatch recheck", "publish"]) {
+  test(`cleared-error acknowledgment survives failed ${failure} until successful dispatch`, async (t) => {
+    const previous = process.env.BAMBU_REQUIRE_CONFIRMATION;
+    process.env.BAMBU_REQUIRE_CONFIRMATION = "0";
+    t.after(() => { if (previous === undefined) delete process.env.BAMBU_REQUIRE_CONFIRMATION; else process.env.BAMBU_REQUIRE_CONFIRMATION = previous; });
+    const legacyFile = await fixture(t);
+    const file = legacyFile.replace(".gcode.3mf", ".3mf");
+    await fs.rename(legacyFile, file);
+    const { printer } = isolatedPrinter(safetyStatus({ print_error: 123 }));
+    await printer.clearHmsErrors(host, serial, token);
+    let reads = 0;
+    printer.getSafetyStatus = async () => safetyStatus({ state: ++reads === (failure === "confirmation recheck" ? 2 : failure === "dispatch recheck" ? 3 : -1) ? "RUNNING" : "IDLE" });
+    const upload = printer.ftpUpload, getPrinter = printer.getPrinter;
+    if (failure === "upload") printer.ftpUpload = async () => { throw Error("upload failed"); };
+    if (failure === "publish") printer.getPrinter = async () => ({ publish: async () => { throw Error("publish failed"); } });
+    const prompts = [];
+    printer.confirm = async message => { prompts.push(message); return true; };
+    const options = { projectName: "retry", filePath: file, bambuModel: "p1s", useAMS: false };
+    await assert.rejects(printer.print3mf(host, serial, token, options));
+    assert.equal(prompts.length, 1);
+    printer.getSafetyStatus = async () => safetyStatus();
+    printer.ftpUpload = upload; printer.getPrinter = getPrinter;
+    await printer.print3mf(host, serial, token, options);
+    assert.equal(prompts.length, 2, "retry must require a new physical acknowledgment even in headless mode");
+    assert.ok(prompts.every(message => message.includes("Previously cleared hardware codes: print_error:123")));
+    await printer.print3mf(host, serial, token, options);
+    assert.equal(prompts.length, 2, "a successful checked dispatch consumes the acknowledged codes");
+  });
+}
+
+test("bridge snapshots are retained only after handoff, including an uncertain result", async (t) => {
+  const file = await fixture(t);
+  let rejectedSnapshot;
+  await assert.rejects(withPrintSnapshot(file, async snapshot => { rejectedSnapshot = snapshot; throw Error("preflight rejected"); }), /preflight rejected/);
+  await assert.rejects(fs.access(path.dirname(rejectedSnapshot)), { code: "ENOENT" });
+  let dispatchedSnapshot;
+  await assert.rejects(withPrintSnapshot(file, async (snapshot, retain) => { dispatchedSnapshot = snapshot; retain(); throw Error("response timed out"); }), /response timed out/);
+  assert.deepEqual(await fs.readFile(dispatchedSnapshot), await fs.readFile(file));
+  await fs.rm(path.dirname(dispatchedSnapshot), { recursive: true, force: true });
 });

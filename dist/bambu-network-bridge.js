@@ -188,6 +188,7 @@ export class BambuNetworkBridge {
                         }
                     }
                 });
+                options.onDispatched?.(method);
             }
             catch (error) {
                 clearTimeout(timer);

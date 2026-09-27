@@ -37,13 +37,14 @@ export async function withPrinterOperation(_host, serial, operation) {
     }
 }
 /** Inspect and send a private copy, so changes to the user's source cannot change the job. */
-export async function withPrintSnapshot(source, operation, retainUntilExit = false) {
+export async function withPrintSnapshot(source, operation) {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-print-"));
     const snapshot = path.join(directory, path.basename(source));
+    let retainUntilExit = false;
     try {
         await fs.copyFile(source, snapshot);
         await fs.chmod(snapshot, 0o400);
-        return await operation(snapshot);
+        return await operation(snapshot, () => { retainUntilExit = true; });
     }
     finally {
         // Native bridge APIs may return before their asynchronous upload completes.

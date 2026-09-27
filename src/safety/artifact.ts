@@ -30,13 +30,14 @@ export async function withPrinterOperation<T>(_host: string, serial: string, ope
 }
 
 /** Inspect and send a private copy, so changes to the user's source cannot change the job. */
-export async function withPrintSnapshot<T>(source: string, operation: (snapshot: string) => Promise<T>, retainUntilExit = false): Promise<T> {
+export async function withPrintSnapshot<T>(source: string, operation: (snapshot: string, retainForDispatchedUpload: () => void) => Promise<T>): Promise<T> {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-print-"));
   const snapshot = path.join(directory, path.basename(source));
+  let retainUntilExit = false;
   try {
     await fs.copyFile(source, snapshot);
     await fs.chmod(snapshot, 0o400);
-    return await operation(snapshot);
+    return await operation(snapshot, () => { retainUntilExit = true; });
   } finally {
     // Native bridge APIs may return before their asynchronous upload completes.
     if (retainUntilExit) retained.add(directory);
