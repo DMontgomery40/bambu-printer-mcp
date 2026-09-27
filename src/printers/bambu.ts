@@ -62,6 +62,10 @@ function isH2ModelName(model: unknown): boolean {
   return H2_MODEL_NAMES.has(String(model ?? "").trim().toLowerCase().replace(/\s+/g, " "));
 }
 
+function isP2SModelName(model: unknown): boolean {
+  return String(model ?? "").trim().toLowerCase() === "p2s";
+}
+
 interface BambuPrintOptionsInternal {
   projectName: string;
   filePath: string;
@@ -145,11 +149,14 @@ class TolerantBambuClient extends BambuClient {
     const sn = this.config.serialNumber;
     if (sn.startsWith("093")) return "H2S";
     if (sn.startsWith("094")) return "H2D";
+    if (sn.startsWith("239")) return "H2C";
+    if (sn.startsWith("31B")) return "H2DPRO";
     if (sn.startsWith("00M")) return "X1C";
     if (sn.startsWith("00W")) return "X1";
     if (sn.startsWith("03W")) return "X1E";
     if (sn.startsWith("01S")) return "P1P";
     if (sn.startsWith("01P")) return "P1S";
+    if (sn.startsWith("22E")) return "P2S";
     if (sn.startsWith("030")) return "A1";
     if (sn.startsWith("039")) return "A1M";
     return undefined;
@@ -572,27 +579,36 @@ export class BambuImplementation {
     remoteFileName = remoteFileName.replace(/\.gcode\.3mf\.gcode\.3mf$/i, ".gcode.3mf");
 
     // H2-series printers land files at the FTP root and reference them via ftp:///<name>.
-    // P1/A1/X1 use /cache/<name> and file:///sdcard/cache/<name>.
+    // Full-size A1 uses SD root/project_file (reported on firmware 01.08.01.00).
+    // P1/X1/A1 mini retain their legacy cache/gcode_file route.
+    // P2S keeps the /cache/<name> upload but only accepts the H2-style
+    // project_file command, referenced via ftp:///cache/<name> (verified on
+    // P2S firmware 01.02.00.00; file:///sdcard/... fails with ERROR STATE).
     const isH2 =
       serial.startsWith("093") ||
       serial.startsWith("094") ||
       isH2ModelName(options.bambuModel);
-    const remoteProjectPath = isH2 ? remoteFileName : `cache/${remoteFileName}`;
-    const remoteUploadPath = isH2 ? `/${remoteFileName}` : `/cache/${remoteFileName}`;
-    const projectUrl = isH2
-      ? `ftp:///${remoteFileName}`
+    const isP2S = serial.startsWith("22E") || isP2SModelName(options.bambuModel);
+    const isA1 = String(options.bambuModel ?? "").trim().toLowerCase() === "a1" ||
+      (!options.bambuModel && serial.startsWith("030"));
+    const usesH2ProjectFile = isH2 || isP2S;
+    const remoteProjectPath = isH2 || isA1 ? remoteFileName : `cache/${remoteFileName}`;
+    const remoteUploadPath = `/${remoteProjectPath}`;
+    const projectUrl = usesH2ProjectFile
+      ? `ftp:///${remoteProjectPath}`
       : `file:///sdcard/${remoteProjectPath}`;
 
     // Upload via basic-ftp directly (bypasses bambu-js double-path bug)
     await this.ftpUpload(host, token, options.filePath, remoteUploadPath);
 
     // Pre-sliced .gcode.3mf files: routing depends on firmware generation.
-    // P1/A1/X1 series: project_file returns 405004002 for .gcode.3mf (firmware
+    // Legacy P1/X1/A1 mini: project_file returns 405004002 for .gcode.3mf (firmware
     // doesn't recognise the container), so use gcode_file instead.
-    // H2-series: gcode_file is not supported; project_file works because the
+    // H2-series and P2S: gcode_file is not supported (P2S answers 0500-4002
+    // "Unsupported file path or name"); project_file works because the
     // firmware can open the zip and find Metadata/plate_<n>.gcode directly.
     if (options.filePath.toLowerCase().endsWith(".gcode.3mf")) {
-      if (!isH2) {
+      if (!usesH2ProjectFile && !isA1) {
         const printer = await this.getPrinter(host, serial, token);
         await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath }));
         return {
@@ -601,7 +617,7 @@ export class BambuImplementation {
           remoteProjectPath,
         };
       }
-      // H2-series: fall through to project_file path below
+      // H2-series and P2S: fall through to project_file path below
     }
 
     const projectMetadata = await this.resolveProjectFileMetadata(
@@ -687,7 +703,7 @@ export class BambuImplementation {
 
     let amsMapping: number[];
     let amsMapping2: Array<{ ams_id: number; slot_id: number }>;
-    if (isH2) {
+    if (usesH2ProjectFile) {
       const projLen = Math.max(projectMetadata.projectFilamentCount, baseMapping.length, 1);
       amsMapping = Array.from({ length: projLen }, (_, i) =>
         i < baseMapping.length ? baseMapping[i] : -1
@@ -699,7 +715,7 @@ export class BambuImplementation {
         return { ams_id: Math.floor(v / 4), slot_id: v % 4 };
       });
     } else {
-      amsMapping = Array.from({ length: 5 }, (_, i) =>
+      amsMapping = Array.from({ length: Math.max(5, baseMapping.length, projectMetadata.projectFilamentCount) }, (_, i) =>
         i < baseMapping.length ? baseMapping[i] : -1
       );
       amsMapping2 = [];
@@ -707,7 +723,7 @@ export class BambuImplementation {
 
     const b = (v: any) => (v ? 1 : 0);
     let projectFileCmd: Record<string, any>;
-    if (isH2) {
+    if (usesH2ProjectFile) {
       const submissionId = String(Date.now() & 0x7fffffff);
       projectFileCmd = {
         print: {
@@ -1270,7 +1286,7 @@ export class BambuImplementation {
     // integration's models.py shows the printer reports its own
     // `ipcam.rtsp_url` for these models, and Parker (H2S) rejects the
     // A1/P1 80-byte auth packet on port 6000 (verified 2026-04-27 --
-    // see PROGRESS.md "H2 probe results").
+    // confirmed by local H2 camera transport probes).
     const RTSP_MODELS = new Set([
       "x1", "x1c", "x1carbon", "x1e", "p2s",
       "h2", "h2s", "h2d", "h2c", "h2dpro",

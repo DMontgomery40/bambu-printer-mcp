@@ -22,7 +22,15 @@ async function makeSyntheticTree() {
   for (const sub of ["machine", "process", "filament"]) {
     await fs.mkdir(path.join(bbl, sub), { recursive: true });
   }
+  await writeCliConfig(bbl);
   return { root, bbl };
+}
+
+async function writeCliConfig(bbl) {
+  await fs.writeFile(path.join(bbl, "cli_config.json"), JSON.stringify({ printer: {
+    "Bambu Lab TEST": { machine_limits: { cli_safe_acceleration_x: "6000,6000" } },
+    "Bambu Lab TESTDUAL": { machine_limits: { cli_safe_acceleration_x: "6000,6000" } },
+  } }));
 }
 
 async function writeProfile(dir, kind, data) {
@@ -100,6 +108,7 @@ test("STLManipulator flattening uses the active slicer_path profile root", async
   for (const sub of ["machine", "process", "filament"]) {
     await fs.mkdir(path.join(activeBbl, sub), { recursive: true });
   }
+  await writeCliConfig(activeBbl);
   await fs.mkdir(activeBin, { recursive: true });
 
   await writeProfile(activeBbl, "machine", {
@@ -292,6 +301,129 @@ test("missing parent name produces a useful error", async () => {
     }),
     /Profile "ghost_parent" not found/
   );
+});
+
+test("include templates are applied per inherits level, under the profile's own keys", async () => {
+  const { root, bbl } = await makeSyntheticTree();
+
+  await writeProfile(bbl, "machine", {
+    name: "root_common",
+    inherits: null,
+    instantiation: "false",
+    nozzle_diameter: ["0.4"],
+    machine_start_gcode: "generic start",
+    machine_end_gcode: "generic end",
+    change_filament_gcode: "generic change",
+  });
+  for (const [name, key, value] of [
+    ["TEST 0.4 template machine_start_gcode", "machine_start_gcode", "TEST 0.4 start"],
+    ["TEST 0.4 template machine_end_gcode", "machine_end_gcode", "TEST 0.4 end"],
+    ["TEST 0.4 template change_filament_gcode", "change_filament_gcode", "TEST 0.4 change"],
+    ["TEST 0.2 template machine_start_gcode", "machine_start_gcode", "TEST 0.2 start"],
+  ]) {
+    await writeProfile(bbl, "machine", { name, instantiation: "false", [key]: value });
+  }
+  await writeProfile(bbl, "machine", {
+    name: "Bambu Lab TEST 0.4 nozzle",
+    inherits: "root_common",
+    instantiation: "true",
+    include: [
+      "TEST 0.4 template machine_start_gcode",
+      "TEST 0.4 template machine_end_gcode",
+      "TEST 0.4 template change_filament_gcode",
+    ],
+    change_filament_gcode: "leaf own change", // own key beats its include
+  });
+  // Like "Bambu Lab P1S 0.2 nozzle": only re-includes the start template,
+  // the rest comes from the 0.4 parent's includes. String form, as the GUI
+  // also accepts it.
+  await writeProfile(bbl, "machine", {
+    name: "Bambu Lab TEST 0.2 nozzle",
+    inherits: "Bambu Lab TEST 0.4 nozzle",
+    instantiation: "true",
+    include: "TEST 0.2 template machine_start_gcode",
+    nozzle_diameter: ["0.2"],
+  });
+  await writeProfile(bbl, "process", { name: "0.20mm @TEST", inherits: null, layer_height: 0.2 });
+  await writeProfile(bbl, "filament", { name: "PLA @TEST", inherits: null, filament_type: ["PLA"] });
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "flat-include-"));
+  const flatten = async (machineLeaf) => {
+    const result = await flattenForCli({
+      machineLeaf,
+      processLeaf: "0.20mm @TEST",
+      filamentLeaves: ["PLA @TEST"],
+      profilesRoot: root,
+      tempDir,
+    });
+    return JSON.parse(await fs.readFile(result.machinePath, "utf8"));
+  };
+
+  const leaf04 = await flatten("Bambu Lab TEST 0.4 nozzle");
+  assert.equal(leaf04.machine_start_gcode, "TEST 0.4 start", "include replaces inherited generic G-code");
+  assert.equal(leaf04.machine_end_gcode, "TEST 0.4 end");
+  assert.equal(leaf04.change_filament_gcode, "leaf own change", "profile's own key wins over its include");
+  assert.equal(leaf04.name, "Bambu Lab TEST 0.4 nozzle", "template name must not leak");
+  assert.equal("include" in leaf04, false, "include is consumed by the flattener");
+
+  const leaf02 = await flatten("Bambu Lab TEST 0.2 nozzle");
+  assert.equal(leaf02.machine_start_gcode, "TEST 0.2 start", "child include overrides parent include");
+  assert.equal(leaf02.machine_end_gcode, "TEST 0.4 end", "parent's includes are inherited");
+  assert.equal(leaf02.change_filament_gcode, "leaf own change");
+});
+
+test("missing include template is an error, not a silent fallback", async () => {
+  const { root, bbl } = await makeSyntheticTree();
+  await writeProfile(bbl, "machine", {
+    name: "Bambu Lab TEST 0.4 nozzle",
+    inherits: null,
+    instantiation: "true",
+    nozzle_diameter: ["0.4"],
+    include: ["TEST 0.4 template machine_start_gcode"],
+  });
+  await writeProfile(bbl, "process", { name: "0.20mm @TEST", inherits: null, layer_height: 0.2 });
+  await writeProfile(bbl, "filament", { name: "PLA @TEST", inherits: null, filament_type: ["PLA"] });
+
+  await assert.rejects(
+    flattenForCli({
+      machineLeaf: "Bambu Lab TEST 0.4 nozzle",
+      processLeaf: "0.20mm @TEST",
+      filamentLeaves: ["PLA @TEST"],
+      profilesRoot: root,
+      tempDir: await fs.mkdtemp(path.join(os.tmpdir(), "flat-include-missing-")),
+    }),
+    /includes "TEST 0\.4 template machine_start_gcode"/
+  );
+});
+
+test("end-to-end against real BBL tree: P2S 0.4 nozzle gets its own G-code templates", async (t) => {
+  const profilesRoot = detectProfilesRoot();
+  const leafPath = path.join(profilesRoot, "BBL", "machine", "Bambu Lab P2S 0.4 nozzle.json");
+  let leaf;
+  try {
+    leaf = JSON.parse(await fs.readFile(leafPath, "utf8"));
+  } catch {
+    t.skip("Installed BambuStudio profiles do not include the P2S preset");
+    return;
+  }
+  if (!Array.isArray(leaf.include) || leaf.include.length === 0) {
+    t.skip("Installed P2S preset does not use include templates");
+    return;
+  }
+
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "flat-p2s-"));
+  const result = await flattenForCli({
+    machineLeaf: "Bambu Lab P2S 0.4 nozzle",
+    processLeaf: "0.20mm Standard @BBL P2S",
+    filamentLeaves: ["Bambu PLA Basic @BBL P2S"],
+    profilesRoot,
+    tempDir,
+  });
+  const flat = JSON.parse(await fs.readFile(result.machinePath, "utf8"));
+
+  assert.match(flat.machine_start_gcode, /P2S start gcode/, "P2S start G-code, not the generic inherited one");
+  assert.match(flat.machine_start_gcode, /M620 S/, "start G-code must load filament from the AMS");
+  assert.equal("include" in flat, false);
 });
 
 test("nozzleVolumeType override produces matching-length array", async () => {

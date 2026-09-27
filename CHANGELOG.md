@@ -2,7 +2,28 @@
 
 ## Unreleased
 
+### Changed
+- Consolidate shared agent rules for local and GitHub review, retain public documentation, and keep scratch plans, progress logs, and handoff notes out of Git.
+
+### Added
+- Connect to standard Blender MCP servers with tool discovery, schema-checked calls, timeouts/cancellation, and verified STL import/edit/export. Keep the custom-executable bridge available with explicit verification status.
+- Package a Claude Desktop extension with prompted printer settings, safe staging, and synchronized release versions ([#11](https://github.com/DMontgomery40/bambu-printer-mcp/pull/11)).
+
+### Fixed
+- Validate large Blender STL meshes without boxing coordinate arrays, keeping finite-geometry checks within a bounded JavaScript heap.
+- Preserve the selected bundled process preset identity through generated settings, and remove automatically created temporary roots on shutdown while retaining explicitly configured TEMP_DIR contents.
+- Stop before printer uploads when automatic slicing or required profile preparation fails, preserving the original diagnostic. Validate model CLI configuration before flattening and advertise the required output path for standard Blender MCP edits.
+- Apply the required printer dependency patch to the resolved installed package, including hoisted npm installations, and fail installation if it cannot be applied.
+- Resolve CLI profile dependencies automatically and stop before slicing on incomplete profiles. Preserve custom overrides and filament-slot order, replace every declared 3MF slot for a single-profile override, discover platform-specific profile trees, and isolate concurrent config files.
+- Point installation examples at `bambu-printer-mcp` and report the installed npm version in the MCP handshake.
+- Create a private temporary directory per server instance, so desktop-extension startup does not depend on a writable working directory and concurrent printers cannot overwrite each other's default outputs.
+- Resolve Bambu profile include templates so CLI slicing retains machine-specific G-code ([#16](https://github.com/DMontgomery40/bambu-printer-mcp/pull/16), reported in [#12](https://github.com/DMontgomery40/bambu-printer-mcp/issues/12)).
+- Use the P2S project-file payload with its cache upload path while retaining legacy P1/X1 routes ([#15](https://github.com/DMontgomery40/bambu-printer-mcp/pull/15)).
+- Start full-size A1 pre-sliced projects from the SD root via `project_file`, preserving other models' routes and all project filament mapping positions ([#14](https://github.com/DMontgomery40/bambu-printer-mcp/pull/14)).
+- Keep H2C/H2D/H2S status connections alive when delayed OTA version messages arrive; recognize H2 serial prefixes, preserve unknown model identities, and accept unexpected status transitions without terminating the MQTT listener ([#7](https://github.com/DMontgomery40/bambu-printer-mcp/issues/7)).
+
 ### Security
+- Refresh compatible transitive dependencies to resolve the nine npm audit findings in the previous lockfile; retain the pinned printer dependency patch.
 - Per-call `slicer_path`, `ffmpeg_path`, and `bridge_command` executable selectors are now rejected by default. Trusted server-side environment configuration remains available, including `FFMPEG_PATH` for RTSP camera snapshots; set `MCP_ALLOW_EXECUTABLE_ARG=1` only when intentional per-call overrides are required. `MCP_ALLOW_BRIDGE_COMMAND_ARG` remains a compatibility alias for `bridge_command` only.
 
 ## [1.1.3] – 2026-05-31
@@ -44,7 +65,7 @@
 - **delete_printer_file** — destructive FTPS DELETE with `confirm:true` gate, allowlist on `cache/`, `timelapse/`, `logs/`, and explicit rejection of `..` segments.
 - **camera_snapshot** — capture a single JPEG from the printer's chamber camera. Two transports wired in:
   - **TCP-on-6000** (per OpenBambuAPI `video.md`) for **A1, A1 mini, P1S, P1P**.
-  - **RTSPS via ffmpeg** (`rtsps://bblp:<token>@<host>:322/streaming/live/1`) for **X1, X1 Carbon, X1E, P2S** and **H2, H2S, H2D, H2C, H2D Pro**. Verified live against Parker (H2S), Kingpin (H2D), and an X1C — all return real chamber JPEGs in ~1.5s. The H2 series wasn't documented upstream; root cause and fix recorded in `PROGRESS.md` ("H2 camera RESOLVED via RTSP").
+  - **RTSPS via ffmpeg** (`rtsps://bblp:<token>@<host>:322/streaming/live/1`) for **X1, X1 Carbon, X1E, P2S** and **H2, H2S, H2D, H2C, H2D Pro**. Verified live against Parker (H2S), Kingpin (H2D), and an X1C — all return real chamber JPEGs in ~1.5s. The H2 series was not documented upstream; local investigation established the RTSP path.
   - Response includes a `transport` field so callers can tell which path produced the frame.
   - `experimental` flag from interim work is now a no-op (kept on the schema for compatibility).
   - Requires `ffmpeg` in `PATH` for the RTSP path; `ffmpeg_path` argument allows override.

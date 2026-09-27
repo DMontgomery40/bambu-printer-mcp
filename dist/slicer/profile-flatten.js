@@ -10,11 +10,13 @@
  *
  * This module:
  *   1. Indexes every BBL profile JSON by its `name` field.
- *   2. Recursively walks `inherits`, deep-merging parent into child.
+ *   2. Recursively walks `inherits`, deep-merging parent into child, and
+ *      applies each level's `include` templates (G-code templates for
+ *      machines, per-variant defaults for filaments) the way the GUI does.
  *   3. Derives `nozzle_volume_type` from `default_nozzle_volume_type[0]`
  *      (the GUI does this implicitly; the CLI doesn't).
- *   4. Merges CLI-specific machine_limits from `BBL/cli_config.json` so the
- *      printer doesn't run unsafe accelerations / jerks.
+ *   4. Validates the model in `BBL/cli_config.json` and merges its CLI-specific
+ *      machine_limits where supplied for safe accelerations / jerks.
  *   5. Writes the flattened JSON to a temp file the caller passes to
  *      BambuStudio CLI.
  *
@@ -22,6 +24,7 @@
  * fail loud rather than producing dangerous gcode for hardware we don't own.
  */
 import fs from "node:fs/promises";
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 /* -------------------------------------------------------------------------- */
@@ -92,31 +95,66 @@ async function buildNameIndex(profilesRoot, vendor) {
  *   - Unknown name (broken `inherits` reference).
  *   - Cycles (A -> B -> A).
  */
-function flattenByName(leafName, index) {
-    const chain = [];
-    const visited = new Set();
-    let cursor = leafName;
-    while (cursor) {
-        if (visited.has(cursor)) {
-            throw new Error(`Profile inheritance cycle detected at "${cursor}" (chain: ${[...visited].join(" -> ")})`);
-        }
-        visited.add(cursor);
-        const entry = index.get(cursor);
-        if (!entry) {
-            throw new Error(`Profile "${cursor}" not found in index. ` +
-                `Inherits chain so far: ${[...visited].join(" -> ")}. ` +
-                `This usually means the leaf name is misspelled or the profile tree is incomplete.`);
-        }
-        chain.push(entry.data);
-        const parent = entry.data["inherits"];
-        cursor = typeof parent === "string" && parent.length > 0 ? parent : undefined;
+function flattenByName(leafName, index, visiting = new Set()) {
+    if (visiting.has(leafName)) {
+        throw new Error(`Profile inheritance cycle detected (inherits/include): ${[...visiting, leafName].join(" -> ")}`);
     }
-    // Merge root-most parent first, leaf last (so leaf wins).
-    const merged = {};
-    for (let i = chain.length - 1; i >= 0; i--) {
-        Object.assign(merged, chain[i]);
+    const entry = index.get(leafName);
+    if (!entry) {
+        throw new Error(`Profile "${leafName}" not found in index. The profile tree is incomplete or the name is misspelled.`);
     }
+    visiting.add(leafName);
+    try {
+        return flattenData(entry.data, index, visiting);
+    }
+    finally {
+        visiting.delete(leafName);
+    }
+}
+function flattenData(data, index, visiting = new Set()) {
+    const parent = data["inherits"];
+    const merged = typeof parent === "string" && parent.length > 0
+        ? flattenByName(parent, index, visiting)
+        : {};
+    // Includes may themselves inherit or include templates. Each level wins
+    // over its parent, then the including profile's own settings win last.
+    applyIncludes(merged, data, index, visiting);
+    Object.assign(merged, data);
+    delete merged["include"];
     return merged;
+}
+/** Keys of an include template that describe the template, not the config. */
+const INCLUDE_METADATA_KEYS = new Set(["name", "type", "from", "instantiation", "inherits", "include", "setting_id"]);
+/**
+ * Recent BBL profiles (e.g. "Bambu Lab P2S 0.4 nozzle") no longer carry
+ * their G-code inline: `machine_start_gcode`, `machine_end_gcode`,
+ * `change_filament_gcode`, ... live in separate "... template <key>"
+ * profiles listed under `include`. Skipping them silently falls back to
+ * the generic G-code inherited from `fdm_machine_common` & co, which is
+ * wrong for the printer (no AMS filament load, other printer's moves).
+ */
+function applyIncludes(target, profile, index, visiting) {
+    const raw = profile["include"];
+    if (raw === undefined || raw === null)
+        return;
+    if (typeof raw !== "string" && !Array.isArray(raw)) {
+        throw new Error(`Profile "${String(profile["name"])}" has an invalid include; expected a name or array of names.`);
+    }
+    const names = typeof raw === "string" ? [raw] : Array.isArray(raw) ? raw : [];
+    for (const name of names) {
+        if (typeof name !== "string" || name.trim().length === 0) {
+            throw new Error(`Profile "${String(profile["name"])}" has an invalid include reference; every entry must be a nonempty name.`);
+        }
+        const entry = index.get(name);
+        if (!entry) {
+            throw new Error(`Profile "${String(profile["name"])}" includes "${name}", which is not in the index. ` +
+                `Refusing to fall back to inherited defaults (wrong G-code for this printer).`);
+        }
+        for (const [key, value] of Object.entries(flattenByName(name, index, visiting))) {
+            if (!INCLUDE_METADATA_KEYS.has(key))
+                target[key] = value;
+        }
+    }
 }
 /* -------------------------------------------------------------------------- */
 /* CLI post-processing                                                         */
@@ -190,61 +228,86 @@ function inferExtruderCount(flat) {
     return 1;
 }
 /**
- * Bambu ships `BBL/cli_config.json` with per-printer overlays containing
- * machine_limits keys (cli_safe_acceleration_*, cli_safe_jerk_*,
- * cli_safe_speed_*). Without these the slicer can emit movements faster
- * than the printer's safe envelope -- dangerous on real hardware.
- *
- * The overlay keys are scoped under printer.<printer_name>.machine_limits.
- * We look up by the leaf machine's `printer_model` or `name` and merge
- * those keys into the flattened machine profile.
- *
- * Returns true if an overlay was found and applied, false otherwise.
+ * Validate the selected model's CLI config before making a bundled profile
+ * into a User profile. A1-family models require machine_limits overrides;
+ * other official models (including P1S and H2D) intentionally declare only
+ * downward_check. Missing config cannot tell us whether limits are required.
+ * Returns whether limits were applied, not whether validation succeeded.
  */
 async function applyCliOverlay(flat, profilesRoot, vendor) {
     const cliConfigPath = path.join(profilesRoot, vendor, "cli_config.json");
+    const fail = (reason) => {
+        throw new Error(`Cannot prepare machine profile "${String(flat["name"])}" ` +
+            `(model "${String(flat["printer_model"] ?? stripNozzleSuffix(String(flat["name"])))}"): ` +
+            `${cliConfigPath}: ${reason}. Check your BambuStudio installation or BAMBU_PROFILES_ROOT.`);
+    };
     let raw;
     try {
         raw = await fs.readFile(cliConfigPath, "utf8");
     }
     catch {
-        return false;
+        return fail("required CLI configuration is missing or unreadable");
     }
     let cliConfig;
     try {
         cliConfig = JSON.parse(raw);
     }
     catch {
-        return false;
+        return fail("invalid JSON in required CLI configuration");
     }
+    if (!isRecord(cliConfig))
+        return fail("expected a CLI configuration object");
     const printerSection = cliConfig["printer"];
-    if (!printerSection || typeof printerSection !== "object")
-        return false;
+    if (!isRecord(printerSection))
+        return fail("expected a printer configuration object");
     // Match key: cli_config.json keys are bare printer names like
-    // "Bambu Lab H2D" / "Bambu Lab A1". Try, in order: explicit printer_model,
-    // printer_settings_id with the " 0.4 nozzle" suffix stripped, raw name
-    // with that suffix stripped, raw name as-is.
-    const candidates = [
-        flat["printer_model"],
-        typeof flat["printer_settings_id"] === "string"
-            ? stripNozzleSuffix(flat["printer_settings_id"])
-            : undefined,
-        typeof flat["name"] === "string" ? stripNozzleSuffix(flat["name"]) : undefined,
-        flat["name"],
-    ].filter((v) => typeof v === "string" && v.length > 0);
-    for (const key of candidates) {
-        const block = printerSection[key];
-        if (!block || typeof block !== "object")
-            continue;
-        const mlimits = block["machine_limits"];
-        if (!mlimits || typeof mlimits !== "object")
-            continue;
-        // Merge machine_limits into the flat profile. These are CLI-only safety
-        // values; they should never be overridden by the leaf.
-        Object.assign(flat, mlimits);
-        return true;
+    // "Bambu Lab H2D" / "Bambu Lab A1". If no model is provided, try preset
+    // identity with the nozzle suffix stripped, then the name as-is.
+    // An explicit model is authoritative; do not silently use another model's
+    // limits because a stale preset name happens to match.
+    const candidates = typeof flat["printer_model"] === "string" && flat["printer_model"].trim()
+        ? [flat["printer_model"]]
+        : [
+            typeof flat["printer_settings_id"] === "string"
+                ? stripNozzleSuffix(flat["printer_settings_id"])
+                : undefined,
+            typeof flat["name"] === "string" ? stripNozzleSuffix(flat["name"]) : undefined,
+            flat["name"],
+        ].filter((v) => typeof v === "string" && v.length > 0);
+    const model = candidates.find(key => Object.prototype.hasOwnProperty.call(printerSection, key));
+    if (!model)
+        return fail(`selected model is absent (looked for ${candidates.join(", ")})`);
+    const block = printerSection[model];
+    if (!isRecord(block))
+        return fail(`printer.${model} must be an object`);
+    const downward = block["downward_check"];
+    if (Object.prototype.hasOwnProperty.call(block, "downward_check") && (!isRecord(downward) || Object.keys(downward).length === 0 ||
+        Object.entries(downward).some(([name, values]) => !name.trim() || !Array.isArray(values) ||
+            values.some(value => typeof value !== "string" || !value.trim())))) {
+        return fail(`printer.${model}.downward_check must map profile names to arrays of names`);
     }
-    return false;
+    if (!Object.prototype.hasOwnProperty.call(block, "machine_limits")) {
+        if (!isRecord(downward))
+            return fail(`printer.${model} has neither machine_limits nor downward_check`);
+        return false;
+    }
+    const limits = block["machine_limits"];
+    if (!isRecord(limits) || Object.keys(limits).length === 0) {
+        return fail(`printer.${model}.machine_limits must be a nonempty object`);
+    }
+    const limitKey = /^cli_safe_(?:acceleration_(?:e|extruding|retracting|travel|x|y|z)|(?:jerk|speed)_(?:e|x|y|z))$/;
+    for (const [key, value] of Object.entries(limits)) {
+        if (!limitKey.test(key) || typeof value !== "string" ||
+            value.split(",").some(part => !part.trim() || !Number.isFinite(Number(part)) || Number(part) < 0)) {
+            return fail(`printer.${model}.machine_limits contains an invalid limit "${key}"`);
+        }
+    }
+    // CLI safety values override even explicit values in the selected leaf.
+    Object.assign(flat, limits);
+    return true;
+}
+function isRecord(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 /**
  * Ensure the chosen machine is in the process/filament's
@@ -373,13 +436,32 @@ export async function flattenForCli(opts) {
     }
     const index = await buildNameIndex(opts.profilesRoot, vendor);
     // Flatten each leaf.
-    const machineFlat = flattenByName(opts.machineLeaf, index);
-    const processFlat = flattenByName(opts.processLeaf, index);
-    const filamentFlats = opts.filamentLeaves.map((n) => flattenByName(n, index));
+    if (opts.sourceProfiles?.filaments && opts.sourceProfiles.filaments.length !== opts.filamentLeaves.length) {
+        throw new Error("Every filament slot must have a source profile.");
+    }
+    const machineFlat = opts.sourceProfiles?.machine
+        ? flattenData(opts.sourceProfiles.machine, index)
+        : flattenByName(opts.machineLeaf, index);
+    const processFlat = opts.sourceProfiles?.process
+        ? flattenData(opts.sourceProfiles.process, index)
+        : flattenByName(opts.processLeaf, index);
+    const filamentFlats = opts.filamentLeaves.map((n, i) => {
+        const source = opts.sourceProfiles?.filaments?.[i];
+        return source ? flattenData(source, index) : flattenByName(n, index);
+    });
     // CLI-specific post-processing on machine profile only.
     deriveNozzleVolumeType(machineFlat, opts.nozzleVolumeType);
     applyMachineModelBedMetadata(machineFlat, index);
-    const cliOverlayApplied = await applyCliOverlay(machineFlat, opts.profilesRoot, vendor);
+    // A standalone custom machine can accompany process/filament profiles that
+    // need BBL resolution; do not impose bundled model config on that machine.
+    const sourceMachine = opts.sourceProfiles?.machine;
+    const standaloneMachine = sourceMachine && String(sourceMachine.from).toLowerCase() !== "system" &&
+        !(typeof sourceMachine.inherits === "string" && sourceMachine.inherits.length > 0) &&
+        (sourceMachine.include === undefined || sourceMachine.include === null);
+    const cliConfigValidated = !standaloneMachine;
+    const cliOverlayApplied = cliConfigValidated
+        ? await applyCliOverlay(machineFlat, opts.profilesRoot, vendor)
+        : false;
     // Normalize each flattened profile for CLI consumption.
     normalizeForCli(machineFlat, "machine", opts.machineLeaf);
     normalizeForCli(processFlat, "process", opts.processLeaf);
@@ -392,8 +474,8 @@ export async function flattenForCli(opts) {
     // does this implicitly when saving a project.
     ensureMachineInCompatList(processFlat, opts.machineLeaf);
     filamentFlats.forEach((f) => ensureMachineInCompatList(f, opts.machineLeaf));
-    // Write temp files. Hash the leaf name into the filename so concurrent
-    // slices for different printers don't collide.
+    // Hash the resolved content so concurrent jobs using the same preset with
+    // different overrides never overwrite each other's input files.
     await fs.mkdir(opts.tempDir, { recursive: true });
     const machinePath = await writeTemp(opts.tempDir, "machine", opts.machineLeaf, machineFlat);
     const processPath = await writeTemp(opts.tempDir, "process", opts.processLeaf, processFlat);
@@ -410,16 +492,18 @@ export async function flattenForCli(opts) {
             machineLeafName: opts.machineLeaf,
             processLeafName: opts.processLeaf,
             filamentLeafNames: opts.filamentLeaves,
+            cliConfigValidated,
             cliOverlayApplied,
         },
     };
 }
 async function writeTemp(tempDir, kind, leafName, data) {
-    const hash = crypto.createHash("sha1").update(leafName).digest("hex").slice(0, 8);
+    const serialized = JSON.stringify(data, null, 2);
+    const hash = crypto.createHash("sha256").update(leafName).update("\0").update(serialized).digest("hex").slice(0, 16);
     const safe = leafName.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 64);
     const filename = `flat-${kind}-${safe}-${hash}.json`;
     const out = path.join(tempDir, filename);
-    await fs.writeFile(out, JSON.stringify(data, null, 2), "utf8");
+    await fs.writeFile(out, serialized, "utf8");
     return out;
 }
 /* -------------------------------------------------------------------------- */
@@ -427,7 +511,7 @@ async function writeTemp(tempDir, kind, leafName, data) {
 /* -------------------------------------------------------------------------- */
 /**
  * Given the SLICER_PATH (path to BambuStudio executable), walk up to the
- * Resources/profiles directory. Falls back to common platform paths.
+ * profile directory for that installation (macOS, Windows, or Linux prefix).
  *
  * Override via BAMBU_PROFILES_ROOT env.
  */
@@ -436,10 +520,33 @@ export function detectProfilesRoot(slicerPath) {
         return process.env["BAMBU_PROFILES_ROOT"];
     }
     if (slicerPath) {
-        // macOS: /Applications/BambuStudio.app/Contents/MacOS/BambuStudio
-        //  -> /Applications/BambuStudio.app/Contents/Resources/profiles
-        const macGuess = path.resolve(path.dirname(slicerPath), "..", "Resources", "profiles");
-        return macGuess;
+        let executable = slicerPath;
+        if (!slicerPath.includes('/') && !slicerPath.includes('\\')) {
+            const located = (process.env.PATH ?? '').split(path.delimiter)
+                .map(dir => path.join(dir, slicerPath))
+                .find(candidate => existsSync(candidate));
+            if (located)
+                executable = located;
+        }
+        // Package-manager launchers may be symlinks into the installation prefix.
+        try {
+            executable = realpathSync(executable);
+        }
+        catch { /* Probe the supplied path below. */ }
+        const bin = path.dirname(executable);
+        const candidates = path.basename(bin) === 'MacOS'
+            ? [path.resolve(bin, '..', 'Resources', 'profiles')]
+            : [
+                path.join(bin, 'resources', 'profiles'),
+                path.join(bin, 'Resources', 'profiles'),
+                path.resolve(bin, '..', 'share', 'BambuStudio', 'profiles'),
+                path.resolve(bin, '..', 'share', 'bambu-studio', 'profiles'),
+                path.resolve(bin, '..', 'share', 'BambuStudio', 'resources', 'profiles'),
+            ];
+        const found = candidates.find(root => existsSync(path.join(root, 'BBL', 'machine')));
+        // Do not select another installation if this executable has no profile tree.
+        // flattenForCli reports the missing tree and asks for BAMBU_PROFILES_ROOT.
+        return found ?? candidates[0];
     }
     // Default macOS install.
     return "/Applications/BambuStudio.app/Contents/Resources/profiles";

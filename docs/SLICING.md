@@ -4,7 +4,7 @@
 
 | Use case | Path | Status |
 |---|---|---|
-| Single-color slice (any BBL printer) | `BAMBU_CLI_FLATTEN=true` → MCP slices via CLI | ✅ Works (verified H2S, H2D, X1C, P1S on 02.06.01.55). H2C requires Bambu Studio 2.4.0+ and `BAMBU_MODEL=h2c`. |
+| Single-color slice (any BBL printer) | MCP slices via CLI with automatic BBL profile resolution | ✅ Works (verified H2S, H2D, X1C, P1S on 02.06.01.55). H2C requires Bambu Studio 2.4.0+ and `BAMBU_MODEL=h2c`. |
 | Multi-color slice on H2-family printers | None — **upstream BambuStudio CLI is blocked for the verified H2D multi-color path** | ❌ See "Multi-color CLI gap" below |
 | Pre-sliced `.gcode.3mf` → printer | MCP `print_3mf` | ✅ Works (verified live on Kingpin H2D) |
 | Anything else | Pre-slice in Bambu Studio GUI, hand to `print_3mf` | ✅ Works always |
@@ -18,11 +18,10 @@ Mesh ──► Bambu Studio (GUI) ──► sliced .gcode.3mf ──► MCP prin
          slice + export
 ```
 
-**Path B — let the MCP slice via BambuStudio CLI (opt-in, BBL printers only):**
+**Path B — let the MCP slice via BambuStudio CLI (BBL printers only):**
 
 ```
 STL/3MF ──► MCP slice_stl / print_3mf ──► (auto-flatten profiles) ──► BambuStudio CLI ──► sliced .gcode.3mf
-            BAMBU_CLI_FLATTEN=true
 ```
 
 Path B works because the MCP now flattens BBL profile inheritance before
@@ -35,8 +34,23 @@ single-color only; it does not cover H2D two-color/multi-material slicing.
 H2C is accepted as `BAMBU_MODEL=h2c`; use Bambu Studio 2.4.0 or newer for
 the H2C printer preset and do not substitute `h2d`.
 
-To enable Path B, set `BAMBU_CLI_FLATTEN=true` in the environment that
-runs the MCP. Default remains Path A so behavior is backward-compatible.
+BBL profile resolution now runs automatically for CLI slicing.
+`BAMBU_CLI_FLATTEN` is no longer required and cannot disable resolution.
+Missing parents, missing or malformed includes, cycles, and unresolved filament
+slots stop the slice before the CLI runs; the MCP does not fall back to partial
+profiles. Standalone custom process and filament configs remain usable, and
+custom BBL-derived profiles retain their settings on top of resolved parents.
+For BambuStudio CLI tools, `slicer_profile` supplies process settings; the
+selected model's bundled machine preset must still be available. It is not a
+replacement machine configuration or a way to bypass model validation.
+Pre-sliced 3MF printing does not require running this CLI profile preparation.
+
+Profile discovery follows the active executable: macOS app bundles, Windows
+`resources/profiles`, and Linux `share/BambuStudio/profiles` layouts are
+recognized. For AppImages or other layouts whose profiles are not accessible
+beside the executable, set `BAMBU_PROFILES_ROOT` to the matching installation's
+directory containing `BBL`. An unavailable tree produces an error rather than
+using another installation's settings.
 
 ## Multi-color CLI gap (2026-04-28)
 
@@ -51,7 +65,7 @@ with repro files attached.
 
 What this means in practice:
 
-- **Single-color slicing works.** The `BAMBU_CLI_FLATTEN=true` path slices
+- **Single-color slicing works.** The CLI path slices
   H2S/H2D/X1C/P1S models cleanly and produces printable `.gcode.3mf` output.
   H2C follows the H2 print path but needs a Bambu Studio install that includes
   the `Bambu Lab H2C <nozzle> nozzle` preset.
@@ -68,7 +82,7 @@ That tool is correct end-to-end; it produces input the BambuStudio CLI parses
 without complaint. The crash is downstream, in BambuStudio's slicer setup
 itself. The script is ready to use the moment upstream ships #10408.
 
-## Why Path A is still the default
+## Why Path A is still recommended
 
 Path B only works when the MCP can auto-flatten BBL profiles (which is
 why it's BBL-only). Custom user profiles, OrcaSlicer-shipped profiles,
@@ -82,15 +96,16 @@ new geometry deserve a human in the loop the first time.
 
 ## Path B mechanics (CLI auto-flatten)
 
-When `BAMBU_CLI_FLATTEN=true`, the MCP:
+Before BambuStudio CLI slicing, the MCP:
 
 1. Reads each leaf BBL profile JSON the slicer would have used.
-2. Walks its `inherits` chain recursively, deep-merging parent into
-   child (the GUI does this at runtime; the CLI doesn't).
+2. Resolves `inherits` and `include` recursively: inherited settings first,
+   include templates in order, then the profile's own keys. Cycles and
+   unresolved references are errors, including within templates.
 3. Sets `from: "User"`, `inherits: <leaf machine name>`, and
    `printer_settings_id` / `print_settings_id` / `filament_settings_id`
    so the CLI's compatibility check passes.
-4. Derives the scalar `nozzle_volume_type` from
+4. Derives the `nozzle_volume_type` array from
    `default_nozzle_volume_type[]`. **Hardware invariant:** both nozzles
    on a Bambu printer always match (same diameter, same flow type), so
    the array always contains identical entries.
@@ -98,6 +113,13 @@ When `BAMBU_CLI_FLATTEN=true`, the MCP:
    when the user picked a non-default printer/process combo.
 6. Writes flattened temp configs and passes those paths to
    `--load-settings` / `--load-filaments`.
+
+For project 3MF input, a single filament override is repeated across all
+declared project slots. An explicit list preserves order and duplicate paths
+and must provide one profile per slot. This prevents later slots from retaining
+a foreign printer's filament settings; it does not change object assignments or
+AMS tray mapping. A geometry-only 3MF without project settings has no embedded
+slot list to replace.
 
 Implementation: [`src/slicer/profile-flatten.ts`](../src/slicer/profile-flatten.ts).
 Smoke test: `node scripts/test-cli-slice.mjs --model h2s|h2d|h2c|x1c|p1s`.

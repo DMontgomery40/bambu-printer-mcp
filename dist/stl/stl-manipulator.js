@@ -117,13 +117,18 @@ export class STLManipulator extends EventEmitter {
         return crypto.randomUUID();
     }
     getAvailableProfileRoots() {
-        return [...BAMBU_PROFILE_ROOTS, ...configuredBambuProfileDirs()].filter((root) => fs.existsSync(root));
+        const selectedRoot = process.env.BAMBU_PROFILES_ROOT;
+        return [
+            ...(selectedRoot ? [path.join(selectedRoot, 'BBL')] : []),
+            ...configuredBambuProfileDirs(),
+            ...BAMBU_PROFILE_ROOTS,
+        ].filter((root) => fs.existsSync(root));
     }
-    findProfileFile(category, profileName) {
+    findProfileFile(category, profileName, roots = this.getAvailableProfileRoots()) {
         if (!profileName) {
             return undefined;
         }
-        for (const root of this.getAvailableProfileRoots()) {
+        for (const root of roots) {
             const candidate = path.join(root, category, `${profileName}.json`);
             if (fs.existsSync(candidate)) {
                 return candidate;
@@ -131,9 +136,9 @@ export class STLManipulator extends EventEmitter {
         }
         return undefined;
     }
-    buildFilamentIdIndex() {
+    buildFilamentIdIndex(roots = this.getAvailableProfileRoots()) {
         const index = new Map();
-        for (const root of this.getAvailableProfileRoots()) {
+        for (const root of roots) {
             const filamentDir = path.join(root, 'filament');
             if (!fs.existsSync(filamentDir)) {
                 continue;
@@ -195,17 +200,27 @@ export class STLManipulator extends EventEmitter {
         return sanitized;
     }
     writeTempJson(outputBase, suffix, value) {
-        const outPath = path.join(this.tempDir, `${outputBase}_${suffix}.json`);
-        fs.writeFileSync(outPath, JSON.stringify(value, null, 2));
+        const serialized = JSON.stringify(value, null, 2);
+        const hash = crypto.createHash('sha256').update(serialized).digest('hex').slice(0, 16);
+        const outPath = path.join(this.tempDir, `${outputBase}_${suffix}_${hash}.json`);
+        fs.writeFileSync(outPath, serialized);
         return outPath;
     }
-    resolveBambuLikeSettingsBundle(outputBase, slicerType, slicerProfile, printerPreset, bambuOptions) {
-        const machinePath = this.findProfileFile('machine', printerPreset);
+    resolveBambuLikeSettingsBundle(outputBase, slicerType, slicerProfile, printerPreset, bambuOptions, activeProfilesRoot) {
+        const roots = activeProfilesRoot
+            ? [path.join(activeProfilesRoot, 'BBL'), ...this.getAvailableProfileRoots()]
+            : this.getAvailableProfileRoots();
+        const findProfile = (kind, name) => this.findProfileFile(kind, name, roots);
+        const machinePath = findProfile('machine', printerPreset);
+        if (slicerType === 'bambustudio' && printerPreset && !machinePath) {
+            throw new Error(`Printer profile "${printerPreset}" was not found. Set BAMBU_PROFILES_ROOT to the matching BambuStudio profile tree; refusing to use printer defaults.`);
+        }
         const machineConfig = machinePath ? this.readJsonFile(machinePath) : null;
         const hasSlicerProfile = !!slicerProfile && fs.existsSync(slicerProfile);
         const filamentPaths = [];
         let processPath;
         let parsedProfile = null;
+        let processSource;
         if (hasSlicerProfile) {
             try {
                 parsedProfile = this.readJsonFile(slicerProfile);
@@ -215,6 +230,7 @@ export class STLManipulator extends EventEmitter {
             }
         }
         if (parsedProfile && typeof parsedProfile === 'object') {
+            processSource = { filePath: slicerProfile, profile: parsedProfile };
             const inheritedProcessName = (typeof parsedProfile.inherits === 'string' && parsedProfile.inherits) ||
                 (typeof parsedProfile.print_settings_id === 'string' &&
                     parsedProfile.print_settings_id !== parsedProfile.name
@@ -226,7 +242,7 @@ export class STLManipulator extends EventEmitter {
                 (typeof machineConfig?.default_print_profile === 'string'
                     ? machineConfig.default_print_profile
                     : undefined);
-            const inheritedProcessPath = this.findProfileFile('process', inheritedProcessName);
+            const inheritedProcessPath = findProfile('process', inheritedProcessName);
             const inheritedProcess = inheritedProcessPath && fs.existsSync(inheritedProcessPath)
                 ? this.readJsonFile(inheritedProcessPath)
                 : {};
@@ -238,21 +254,27 @@ export class STLManipulator extends EventEmitter {
             processPath = this.writeTempJson(outputBase, slicerType === 'orcaslicer' ? 'process_orca' : 'process', slicerType === 'orcaslicer'
                 ? this.sanitizeProcessForOrca(mergedProcess, printerPreset)
                 : mergedProcess);
-            const defaultFilamentProfiles = Array.isArray(parsedProfile.default_filament_profile)
+            const defaultFilamentProfiles = !bambuOptions?.loadFilaments && Array.isArray(parsedProfile.default_filament_profile)
                 ? parsedProfile.default_filament_profile
                 : [];
             for (const profileName of defaultFilamentProfiles) {
-                const filamentPath = this.findProfileFile('filament', String(profileName));
+                const filamentPath = findProfile('filament', String(profileName));
                 if (filamentPath) {
                     filamentPaths.push(filamentPath);
                 }
+                else {
+                    throw new Error(`Filament profile "${String(profileName)}" was not found; refusing to omit its slot.`);
+                }
             }
-            if (filamentPaths.length === 0 && Array.isArray(parsedProfile.filament_ids)) {
-                const filamentIdIndex = this.buildFilamentIdIndex();
+            if (!bambuOptions?.loadFilaments && filamentPaths.length === 0 && Array.isArray(parsedProfile.filament_ids)) {
+                const filamentIdIndex = this.buildFilamentIdIndex(roots);
                 for (const filamentId of parsedProfile.filament_ids) {
                     const filamentPath = filamentIdIndex.get(String(filamentId));
                     if (filamentPath) {
                         filamentPaths.push(filamentPath);
+                    }
+                    else {
+                        throw new Error(`Filament ID "${String(filamentId)}" could not be resolved; refusing to omit its slot.`);
                     }
                 }
             }
@@ -264,7 +286,7 @@ export class STLManipulator extends EventEmitter {
             const defaultProcessName = typeof machineConfig?.default_print_profile === 'string'
                 ? machineConfig.default_print_profile
                 : undefined;
-            const defaultProcessPath = this.findProfileFile('process', defaultProcessName);
+            const defaultProcessPath = findProfile('process', defaultProcessName);
             if (defaultProcessPath) {
                 processPath =
                     slicerType === 'orcaslicer'
@@ -276,9 +298,12 @@ export class STLManipulator extends EventEmitter {
             filamentPaths.length === 0 &&
             Array.isArray(machineConfig?.default_filament_profile)) {
             for (const profileName of machineConfig.default_filament_profile) {
-                const filamentPath = this.findProfileFile('filament', String(profileName));
+                const filamentPath = findProfile('filament', String(profileName));
                 if (filamentPath) {
                     filamentPaths.push(filamentPath);
+                }
+                else {
+                    throw new Error(`Filament profile "${String(profileName)}" was not found; refusing to omit its slot.`);
                 }
             }
         }
@@ -294,68 +319,111 @@ export class STLManipulator extends EventEmitter {
         const settingsParts = [machinePath, processPath].filter((entry) => Boolean(entry));
         return {
             settingsArg: settingsParts.length > 0 ? settingsParts.join(';') : undefined,
-            filamentPaths: Array.from(new Set(filamentPaths)),
+            filamentPaths,
+            processSource,
         };
     }
-    /**
-     * Optionally rewrite a Bambu-like settings bundle so the paths point at
-     * fully-flattened temp configs instead of the BBL-shipped leaf JSONs.
-     *
-     * BambuStudio's CLI does not resolve the `inherits` chain when loading
-     * profiles via --load-settings / --load-filaments, which causes a
-     * cluster of upstream bugs (see https://github.com/bambulab/BambuStudio/issues/9636
-     * and #9968). Our flattener (src/slicer/profile-flatten.ts) reproduces
-     * what the GUI does at slice time so the CLI accepts the configs.
-     *
-     * Opt-in via `BAMBU_CLI_FLATTEN=true`. When the env var is unset or
-     * not "true"/"1", returns the bundle unchanged so behavior is
-     * backward-compatible. When enabled, only BBL-shipped leaves get
-     * flattened; user-provided custom configs pass through untouched.
-     */
+    /** Resolve BBL dependencies before invoking the CLI; failures stop the slice. */
     async maybeFlattenBundle(bundle, bambuOptions, activeSlicerPath) {
-        const flag = process.env.BAMBU_CLI_FLATTEN;
-        if (flag !== 'true' && flag !== '1')
+        const parts = bundle.settingsArg?.split(';').filter(Boolean) ?? [];
+        const readProfile = (filePath) => {
+            try {
+                const data = this.readJsonFile(filePath);
+                if (!data || typeof data !== 'object' || Array.isArray(data)) {
+                    throw new Error('expected a JSON profile object');
+                }
+                return data;
+            }
+            catch (err) {
+                throw new Error(`Cannot read slicer profile "${filePath}": ${err?.message ?? err}`);
+            }
+        };
+        const settings = parts.map(readProfile);
+        // Read every slot: filtering unreadable names would change positional mapping.
+        const filaments = bundle.filamentPaths.map(readProfile);
+        const profilesRoot = detectProfilesRoot(activeSlicerPath || process.env.SLICER_PATH);
+        const profileRoots = [path.join(profilesRoot, 'BBL'), ...this.getAvailableProfileRoots()];
+        const hasReferences = (profile) => (typeof profile.inherits === 'string' && profile.inherits.length > 0) ||
+            (profile.include !== undefined && profile.include !== null);
+        const isBundledFile = (filePath) => profileRoots.some(root => {
+            const relative = path.relative(root, filePath);
+            return relative !== '' && !relative.startsWith('..') && !path.isAbsolute(relative);
+        });
+        const isBundled = (filePath, profile) => String(profile.from).toLowerCase() === 'system' || isBundledFile(filePath);
+        const needsResolution = (filePath, profile) => hasReferences(profile) || isBundled(filePath, profile);
+        if (![...settings, ...filaments].some((profile, i) => needsResolution([...parts, ...bundle.filamentPaths][i], profile)))
             return bundle;
-        if (!bundle.settingsArg)
-            return bundle;
-        // settingsArg is "machine.json;process.json".
-        const parts = bundle.settingsArg.split(';').filter(Boolean);
-        if (parts.length < 2)
-            return bundle;
+        if (parts.length !== 2) {
+            throw new Error('Resolving BBL profiles requires both a machine and process profile; refusing to slice with unresolved settings.');
+        }
         const [machinePath, processPath] = parts;
-        // Pull leaf names from each JSON's `name` field. If any is missing or
-        // looks non-BBL (e.g. a user-saved custom config), bail out and
-        // return the original bundle untouched.
-        const machineLeaf = this.readLeafName(machinePath);
-        const processLeaf = this.readLeafName(processPath);
-        const filamentLeaves = bundle.filamentPaths
-            .map((p) => this.readLeafName(p))
-            .filter((n) => Boolean(n));
-        if (!machineLeaf || !processLeaf || filamentLeaves.length === 0) {
-            console.log('[cli-flatten] skipping: could not derive BBL leaf names from bundle paths');
+        const [machine, processProfile] = settings;
+        const leafName = (filePath, profile) => {
+            // A user preset inherits its system identity, while keeping its own values.
+            const name = !isBundled(filePath, profile) && typeof profile.inherits === 'string' && profile.inherits
+                ? profile.inherits
+                : profile.name;
+            if (typeof name !== 'string' || !name) {
+                if (needsResolution(filePath, profile))
+                    throw new Error(`Cannot determine the profile name for "${filePath}".`);
+                return path.basename(filePath, '.json');
+            }
+            return name;
+        };
+        const flat = await flattenForCli({
+            machineLeaf: leafName(machinePath, machine),
+            // A generated path loses bundled provenance; inherited metadata can also
+            // make a custom preset look like a system profile. Use the original source
+            // only for identity and retain the prepared values in sourceProfiles below.
+            processLeaf: bundle.processSource
+                ? leafName(bundle.processSource.filePath, bundle.processSource.profile)
+                : leafName(processPath, processProfile),
+            filamentLeaves: filaments.map((profile, i) => leafName(bundle.filamentPaths[i], profile)),
+            profilesRoot,
+            tempDir: this.tempDir,
+            bedType: this.resolveBambuStudioBedType(bambuOptions?.bedType),
+            sourceProfiles: {
+                machine: isBundledFile(machinePath) ? undefined : machine,
+                process: isBundledFile(processPath) ? undefined : processProfile,
+                filaments: filaments.map((profile, i) => isBundledFile(bundle.filamentPaths[i]) ? undefined : profile),
+            },
+        });
+        // Standalone custom files have no BBL dependencies; preserve their identity
+        // and content. Other profiles retain user values through sourceProfiles.
+        return {
+            settingsArg: [
+                needsResolution(machinePath, machine) ? flat.machinePath : machinePath,
+                needsResolution(processPath, processProfile) ? flat.processPath : processPath,
+            ].join(';'),
+            filamentPaths: filaments.map((profile, i) => needsResolution(bundle.filamentPaths[i], profile) ? flat.filamentPaths[i] : bundle.filamentPaths[i]),
+        };
+    }
+    /** --load-filaments is positional; a single override must cover every project slot. */
+    async expandProjectFilaments(inputPath, bundle) {
+        if (!inputPath.toLowerCase().endsWith('.3mf') || bundle.filamentPaths.length === 0)
             return bundle;
-        }
-        const bedType = this.resolveBambuStudioBedType(bambuOptions?.bedType);
-        try {
-            const profilesRoot = detectProfilesRoot(activeSlicerPath || process.env.SLICER_PATH);
-            const flat = await flattenForCli({
-                machineLeaf,
-                processLeaf,
-                filamentLeaves,
-                profilesRoot,
-                tempDir: this.tempDir,
-                bedType,
-            });
-            console.log(`[cli-flatten] applied for ${machineLeaf} (cliOverlay=${flat.meta.cliOverlayApplied})`);
-            return {
-                settingsArg: `${flat.machinePath};${flat.processPath}`,
-                filamentPaths: flat.filamentPaths,
-            };
-        }
-        catch (err) {
-            console.error(`[cli-flatten] failed, falling back to unflattened bundle: ${err?.message ?? err}`);
+        const JSZip = (await import('jszip')).default;
+        const zip = await JSZip.loadAsync(await fs.promises.readFile(inputPath));
+        const file = zip.file('Metadata/project_settings.config');
+        // Geometry-only 3MFs have no embedded filament slots.
+        if (!file)
             return bundle;
+        const config = JSON.parse(await file.async('string'));
+        if (!config || typeof config !== 'object' || Array.isArray(config)) {
+            throw new Error('Cannot determine project filament slots: invalid project_settings.config.');
         }
+        const data = config;
+        const count = Math.max(0, ...['filament_settings_id', 'filament_type', 'filament_colour', 'filament_diameter']
+            .map(key => Array.isArray(data[key]) ? data[key].length : 0));
+        if (count === 0)
+            throw new Error('Cannot determine project filament slots from project_settings.config.');
+        if (bundle.filamentPaths.length === 1) {
+            return { ...bundle, filamentPaths: Array(count).fill(bundle.filamentPaths[0]) };
+        }
+        if (bundle.filamentPaths.length !== count) {
+            throw new Error(`Project declares ${count} filament slots, but ${bundle.filamentPaths.length} profiles were supplied. Provide one profile for all slots or one per slot.`);
+        }
+        return bundle;
     }
     resolveBambuStudioBedType(bedType) {
         if (!bedType)
@@ -365,16 +433,6 @@ export class STLManipulator extends EventEmitter {
             throw new Error('BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF or choose textured_plate, cool_plate, engineering_plate, or hot_plate.');
         }
         return BAMBU_CLI_BED_TYPES[normalized] || bedType;
-    }
-    /** Read a profile JSON's top-level `name` field, or null if unreadable. */
-    readLeafName(filePath) {
-        try {
-            const data = this.readJsonFile(filePath);
-            return typeof data?.name === 'string' && data.name.length > 0 ? data.name : null;
-        }
-        catch {
-            return null;
-        }
     }
     /**
      * Load STL file and return geometry and bounding box
@@ -1145,11 +1203,10 @@ export class STLManipulator extends EventEmitter {
                         const outputBase = path.basename(stlFilePath, is3mf ? '.3mf' : '.stl');
                         const bambuOutputPath = path.join(this.tempDir, outputBase + '_sliced.3mf');
                         const outputDir = path.dirname(bambuOutputPath);
-                        const rawBundle = this.resolveBambuLikeSettingsBundle(outputBase, slicerType, slicerProfile, printerPreset, bambuOptions);
-                        // Opt-in flatten step: walks the BBL `inherits` chain so the
-                        // CLI accepts what we hand it. See maybeFlattenBundle docstring.
+                        const rawBundle = this.resolveBambuLikeSettingsBundle(outputBase, slicerType, slicerProfile, printerPreset, bambuOptions, slicerType === 'bambustudio' ? detectProfilesRoot(slicerPath) : undefined);
+                        // Resolve every BBL dependency before launching the slicer.
                         const settingsBundle = slicerType === 'bambustudio'
-                            ? await this.maybeFlattenBundle(rawBundle, bambuOptions, slicerPath)
+                            ? await this.maybeFlattenBundle(await this.expandProjectFilaments(stlFilePath, rawBundle), bambuOptions, slicerPath)
                             : rawBundle;
                         args = [
                             '--slice', String(bambuOptions?.slicePlate ?? 0),
