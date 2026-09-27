@@ -1,8 +1,8 @@
 # Contributors
 
-Thank you to everyone who builds, tests, reports problems, and shares real printer evidence. This release is stronger because of your work!
+Thank you to everyone who builds, tests, reports problems, and shares real printer evidence. The project is stronger because of your work!
 
-## This release
+## Release contributions
 
 | Contributor | Contribution |
 | --- | --- |
@@ -17,7 +17,7 @@ Thank you to everyone who builds, tests, reports problems, and shares real print
 
 ## Project contributors
 
-Thank you also to the existing contributors whose work this release builds on:
+Thank you also to the existing contributors whose work the project builds on:
 
 - [David Montgomery (DMontgomery40)](https://github.com/DMontgomery40) — project maintainer.
 - [rowbotik](https://github.com/rowbotik) — printer, AMS, slicing, and operational work across the existing release history.
@@ -25,3 +25,9 @@ Thank you also to the existing contributors whose work this release builds on:
 - [thebitrock](https://github.com/thebitrock) — project code contribution.
 
 See the [full contribution history](https://github.com/DMontgomery40/bambu-printer-mcp/graphs/contributors) for commit authorship. Credit here includes bug reports and reviewed proposals as well as merged code.
+
+## Open-source community and interoperability
+
+Special thanks to [FULU Foundation](https://www.fulu.org/), [Louis Rossmann](https://www.youtube.com/watch?v=1jhRqgHxEP8), and the [OrcaSlicer-bambulab contributors](https://github.com/FULU-Foundation/OrcaSlicer-bambulab) for their work supporting user control and interoperable tools. We support open-source software, repair rights, and a local print workflow that does not require Bambu Studio, Bambu Connect, or Bambu Cloud.
+
+This is community recognition, separate from code authorship in this repository. The optional FULU bridge uses Bambu's networking runtime; see the [FULU setup guide](./docs/FULU.md) for the direct LAN alternative and current validation limits.
