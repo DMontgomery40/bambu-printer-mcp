@@ -12,6 +12,7 @@
 - Apply independent printer/component and material temperature ceilings, reject nonfinite values before connecting, and require declared material for manual nozzle heating. Keep heater-off commands available.
 - Inspect private file snapshots and use unique remote print names. Download and inspect remote G-code before starting a verified copy.
 - Check the currently loaded material for manual heating and G-code-file dispatch, bind resume to an inspected paused job, and let stop/heater-off requests cancel pending operations before dispatch.
+- Reject G-code-file starts and resumes when fresh telemetry explicitly reports an unloaded nozzle; preserve declared-material manual heating for loading filament.
 - Register successful inspected BambuNetwork jobs for the same verified resume path, using unique submitted task identities.
 - Reject ambiguous ZIP entries and bind the dispatched plate and checksum to inspected bytes; bound archive inspection and check every printable plate on upload-only requests, refusing noncanonical plate names and unrecognized G-code entries.
 - Preserve existing remote files with unique upload names and destination collision checks; verify uploaded job model/nozzles against fresh printer reports.

@@ -215,6 +215,19 @@ test("manual nozzle heating accepts a declared external PA spool with matching t
 });
 
 for (const route of ["legacy 3MF", "raw upload-and-print", "remote start"]) {
+  test(`${route} rejects an explicitly unloaded nozzle before upload or dispatch`, async (t) => {
+    const file = await fixture(t, { raw: route !== "legacy 3MF" });
+    const { printer, events } = isolatedPrinter(safetyStatus({ ams: { tray_now: "255", ams: [] } }));
+    printer.ftpDownload = async (_host, _token, _remote, destination) => fs.copyFile(file, destination);
+    const print = route === "legacy 3MF"
+      ? printer.print3mf(host, serial, token, { projectName: "unloaded", filePath: file, bambuModel: "p1s", useAMS: false })
+      : route === "raw upload-and-print"
+        ? printer.uploadFile(host, serial, token, file, "unloaded.gcode", true, "p1s")
+        : printer.startJob(host, serial, token, "unloaded.gcode", "p1s");
+    await assert.rejects(print, /no filament|unloaded|load.*filament/i);
+    assertNoDispatch(events);
+  });
+
   test(`${route} checks the loaded AMS material instead of an unused external-spool declaration`, async (t) => {
     const file = await fixture(t, { raw: route !== "legacy 3MF", material: "PA", gcode: "M104 S300\nM140 S60\nG1 X10 Y10 Z1\n" });
     const { printer, events } = isolatedPrinter(safetyStatus({
@@ -291,6 +304,9 @@ for (const [name, changes, error] of [
   ["a changed nozzle", { nozzle: "0.6" }, /nozzle|diameter/i],
   ["a changed spool material", { vt_tray: { tray_type: "ABS" } }, /material|contradict/i],
   ["a job that is no longer paused", { state: "RUNNING" }, /paused|PAUSE|state/i],
+  ["an explicitly unloaded nozzle", { ams: { tray_now: 255, ams: [] } }, /no filament|unloaded|load.*filament/i],
+  ["a different loaded spool", { ams: { tray_now: "0", ams: [{ id: "0", tray: [{ id: "0", tray_type: "ABS" }] }] } }, /loaded.*tray|loaded.*spool/i],
+  ["an unknown current AMS tray", { ams: { ams: [] } }, /loaded.*tray|loaded.*spool/i],
 ]) {
   test(`resume refuses ${name} without publishing`, async (t) => {
     const file = await fixture(t);

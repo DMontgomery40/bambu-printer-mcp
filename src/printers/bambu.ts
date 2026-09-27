@@ -491,7 +491,7 @@ export class BambuImplementation {
     const loaded = manualHeatingRequirements(status, inspection.model, inspection.nozzleDiameters[0], usedMaterials[0]);
     const mapping = Array<number>(inspection.materials.length).fill(-1);
     inspection.usedFilamentPositions.forEach(position => { mapping[position] = loaded.amsMapping?.[0] ?? 254; });
-    const requirements = { ...inspection, useAMS: loaded.useAMS, amsMapping: mapping, usedNozzleIndices: loaded.usedNozzleIndices };
+    const requirements = { ...inspection, useAMS: loaded.useAMS, amsMapping: mapping, usedNozzleIndices: loaded.usedNozzleIndices, requireLoadedFilament: true };
     validatePrinterState(status, requirements);
     return requirements;
   }

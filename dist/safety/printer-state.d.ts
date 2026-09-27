@@ -9,6 +9,8 @@ export interface PrinterStateRequirements {
     amsMapping?: number[];
     useAMS?: boolean;
     requireIdle?: boolean;
+    /** Raw gcode_file transport cannot load a mapped spool before printing. */
+    requireLoadedFilament?: boolean;
     /** Upload-only identity checks do not select or consume a physical filament slot. */
     verifyMaterials?: boolean;
     /** Zero-based firmware nozzle indices corresponding positionally to nozzleDiameters. */

@@ -257,6 +257,17 @@ export function validatePrinterState(status, requirements) {
     if (!model || !identity.model || model !== identity.model)
         throw new Error(`Printer model identity mismatch: requested ${requirements.model}, observed ${identity.model ?? "unknown"}.`);
     validateErrors(raw, requirements.requireIdle !== false);
+    if (requirements.requireLoadedFilament && (raw.ams?.tray_now !== undefined || Array.isArray(raw.ams?.ams))) {
+        const current = finiteNumber(raw.ams?.tray_now);
+        if (current === 255)
+            throw new Error("The nozzle is explicitly reported unloaded. Load the declared filament before starting or resuming this G-code job.");
+        if (current === undefined || !Number.isInteger(current) || current < 0 || current > 254) {
+            throw new Error("Cannot verify the currently loaded AMS tray before starting or resuming this G-code job.");
+        }
+        if ((requirements.usedFilamentPositions ?? []).some(position => current !== (requirements.useAMS ? requirements.amsMapping?.[position] : 254))) {
+            throw new Error("The currently loaded spool differs from the tray checked for this G-code job.");
+        }
+    }
     const nozzles = requirements.nozzleDiameters.length ? reportedNozzles(raw) : [];
     if (requirements.nozzleDiameters.length && ["h2d", "h2dpro", "h2c", "x2d"].includes(model) &&
         !Array.isArray(raw.device?.nozzle?.info) && !Array.isArray(raw.nozzle_diameter)) {
