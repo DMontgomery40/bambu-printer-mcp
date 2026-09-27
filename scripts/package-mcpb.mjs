@@ -56,6 +56,8 @@ export function packageMcpb({ root = ROOT, outputPath = path.join(root, "bambu-p
     for (const name of ["package.json", "package-lock.json", "manifest.json", "dist", "src", "patches", "LICENSE", "README.md"]) {
       copyReleaseInput(path.join(root, name), path.join(staging, name));
     }
+    fs.mkdirSync(path.join(staging, "scripts"));
+    copyReleaseInput(path.join(root, "scripts/install-patches.mjs"), path.join(staging, "scripts/install-patches.mjs"));
     for (const name of ["CONTRIBUTORS", "CONTRIBUTORS.md"]) {
       if (fs.existsSync(path.join(root, name))) copyReleaseInput(path.join(root, name), path.join(staging, name));
     }

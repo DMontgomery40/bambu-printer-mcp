@@ -21,6 +21,14 @@ Local handoff note: see [REMOTE-DEPLOYMENT.md](./REMOTE-DEPLOYMENT.md) for the c
 
 This fork adds a substantial set of printer control tools beyond the upstream `mcp-3D-printer-server`. Everything listed below is unique to this package.
 
+### v1.1.8 — reliable installs, printer fixes, and Blender MCP
+
+- Fix delayed H2 status crashes and preserve machine-specific G-code when resolving Bambu profiles.
+- Correct P2S and full-size A1 print routing while preserving other models' existing behavior.
+- Install a Claude Desktop extension with prompted settings; keep local credentials and models out of packaged artifacts.
+- Connect to standard Blender MCP servers, discover and call their tools, and verify STL edit/export results.
+- Preserve filament-slot order and isolate temporary files between concurrent jobs and server instances.
+
 ### v1.1.0 — AMS auto-match, camera snapshot, pause/resume, skip objects
 
 - **AMS auto-match by RFID** (`auto_match_ams` on `print_3mf`) — resolves sliced 3MF filament requirements against live AMS inventory. Handles same-SKU different-color filaments. Dry-run with `resolve_3mf_ams_slots`.

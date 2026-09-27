@@ -16,7 +16,7 @@
     "test": "npm run build && node --test tests/*.test.mjs tests/**/*.test.mjs",
     "package:mcpb": "npm run build && node scripts/package-mcpb.mjs",
     "version": "node scripts/sync-manifest-version.mjs",
-    "postinstall": "patch-package"
+    "postinstall": "node scripts/install-patches.mjs"
   },
   "bin": {
     "bambu-printer-mcp": "dist/index.js"
@@ -25,6 +25,7 @@
     "dist",
     "src",
     "patches",
+    "scripts/install-patches.mjs",
     "README.md",
     "CONTRIBUTORS.md",
     "LICENSE"
@@ -48,7 +49,7 @@
     "dotenv": "^16.3.1",
     "jszip": "^3.10.1",
     "mqtt": "^5.15.1",
-    "patch-package": "^8.0.1",
+    "patch-package": "8.0.1",
     "three": "^0.173.0",
     "xml2js": "^0.6.2"
   },
