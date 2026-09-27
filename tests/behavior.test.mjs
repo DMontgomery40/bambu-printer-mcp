@@ -1315,6 +1315,9 @@ async function createFakeBambuSlicer() {
   for (const kind of ["machine", "process", "filament"]) {
     fs.mkdirSync(path.join(profilesRoot, "BBL", kind), { recursive: true });
   }
+  fs.writeFileSync(path.join(profilesRoot, "BBL", "cli_config.json"), JSON.stringify({ printer: {
+    "Bambu Lab P1S": { downward_check: { "Bambu Lab P1S 0.4 nozzle": ["Bambu Lab A1 0.4 nozzle"] } },
+  } }));
   const writeProfile = (kind, profile) => fs.writeFileSync(
     path.join(profilesRoot, "BBL", kind, `${profile.name}.json`), JSON.stringify(profile)
   );

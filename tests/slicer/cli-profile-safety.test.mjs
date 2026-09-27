@@ -14,6 +14,9 @@ async function fixture(t) {
   const profiles = path.join(root, 'BambuStudio.app', 'Contents', 'Resources', 'profiles');
   const bbl = path.join(profiles, 'BBL');
   for (const kind of ['machine', 'process', 'filament']) await fs.mkdir(path.join(bbl, kind), { recursive: true });
+  await fs.writeFile(path.join(bbl, 'cli_config.json'), JSON.stringify({
+    printer: { 'Bambu Lab SAFETY': { machine_limits: { cli_safe_acceleration_x: '6000,6000' } } },
+  }));
   const write = async (kind, value) => {
     const file = path.join(bbl, kind, `${value.name}.json`);
     await fs.writeFile(file, JSON.stringify(value));
@@ -229,4 +232,99 @@ test('an unavailable active profile tree cannot silently slice with printer defa
   const manipulator = new STLManipulator(path.join(f.root, 'no-profiles-out'));
   await assert.rejects(manipulator.sliceSTL(f.stl, 'bambustudio', executable, undefined, undefined, 'Bambu Lab SAFETY 0.4 nozzle'), /profile|preset/i);
   await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+});
+
+for (const [label, config] of [
+  ['missing file', undefined],
+  ['malformed JSON', '{not json'],
+  ['non-object config', 'null'],
+  ['missing printer section', '{}'],
+  ['malformed printer section', JSON.stringify({ printer: [] })],
+  ['missing selected model', JSON.stringify({ printer: { 'Bambu Lab OTHER': { machine_limits: { cli_safe_acceleration_x: '9000,9000' } } } })],
+  ['empty selected model', JSON.stringify({ printer: { 'Bambu Lab SAFETY': {} } })],
+  ['array selected model', JSON.stringify({ printer: { 'Bambu Lab SAFETY': [] } })],
+  ['empty limits', JSON.stringify({ printer: { 'Bambu Lab SAFETY': { machine_limits: {} } } })],
+  ['array limits', JSON.stringify({ printer: { 'Bambu Lab SAFETY': { machine_limits: [] } } })],
+  ['null limits', JSON.stringify({ printer: { 'Bambu Lab SAFETY': { machine_limits: null } } })],
+  ['invalid limit value', JSON.stringify({ printer: { 'Bambu Lab SAFETY': { machine_limits: { cli_safe_acceleration_x: 'oops' } } } })],
+  ['negative limit value', JSON.stringify({ printer: { 'Bambu Lab SAFETY': { machine_limits: { cli_safe_acceleration_x: '-1,6000' } } } })],
+  ['non-finite limit value', JSON.stringify({ printer: { 'Bambu Lab SAFETY': { machine_limits: { cli_safe_acceleration_x: 'Infinity,6000' } } } })],
+  ['non-limit setting', JSON.stringify({ printer: { 'Bambu Lab SAFETY': { machine_limits: { machine_start_gcode: 'wrong machine' } } } })],
+  ['malformed downward check', JSON.stringify({ printer: { 'Bambu Lab SAFETY': { downward_check: [] } } })],
+  ['empty downward check', JSON.stringify({ printer: { 'Bambu Lab SAFETY': { downward_check: {} } } })],
+  ['malformed downward targets', JSON.stringify({ printer: { 'Bambu Lab SAFETY': { downward_check: { 'Bambu Lab SAFETY 0.4 nozzle': [42] } } } })],
+]) {
+  test(`CLI configuration ${label} prevents slicer execution`, async t => {
+    const f = await fixture(t);
+    const configPath = path.join(f.profiles, 'BBL', 'cli_config.json');
+    if (config === undefined) await fs.unlink(configPath); else await fs.writeFile(configPath, config);
+    await assert.rejects(f.slice(), error => {
+      assert.match(error.message, /cli_config\.json/);
+      assert.match(error.message, /Bambu Lab SAFETY 0\.4 nozzle/);
+      return true;
+    });
+    await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+  });
+}
+
+test('declared machine limits override profile values and report validated config', async t => {
+  const f = await fixture(t);
+  const machine = JSON.parse(await fs.readFile(f.machine, 'utf8'));
+  machine.cli_safe_acceleration_x = '9999,9999';
+  await fs.writeFile(f.machine, JSON.stringify(machine));
+  const result = await flattenForCli({ machineLeaf: machine.name, processLeaf: 'SAFETY process', filamentLeaves: ['SAFETY filament'], profilesRoot: f.profiles, tempDir: path.join(f.root, 'out') });
+  assert.equal(JSON.parse(await fs.readFile(result.machinePath, 'utf8')).cli_safe_acceleration_x, '6000,6000');
+  assert.equal(result.meta.cliConfigValidated, true);
+  assert.equal(result.meta.cliOverlayApplied, true);
+});
+
+test('an explicit missing model cannot borrow limits from its preset name', async t => {
+  const f = await fixture(t);
+  const machine = JSON.parse(await fs.readFile(f.machine, 'utf8'));
+  machine.printer_model = 'Bambu Lab UNKNOWN';
+  await fs.writeFile(f.machine, JSON.stringify(machine));
+  await assert.rejects(f.slice(), /model "Bambu Lab UNKNOWN".*selected model is absent/);
+  await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+});
+
+test('custom machines using BBL includes still require the model CLI configuration', async t => {
+  const f = await fixture(t);
+  await fs.unlink(path.join(f.profiles, 'BBL', 'cli_config.json'));
+  await assert.rejects(flattenForCli({ machineLeaf: 'Bambu Lab SAFETY 0.4 nozzle', processLeaf: 'SAFETY process', filamentLeaves: ['SAFETY filament'], profilesRoot: f.profiles, tempDir: path.join(f.root, 'out'),
+    sourceProfiles: { machine: { name: 'Custom included machine', from: 'User', include: ['SAFETY start'], printer_model: 'Bambu Lab SAFETY' } },
+  }), /cli_config\.json/);
+});
+
+test('official P1S and H2D config shapes without machine limits remain valid', async t => {
+  const f = await fixture(t);
+  for (const model of ['Bambu Lab P1S', 'Bambu Lab H2D']) {
+    const leaf = `${model} 0.4 nozzle`;
+    await f.write('machine', { name: leaf, printer_model: model, nozzle_diameter: ['0.4'], machine_start_gcode: 'model start' });
+    // Official BBL configurations declare only downward_check for these models.
+    await fs.writeFile(path.join(f.profiles, 'BBL', 'cli_config.json'), JSON.stringify({
+      printer: { [model]: { downward_check: { [leaf]: ['Bambu Lab A1 0.4 nozzle'] } } },
+    }));
+    const result = await flattenForCli({ machineLeaf: leaf, processLeaf: 'SAFETY process', filamentLeaves: ['SAFETY filament'], profilesRoot: f.profiles, tempDir: path.join(f.root, 'out') });
+    assert.equal(result.meta.cliConfigValidated, true);
+    assert.equal(result.meta.cliOverlayApplied, false);
+  }
+});
+
+test('standalone custom machine settings do not require a bundled CLI configuration', async t => {
+  const f = await fixture(t);
+  await fs.unlink(path.join(f.profiles, 'BBL', 'cli_config.json'));
+  const result = await flattenForCli({ machineLeaf: 'Standalone custom', processLeaf: 'SAFETY process', filamentLeaves: ['SAFETY filament'], profilesRoot: f.profiles, tempDir: path.join(f.root, 'out'),
+    sourceProfiles: { machine: { name: 'Standalone custom', from: 'User', nozzle_diameter: ['0.4'], cli_safe_acceleration_x: '5000,5000' } },
+  });
+  assert.equal(JSON.parse(await fs.readFile(result.machinePath, 'utf8')).cli_safe_acceleration_x, '5000,5000');
+  assert.equal(result.meta.cliConfigValidated, false);
+  assert.equal(result.meta.cliOverlayApplied, false);
+});
+
+test('custom machines inheriting BBL settings still require the model CLI configuration', async t => {
+  const f = await fixture(t);
+  await fs.unlink(path.join(f.profiles, 'BBL', 'cli_config.json'));
+  await assert.rejects(flattenForCli({ machineLeaf: 'Bambu Lab SAFETY 0.4 nozzle', processLeaf: 'SAFETY process', filamentLeaves: ['SAFETY filament'], profilesRoot: f.profiles, tempDir: path.join(f.root, 'out'),
+    sourceProfiles: { machine: { name: 'Custom inherited machine', from: 'User', inherits: 'Bambu Lab SAFETY 0.4 nozzle' } },
+  }), /cli_config\.json/);
 });

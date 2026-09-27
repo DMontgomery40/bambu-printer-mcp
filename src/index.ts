@@ -2684,13 +2684,15 @@ class BambuPrinterMCPServer {
                   maxItems: 64,
                   items: { type: "string" }
                 },
-                output_path: { type: "string", description: "New local STL output path for standard MCP editing; its parent must exist and existing files are never overwritten." },
+                output_path: { type: "string", description: "Required for standard MCP previews and execution: new local STL output path whose parent exists. Existing files are never overwritten. Optional for legacy-only bridge configuration." },
                 user_prompt: { type: "string", description: "The user's own words describing the edit, passed unchanged to Blender MCP." },
                 timeout_ms: { type: "integer", minimum: 100, maximum: 300000, description: "Total Blender request deadline in milliseconds; defaults to BLENDER_MCP_TIMEOUT_MS or 120000." },
                 bridge_command: { type: "string", description: "Legacy custom bridge executable override, not a standard MCP command. Per-call overrides require MCP_ALLOW_EXECUTABLE_ARG=1." },
                 execute: { type: "boolean", description: "Apply edits and export (true) or validate and return the prepared request without connecting (false, default)." }
               },
-              required: ["stl_path", "operations"],
+              required: process.env.BLENDER_MCP_COMMAND?.trim()
+                ? ["stl_path", "operations", "output_path"]
+                : ["stl_path", "operations"],
               additionalProperties: false
             }
           }
@@ -3268,57 +3270,50 @@ class BambuPrinterMCPServer {
 
             let threeMFPath = String(args.three_mf_path);
 
-            // Auto-slice if 3MF has no gcode
-            try {
-              const JSZip = (await import('jszip')).default;
-              const zipData = fs.readFileSync(threeMFPath);
-              const zip = await JSZip.loadAsync(zipData);
-              const hasGcode = Object.keys(zip.files).some(
-                f => f.match(/Metadata\/plate_\d+\.gcode/i) || f.endsWith('.gcode')
-              );
-              if (!hasGcode) {
-                if (printBedType === "supertack_plate") {
-                  throw new Error(
-                    'BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF for SuperTack or choose textured_plate, cool_plate, engineering_plate, or hot_plate.'
-                  );
-                }
-                console.log(`3MF has no gcode — auto-slicing with ${slicerType} for ${printModel}`);
-                const autoSliceOptions: BambuSliceOptions = {
-                  uptodate: true,
-                  ensureOnBed: true,
-                  minSave: true,
-                  skipModifiedGcodes: true,
-                  bedType: printBedType,
-                };
-                if (!explicitSlicerProfile) {
-                  try {
-                    const liveFilaments = await this.getResolvedPrinterFilamentInventory(
-                      host,
-                      bambuSerial,
-                      bambuToken,
-                      printModel,
-                      printNozzle
-                    );
-                    if (liveFilaments.recommended?.load_filaments) {
-                      autoSliceOptions.loadFilaments = liveFilaments.recommended.load_filaments;
-                    }
-                  } catch (filamentError) {
-                    console.warn("Could not resolve live printer filaments for auto-slicing:", filamentError);
-                  }
-                }
-                threeMFPath = await this.stlManipulator.sliceSTL(
-                  threeMFPath, slicerType, slicerPath, activeSlicerProfile,
-                  undefined, // progressCallback
-                  printPreset,
-                  autoSliceOptions
+            // Inspect and auto-slice before upload. Preserve any failure instead of sending an unsliced project.
+            const JSZip = (await import('jszip')).default;
+            const zipData = fs.readFileSync(threeMFPath);
+            const zip = await JSZip.loadAsync(zipData);
+            const hasGcode = Object.values(zip.files).some(
+              entry => !entry.dir && /\.gcode$/i.test(entry.name)
+            );
+            if (!hasGcode) {
+              if (printBedType === "supertack_plate") {
+                throw new Error(
+                  'BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF for SuperTack or choose textured_plate, cool_plate, engineering_plate, or hot_plate.'
                 );
-                console.log("Auto-sliced to: " + threeMFPath);
               }
-            } catch (sliceCheckErr: any) {
-              if (String(sliceCheckErr?.message || "").includes("SuperTack")) {
-                throw sliceCheckErr;
+              console.log(`3MF has no gcode — auto-slicing with ${slicerType} for ${printModel}`);
+              const autoSliceOptions: BambuSliceOptions = {
+                uptodate: true,
+                ensureOnBed: true,
+                minSave: true,
+                skipModifiedGcodes: true,
+                bedType: printBedType,
+              };
+              if (!explicitSlicerProfile) {
+                try {
+                  const liveFilaments = await this.getResolvedPrinterFilamentInventory(
+                    host,
+                    bambuSerial,
+                    bambuToken,
+                    printModel,
+                    printNozzle
+                  );
+                  if (liveFilaments.recommended?.load_filaments) {
+                    autoSliceOptions.loadFilaments = liveFilaments.recommended.load_filaments;
+                  }
+                } catch (filamentError) {
+                  console.warn("Could not resolve live printer filaments for auto-slicing:", filamentError);
+                }
               }
-              console.warn("Could not check/slice 3MF, proceeding with original:", sliceCheckErr.message);
+              threeMFPath = await this.stlManipulator.sliceSTL(
+                threeMFPath, slicerType, slicerPath, activeSlicerProfile,
+                undefined, // progressCallback
+                printPreset,
+                autoSliceOptions
+              );
+              console.log("Auto-sliced to: " + threeMFPath);
             }
 
             const parsed3MFData = await parse3MF(threeMFPath);

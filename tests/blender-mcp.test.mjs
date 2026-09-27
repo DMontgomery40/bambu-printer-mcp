@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = path.join(root, "tests/fixtures/blender-mcp-server.mjs");
@@ -35,6 +36,7 @@ async function start(t, mode = "normal", overrides = {}) {
   await client.connect(transport);
   return {
     directory,
+    list: () => client.listTools(),
     events: () => fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : [],
     call: (name, args = {}) => client.callTool({ name, arguments: args }, undefined, { timeout: 15000 }),
   };
@@ -136,6 +138,36 @@ test("Blender standard edit previews without launching and exports a verified ne
   assert.equal(data(result).triangles, 1);
   assert.equal(fs.statSync(output).size, 134);
   assert.deepEqual(fs.readdirSync(peer.directory).sort(), [path.basename(output), "peer.jsonl"].sort());
+});
+
+test("Blender edit discovery requires output_path for standard MCP while preserving legacy-only requests", async (t) => {
+  await t.test("standard configuration advertises the output required by preview and execution", async (t) => {
+    const peer = await start(t);
+    const tool = (await peer.list()).tools.find((tool) => tool.name === "blender_mcp_edit_model");
+    const validate = new AjvJsonSchemaValidator().getValidator(tool.inputSchema);
+    const withoutOutput = { stl_path: sample, operations: ["decimate:0.5"] };
+    assert.equal(validate(withoutOutput).valid, false, "discovery must not advertise a standard edit without its required output");
+    assert.equal(validate({ ...withoutOutput, execute: true }).valid, false);
+    const request = { ...withoutOutput, output_path: path.join(peer.directory, "prepared.stl") };
+    assert.equal(validate(request).valid, true);
+    const result = await peer.call(tool.name, request);
+    assert.equal(result.isError, undefined, errorText(result));
+    assert.equal(data(result).status, "prepared");
+    assert.equal(data(result).mode, "mcp");
+    assert.deepEqual(peer.events(), []);
+  });
+  await t.test("legacy-only configuration keeps output_path optional", async (t) => {
+    const peer = await start(t, "normal", { BLENDER_MCP_COMMAND: "", BLENDER_MCP_BRIDGE_COMMAND: "/trusted/custom-bridge" });
+    const tool = (await peer.list()).tools.find((tool) => tool.name === "blender_mcp_edit_model");
+    const request = { stl_path: sample, operations: ["remesh"] };
+    const validate = new AjvJsonSchemaValidator().getValidator(tool.inputSchema);
+    assert.equal(validate(request).valid, true);
+    const result = await peer.call(tool.name, request);
+    assert.equal(result.isError, undefined, errorText(result));
+    assert.equal(data(result).status, "prepared");
+    assert.equal(data(result).mode, "legacy");
+    assert.deepEqual(peer.events(), []);
+  });
 });
 
 test("Blender standard edits reject text errors, missing receipts and invalid output instead of reporting success", async (t) => {

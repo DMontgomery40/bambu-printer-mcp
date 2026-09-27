@@ -1320,6 +1320,9 @@ an STL without replacing the input or an existing output. Supported operations
 are `decimate:<ratio>` (greater than 0 through 1), `remesh:<voxel size>` (positive,
 in STL coordinate units), and `boolean_union:<STL path>`. Other operations can
 use `blender_mcp_call`. Both processes must have access to the same file paths.
+When `BLENDER_MCP_COMMAND` selects standard MCP, the advertised tool schema
+requires an explicit `output_path` for both preview and execution. Legacy-only
+bridge configurations keep `output_path` optional for compatibility.
 
 ```json
 {

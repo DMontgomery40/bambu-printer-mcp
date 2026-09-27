@@ -15,8 +15,8 @@
  *      machines, per-variant defaults for filaments) the way the GUI does.
  *   3. Derives `nozzle_volume_type` from `default_nozzle_volume_type[0]`
  *      (the GUI does this implicitly; the CLI doesn't).
- *   4. Merges CLI-specific machine_limits from `BBL/cli_config.json` so the
- *      printer doesn't run unsafe accelerations / jerks.
+ *   4. Validates the model in `BBL/cli_config.json` and merges its CLI-specific
+ *      machine_limits where supplied for safe accelerations / jerks.
  *   5. Writes the flattened JSON to a temp file the caller passes to
  *      BambuStudio CLI.
  *
@@ -34,6 +34,9 @@ export interface FlattenedProfiles {
         machineLeafName: string;
         processLeafName: string;
         filamentLeafNames: string[];
+        /** False only for an explicit standalone custom machine. */
+        cliConfigValidated: boolean;
+        /** Some validated official model configs intentionally have no limits. */
         cliOverlayApplied: boolean;
     };
 }

@@ -15,8 +15,8 @@
  *      machines, per-variant defaults for filaments) the way the GUI does.
  *   3. Derives `nozzle_volume_type` from `default_nozzle_volume_type[0]`
  *      (the GUI does this implicitly; the CLI doesn't).
- *   4. Merges CLI-specific machine_limits from `BBL/cli_config.json` so the
- *      printer doesn't run unsafe accelerations / jerks.
+ *   4. Validates the model in `BBL/cli_config.json` and merges its CLI-specific
+ *      machine_limits where supplied for safe accelerations / jerks.
  *   5. Writes the flattened JSON to a temp file the caller passes to
  *      BambuStudio CLI.
  *
@@ -41,6 +41,9 @@ export interface FlattenedProfiles {
     machineLeafName: string;
     processLeafName: string;
     filamentLeafNames: string[];
+    /** False only for an explicit standalone custom machine. */
+    cliConfigValidated: boolean;
+    /** Some validated official model configs intentionally have no limits. */
     cliOverlayApplied: boolean;
   };
 }
@@ -314,16 +317,11 @@ function inferExtruderCount(flat: Record<string, unknown>): number {
 }
 
 /**
- * Bambu ships `BBL/cli_config.json` with per-printer overlays containing
- * machine_limits keys (cli_safe_acceleration_*, cli_safe_jerk_*,
- * cli_safe_speed_*). Without these the slicer can emit movements faster
- * than the printer's safe envelope -- dangerous on real hardware.
- *
- * The overlay keys are scoped under printer.<printer_name>.machine_limits.
- * We look up by the leaf machine's `printer_model` or `name` and merge
- * those keys into the flattened machine profile.
- *
- * Returns true if an overlay was found and applied, false otherwise.
+ * Validate the selected model's CLI config before making a bundled profile
+ * into a User profile. A1-family models require machine_limits overrides;
+ * other official models (including P1S and H2D) intentionally declare only
+ * downward_check. Missing config cannot tell us whether limits are required.
+ * Returns whether limits were applied, not whether validation succeeded.
  */
 async function applyCliOverlay(
   flat: Record<string, unknown>,
@@ -331,47 +329,80 @@ async function applyCliOverlay(
   vendor: string
 ): Promise<boolean> {
   const cliConfigPath = path.join(profilesRoot, vendor, "cli_config.json");
+  const fail = (reason: string): never => {
+    throw new Error(
+      `Cannot prepare machine profile "${String(flat["name"])}" ` +
+      `(model "${String(flat["printer_model"] ?? stripNozzleSuffix(String(flat["name"])))}"): ` +
+      `${cliConfigPath}: ${reason}. Check your BambuStudio installation or BAMBU_PROFILES_ROOT.`
+    );
+  };
   let raw: string;
   try {
     raw = await fs.readFile(cliConfigPath, "utf8");
   } catch {
-    return false;
+    return fail("required CLI configuration is missing or unreadable");
   }
-  let cliConfig: Record<string, unknown>;
+  let cliConfig: unknown;
   try {
-    cliConfig = JSON.parse(raw) as Record<string, unknown>;
+    cliConfig = JSON.parse(raw);
   } catch {
-    return false;
+    return fail("invalid JSON in required CLI configuration");
   }
-
+  if (!isRecord(cliConfig)) return fail("expected a CLI configuration object");
   const printerSection = cliConfig["printer"];
-  if (!printerSection || typeof printerSection !== "object") return false;
+  if (!isRecord(printerSection)) return fail("expected a printer configuration object");
 
   // Match key: cli_config.json keys are bare printer names like
-  // "Bambu Lab H2D" / "Bambu Lab A1". Try, in order: explicit printer_model,
-  // printer_settings_id with the " 0.4 nozzle" suffix stripped, raw name
-  // with that suffix stripped, raw name as-is.
-  const candidates = [
-    flat["printer_model"],
-    typeof flat["printer_settings_id"] === "string"
-      ? stripNozzleSuffix(flat["printer_settings_id"])
-      : undefined,
-    typeof flat["name"] === "string" ? stripNozzleSuffix(flat["name"]) : undefined,
-    flat["name"],
-  ].filter((v): v is string => typeof v === "string" && v.length > 0);
+  // "Bambu Lab H2D" / "Bambu Lab A1". If no model is provided, try preset
+  // identity with the nozzle suffix stripped, then the name as-is.
+  // An explicit model is authoritative; do not silently use another model's
+  // limits because a stale preset name happens to match.
+  const candidates = typeof flat["printer_model"] === "string" && flat["printer_model"].trim()
+    ? [flat["printer_model"]]
+    : [
+      typeof flat["printer_settings_id"] === "string"
+        ? stripNozzleSuffix(flat["printer_settings_id"])
+        : undefined,
+      typeof flat["name"] === "string" ? stripNozzleSuffix(flat["name"]) : undefined,
+      flat["name"],
+    ].filter((v): v is string => typeof v === "string" && v.length > 0);
 
-  for (const key of candidates) {
-    const block = (printerSection as Record<string, unknown>)[key];
-    if (!block || typeof block !== "object") continue;
-    const mlimits = (block as Record<string, unknown>)["machine_limits"];
-    if (!mlimits || typeof mlimits !== "object") continue;
-    // Merge machine_limits into the flat profile. These are CLI-only safety
-    // values; they should never be overridden by the leaf.
-    Object.assign(flat, mlimits as Record<string, unknown>);
-    return true;
+  const model = candidates.find(key => Object.prototype.hasOwnProperty.call(printerSection, key));
+  if (!model) return fail(`selected model is absent (looked for ${candidates.join(", ")})`);
+  const block = printerSection[model];
+  if (!isRecord(block)) return fail(`printer.${model} must be an object`);
+
+  const downward = block["downward_check"];
+  if (Object.prototype.hasOwnProperty.call(block, "downward_check") && (
+    !isRecord(downward) || Object.keys(downward).length === 0 ||
+    Object.entries(downward).some(([name, values]) => !name.trim() || !Array.isArray(values) ||
+      values.some(value => typeof value !== "string" || !value.trim()))
+  )) {
+    return fail(`printer.${model}.downward_check must map profile names to arrays of names`);
   }
 
-  return false;
+  if (!Object.prototype.hasOwnProperty.call(block, "machine_limits")) {
+    if (!isRecord(downward)) return fail(`printer.${model} has neither machine_limits nor downward_check`);
+    return false;
+  }
+  const limits = block["machine_limits"];
+  if (!isRecord(limits) || Object.keys(limits).length === 0) {
+    return fail(`printer.${model}.machine_limits must be a nonempty object`);
+  }
+  const limitKey = /^cli_safe_(?:acceleration_(?:e|extruding|retracting|travel|x|y|z)|(?:jerk|speed)_(?:e|x|y|z))$/;
+  for (const [key, value] of Object.entries(limits)) {
+    if (!limitKey.test(key) || typeof value !== "string" ||
+      value.split(",").some(part => !part.trim() || !Number.isFinite(Number(part)) || Number(part) < 0)) {
+      return fail(`printer.${model}.machine_limits contains an invalid limit "${key}"`);
+    }
+  }
+  // CLI safety values override even explicit values in the selected leaf.
+  Object.assign(flat, limits);
+  return true;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 /**
@@ -540,7 +571,16 @@ export async function flattenForCli(opts: FlattenOptions): Promise<FlattenedProf
   // CLI-specific post-processing on machine profile only.
   deriveNozzleVolumeType(machineFlat, opts.nozzleVolumeType);
   applyMachineModelBedMetadata(machineFlat, index);
-  const cliOverlayApplied = await applyCliOverlay(machineFlat, opts.profilesRoot, vendor);
+  // A standalone custom machine can accompany process/filament profiles that
+  // need BBL resolution; do not impose bundled model config on that machine.
+  const sourceMachine = opts.sourceProfiles?.machine;
+  const standaloneMachine = sourceMachine && String(sourceMachine.from).toLowerCase() !== "system" &&
+    !(typeof sourceMachine.inherits === "string" && sourceMachine.inherits.length > 0) &&
+    (sourceMachine.include === undefined || sourceMachine.include === null);
+  const cliConfigValidated = !standaloneMachine;
+  const cliOverlayApplied = cliConfigValidated
+    ? await applyCliOverlay(machineFlat, opts.profilesRoot, vendor)
+    : false;
 
   // Normalize each flattened profile for CLI consumption.
   normalizeForCli(machineFlat, "machine", opts.machineLeaf);
@@ -577,6 +617,7 @@ export async function flattenForCli(opts: FlattenOptions): Promise<FlattenedProf
       machineLeafName: opts.machineLeaf,
       processLeafName: opts.processLeaf,
       filamentLeafNames: opts.filamentLeaves,
+      cliConfigValidated,
       cliOverlayApplied,
     },
   };

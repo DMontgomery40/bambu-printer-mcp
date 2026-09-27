@@ -22,7 +22,15 @@ async function makeSyntheticTree() {
   for (const sub of ["machine", "process", "filament"]) {
     await fs.mkdir(path.join(bbl, sub), { recursive: true });
   }
+  await writeCliConfig(bbl);
   return { root, bbl };
+}
+
+async function writeCliConfig(bbl) {
+  await fs.writeFile(path.join(bbl, "cli_config.json"), JSON.stringify({ printer: {
+    "Bambu Lab TEST": { machine_limits: { cli_safe_acceleration_x: "6000,6000" } },
+    "Bambu Lab TESTDUAL": { machine_limits: { cli_safe_acceleration_x: "6000,6000" } },
+  } }));
 }
 
 async function writeProfile(dir, kind, data) {
@@ -100,6 +108,7 @@ test("STLManipulator flattening uses the active slicer_path profile root", async
   for (const sub of ["machine", "process", "filament"]) {
     await fs.mkdir(path.join(activeBbl, sub), { recursive: true });
   }
+  await writeCliConfig(activeBbl);
   await fs.mkdir(activeBin, { recursive: true });
 
   await writeProfile(activeBbl, "machine", {
