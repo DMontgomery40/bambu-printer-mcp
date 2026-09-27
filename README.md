@@ -830,7 +830,7 @@ The primary tool for starting a Bambu print. **Recommended input: a pre-sliced `
 }
 ```
 
-`bambu_model` is **required** -- it ensures the slicer generates G-code for the correct printer. Using the wrong model can cause the bed to crash into the nozzle. If `bambu_model` is not provided in the tool call and `BAMBU_MODEL` is not set in the environment, the server will ask you interactively via MCP elicitation (if your client supports it) or return a clear error.
+`bambu_model` is **required** for model-specific routing and preset selection. It does not by itself validate the G-code or guarantee matching output from the FULU/Orca CLI; use GUI-exported sliced projects for those slicers while the machine-preset gate is missing. Using the wrong model can damage hardware. If `bambu_model` is not provided in the tool call and `BAMBU_MODEL` is not set in the environment, the server will ask you interactively via MCP elicitation (if your client supports it) or return a clear error.
 
 `bed_type` defaults to `textured_plate` if omitted. `ams_slots` is the preferred override input; `ams_mapping` remains the raw escape hatch. On AMS-equipped H2 printers, `use_ams: false` does not suppress mapping lookup if the sliced file declares filaments. If no mapping is provided for an H2 pre-sliced job with declared filaments, the server fails before sending; pass explicit `ams_slots`, raw `ams_mapping`, or `auto_match_ams: true`.
 
@@ -1193,7 +1193,7 @@ After connecting the MCP server in Claude Desktop or Claude Code, you can ask Cl
 
 Understanding these constraints will help you avoid frustrating errors and set appropriate expectations.
 
-1. **Printable 3MF required for print_3mf.** The `print_3mf` tool expects a sliced 3MF containing at least one `Metadata/plate_<n>.gcode` entry. If you pass an unsliced 3MF (one exported from a CAD tool without slicing), the server will attempt to auto-slice it using the configured slicer — any inspection or slicing failure stops before upload. For a previewable workflow, pre-slice in FULU OrcaSlicer-bambulab, OrcaSlicer, or Bambu Studio and pass the resulting `.gcode.3mf`. See [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md) for the full procedure.
+1. **Printable 3MF required for print_3mf.** The `print_3mf` tool expects a sliced 3MF containing at least one `Metadata/plate_<n>.gcode` entry. If you pass an unsliced 3MF (one exported from a CAD tool without slicing), the server attempts auto-slicing. Use the validated BambuStudio CLI path for that; FULU/Orca users must supply GUI-exported sliced files while their CLI preset gate is missing — any inspection or slicing failure stops before upload. For a previewable workflow, pre-slice in FULU OrcaSlicer-bambulab, OrcaSlicer, or Bambu Studio and pass the resulting `.gcode.3mf`. See [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md) for the full procedure.
 
 2. **Layer height, temperature, and slicer settings are baked in.** The `project_file` MQTT command tells the printer which plate to run. It does not support overriding layer height, temperature targets, infill percentage, or other slicing parameters at print time. These must be set in your slicer before generating the 3MF.
 

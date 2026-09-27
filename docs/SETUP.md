@@ -102,7 +102,7 @@ BLENDER_MCP_TIMEOUT_MS=120000
 | `PRINTER_HOST` | `localhost` | Direct LAN | IP address of the Bambu printer. Alias: `BAMBU_PRINTER_HOST` |
 | `BAMBU_SERIAL` | | Direct LAN | Printer serial number. Alias: `BAMBU_PRINTER_SERIAL` |
 | `BAMBU_TOKEN` | | Direct LAN | LAN access token. Alias: `BAMBU_PRINTER_ACCESS_TOKEN` |
-| `BAMBU_MODEL` | | **Slicing and printing** | Printer model: `p1s`, `p1p`, `p2s`, `x1c`, `x1e`, `a1`, `a1mini`, `h2d`, `h2s`, `h2c`, `x2d`. **Required for safe operation** -- determines the correct G-code generation. X2D supports status and slicing only; direct X2D printing is rejected. Alias: `BAMBU_PRINTER_MODEL`. If omitted and the MCP client supports elicitation, the server will ask you interactively. Use `h2c` for H2C and `x2d` for X2D; do not use `h2d` as a fallback. |
+| `BAMBU_MODEL` | | **Slicing and printing** | Printer model: `p1s`, `p1p`, `p2s`, `x1c`, `x1e`, `a1`, `a1mini`, `h2d`, `h2s`, `h2c`, `x2d`. **Required** for model-specific routing and preset selection; it does not itself validate a pre-sliced file or FULU/Orca CLI output. X2D supports status and slicing only; direct X2D printing is rejected. Alias: `BAMBU_PRINTER_MODEL`. If omitted and the MCP client supports elicitation, the server will ask you interactively. Use `h2c` for H2C and `x2d` for X2D; do not use `h2d` as a fallback. |
 | `BED_TYPE` | `textured_plate` | No | Bed plate type: `textured_plate`, `cool_plate`, `engineering_plate`, `hot_plate`, `supertack_plate` |
 | `NOZZLE_DIAMETER` | `0.4` | No | Nozzle diameter in mm. Used to select the correct BambuStudio machine preset. |
 | `SLICER_TYPE` | `bambustudio` | No | `bambustudio`, `orcaslicer-bambulab` (FULU), `orcaslicer`, `prusaslicer`, `cura`, or `slic3r` |
