@@ -73,7 +73,7 @@ test('manual temperature validation uses machine component limits and finite num
   assert.throws(()=>validateTemperature('nozzle',220,'p1s'),/material/i);assert.equal(validateTemperature('nozzle',0,'p1s'),0);assert.equal(validateTemperature('bed','60','p1s'),60);
 });
 test('H2D vendor startup flags, heater-off targets and unload sentinels remain usable',async t=>{
-  const source=header('H2D','PLA','0.4;0.4')+'M620 M\nM620.10 A0 F74.8347 H0.4 T270 P220 S1\nM620 S0A\nT0\nM621 S0A\nM109 S140 A\nM104 S220 A\nM620 S65535\nT65535\nM621 S65535\nM620 S65279\nT65279\nM621 S65279\nM104 S0 T0\nM104 S0 T1\n';
+  const source=header('H2D','PETG','0.4;0.4')+'M620 M\nM620.10 A0 F74.8347 H0.4 T270 P220 S1\nM620 S0A\nT0\nM621 S0A\nM109 S140 A\nM104 S220 A\nM620 S65535\nT65535\nM621 S65535\nM620 S65279\nT65279\nM621 S65279\nM104 S0 T0\nM104 S0 T1\n';
   const result=await inspect(t,source,{model:'h2d',nozzleDiameters:[0.4]});assert.equal(result.maxNozzleTemperature,270);assert.equal(result.selectsAms,true);
 });
 test('explicit physical heater targets cannot silently select a different filament material',async t=>{
@@ -86,7 +86,7 @@ test('official installed startup and end routines retain parsed static vendor sy
   const base='/Applications/BambuStudio.app/Contents/Resources/profiles/BBL/machine/';
   for(const model of ['P1S','H2D','X1E']) {
     let profile;try {profile=JSON.parse(await fs.readFile(path.join(base,`Bambu Lab ${model} 0.4 nozzle.json`),'utf8'));}catch {t.skip('installed BambuStudio profiles unavailable');return;}
-    const replace=expression=> /(?:extruder|filament_id|first.*filaments)/.test(expression)&&!/(?:temp|speed|diameter)/.test(expression)?'0':/chamber_temperature/.test(expression)?'40':/bed_temperature/.test(expression)?'60':/nozzle_diameter/.test(expression)?'0.4':/nozzle_temperature_range_high/.test(expression)?'270':/temp/.test(expression)?'220':'1';
+    const replace=expression=> /(?:extruder|filament_id|first.*filaments)/.test(expression)&&!/(?:temp|speed|diameter)/.test(expression)?'0':/chamber_temperature/.test(expression)?'40':/bed_temperature/.test(expression)?'60':/nozzle_diameter/.test(expression)?'0.4':/nozzle_temperature_range_high/.test(expression)?'260':/temp/.test(expression)?'220':'1';
     const routine=[profile.machine_start_gcode,profile.machine_end_gcode].filter(Boolean).join('\n').replace(/^[ \t]*\{[\s\S]*?\}[^\n]*$/gm,'').replace(/\{[^{}]*\}/g,replace).replace(/\[[^\[\]]*\]/g,replace);
     await inspect(t,header(model,'PLA',model==='H2D'?'0.4;0.4':'0.4')+routine,{model:model.toLowerCase()});
   }
@@ -309,5 +309,25 @@ test('all literal H2D startup change and end template commands retain numeric fo
     if(!lines.length) continue;
     await assert.doesNotReject(inspect(t,header('H2D','PLA','0.4;0.4')+lines.join('\n'),{model:'h2d'}));
     t.diagnostic(`Parsed ${lines.length} literal H2D startup/change/end lines with safe example substitutions`);
+  }
+});
+
+test('M620 startup setup cannot authorize above-normal PLA heat with dwell repetition or missing cooldown',async t=>{
+  const setup=['M620.1 E F100 T290','M620.10 A0 F74.8347 H0.4 T290 P220 S1'];
+  for(const command of setup) for(const suffix of ['','\nG4 S3600','\n'+command,'\nM104 S220']) {
+    await assert.rejects(inspect(t,header('H2D','PLA','0.4;0.4')+command+suffix+'\n',{model:'h2d'}),/PLA|material|260/i,command+suffix);
+  }
+});
+test('actual H2D startup setup forms preserve declared PLA240 and PETG270 targets without a purge exception',async t=>{
+  const {project}=await h2dGuiData();
+  const pair=project.machine_start_gcode.split('\n').filter(line=>/^M620\.10 /.test(line)).slice(-2);
+  assert.equal(pair.length,2);
+  for(const [material,position,normal] of [['PLA',7,220],['PETG',4,245]]) {
+    assert.equal(project.filament_type[position],material);
+    const target=Number(project.nozzle_temperature_range_high[position]);
+    assert.equal(target,material==='PLA'?240:270);
+    const program=pair.map(line=>line.replace(/\{[^{}]*\}/g,expression=>/nozzle_diameter/.test(expression)?'0.4':/flush_temperatures/.test(expression)?String(target):/nozzle_temperature_initial_layer/.test(expression)?String(normal):'100')).join('\n');
+    const result=await inspect(t,header('H2D',material,'0.4;0.4')+program+'\nM104 S'+normal+'\n',{model:'h2d'});
+    assert.equal(result.maxNozzleTemperature,target);
   }
 });

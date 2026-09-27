@@ -292,9 +292,9 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
       } else if(code==='M620.1' || code==='M620.10') {
         const args=parameters(argumentsText,'E');
         const position=code==='M620.10' && args.get('A')===1 ? pending ?? active : code==='M620.10' && args.get('A')===0 ? active : undefined;
-        const startupSetup=!depositionStarted && (code==='M620.1' ? args.has('E') && args.get('F')!>0 :
-          [0,1].includes(args.get('A')!) && args.get('F')!>0 && [0.2,0.4,0.6,0.8].includes(args.get('H')!) && args.has('P'));
-        for(const key of code==='M620.10'?['T','P']:['T']) if(args.has(key)) heat('nozzle',args.get(key)!,position,false,startupSetup && key==='T');
+        // Setup commands are thermal-affecting too. Startup placement or a P
+        // target cannot establish a bounded purge, so no elevated PLA allowance.
+        for(const key of code==='M620.10'?['T','P']:['T']) if(args.has(key)) heat('nozzle',args.get(key)!,position);
       } else if(code==='G150') {
         // Official H2D nozzle-wipe routine carries the temperature in T.
         const args=parameters(argumentsText);

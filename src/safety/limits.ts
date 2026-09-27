@@ -41,7 +41,7 @@ export function normalizeModel(value: unknown): string | undefined {
 /** Policy ceilings, NOT manufacturer-recommended print temperatures or decomposition
  * thresholds. The normal PLA ceiling of 260 C includes Bambu PLA Aero's bundled
  * range_high=260 (other bundled PLA ranges are lower). A separate 290 C startup
- * allowance is only used by the inspector for bounded verified vendor purge forms;
+ * allowance is only used by the inspector for the exact one-shot X1E common flush;
  * it must never authorize manual heating or sustained deposition at that target.
  * File/profile nozzle_temperature_range_high and RFID limits cannot raise this policy.
  */

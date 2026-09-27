@@ -15,7 +15,7 @@
 - Reject ambiguous ZIP entries and bind the dispatched plate and checksum to inspected bytes; bound archive inspection and check every printable plate on upload-only requests, refusing noncanonical plate names and unrecognized G-code entries.
 - Preserve existing remote files with unique upload names and destination collision checks; verify uploaded job model/nozzles against fresh printer reports.
 - Add human print/heating preflight through MCP elicitation, mandatory finished-bed clearance, and confirmed hardware-error clearing with acknowledgment on the next print.
-- Validate H2D probing, wipe, and tool-change thermal commands and normalize GUI nozzle-variant tables. Apply a 260°C normal PLA ceiling with narrowly bounded vendor startup-purge exceptions; refuse explicit non-FFF jobs and recognized laser-enabling commands.
+- Validate H2D probing, wipe, and tool-change thermal commands and normalize GUI nozzle-variant tables. Apply a 260°C normal PLA ceiling with one narrowly bounded X1E startup-purge sequence; refuse explicit non-FFF jobs and recognized laser-enabling commands.
 - Apply the checks to the optional BambuNetwork print wrapper and restrict raw bridge calls to named read-only probes. Require LAN telemetry even when the bridge submits through a cloud session.
 - Require a single external-spool plate for legacy `.gcode.3mf` dispatch; use a `.3mf` project export when verified AMS mappings or plate selection are needed.
 - Credit Boardy (@boardyai) for raising the nozzle-verification question and David Montgomery for the temperature and hardware-safety reports. Validation uses mocked printer boundaries; physical printer acceptance remains a separate check.
