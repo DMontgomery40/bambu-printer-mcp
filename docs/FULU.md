@@ -63,7 +63,7 @@ export BAMBU_MODEL=p1s                # your exact printer model
 export NOZZLE_DIAMETER=0.4           # your installed nozzle diameter
 ```
 
-`BAMBU_PROFILES_ROOT` is the directory containing `BBL`, including the machine, process, filament, and `cli_config.json` files from that same slicer installation. It is optional when the tree is discoverable beside the executable. For AppImage or custom installations, point it to the matching extracted resources. The server does not borrow a missing machine from another installation.
+`BAMBU_PROFILES_ROOT` is the directory containing `BBL`, including the machine, process, filament, and `cli_config.json` files from that same slicer installation. It is optional when the tree is discoverable beside the executable. For AppImage or custom installations, point it to the matching extracted resources. The server does not borrow a missing machine from another installation. Configured user-profile directories remain available for custom process and filament dependencies, but cannot supply machine ancestors.
 
 When multiple Orca/OrcaStudio variants share one Linux install prefix, set `BAMBU_PROFILES_ROOT` explicitly: automatic discovery does not distinguish those co-installed variants.
 

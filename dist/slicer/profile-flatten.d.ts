@@ -49,6 +49,8 @@ export interface FlattenOptions {
     filamentLeaves: string[];
     /** Absolute path to `.../Resources/profiles`. */
     profilesRoot: string;
+    /** Configured BBL directories for custom process/filament dependencies only. */
+    userProfileRoots?: string[];
     /** Where to write flattened temp files. */
     tempDir: string;
     /** Vendor subdir under profilesRoot. Currently only "BBL" supported. */
@@ -82,6 +84,8 @@ export interface FlattenOptions {
         wipe_tower_y?: unknown;
     };
 }
+/** Resolve bundled machine defaults before choosing process and filament leaves. */
+export declare function resolveBblMachineProfile(profilesRoot: string, machineLeaf: string): Promise<Record<string, unknown>>;
 /** Best-effort extruder count for fallback nozzle_volume_type sizing. */
 /** BambuStudio's built-in filament_colour default. */
 export declare const DEFAULT_FILAMENT_COLOUR = "#00AE42";

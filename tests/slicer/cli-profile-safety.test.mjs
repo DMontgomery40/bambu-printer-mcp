@@ -87,6 +87,56 @@ for (const slicerType of ['bambustudio', 'orcaslicer', 'orcaslicer-bambulab']) {
     await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
   });
 
+  test(`${slicerType} loads inherited default process and filament profiles`, async t => {
+    const f = await fixture(t, slicerType);
+    // FULU's P1S leaf inherits these selections from the machine family.
+    await f.write('machine', { name: 'SAFETY base', nozzle_diameter: ['0.4'],
+      default_print_profile: 'SAFETY process', default_filament_profile: ['SAFETY filament'] });
+    await f.write('machine', { name: 'Bambu Lab SAFETY 0.4 nozzle', inherits: 'SAFETY base', include: ['SAFETY start'] });
+    await f.slice();
+    const args = await f.args();
+    const processFile = args[args.indexOf('--load-settings') + 1].split(';')[1];
+    assert.equal(JSON.parse(await fs.readFile(processFile, 'utf8')).layer_height, '0.2');
+    assert.notEqual(args.indexOf('--load-filaments'), -1, 'inherited defaults must be supplied explicitly');
+    assert.deepEqual(JSON.parse(await fs.readFile((await f.loaded())[0], 'utf8')).nozzle_temperature, ['220']);
+  });
+
+  test(`${slicerType} preserves custom dependencies from configured user profile directories`, async t => {
+    const f = await fixture(t, slicerType);
+    const user = path.join(f.root, 'user-BBL');
+    for (const kind of ['process', 'filament']) await fs.mkdir(path.join(user, kind), { recursive: true });
+    await fs.writeFile(path.join(user, 'process', 'My process base.json'), JSON.stringify({
+      name: 'My process base', inherits: 'SAFETY process', layer_height: '0.12', wall_loops: '5',
+    }));
+    await fs.writeFile(path.join(user, 'filament', 'My PETG.json'), JSON.stringify({
+      name: 'My PETG', inherits: 'SAFETY filament', filament_type: ['PETG'], nozzle_temperature: ['250'], filament_id: 'my-petg',
+    }));
+    process.env.BAMBU_SLICER_PROFILE_DIRS = user;
+    const custom = path.join(f.root, 'custom.json');
+    for (const selection of [{ default_filament_profile: ['My PETG'] }, { filament_ids: ['my-petg'] }]) {
+      await fs.writeFile(custom, JSON.stringify({ name: 'My custom', inherits: 'My process base', wall_loops: '7', ...selection }));
+      await f.slice({}, custom);
+      const args = await f.args();
+      const [machineFile, processFile] = args[args.indexOf('--load-settings') + 1].split(';');
+      assert.equal(JSON.parse(await fs.readFile(machineFile, 'utf8')).machine_start_gcode, 'M620 S0A ; correct machine');
+      const config = JSON.parse(await fs.readFile(processFile, 'utf8'));
+      assert.equal(config.layer_height, '0.12');
+      assert.equal(config.wall_loops, '7');
+      assert.deepEqual(JSON.parse(await fs.readFile((await f.loaded())[0], 'utf8')).nozzle_temperature, ['250']);
+    }
+  });
+
+  test(`${slicerType} cannot resolve missing machine ancestors from user process profiles`, async t => {
+    const f = await fixture(t, slicerType);
+    const user = path.join(f.root, 'user-BBL');
+    await fs.mkdir(path.join(user, 'process'), { recursive: true });
+    await fs.copyFile(path.join(f.profiles, 'BBL', 'machine', 'SAFETY base.json'), path.join(user, 'process', 'SAFETY base.json'));
+    await fs.unlink(path.join(f.profiles, 'BBL', 'machine', 'SAFETY base.json'));
+    process.env.BAMBU_SLICER_PROFILE_DIRS = user;
+    await assert.rejects(f.slice(), /SAFETY base.*not found/);
+    await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+  });
+
   for (const invalid of ['null', '{broken', JSON.stringify({ name: 'Bambu Lab OTHER 0.4 nozzle' })]) {
     test(`${slicerType} rejects invalid machine contents: ${invalid}`, async t => {
       const f = await fixture(t, slicerType);
