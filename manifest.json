@@ -67,7 +67,7 @@
         "bambu_model": {
             "type": "string",
             "title": "Printer model",
-            "description": "Required for safe G-code generation. One of: p1s, p1p, p2s, x1c, x1e, a1, a1mini, h2d, h2s, h2c.",
+            "description": "Required for safe G-code generation. One of: p1s, p1p, p2s, x1c, x1e, a1, a1mini, h2d, h2s, h2c, x2d.",
             "required": true
         },
         "blender_mcp_command": {

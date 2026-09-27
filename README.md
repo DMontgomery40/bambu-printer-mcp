@@ -106,7 +106,7 @@ This fork adds a substantial set of printer control tools beyond the upstream `m
 - Get detailed printer status: temperatures (nozzle, bed, chamber), print progress, current layer, time remaining, and live AMS slot data
 - Query live AMS inventory with resolved Bambu/Orca filament profile paths via `get_printer_filaments`. Includes per-tray display names, match confidence (`high`/`medium`/`low`/`none`), resolution tier (`exact-model-nozzle`/`model`/`generic`/`unresolved`), and a summary with recommended auto-slice filament. Retries automatically when AMS data hasn't arrived yet (common on first MQTT push from idle printers).
 - List, upload, and delete files on the printer's SD card via FTPS
-- Capture a JPEG snapshot from the chamber camera. Supports A1, A1 mini, P1S, P1P (TCP-on-6000), and X1, X1C, X1E, P2S, H2, H2S, H2D, H2C, H2D Pro (RTSP via ffmpeg). Requires ffmpeg in PATH for the RTSP path.
+- Capture a JPEG snapshot from the chamber camera. Supports A1, A1 mini, P1S, P1P (TCP-on-6000), and X1, X1C, X1E, P2S, H2, H2S, H2D, H2C, H2D Pro, X2D (RTSP via ffmpeg). Requires ffmpeg in PATH for the RTSP path.
 - Upload and print pre-sliced `.gcode.3mf` files with full plate selection and calibration flag control (recommended path — see [docs/SLICING.md](./docs/SLICING.md))
 - Optional single-color auto-slice path via BambuStudio CLI. BBL profile inheritance and include templates resolve automatically before slicing; missing dependencies stop the slice. Standalone custom configurations remain supported. H2C requires a compatible installed Bambu Studio profile tree and `BAMBU_MODEL=h2c`. The previously documented H2D multi-color CLI limitation remains; use a GUI-sliced `.gcode.3mf` for that workflow. See [docs/SLICING.md](./docs/SLICING.md).
 - Parse AMS mapping from the 3MF's embedded slicer metadata (`Metadata/plate_<n>.json` + gcode filament header) and send it correctly formatted per the OpenBambuAPI spec, with correct H2S/H2D/H2C `ams_mapping2` parallel array format
@@ -186,7 +186,7 @@ BAMBU_TOKEN=your_access_token     # LAN access token from printer touchscreen
 # BAMBU_PRINTER_HOST / BAMBU_PRINTER_SERIAL / BAMBU_PRINTER_ACCESS_TOKEN
 
 # --- Printer model (CRITICAL for safe operation) ---
-BAMBU_MODEL=p1s                   # Your printer model: p1s, p1p, p2s, x1c, x1e, a1, a1mini, h2d, h2s, h2c
+BAMBU_MODEL=p1s                   # Your printer model: p1s, p1p, p2s, x1c, x1e, a1, a1mini, h2d, h2s, h2c, x2d
 # Alias also accepted: BAMBU_PRINTER_MODEL
 BED_TYPE=textured_plate           # Bed plate type: textured_plate, cool_plate, engineering_plate, hot_plate, supertack_plate
 NOZZLE_DIAMETER=0.4               # Nozzle diameter in mm (default: 0.4)
@@ -227,7 +227,7 @@ BLENDER_MCP_TIMEOUT_MS=120000
 | `PRINTER_HOST` | `localhost` | Yes | IP address of the Bambu printer. Alias: `BAMBU_PRINTER_HOST` |
 | `BAMBU_SERIAL` | | Yes | Printer serial number. Alias: `BAMBU_PRINTER_SERIAL` |
 | `BAMBU_TOKEN` | | Yes | LAN access token. Alias: `BAMBU_PRINTER_ACCESS_TOKEN` |
-| `BAMBU_MODEL` | | **Yes** | Printer model: `p1s`, `p1p`, `p2s`, `x1c`, `x1e`, `a1`, `a1mini`, `h2d`, `h2s`, `h2c`. **Required for safe operation** -- determines the correct G-code generation. Alias: `BAMBU_PRINTER_MODEL`. If omitted and the MCP client supports elicitation, the server will ask you interactively. Use `h2c` for H2C; do not use `h2d` as a fallback. |
+| `BAMBU_MODEL` | | **Yes** | Printer model: `p1s`, `p1p`, `p2s`, `x1c`, `x1e`, `a1`, `a1mini`, `h2d`, `h2s`, `h2c`, `x2d`. **Required for safe operation** -- determines the correct G-code generation. Alias: `BAMBU_PRINTER_MODEL`. If omitted and the MCP client supports elicitation, the server will ask you interactively. Use `h2c` for H2C and `x2d` for X2D; do not use `h2d` as a fallback. |
 | `BED_TYPE` | `textured_plate` | No | Bed plate type: `textured_plate`, `cool_plate`, `engineering_plate`, `hot_plate`, `supertack_plate` |
 | `NOZZLE_DIAMETER` | `0.4` | No | Nozzle diameter in mm. Used to select the correct BambuStudio machine preset. |
 | `SLICER_TYPE` | `bambustudio` | No | Slicer to use for slicing operations |

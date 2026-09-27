@@ -42,7 +42,7 @@ function parseArgs() {
     else if (a === "--keep-temp") out.keepTemp = true;
     else if (a === "-h" || a === "--help") {
       console.log(
-        "Usage: node scripts/test-cli-slice.mjs --model <h2s|h2d|h2c|x1c|p1s> [--filament NAME] [--stl PATH] [--keep-temp]"
+        "Usage: node scripts/test-cli-slice.mjs --model <h2s|h2d|h2c|x2d|x1c|p1s> [--filament NAME] [--stl PATH] [--keep-temp]"
       );
       process.exit(0);
     } else {
@@ -70,6 +70,11 @@ const MODEL_DEFAULTS = {
     machineLeaf: "Bambu Lab H2C 0.4 nozzle",
     processLeaf: "0.20mm Standard @BBL H2C",
     filamentLeaf: "Bambu PLA Basic @BBL H2C",
+  },
+  x2d: {
+    machineLeaf: "Bambu Lab X2D 0.4 nozzle",
+    processLeaf: "0.20mm Standard @BBL X2D",
+    filamentLeaf: "Bambu PLA Basic @BBL X2D",
   },
   x1c: {
     machineLeaf: "Bambu Lab X1 Carbon 0.4 nozzle",

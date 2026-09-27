@@ -23,7 +23,7 @@ const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, "..");
 const SERVER_ENTRY = path.join(REPO_ROOT, "dist", "index.js");
 const SAMPLE_STL = path.join(REPO_ROOT, "test", "sample_cube.stl");
-const EXPECTED_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s", "h2c"];
+const EXPECTED_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s", "h2c", "x2d"];
 
 async function writeSliced3mfFixture({
   name = "h2-project-filament",
@@ -561,7 +561,7 @@ test("H2 family print_3mf rejects pre-sliced filament jobs without explicit AMS 
   t.after(async () => { await closeTransport(transport); });
 
   await client.connect(transport);
-  for (const bambuModel of ["h2s", "h2d", "h2c"]) {
+  for (const bambuModel of ["h2s", "h2d", "h2c", "x2d"]) {
     const result = await client.callTool({
       name: "print_3mf",
       arguments: {
@@ -621,7 +621,8 @@ test("H2 ams_slots expand into project-level ams_mapping and ams_mapping2", asyn
   }
 });
 
-test("H2C model routes project files through the H2 print path independent of serial prefix", async () => {
+for (const bambuModel of ["h2c", "x2d"]) {
+test(`${bambuModel.toUpperCase()} model routes project files through the H2 print path independent of serial prefix`, async () => {
   const threeMfPath = await writeSliced3mfFixture({ plateFilamentIds: [1] });
   const bambu = new BambuImplementation();
   let uploadedPath = null;
@@ -638,9 +639,9 @@ test("H2C model routes project files through the H2 print path independent of se
 
   try {
     const result = await bambu.print3mf("127.0.0.1", "01P00TEST0000000", "TEST_TOKEN", {
-      projectName: "h2c-cube",
+      projectName: `${bambuModel}-cube`,
       filePath: threeMfPath,
-      bambuModel: "h2c",
+      bambuModel,
       plateIndex: 0,
       useAMS: true,
       amsSlots: [1],
@@ -649,7 +650,7 @@ test("H2C model routes project files through the H2 print path independent of se
 
     assert.equal(result.status, "success");
     assert.equal(uploadedPath, `/${path.basename(threeMfPath)}`);
-    assert.ok(publishedPayload?.print, "H2C should publish a project_file payload");
+    assert.ok(publishedPayload?.print, `${bambuModel} should publish a project_file payload`);
     assert.equal(publishedPayload.print.command, "project_file");
     assert.match(publishedPayload.print.url, /^ftp:\/\/\//);
     assert.deepEqual(publishedPayload.print.ams_mapping, [-1, 1, -1, -1]);
@@ -663,6 +664,7 @@ test("H2C model routes project files through the H2 print path independent of se
     fs.rmSync(threeMfPath, { force: true });
   }
 });
+}
 
 async function captureP2SPrint({ serial, bambuModel }) {
   const threeMfPath = await writeSliced3mfFixture({ name: "p2s-cube", plateFilamentIds: [1] });

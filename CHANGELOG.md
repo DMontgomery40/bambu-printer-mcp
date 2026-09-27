@@ -6,6 +6,7 @@
 - Consolidate shared agent rules for local and GitHub review, retain public documentation, and keep scratch plans, progress logs, and handoff notes out of Git.
 
 ### Added
+- Accept `x2d` as a printer model. X2D uses the H2-generation print route (FTP-root upload, `project_file`, `ams_mapping2`), RTSP camera snapshots, and the bundled `Bambu Lab X2D <nozzle> nozzle` BambuStudio preset. Printer-reported model ID `N6` and serial prefix `20P` resolve to X2D (observed via SSDP on X2D firmware 01.02.00.00). Covered by mocked routing and model-validation tests only; not yet verified against physical X2D hardware.
 - Connect to standard Blender MCP servers with tool discovery, schema-checked calls, timeouts/cancellation, and verified STL import/edit/export. Keep the custom-executable bridge available with explicit verification status.
 - Package a Claude Desktop extension with prompted printer settings, safe staging, and synchronized release versions ([#11](https://github.com/DMontgomery40/bambu-printer-mcp/pull/11)).
 

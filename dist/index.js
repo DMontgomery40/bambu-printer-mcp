@@ -44,8 +44,10 @@ const DEFAULT_BAMBU_MODEL = process.env.BAMBU_PRINTER_MODEL?.trim().toLowerCase(
     "";
 const DEFAULT_BED_TYPE = process.env.BED_TYPE?.trim().toLowerCase() || "textured_plate";
 const DEFAULT_NOZZLE_DIAMETER = process.env.NOZZLE_DIAMETER?.trim() || "0.4";
-const VALID_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s", "h2c"];
-const H2_BAMBU_MODELS = new Set(["h2d", "h2s", "h2c"]);
+const VALID_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s", "h2c", "x2d"];
+// Models that use the H2-generation print route (project_file + ams_mapping2).
+// X2D is a dual-nozzle H2D-class machine on the same firmware generation.
+const H2_BAMBU_MODELS = new Set(["h2d", "h2s", "h2c", "x2d"]);
 const VALID_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"];
 const VALID_BAMBUSTUDIO_CLI_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"];
 // Map model IDs to BambuStudio --load-machine preset names
@@ -60,6 +62,7 @@ const BAMBU_MODEL_PRESETS = {
     h2d: (n) => `Bambu Lab H2D ${n} nozzle`,
     h2s: (n) => `Bambu Lab H2S ${n} nozzle`,
     h2c: (n) => `Bambu Lab H2C ${n} nozzle`,
+    x2d: (n) => `Bambu Lab X2D ${n} nozzle`,
 };
 const FILAMENT_PROFILE_DIR = "/Applications/BambuStudio.app/Contents/Resources/profiles/BBL/filament";
 const FILAMENT_MODEL_CODES = {
@@ -73,6 +76,7 @@ const FILAMENT_MODEL_CODES = {
     h2d: "H2D",
     h2s: "H2S",
     h2c: "H2C",
+    x2d: "X2D",
 };
 const COLLAR_CHARM_POLICY = getCollarCharmRolePolicy();
 let filamentProfileIndexCache = null;
@@ -822,6 +826,7 @@ class BambuPrinterMCPServer {
                                 { const: "h2d", title: "H2D" },
                                 { const: "h2s", title: "H2S" },
                                 { const: "h2c", title: "H2C" },
+                                { const: "x2d", title: "X2D" },
                             ],
                         },
                     },
@@ -2107,7 +2112,7 @@ class BambuPrinterMCPServer {
                                 bambu_model: {
                                     type: "string",
                                     enum: [...VALID_BAMBU_MODELS],
-                                    description: "REQUIRED: Bambu Lab printer model. H2D, H2S, and H2C are the primary intended paths."
+                                    description: "REQUIRED: Bambu Lab printer model. H2D, H2S, H2C, and X2D are the primary intended paths."
                                 },
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
