@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## [1.1.12] – 2026-09-27
+
+### Documentation
+- Publish a searchable documentation site on GitHub Pages at https://dmontgomery40.github.io/bambu-printer-mcp/. Pages are generated from the README, setup, slicing, and FULU guides, changelog, and contributor credits at build time, so the repository Markdown remains the single source.
+- Keep README deep links working on the site with GitHub-compatible heading anchors. The site build fails on broken links, unknown anchors, or README content that no page publishes; pull requests build it without deploying.
+- Add a large-image social card and per-page link-preview titles, descriptions, and canonical URLs for the site.
+- Replace the outdated example commands with outcome-first requests: adapting a MakerWorld model, printing from a photo, and checking on a print by messaging an always-on agent from anywhere. Clarify which abilities come from the agent and which from this server.
+
 ## [1.1.11] – 2026-09-27
 
 ### Fixed
@@ -120,3 +128,4 @@ Initial public release with core print, upload, slice, and status tooling.
 [1.1.9]: https://github.com/DMontgomery40/bambu-printer-mcp/releases/tag/v1.1.9
 [1.1.8]: https://github.com/DMontgomery40/bambu-printer-mcp/releases/tag/v1.1.8
 [1.1.10]: https://github.com/DMontgomery40/bambu-printer-mcp/releases/tag/v1.1.10
+[1.1.12]: https://github.com/DMontgomery40/bambu-printer-mcp/releases/tag/v1.1.12

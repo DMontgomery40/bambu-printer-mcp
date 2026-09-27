@@ -23,6 +23,14 @@ result.json
 # Packed Claude Desktop extension bundle
 *.mcpb
 
+# Documentation site output; pages are generated from README.md and docs/
+/site/content/
+/site/dist/
+/site/.vitepress/cache/
+/site/.vitepress/dist/
+/site/.vitepress/.temp/
+/site/.vitepress/generated/
+
 # Agent scratch notes and handoffs are local; keep shared rules/public docs.
 *.md
 !/AGENTS.md
