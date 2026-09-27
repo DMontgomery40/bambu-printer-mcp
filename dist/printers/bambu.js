@@ -466,7 +466,8 @@ export class BambuImplementation {
         let remoteFileName = path.basename(options.filePath);
         remoteFileName = remoteFileName.replace(/\.gcode\.3mf\.gcode\.3mf$/i, ".gcode.3mf");
         // H2-series printers land files at the FTP root and reference them via ftp:///<name>.
-        // P1/A1/X1 use /cache/<name> and file:///sdcard/cache/<name>.
+        // Full-size A1 uses SD root/project_file (reported on firmware 01.08.01.00).
+        // P1/X1/A1 mini retain their legacy cache/gcode_file route.
         // P2S keeps the /cache/<name> upload but only accepts the H2-style
         // project_file command, referenced via ftp:///cache/<name> (verified on
         // P2S firmware 01.02.00.00; file:///sdcard/... fails with ERROR STATE).
@@ -474,22 +475,24 @@ export class BambuImplementation {
             serial.startsWith("094") ||
             isH2ModelName(options.bambuModel);
         const isP2S = serial.startsWith("22E") || isP2SModelName(options.bambuModel);
+        const isA1 = String(options.bambuModel ?? "").trim().toLowerCase() === "a1" ||
+            (!options.bambuModel && serial.startsWith("030"));
         const usesH2ProjectFile = isH2 || isP2S;
-        const remoteProjectPath = isH2 ? remoteFileName : `cache/${remoteFileName}`;
-        const remoteUploadPath = isH2 ? `/${remoteFileName}` : `/cache/${remoteFileName}`;
+        const remoteProjectPath = isH2 || isA1 ? remoteFileName : `cache/${remoteFileName}`;
+        const remoteUploadPath = `/${remoteProjectPath}`;
         const projectUrl = usesH2ProjectFile
             ? `ftp:///${remoteProjectPath}`
             : `file:///sdcard/${remoteProjectPath}`;
         // Upload via basic-ftp directly (bypasses bambu-js double-path bug)
         await this.ftpUpload(host, token, options.filePath, remoteUploadPath);
         // Pre-sliced .gcode.3mf files: routing depends on firmware generation.
-        // P1/A1/X1 series: project_file returns 405004002 for .gcode.3mf (firmware
+        // Legacy P1/X1/A1 mini: project_file returns 405004002 for .gcode.3mf (firmware
         // doesn't recognise the container), so use gcode_file instead.
         // H2-series and P2S: gcode_file is not supported (P2S answers 0500-4002
         // "Unsupported file path or name"); project_file works because the
         // firmware can open the zip and find Metadata/plate_<n>.gcode directly.
         if (options.filePath.toLowerCase().endsWith(".gcode.3mf")) {
-            if (!usesH2ProjectFile) {
+            if (!usesH2ProjectFile && !isA1) {
                 const printer = await this.getPrinter(host, serial, token);
                 await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath }));
                 return {
@@ -579,7 +582,7 @@ export class BambuImplementation {
             });
         }
         else {
-            amsMapping = Array.from({ length: 5 }, (_, i) => i < baseMapping.length ? baseMapping[i] : -1);
+            amsMapping = Array.from({ length: Math.max(5, baseMapping.length, projectMetadata.projectFilamentCount) }, (_, i) => i < baseMapping.length ? baseMapping[i] : -1);
             amsMapping2 = [];
         }
         const b = (v) => (v ? 1 : 0);

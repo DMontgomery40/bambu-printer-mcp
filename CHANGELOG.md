@@ -3,6 +3,9 @@
 ## Unreleased
 
 ### Fixed
+- Resolve Bambu profile include templates so CLI slicing retains machine-specific G-code ([#16](https://github.com/DMontgomery40/bambu-printer-mcp/pull/16), reported in [#12](https://github.com/DMontgomery40/bambu-printer-mcp/issues/12)).
+- Use the P2S project-file payload with its cache upload path while retaining legacy P1/X1 routes ([#15](https://github.com/DMontgomery40/bambu-printer-mcp/pull/15)).
+- Start full-size A1 pre-sliced projects from the SD root via `project_file`, preserving other models' routes and all project filament mapping positions ([#14](https://github.com/DMontgomery40/bambu-printer-mcp/pull/14)).
 - Keep H2C/H2D/H2S status connections alive when delayed OTA version messages arrive; recognize H2 serial prefixes, preserve unknown model identities, and accept unexpected status transitions without terminating the MQTT listener ([#7](https://github.com/DMontgomery40/bambu-printer-mcp/issues/7)).
 
 ### Security
