@@ -33,6 +33,10 @@ This file is the repository's shared source of truth for local agents and GitHub
 
 ## Printer and slicer safety
 
+- All print routes must inspect the exact dispatched file snapshot and selected plate, enforce independent model/component and declared-material temperature ceilings, and require fresh observed MQTT identity, nozzle configuration, ready state, and actionable-error checks. Configured serial inference and cached display status are not live safety evidence.
+- Keep complete physical filament mappings and compare available reported materials. Manual non-RFID material declarations remain supported; do not claim they prove physical spool contents or installed nozzle hardware.
+- Remote starts must inspect the actual remote artifact and dispatch an immutable checked copy. Raw bridge methods and option overrides must not bypass the shared gate. Heater-off and stop/cancel controls remain available.
+
 - BAMBU_MODEL (or the explicit tool model) is required for every print operation. Elicit it when missing. Never skip validation: G-code for the wrong model can damage hardware.
 - Preserve model-specific upload/command routes and complete positional AMS mappings. Add regressions for the changed model and unaffected routes, including external-spool use where supported.
 - X2D is recognized for status and slicing with its own installed preset. Direct X2D print paths must reject before slicing, connecting, or uploading: internal eMMC needs a native transport that has not shipped. Do not infer working X2D printing from MQTT status, a successful slice, or mocked H2 routing. The explicitly configured BambuNetwork bridge is a separate transport and is not proof of direct-print support.

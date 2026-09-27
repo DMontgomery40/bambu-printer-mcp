@@ -187,9 +187,9 @@ For a LAN bridge job, use the same tool and explicitly select LAN:
 }
 ```
 
-For the equivalent `print_3mf` calls, add `connection_mode: "bambu_network"`. Its default remains direct LAN; the dedicated bridge tool defaults to `connection_type: "cloud"`. Local bridge methods require the printer IP and access code. Cloud submission requires a device ID and authenticated runtime; `auto_match_ams: true` additionally queries live inventory through **local MQTT**, so it also needs LAN credentials/reachability. For a remote-only job, supply a mapping verified against the loaded materials instead.
+For the equivalent `print_3mf` calls, add `connection_mode: "bambu_network"`. Its default remains direct LAN; the dedicated bridge tool defaults to `connection_type: "cloud"`. Every bridge print requires a reachable printer IP, LAN access code, and matching serial/device ID for fresh local MQTT safety verification, including cloud submission through an authenticated runtime. A cloud-only connection without local safety telemetry cannot authorize a print.
 
-`plate_index` is zero-based in MCP calls and converted to one-based for FULU. `ams_mapping` is positional across project filaments; `[0]` above is only for a one-filament project. For advanced firmware requirements, the dedicated tool exposes `ams_mapping_bridge`, `ams_mapping2`, `ams_mapping_info`, `nozzle_mapping`, and `nozzles_info` as JSON strings. The bridge forwards these; do not assume the direct H2 path's full mapping conversion is applied to every bridge job.
+`plate_index` is zero-based in MCP calls and converted to one-based for FULU. `ams_mapping` is positional across project filaments; `[0]` above is only for a one-filament project. `ams_slots` expands into those project positions before verification. Raw mapping, nozzle, configuration-file and extra-option overrides are refused so they cannot replace the checked job. Use the structured model, nozzle, plate, and AMS arguments. The raw `bambu_network_call` tool permits only named read-only probes.
 
 | `bambu_network_method` | Runtime call | Default/use |
 |---|---|---|

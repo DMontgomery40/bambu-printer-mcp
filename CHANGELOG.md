@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## [1.1.12] – 2026-09-27
+
+### Added
+- Add shared print safety checks for declared model, nozzle, material, selected plate, and every supported heating command in the final printable file.
+- Require fresh MQTT identity, nozzle configuration, ready state, and error checks before upload and dispatch; compare declared material with available mapped-spool reports.
+- Apply independent printer/component and material temperature ceilings, reject nonfinite values before connecting, and require declared material for manual nozzle heating. Keep heater-off commands available.
+- Inspect private file snapshots and use unique remote print names. Download and inspect remote G-code before starting a verified copy.
+- Check the currently loaded material for manual heating and G-code-file dispatch, bind resume to an inspected paused job, and let stop/heater-off requests cancel pending operations before dispatch.
+- Apply the checks to the optional BambuNetwork print wrapper and restrict raw bridge calls to named read-only probes. Require LAN telemetry even when the bridge submits through a cloud session.
+- Require a single external-spool plate for legacy `.gcode.3mf` dispatch; use a `.3mf` project export when verified AMS mappings or plate selection are needed.
+- Credit Boardy (@boardyai) for raising the nozzle-verification question and David Montgomery for the temperature and hardware-safety reports. Validation uses mocked printer boundaries; physical printer acceptance remains a separate check.
+
 ## [1.1.11] – 2026-09-27
 
 ### Fixed

@@ -1,10 +1,15 @@
 import { createHash } from "node:crypto";
+import { readFreshPrinterStatus } from "../safety/printer-state.js";
 import fs from "node:fs/promises";
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { Readable } from "node:stream";
 import JSZip from "jszip";
+import { inspectPrintFile } from "../safety/print-file.js";
+import { normalizeModel, validateTemperature } from "../safety/limits.js";
+import { validatePrinterState, manualHeatingRequirements, type PrinterStateRequirements } from "../safety/printer-state.js";
+import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRemotePath, cancelPendingPrinterOperations } from "../safety/artifact.js";
 import { Client as FTPClient } from "basic-ftp";
 import { BambuPrinter } from "bambu-js";
 import * as mqtt from "mqtt";
@@ -80,6 +85,7 @@ interface BambuPrintOptionsInternal {
   projectName: string;
   filePath: string;
   bambuModel?: string;
+  nozzleDiameters?: number[];
   useAMS?: boolean;
   plateIndex?: number;
   bedType?: string;
@@ -430,6 +436,7 @@ class BambuClientStore {
 
 export class BambuImplementation {
   private printerStore: BambuClientStore;
+  private checkedJobs = new Map<string, { remotePath: string; requirements: PrinterStateRequirements }>();
 
   constructor() {
     this.printerStore = new BambuClientStore();
@@ -437,6 +444,17 @@ export class BambuImplementation {
 
   private async getPrinter(host: string, serial: string, token: string): Promise<BambuClient> {
     return this.printerStore.getPrinter(host, serial, token);
+  }
+
+  private validateLoadedGcodeState(status: any, inspection: Awaited<ReturnType<typeof inspectPrintFile>>): PrinterStateRequirements {
+    const usedMaterials = inspection.usedFilamentPositions.map(position => inspection.materials[position]);
+    if (new Set(usedMaterials).size !== 1) throw new Error("gcode_file printing cannot verify physical changes between different materials. Use a mapped .3mf project.");
+    const loaded = manualHeatingRequirements(status, inspection.model, inspection.nozzleDiameters[0], usedMaterials[0]);
+    const mapping = Array<number>(inspection.materials.length).fill(-1);
+    inspection.usedFilamentPositions.forEach(position => { mapping[position] = loaded.amsMapping?.[0] ?? 254; });
+    const requirements = { ...inspection, useAMS: loaded.useAMS, amsMapping: mapping, usedNozzleIndices: loaded.usedNozzleIndices };
+    validatePrinterState(status, requirements);
+    return requirements;
   }
 
   private async resolveProjectFileMetadata(
@@ -525,6 +543,11 @@ export class BambuImplementation {
     };
   }
 
+  /** Safety reads never use the display cache or configured-serial model inference. */
+  async getSafetyStatus(host: string, serial: string, token: string): Promise<any> {
+    return readFreshPrinterStatus(await this.getPrinter(host, serial, token), serial);
+  }
+
   async getStatus(host: string, serial: string, token: string): Promise<any> {
     try {
       const printer = await this.getPrinter(host, serial, token);
@@ -580,6 +603,14 @@ export class BambuImplementation {
     options: BambuPrintOptionsInternal
   ): Promise<any> {
     assertDirectPrintSupported(options.bambuModel, serial);
+    return withPrinterOperation(host, serial, assertActive => withPrintSnapshot(options.filePath, filePath =>
+      this.print3mfPrepared(host, serial, token, { ...options, filePath }, assertActive)
+    ));
+  }
+
+  private async print3mfPrepared(host: string, serial: string, token: string, options: BambuPrintOptionsInternal, assertActive: () => void): Promise<any> {
+    const model = normalizeModel(options.bambuModel);
+    if (!model) throw new Error("A supported bambuModel is required before printing.");
     if (!options.filePath.toLowerCase().endsWith(".3mf")) {
       throw new Error("print3mf requires a .3mf input file.");
     }
@@ -587,7 +618,7 @@ export class BambuImplementation {
     // Normalise remote filename: collapse double-extension artifacts like
     // "Cube.gcode.3mf.gcode.3mf" -> "Cube.gcode.3mf" so firmware can identify
     // the container format from the extension.
-    let remoteFileName = path.basename(options.filePath);
+    let remoteFileName = uniquePrintName(options.filePath);
     remoteFileName = remoteFileName.replace(/\.gcode\.3mf\.gcode\.3mf$/i, ".gcode.3mf");
 
     // H2-series printers land files at the FTP root and reference them via ftp:///<name>.
@@ -610,28 +641,9 @@ export class BambuImplementation {
       ? `ftp:///${remoteProjectPath}`
       : `file:///sdcard/${remoteProjectPath}`;
 
-    // Upload via basic-ftp directly (bypasses bambu-js double-path bug)
-    await this.ftpUpload(host, token, options.filePath, remoteUploadPath);
-
-    // Pre-sliced .gcode.3mf files: routing depends on firmware generation.
-    // Legacy P1/X1/A1 mini: project_file returns 405004002 for .gcode.3mf (firmware
-    // doesn't recognise the container), so use gcode_file instead.
-    // H2-series and P2S: gcode_file is not supported (P2S answers 0500-4002
-    // "Unsupported file path or name"); project_file works because the
-    // firmware can open the zip and find Metadata/plate_<n>.gcode directly.
-    if (options.filePath.toLowerCase().endsWith(".gcode.3mf")) {
-      if (!usesH2ProjectFile && !isA1) {
-        const printer = await this.getPrinter(host, serial, token);
-        await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath }));
-        return {
-          status: "success",
-          message: `Uploaded and started gcode.3mf print: ${options.projectName}`,
-          remoteProjectPath,
-        };
-      }
-      // H2-series and P2S: fall through to project_file path below
-    }
-
+    const inspection = await inspectPrintFile(options.filePath, {
+      model, nozzleDiameters: options.nozzleDiameters, plateIndex: options.plateIndex ?? 0, bedType: options.bedType,
+    });
     const projectMetadata = await this.resolveProjectFileMetadata(
       options.filePath,
       options.plateIndex
@@ -639,8 +651,8 @@ export class BambuImplementation {
 
     // Send project_file command via bambu-node MQTT (bypasses bambu-js
     // hardcoded use_ams=true and missing ams_mapping support)
-    const printer = await this.getPrinter(host, serial, token);
-    const md5 = options.md5 ?? projectMetadata.md5;
+    const md5 = projectMetadata.md5;
+    if (options.md5 !== undefined && options.md5 !== md5) throw new Error("Provided checksum does not match the inspected plate G-code.");
 
     // Build AMS mapping.
     //
@@ -696,7 +708,7 @@ export class BambuImplementation {
         baseMapping[pos] = options.amsSlots![i];
       });
     } else {
-      if (isH2 && projectMetadata.usedFilamentPositions.length > 0) {
+      if (options.useAMS !== false && projectMetadata.usedFilamentPositions.length > 0) {
         throw new Error(
           `H2 project_file requires amsSlots or amsMapping for sliced files with declared filaments. Plate uses project filament positions ${JSON.stringify(projectMetadata.usedFilamentPositions)}.`
         );
@@ -709,7 +721,7 @@ export class BambuImplementation {
       );
       baseMapping = Array<number>(projectLen).fill(-1);
       positions.forEach((pos, i) => {
-        baseMapping[pos] = i;
+        baseMapping[pos] = options.useAMS === false ? 254 : i;
       });
     }
 
@@ -731,6 +743,43 @@ export class BambuImplementation {
         i < baseMapping.length ? baseMapping[i] : -1
       );
       amsMapping2 = [];
+    }
+
+    for (const position of inspection.usedFilamentPositions) {
+      if (baseMapping[position] === undefined || baseMapping[position] < 0) {
+        throw new Error(`Missing physical filament mapping for project filament ${position}.`);
+      }
+      if (options.useAMS === false && baseMapping[position] !== 254) {
+        throw new Error("External-spool printing requires external spool mapping (254).");
+      }
+    }
+    const legacyContainer = options.filePath.toLowerCase().endsWith(".gcode.3mf") && !usesH2ProjectFile && !isA1;
+    if (legacyContainer) {
+      if (options.useAMS !== false || inspection.selectsAms) {
+        throw new Error("Legacy .gcode.3mf transport cannot apply verified AMS mappings. Export a .3mf project for AMS printing, or use an external-spool-only job with use_ams:false.");
+      }
+      const archive = await JSZip.loadAsync(await fs.readFile(options.filePath));
+      const plates = Object.values(archive.files).filter(entry => !entry.dir && /^Metadata\/plate_\d+\.gcode$/i.test(entry.name));
+      if (plates.length !== 1 || inspection.plateInternalPath?.toLowerCase() !== "metadata/plate_1.gcode") {
+        throw new Error("Legacy gcode_file printing requires a single plate_1.gcode. Export only the selected plate or use a .3mf project_file export.");
+      }
+    }
+    let requirements: PrinterStateRequirements = { ...inspection, amsMapping: baseMapping, useAMS: options.useAMS !== false };
+    const initialStatus = await this.getSafetyStatus(host, serial, token);
+    if (legacyContainer) requirements = this.validateLoadedGcodeState(initialStatus, inspection);
+    else validatePrinterState(initialStatus, requirements);
+    assertActive();
+    await this.ftpUpload(host, token, options.filePath, remoteUploadPath);
+    // Uploads can be long. Recheck current state before the command is dispatched.
+    const dispatchStatus = await this.getSafetyStatus(host, serial, token);
+    if (legacyContainer) requirements = this.validateLoadedGcodeState(dispatchStatus, inspection);
+    else validatePrinterState(dispatchStatus, requirements);
+    const printer = await this.getPrinter(host, serial, token);
+    assertActive();
+    if (legacyContainer) {
+      await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath }));
+      this.checkedJobs.set(`${host}\n${serial}`, { remotePath: remoteProjectPath, requirements });
+      return { status: "success", message: `Uploaded and started gcode.3mf print: ${options.projectName}`, remoteProjectPath };
     }
 
     const b = (v: any) => (v ? 1 : 0);
@@ -772,7 +821,7 @@ export class BambuImplementation {
           command: "project_file",
           param: `Metadata/${projectMetadata.plateFileName}`,
           url: projectUrl,
-          subtask_name: options.projectName,
+          subtask_name: remoteFileName.replace(/\.3mf$/i, ""),
           md5,
           flow_cali: options.flowCalibration ?? true,
           layer_inspect: options.layerInspect ?? true,
@@ -792,6 +841,7 @@ export class BambuImplementation {
     }
 
     await printer.publish(projectFileCmd);
+    this.checkedJobs.set(`${host}\n${serial}`, { remotePath: remoteProjectPath, requirements });
     await new Promise((resolve) => setTimeout(resolve, 300));
 
     return {
@@ -806,10 +856,13 @@ export class BambuImplementation {
   }
 
   async cancelJob(host: string, serial: string, token: string): Promise<any> {
+    cancelPendingPrinterOperations(host, serial);
+    this.checkedJobs.delete(`${host}\n${serial}`);
     const printer = await this.getPrinter(host, serial, token);
 
     try {
       await invokeWithoutAck(printer, new UpdateStateCommand({ state: "stop" }));
+      this.checkedJobs.delete(`${host}\n${serial}`);
       return { status: "success", message: "Cancel command sent successfully." };
     } catch (error) {
       throw new Error(`Failed to cancel print: ${(error as Error).message}`);
@@ -827,13 +880,20 @@ export class BambuImplementation {
   }
 
   async resumeJob(host: string, serial: string, token: string): Promise<any> {
-    const printer = await this.getPrinter(host, serial, token);
-    try {
+    return withPrinterOperation(host, serial, async assertActive => {
+      const checked = this.checkedJobs.get(`${host}\n${serial}`);
+      if (!checked) throw new Error("Resume requires a job inspected and started by this server instance. Verify other jobs on the printer before resuming them there.");
+      const status = await this.getSafetyStatus(host, serial, token);
+      validatePrinterState(status, { ...checked.requirements, requireIdle: false });
+      if (status.raw.gcode_state !== "PAUSE") throw new Error("Resume requires a freshly reported paused job.");
+      const stem = (value: string) => path.posix.basename(value).replace(/(?:\.gcode)?\.3mf$|\.gcode$/i, "");
+      const names = [status.raw.gcode_file, status.raw.subtask_name].filter(value => typeof value === "string");
+      if (!names.some(value => stem(value) === stem(checked.remotePath))) throw new Error("Paused job identity does not match this server's inspected artifact.");
+      const printer = await this.getPrinter(host, serial, token);
+      assertActive();
       await invokeWithoutAck(printer, new UpdateStateCommand({ state: "resume" }));
       return { status: "success", message: "Resume command sent successfully." };
-    } catch (error) {
-      throw new Error(`Failed to resume print: ${(error as Error).message}`);
-    }
+    });
   }
 
   async clearHmsErrors(host: string, serial: string, token: string): Promise<any> {
@@ -943,39 +1003,46 @@ export class BambuImplementation {
     serial: string,
     token: string,
     component: string,
-    temperature: number
+    temperature: unknown,
+    bambuModel?: string,
+    material?: string,
+    nozzleDiameter = 0.4
   ) {
-    const printer = await this.getPrinter(host, serial, token);
-
     const normalizedComponent = component.toLowerCase();
-    const targetTemperature = Math.round(temperature);
-
-    if (targetTemperature < 0 || targetTemperature > 300) {
-      throw new Error("Temperature must be between 0 and 300°C.");
-    }
-
-    let gcode: string;
-    if (normalizedComponent === "bed") {
-      gcode = `M140 S${targetTemperature}`;
-    } else if (
-      normalizedComponent === "extruder" ||
-      normalizedComponent === "nozzle" ||
-      normalizedComponent === "tool" ||
-      normalizedComponent === "tool0"
-    ) {
-      gcode = `M104 S${targetTemperature}`;
-    } else {
+    const heater = normalizedComponent === "bed" ? "bed" :
+      ["extruder", "nozzle", "tool", "tool0"].includes(normalizedComponent) ? "nozzle" : undefined;
+    if (!heater) {
       throw new Error(
         `Unsupported temperature component: ${component}. Use one of: bed, nozzle, extruder.`
       );
     }
-
-    await invokeWithoutAck(printer, new GCodeLineCommand({ gcodes: [gcode] }));
-    return {
-      status: "success",
-      message: `Temperature command sent for ${normalizedComponent}.`,
-      command: gcode,
+    if (typeof temperature !== "number" || !Number.isFinite(temperature) || temperature < 0) {
+      throw new Error("Temperature must be a finite, non-negative number in °C.");
+    }
+    const model = normalizeModel(bambuModel);
+    if (temperature > 0 && !model) throw new Error("bambu_model is required before heating.");
+    if (temperature > 0 && heater === "nozzle" && !material?.trim()) {
+      throw new Error("Declare material before nozzle heating, including non-RFID external spools.");
+    }
+    const targetTemperature = temperature === 0 ? 0 : validateTemperature(heater, temperature, model!, material ? [material] : undefined);
+    const gcode = `${heater === "bed" ? "M140" : "M104"}${heater === "nozzle" && targetTemperature > 0 ? " T0" : ""} S${targetTemperature}`;
+    const send = async (assertActive: () => void) => {
+      if (targetTemperature > 0) {
+        const status = await this.getSafetyStatus(host, serial, token);
+        validatePrinterState(status, heater === "nozzle"
+          ? manualHeatingRequirements(status, model!, nozzleDiameter, material!)
+          : { model: model!, nozzleDiameters: [] });
+      }
+      const printer = await this.getPrinter(host, serial, token);
+      assertActive();
+      await invokeWithoutAck(printer, new GCodeLineCommand({ gcodes: [gcode] }));
+      return { status: "success", message: `Temperature command sent for ${normalizedComponent}.`, command: gcode };
     };
+    if (targetTemperature === 0) {
+      cancelPendingPrinterOperations(host, serial);
+      return send(() => undefined);
+    }
+    return withPrinterOperation(host, serial, send);
   }
 
   async setFanSpeed(
@@ -1166,69 +1233,68 @@ export class BambuImplementation {
   }
 
   async uploadFile(
-    host: string,
-    serial: string,
-    token: string,
-    filePath: string,
-    filename: string,
-    print: boolean,
-    bambuModel?: string
+    host: string, serial: string, token: string, filePath: string,
+    filename: string, print: boolean, bambuModel?: string
   ) {
-    if (print) assertDirectPrintSupported(bambuModel, serial);
-    await fs.access(filePath);
-
-    const normalizedFileName = filename.replace(/^\/+/, "");
-    const remotePath = normalizedFileName.includes("/")
-      ? normalizedFileName
-      : `cache/${normalizedFileName}`;
-
-    // Use direct FTP upload (bypasses bambu-js double-path bug)
-    await this.ftpUpload(host, token, filePath, `/${remotePath}`);
-
-    const response: Record<string, unknown> = {
-      status: "success",
-      uploaded: true,
-      remotePath,
-      printRequested: print,
-    };
-
-    if (print) {
-      if (remotePath.toLowerCase().endsWith(".gcode")) {
-        response.startResult = await this.startJob(host, serial, token, remotePath, bambuModel);
-      } else if (remotePath.toLowerCase().endsWith(".3mf")) {
-        response.note =
-          "3MF upload complete. Use print_3mf to start a project print with plate and metadata options.";
-      } else {
-        throw new Error(
-          "Automatic print after upload supports .gcode only. Use print_3mf for .3mf project prints."
-        );
-      }
+    const remotePath = normalizedRemotePath(filename);
+    if (!print) {
+      await this.ftpUpload(host, token, filePath, `/${remotePath}`);
+      return { status: "success", uploaded: true, remotePath, printRequested: false };
     }
+    assertDirectPrintSupported(bambuModel, serial);
+    if (!remotePath.toLowerCase().endsWith(".gcode") || !filePath.toLowerCase().endsWith(".gcode")) {
+      throw new Error("Automatic print after upload requires .gcode. Use print_3mf for inspected .3mf project prints.");
+    }
+    return withPrinterOperation(host, serial, assertActive => withPrintSnapshot(filePath, snapshot =>
+      this.printRawPrepared(host, serial, token, snapshot, remotePath, bambuModel, assertActive)
+    ));
+  }
 
-    return response;
+  private async printRawPrepared(host: string, serial: string, token: string, filePath: string, filename: string, bambuModel: string | undefined, assertActive: () => void) {
+    const model = normalizeModel(bambuModel);
+    if (!model) throw new Error("A supported bambuModel is required before printing.");
+    const inspection = await inspectPrintFile(filePath, { model });
+    if (inspection.selectsAms) throw new Error("Raw G-code with AMS selection requires a .3mf project export with verified physical slot mappings.");
+    let requirements = this.validateLoadedGcodeState(await this.getSafetyStatus(host, serial, token), inspection);
+    assertActive();
+    const remotePath = path.posix.join(path.posix.dirname(filename), uniquePrintName(filename));
+    await this.ftpUpload(host, token, filePath, `/${remotePath}`);
+    requirements = this.validateLoadedGcodeState(await this.getSafetyStatus(host, serial, token), inspection);
+    const printer = await this.getPrinter(host, serial, token);
+    assertActive();
+    await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remotePath }));
+    this.checkedJobs.set(`${host}\n${serial}`, { remotePath, requirements });
+    return { status: "success", uploaded: true, printRequested: true, remotePath, message: `Checked and started ${remotePath}.` };
   }
 
   async startJob(host: string, serial: string, token: string, filename: string, bambuModel?: string) {
     assertDirectPrintSupported(bambuModel, serial);
-    const lower = filename.toLowerCase();
-    if (lower.endsWith(".3mf") && !lower.endsWith(".gcode.3mf")) {
-      throw new Error("Use print_3mf for .3mf project files.");
+    if (!normalizeModel(bambuModel)) throw new Error("A supported bambuModel is required before printing.");
+    const remotePath = normalizedRemotePath(filename);
+    if (!remotePath.toLowerCase().endsWith(".gcode")) {
+      throw new Error("Remote starts require inspectable .gcode. Use print_3mf with the local project for .3mf printing.");
     }
+    return withPrinterOperation(host, serial, async assertActive => {
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-remote-check-"));
+      const localPath = path.join(directory, path.basename(remotePath));
+      try {
+        await this.ftpDownload(host, token, remotePath, localPath);
+        // Send a unique copy of the downloaded, inspected bytes. Starting the
+        // original remote name would allow it to change after inspection.
+        return await withPrintSnapshot(localPath, snapshot => this.printRawPrepared(host, serial, token, snapshot, remotePath, bambuModel, assertActive));
+      } finally { await fs.rm(directory, { recursive: true, force: true }); }
+    });
+  }
 
-    const printer = await this.getPrinter(host, serial, token);
-
-    const normalizedFileName = filename.replace(/^\/+/, "");
-    const remoteFile = normalizedFileName.includes("/")
-      ? normalizedFileName
-      : `cache/${normalizedFileName}`;
-
-    await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteFile }));
-
-    return {
-      status: "success",
-      message: `Start command sent for ${remoteFile}.`,
-      file: remoteFile,
-    };
+  private async ftpDownload(host: string, token: string, remotePath: string, localPath: string): Promise<void> {
+    const client = new FTPClient(15_000);
+    try {
+      await client.access({ host, port: 990, user: "bblp", password: token, secure: "implicit", secureOptions: ftpsSecureOptions() });
+      await this.waitForTlsSession(client);
+      const size = await client.size(`/${remotePath}`);
+      if (!Number.isFinite(size) || size <= 0 || size > 512 * 1024 * 1024) throw new Error("Remote print file is empty or exceeds the 512 MiB inspection limit.");
+      await client.downloadTo(localPath, `/${remotePath}`);
+    } finally { client.close(); }
   }
 
   /**

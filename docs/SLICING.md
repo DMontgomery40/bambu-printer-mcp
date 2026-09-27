@@ -4,6 +4,14 @@
 
 ## TL;DR
 
+Printing includes a mandatory preflight of the final selected G-code and fresh MQTT reports. The requested model, file model, printer identity, and reported nozzle diameters must agree. Missing or contradictory safety information stops the operation. Positive heating commands must fit independent hardware and material ceilings, including later commands and waiting-temperature targets. These ceilings allow supported purge routines; they are not recommended print temperatures.
+
+Use a sliced file carrying its machine, nozzle, filament, and bed metadata. Declare non-RFID materials in the slicer and supply the complete physical AMS mapping or select external-spool printing. Available printer-reported materials are compared with that declaration. Reports cannot prove the contents of a manually labelled spool, the physical nozzle behind a manual setting, or that the build plate is clear. The checks validate declared object bounds and supported thermal syntax; they do not simulate arbitrary motion or authenticate a file's metadata.
+
+Legacy P1/X1/A1-mini `.gcode.3mf` transport cannot send an AMS mapping or select a plate. It accepts a single external-spool-only plate; export a `.3mf` project for checked AMS mappings. Remote `.gcode` starts download and inspect the file, then print a uniquely named checked copy. The optional BambuNetwork wrapper also requires local MQTT telemetry even for cloud dispatch. Its raw mutation and parameter-override routes are restricted.
+
+These preflight changes have automated regression coverage with intercepted printer transports. Earlier live-print evidence below predates this additional gate; no new physical print is claimed by those tests.
+
 | Use case | Path | Status |
 |---|---|---|
 | Single-colour BambuStudio CLI slicing | MCP slices via CLI with automatic BBL profile resolution | ✅ Works (verified H2S, H2D, X1C, P1S on 02.06.01.55). H2C requires Bambu Studio 2.4.0+ and `BAMBU_MODEL=h2c`. |

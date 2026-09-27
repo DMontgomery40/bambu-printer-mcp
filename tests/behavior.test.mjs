@@ -27,13 +27,19 @@ const EXPECTED_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini"
 
 async function writeSliced3mfFixture({
   name = "h2-project-filament",
+  bambuModel = "h2s",
+  bedType = "Cool Plate SuperTack",
   projectFilamentIds = ["GFG02", "GFG01", "GFL00", "GFL03"],
   projectFilamentColors = ["#FFFFFF", "#FF911A80", "#DCF478", "#DCF478"],
   projectFilamentTypes = ["PETG", "PETG", "PLA", "PLA"],
   plateFilamentIds = [1],
 } = {}) {
   const zip = new JSZip();
+  const nozzleDiameters = ["h2d", "h2c"].includes(bambuModel) ? ["0.4", "0.4"] : ["0.4"];
   const gcode = [
+    `; printer_model = ${bambuModel}`,
+    `; nozzle_diameter = ${nozzleDiameters.join(";")}`,
+    `; curr_bed_type = ${bedType}`,
     `; filament_ids = ${projectFilamentIds.join(";")}`,
     `; filament_colour = ${projectFilamentColors.join(";")}`,
     `; filament_type = ${projectFilamentTypes.join(";")}`,
@@ -42,6 +48,7 @@ async function writeSliced3mfFixture({
   ].join("\n");
   const md5 = createHash("md5").update(Buffer.from(gcode)).digest("hex");
   zip.file("Metadata/plate_1.gcode", gcode);
+  zip.file("Metadata/project_settings.config", JSON.stringify({ printer_model: bambuModel, nozzle_diameter: nozzleDiameters, filament_type: projectFilamentTypes, curr_bed_type: bedType }));
   zip.file("Metadata/plate_1.gcode.md5", md5);
   zip.file(
     "3D/3dmodel.model",
@@ -58,6 +65,23 @@ async function writeSliced3mfFixture({
   const tempPath = path.join(os.tmpdir(), `${name}-${Date.now()}-${Math.random().toString(16).slice(2)}.gcode.3mf`);
   fs.writeFileSync(tempPath, await zip.generateAsync({ type: "nodebuffer" }));
   return tempPath;
+}
+
+function stubFreshSafetyStatus(bambu, model) {
+  bambu.getSafetyStatus = async () => {
+    const now = Date.now();
+    return {
+      connected: true, model, status: "IDLE",
+      raw: { model, gcode_state: "IDLE", nozzle_diameter: "0.4", nozzle_type: "hardened_steel", device: { nozzle: { info: ["h2d", "h2c"].includes(model) ? [{ id: 0, diameter: 0.4, type: "HH01", stat: 0 }, { id: 1, diameter: 0.4, type: "HH01", stat: 0 }] : [{ id: 0, diameter: 0.4, type: "HH01", stat: 0 }] } }, print_error: 0, hms: [],
+        ams: { tray_now: "254", ams: [
+          { id: "0", tray: [{ id: "1", tray_type: "PETG", nozzle_temp_min: "220", nozzle_temp_max: "260" }, { id: "2", tray_type: "PETG", nozzle_temp_min: "220", nozzle_temp_max: "260" }] },
+          { id: "3", tray: [{ id: "3", tray_type: "PLA", nozzle_temp_min: "190", nozzle_temp_max: "240" }] },
+          { id: "128", tray: [{ id: "0", tray_type: "PETG", nozzle_temp_min: "220", nozzle_temp_max: "260" }, { id: "3", tray_type: "PETG", nozzle_temp_min: "220", nozzle_temp_max: "260" }] },
+        ] },
+      },
+      observation: { source: "mqtt", requestedAt: now, receivedAt: now, identitySource: "report" },
+    };
+  };
 }
 
 function createClient() {
@@ -254,6 +278,7 @@ test("printer model safety: schema requires bambu_model, rejects missing/invalid
       "print_3mf_bambu_network",
       "print_collar_charm",
       "resolve_3mf_ams_slots",
+      "set_temperature",
       "slice_stl",
       "slice_with_template",
       "start_print",
@@ -582,6 +607,7 @@ test("H2 family print_3mf rejects pre-sliced filament jobs without explicit AMS 
 test("H2 ams_slots expand into project-level ams_mapping and ams_mapping2", async () => {
   const threeMfPath = await writeSliced3mfFixture({ plateFilamentIds: [1] });
   const bambu = new BambuImplementation();
+  stubFreshSafetyStatus(bambu, "h2s");
   let uploaded = false;
   let publishedPayload = null;
 
@@ -597,6 +623,7 @@ test("H2 ams_slots expand into project-level ams_mapping and ams_mapping2", asyn
   try {
     const result = await bambu.print3mf("127.0.0.1", "0938TEST0000000", "TEST_TOKEN", {
       projectName: "cube",
+      bambuModel: "h2s",
       filePath: threeMfPath,
       plateIndex: 0,
       useAMS: true,
@@ -622,8 +649,9 @@ test("H2 ams_slots expand into project-level ams_mapping and ams_mapping2", asyn
 });
 
 test("H2C model routes project files through the H2 print path independent of serial prefix", async () => {
-  const threeMfPath = await writeSliced3mfFixture({ plateFilamentIds: [1] });
+  const threeMfPath = await writeSliced3mfFixture({ bambuModel: "h2c", bedType: "Textured PEI Plate", plateFilamentIds: [1] });
   const bambu = new BambuImplementation();
+  stubFreshSafetyStatus(bambu, "h2c");
   let uploadedPath = null;
   let publishedPayload = null;
 
@@ -648,7 +676,9 @@ test("H2C model routes project files through the H2 print path independent of se
     });
 
     assert.equal(result.status, "success");
-    assert.equal(uploadedPath, `/${path.basename(threeMfPath)}`);
+    assert.equal(path.posix.dirname(uploadedPath), "/");
+    assert.ok(path.posix.basename(uploadedPath).endsWith(`-${path.basename(threeMfPath)}`));
+    assert.equal(uploadedPath, `/${result.remoteProjectPath}`);
     assert.ok(publishedPayload?.print, "H2C should publish a project_file payload");
     assert.equal(publishedPayload.print.command, "project_file");
     assert.match(publishedPayload.print.url, /^ftp:\/\/\//);
@@ -665,8 +695,9 @@ test("H2C model routes project files through the H2 print path independent of se
 });
 
 async function captureP2SPrint({ serial, bambuModel }) {
-  const threeMfPath = await writeSliced3mfFixture({ name: "p2s-cube", plateFilamentIds: [1] });
+  const threeMfPath = await writeSliced3mfFixture({ name: "p2s-cube", bambuModel: bambuModel ?? "p2s", plateFilamentIds: [1] });
   const bambu = new BambuImplementation();
+  stubFreshSafetyStatus(bambu, bambuModel ?? "p2s");
   let uploadedPath = null;
   const published = [];
 
@@ -685,11 +716,14 @@ async function captureP2SPrint({ serial, bambuModel }) {
       filePath: threeMfPath,
       bambuModel,
       plateIndex: 0,
-      useAMS: true,
-      amsSlots: [1],
+      useAMS: bambuModel !== "p1s",
+      ...(bambuModel !== "p1s" ? { amsSlots: [1] } : {}),
       bedType: "supertack_plate",
     });
-    return { result, uploadedPath, published, fileName: path.basename(threeMfPath) };
+    const fileName = path.posix.basename(uploadedPath);
+    assert.ok(fileName.endsWith(`-${path.basename(threeMfPath)}`));
+    assert.equal(uploadedPath, `/${result.remoteProjectPath}`);
+    return { result, uploadedPath, published, fileName };
   } finally {
     fs.rmSync(threeMfPath, { force: true });
   }
@@ -719,12 +753,8 @@ test("P2S pre-sliced .gcode.3mf uses H2-style project_file from /cache instead o
   ]);
 });
 
-test("P2S is detected from its serial prefix when no model is passed", async () => {
-  const { published, fileName } = await captureP2SPrint({ serial: "22E00TEST000000" });
-
-  assert.equal(published.length, 1);
-  assert.equal(published[0].print.command, "project_file");
-  assert.equal(published[0].print.url, `ftp:///cache/${fileName}`);
+test("P2S serial prefix does not replace an explicit print model", async () => {
+  await assert.rejects(captureP2SPrint({ serial: "22E00TEST000000" }), /model.*required|provide.*model|explicit.*model/i);
 });
 
 test("P1S pre-sliced .gcode.3mf still uses gcode_file from /cache", async () => {
@@ -742,12 +772,14 @@ test("P1S pre-sliced .gcode.3mf still uses gcode_file from /cache", async () => 
 test("H2 two-color ams_slots expand at sparse project-level filament positions", async () => {
   const threeMfPath = await writeSliced3mfFixture({
     name: "h2d-two-color-project-filament",
+    bedType: "Textured PEI Plate",
     projectFilamentIds: ["GFG01", "GFG02", "GFG60", "GFG02", "GFG02", "GFG60", "GFG02", "GFL01"],
     projectFilamentColors: ["#FF911A80", "#39541A", "#F72323", "#000000", "#FFFFFF", "#0D6284", "#000000", "#46A8F9"],
     projectFilamentTypes: ["PETG", "PETG", "PETG", "PETG", "PETG", "PETG", "PETG", "PLA"],
     plateFilamentIds: [3, 4],
   });
   const bambu = new BambuImplementation();
+  stubFreshSafetyStatus(bambu, "h2s");
   let publishedPayload = null;
 
   bambu.ftpUpload = async () => {};
@@ -760,6 +792,7 @@ test("H2 two-color ams_slots expand at sparse project-level filament positions",
   try {
     const result = await bambu.print3mf("127.0.0.1", "0938TEST0000000", "TEST_TOKEN", {
       projectName: "h2d-two-color",
+      bambuModel: "h2s",
       filePath: threeMfPath,
       plateIndex: 0,
       useAMS: true,
@@ -794,6 +827,7 @@ test("H2 ams_mapping2 preserves external spool and HT tray encodings", async () 
     plateFilamentIds: [0, 1, 2, 3],
   });
   const bambu = new BambuImplementation();
+  stubFreshSafetyStatus(bambu, "h2s");
   let publishedPayload = null;
 
   bambu.ftpUpload = async () => {};
@@ -806,6 +840,7 @@ test("H2 ams_mapping2 preserves external spool and HT tray encodings", async () 
   try {
     await bambu.print3mf("127.0.0.1", "0938TEST0000000", "TEST_TOKEN", {
       projectName: "h2-external-and-ht",
+      bambuModel: "h2s",
       filePath: threeMfPath,
       plateIndex: 0,
       useAMS: true,
@@ -857,6 +892,9 @@ test("BambuNetwork print rejects invalid ams_slots values before bridge payload"
       ...process.env,
       MCP_TRANSPORT: "stdio",
       BAMBU_SERIAL: "TEST_DEV",
+      BAMBU_PRINTER_SERIAL: "TEST_DEV",
+      BAMBU_PRINTER_HOST: "127.0.0.1",
+      BAMBU_PRINTER_ACCESS_TOKEN: "TEST_TOKEN",
       BAMBU_TOKEN: "TEST_TOKEN",
       BAMBU_MODEL: "h2s",
       BAMBU_NETWORK_BRIDGE_COMMAND: "/definitely/missing/bambu-network-bridge",

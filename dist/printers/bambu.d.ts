@@ -3,6 +3,7 @@ interface BambuPrintOptionsInternal {
     projectName: string;
     filePath: string;
     bambuModel?: string;
+    nozzleDiameters?: number[];
     useAMS?: boolean;
     plateIndex?: number;
     bedType?: string;
@@ -25,11 +26,16 @@ interface BambuPrintOptionsInternal {
 }
 export declare class BambuImplementation {
     private printerStore;
+    private checkedJobs;
     constructor();
     private getPrinter;
+    private validateLoadedGcodeState;
     private resolveProjectFileMetadata;
+    /** Safety reads never use the display cache or configured-serial model inference. */
+    getSafetyStatus(host: string, serial: string, token: string): Promise<any>;
     getStatus(host: string, serial: string, token: string): Promise<any>;
     print3mf(host: string, serial: string, token: string, options: BambuPrintOptionsInternal): Promise<any>;
+    private print3mfPrepared;
     cancelJob(host: string, serial: string, token: string): Promise<any>;
     pauseJob(host: string, serial: string, token: string): Promise<any>;
     resumeJob(host: string, serial: string, token: string): Promise<any>;
@@ -37,7 +43,7 @@ export declare class BambuImplementation {
     setPrintSpeed(host: string, serial: string, token: string, speedMode: string | number): Promise<any>;
     setAirductMode(host: string, serial: string, token: string, mode: string): Promise<any>;
     rereadAmsRfid(host: string, serial: string, token: string, amsId: number, slotId: number): Promise<any>;
-    setTemperature(host: string, serial: string, token: string, component: string, temperature: number): Promise<{
+    setTemperature(host: string, serial: string, token: string, component: string, temperature: unknown, bambuModel?: string, material?: string, nozzleDiameter?: number): Promise<{
         status: string;
         message: string;
         command: string;
@@ -68,12 +74,27 @@ export declare class BambuImplementation {
         name: string;
         exists: boolean;
     }>;
-    uploadFile(host: string, serial: string, token: string, filePath: string, filename: string, print: boolean, bambuModel?: string): Promise<Record<string, unknown>>;
+    uploadFile(host: string, serial: string, token: string, filePath: string, filename: string, print: boolean, bambuModel?: string): Promise<{
+        status: string;
+        uploaded: boolean;
+        printRequested: boolean;
+        remotePath: string;
+        message: string;
+    } | {
+        status: string;
+        uploaded: boolean;
+        remotePath: string;
+        printRequested: boolean;
+    }>;
+    private printRawPrepared;
     startJob(host: string, serial: string, token: string, filename: string, bambuModel?: string): Promise<{
         status: string;
+        uploaded: boolean;
+        printRequested: boolean;
+        remotePath: string;
         message: string;
-        file: string;
     }>;
+    private ftpDownload;
     /**
      * Capture a single JPEG frame from the printer's chamber camera.
      *
