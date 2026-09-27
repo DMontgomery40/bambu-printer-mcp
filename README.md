@@ -60,6 +60,9 @@ worked and whether I need to restart or reload the harness.
 
 [Setup reference](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SETUP.md) · [FULU guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md) · [Optional code mode](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SETUP.md#optional-code-mode)
 
+<details>
+<summary><strong>Start here</strong></summary>
+
 ## Start here
 
 | I want to… | Read next |
@@ -72,12 +75,19 @@ worked and whether I need to restart or reload the harness.
 | Edit an STL through Blender | [Blender MCP setup](#blender-mcp) |
 | See release changes or contributor credit | [Changelog](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/CHANGELOG.md), [releases](https://github.com/DMontgomery40/bambu-printer-mcp/releases), and [contributors](./CONTRIBUTORS.md) |
 
+</details>
+
+<details>
+<summary><strong>What's new in bambu-printer-mcp</strong></summary>
+
 ## What's new in bambu-printer-mcp
 
 See the [changelog](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/CHANGELOG.md) for versioned changes. Recent releases add reliable npm and desktop-extension installs, standard Blender MCP integration, corrected P2S/A1 routing, and safer multi-filament CLI slicing. X2D status and slicing are available; **direct X2D printing remains unsupported** pending its native eMMC transport.
 
+</details>
+
 <details>
-<summary><strong>Click to expand Table of Contents</strong></summary>
+<summary><strong>Table of Contents</strong></summary>
 
 ## Table of Contents
 
@@ -107,7 +117,8 @@ See the [changelog](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main
 
 </details>
 
----
+<details>
+<summary><strong>Description</strong></summary>
 
 ## Description
 
@@ -119,7 +130,10 @@ See the [changelog](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main
 
 **Note on resource usage.** STL manipulation loads entire mesh geometry into memory. For large or complex STL files (greater than 10 MB), these operations can be memory-intensive. See [General Limitations and Considerations](#general-limitations-and-considerations) for details.
 
----
+</details>
+
+<details>
+<summary><strong>FULU and open-source printing</strong></summary>
 
 ## FULU and open-source printing
 
@@ -129,7 +143,10 @@ The optional FULU **BambuNetwork bridge** exposes `bambu_network_bridge_status`,
 
 **[Follow the FULU setup guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md)** for the direct LAN recipe, Linux/Windows/macOS bridge setup, connection probes, authentication, and troubleshooting. Bridge protocol tests and a successful handshake do not establish a successful physical print.
 
----
+</details>
+
+<details>
+<summary><strong>Features</strong></summary>
 
 ## Features
 
@@ -162,7 +179,10 @@ The optional FULU **BambuNetwork bridge** exposes `bambu_network_bridge_status`,
 - Optional Blender MCP bridge for advanced mesh operations
 - Dual transport: stdio (default, for Claude Desktop / Claude Code) and Streamable HTTP
 
----
+</details>
+
+<details>
+<summary><strong>AMS (Automatic Material System) Setup</strong></summary>
 
 ## AMS (Automatic Material System) Setup
 
@@ -248,7 +268,10 @@ Use `get_printer_filaments` for the parsed, enriched view (profile paths, displa
 "What filaments are loaded in my AMS right now?"
 ```
 
----
+</details>
+
+<details>
+<summary><strong>Bambu Communication Notes (MQTT and FTP)</strong></summary>
 
 ## Bambu Communication Notes (MQTT and FTP)
 
@@ -372,12 +395,15 @@ This is the sequence that successfully started a print on an H2S in the original
 - No client X.509 certificate was needed. The earlier assumption that post-Jan 2025 firmware mandates mTLS on all models does not hold for the H2S in LAN mode — user/password over TLS is sufficient.
 - The MCP server's `ftpUpload` helper (basic-ftp with `secure: "implicit"` and a short idle timeout) performs the equivalent upload natively and is the preferred path when using the server itself; the curl form is the manual-debug equivalent.
 
----
+</details>
+
+<details>
+<summary><strong>Available Tools</strong></summary>
 
 ## Available Tools
 
 <details>
-<summary><strong>Click to expand STL Manipulation Tools</strong></summary>
+<summary><strong>STL Manipulation Tools</strong></summary>
 
 ### STL Manipulation Tools
 
@@ -481,7 +507,7 @@ Note: this works best on models with a clearly dominant flat face. Results on or
 </details>
 
 <details>
-<summary><strong>Click to expand Printer Control Tools</strong></summary>
+<summary><strong>Printer Control Tools</strong></summary>
 
 ### Printer Control Tools
 
@@ -920,7 +946,7 @@ If the project does not match those assumptions, the tool fails fast with a stru
 </details>
 
 <details>
-<summary><strong>Click to expand Slicing Tools</strong></summary>
+<summary><strong>Slicing Tools</strong></summary>
 
 ### Slicing Tools
 
@@ -1048,7 +1074,7 @@ These defaults reduce stale-profile problems; inspect downloaded models and thei
 </details>
 
 <details>
-<summary><strong>Click to expand Advanced Tools</strong></summary>
+<summary><strong>Advanced Tools</strong></summary>
 
 ### Advanced Tools
 
@@ -1118,7 +1144,10 @@ configuration is an error when execution is requested. Per-call legacy
 
 </details>
 
----
+</details>
+
+<details>
+<summary><strong>Available Resources</strong></summary>
 
 ## Available Resources
 
@@ -1134,7 +1163,10 @@ Resources follow the MCP resource protocol and can be read by calling `ReadResou
 
 **Example:** To read the status of the default printer, use URI `printer://192.168.1.100/status`. The host segment must match a configured printer IP; the server uses `PRINTER_HOST` if the default URI template is used.
 
----
+</details>
+
+<details>
+<summary><strong>Example Commands for Claude</strong></summary>
 
 ## Example Commands for Claude
 
@@ -1187,7 +1219,10 @@ After connecting the MCP server in Claude Desktop or Claude Code, you can ask Cl
 - "Take this unsliced 3MF, slice it with BambuStudio, and print the result."
 - "Scale this part to 80% of its size, lay it flat, and start a print."
 
----
+</details>
+
+<details>
+<summary><strong>Bambu Lab Printer Limitations</strong></summary>
 
 ## Bambu Lab Printer Limitations
 
@@ -1207,7 +1242,10 @@ Understanding these constraints will help you avoid frustrating errors and set a
 
 7. **Self-signed TLS certificate.** The printer's FTPS server uses a self-signed certificate. The `basic-ftp` client is configured with `rejectUnauthorized: false` to accept it. This is standard for local network Bambu connections but assumes a trusted local network environment.
 
----
+</details>
+
+<details>
+<summary><strong>General Limitations and Considerations</strong></summary>
 
 ## General Limitations and Considerations
 
@@ -1233,7 +1271,10 @@ STL manipulation tools load the entire mesh into memory as Three.js geometry. Fo
 - FTPS uploads for large 3MF files (multi-plate prints, high-detail models) may take 15 to 60 seconds depending on your local network speed.
 - MQTT connections are pooled by `host + serial` key. The first call to any printer tool in a session establishes the MQTT connection; subsequent calls reuse it. If the connection drops (printer power cycled, network interruption), the next call will reconnect automatically.
 
----
+</details>
+
+<details>
+<summary><strong>License</strong></summary>
 
 ## License
 
@@ -1241,8 +1282,15 @@ GPL-2.0. See [LICENSE](./LICENSE) for the full text.
 
 This project is a fork of [mcp-3D-printer-server](https://github.com/DMontgomery40/mcp-3D-printer-server) by David Montgomery, also GPL-2.0.
 
+</details>
+
+<details>
+<summary><strong>Acknowledgements</strong></summary>
+
 ## Acknowledgements
 
 Thank you to **[FULU Foundation](https://www.fulu.org/), [Louis Rossmann](https://www.youtube.com/watch?v=1jhRqgHxEP8), and the [OrcaSlicer-bambulab community](https://github.com/FULU-Foundation/OrcaSlicer-bambulab)** for advancing user choice and interoperability. Our support for open-source tools, repair rights, and printing without Bambu's software or cloud is a project priority. See the [FULU setup guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md) and [contributor credits](./CONTRIBUTORS.md).
 
 Some printer command surfaces and workflow priorities were informed by [Bambuddy](https://github.com/maziggy/bambuddy), an AGPL-3.0 Bambu Lab printer management project. This project does not vendor Bambuddy code.
+
+</details>

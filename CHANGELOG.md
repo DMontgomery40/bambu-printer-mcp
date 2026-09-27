@@ -9,6 +9,7 @@
 - Add a dedicated FULU setup guide covering slicer/export and CLI use, Linux/WSL/macOS bridge configuration, cloud authentication, shared paths, probes, and validation limits.
 - Replace manual README onboarding with one copy-and-paste agent setup request; move installation, environment variables, and LAN instructions into a linked setup reference. Treat code mode as optional.
 - Document the existing FULU/Orca CLI missing-machine-preset safety limitation and direct users and setup agents to GUI-exported sliced projects until an equivalent validation gate ships.
+- Make the README's major reference sections collapsible while keeping the FULU acknowledgment and agent setup request visible.
 - Reorganize README navigation and correct stale client configuration, LAN/account requirements, firmware routing, AMS mapping, and bridge capability descriptions.
 
 ## [1.1.9] – 2026-09-27
