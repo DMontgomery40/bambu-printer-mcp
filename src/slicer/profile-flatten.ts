@@ -10,7 +10,9 @@
  *
  * This module:
  *   1. Indexes every BBL profile JSON by its `name` field.
- *   2. Recursively walks `inherits`, deep-merging parent into child.
+ *   2. Recursively walks `inherits`, deep-merging parent into child, and
+ *      applies each level's `include` templates (G-code templates for
+ *      machines, per-variant defaults for filaments) the way the GUI does.
  *   3. Derives `nozzle_volume_type` from `default_nozzle_volume_type[0]`
  *      (the GUI does this implicitly; the CLI doesn't).
  *   4. Merges CLI-specific machine_limits from `BBL/cli_config.json` so the
@@ -173,12 +175,51 @@ function flattenByName(leafName: string, index: NameIndex): Record<string, unkno
     cursor = typeof parent === "string" && parent.length > 0 ? parent : undefined;
   }
 
-  // Merge root-most parent first, leaf last (so leaf wins).
+  // Merge root-most parent first, leaf last (so leaf wins). At each level,
+  // BambuStudio applies the profile's `include` templates on top of the
+  // resolved parent and under the profile's own keys
+  // (PresetBundle::load_vendor_configs_from_json).
   const merged: Record<string, unknown> = {};
   for (let i = chain.length - 1; i >= 0; i--) {
+    applyIncludes(merged, chain[i], index);
     Object.assign(merged, chain[i]);
   }
+  // Consumed here; the CLI does not resolve `include` itself.
+  delete merged["include"];
   return merged;
+}
+
+/** Keys of an include template that describe the template, not the config. */
+const INCLUDE_METADATA_KEYS = new Set(["name", "type", "from", "instantiation", "inherits", "include", "setting_id"]);
+
+/**
+ * Recent BBL profiles (e.g. "Bambu Lab P2S 0.4 nozzle") no longer carry
+ * their G-code inline: `machine_start_gcode`, `machine_end_gcode`,
+ * `change_filament_gcode`, ... live in separate "... template <key>"
+ * profiles listed under `include`. Skipping them silently falls back to
+ * the generic G-code inherited from `fdm_machine_common` & co, which is
+ * wrong for the printer (no AMS filament load, other printer's moves).
+ */
+function applyIncludes(
+  target: Record<string, unknown>,
+  profile: Record<string, unknown>,
+  index: NameIndex
+): void {
+  const raw = profile["include"];
+  const names = typeof raw === "string" ? [raw] : Array.isArray(raw) ? raw : [];
+  for (const name of names) {
+    if (typeof name !== "string" || name.length === 0) continue;
+    const entry = index.get(name);
+    if (!entry) {
+      throw new Error(
+        `Profile "${String(profile["name"])}" includes "${name}", which is not in the index. ` +
+          `Refusing to fall back to inherited defaults (wrong G-code for this printer).`
+      );
+    }
+    for (const [key, value] of Object.entries(entry.data)) {
+      if (!INCLUDE_METADATA_KEYS.has(key)) target[key] = value;
+    }
+  }
 }
 
 /* -------------------------------------------------------------------------- */

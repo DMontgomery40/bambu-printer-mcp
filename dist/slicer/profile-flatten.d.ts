@@ -10,7 +10,9 @@
  *
  * This module:
  *   1. Indexes every BBL profile JSON by its `name` field.
- *   2. Recursively walks `inherits`, deep-merging parent into child.
+ *   2. Recursively walks `inherits`, deep-merging parent into child, and
+ *      applies each level's `include` templates (G-code templates for
+ *      machines, per-variant defaults for filaments) the way the GUI does.
  *   3. Derives `nozzle_volume_type` from `default_nozzle_volume_type[0]`
  *      (the GUI does this implicitly; the CLI doesn't).
  *   4. Merges CLI-specific machine_limits from `BBL/cli_config.json` so the
