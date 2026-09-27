@@ -54,3 +54,4 @@ This file is the repository's shared source of truth for local agents and GitHub
 
 - `.gitignore` excludes agent scratch plans, progress logs, handoff notes, and draft comments with `*.md`, while explicitly allowing shared AGENTS/CLAUDE rules and public README, CHANGELOG, CONTRIBUTORS, and docs/SLICING documentation. Keep public docs and rules tracked and current; leave private agent notes local. Add an explicit exception for intentional new public documentation.
 - Keep real credentials and private artifacts out of Git. Do not print secrets from .env or local configuration.
+- The GitHub Pages site in site/ is generated from README.md, docs/, CHANGELOG.md, and CONTRIBUTORS.md; edit those sources, not generated output. Map new or renamed README sections in site/scripts/pages.mjs, keep the home page's model notes in site/scripts/sync-docs.mjs aligned with supported printing, and check documentation changes with `npm --prefix site ci && npm --prefix site run build`.
