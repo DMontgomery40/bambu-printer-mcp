@@ -38,8 +38,12 @@ BBL profile resolution now runs automatically for CLI slicing.
 `BAMBU_CLI_FLATTEN` is no longer required and cannot disable resolution.
 Missing parents, missing or malformed includes, cycles, and unresolved filament
 slots stop the slice before the CLI runs; the MCP does not fall back to partial
-profiles. Standalone custom configs remain usable, and custom BBL-derived
-profiles retain their own settings on top of the resolved parents.
+profiles. Standalone custom process and filament configs remain usable, and
+custom BBL-derived profiles retain their settings on top of resolved parents.
+For BambuStudio CLI tools, `slicer_profile` supplies process settings; the
+selected model's bundled machine preset must still be available. It is not a
+replacement machine configuration or a way to bypass model validation.
+Pre-sliced 3MF printing does not require running this CLI profile preparation.
 
 Profile discovery follows the active executable: macOS app bundles, Windows
 `resources/profiles`, and Linux `share/BambuStudio/profiles` layouts are

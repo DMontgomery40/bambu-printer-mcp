@@ -220,6 +220,7 @@ export class STLManipulator extends EventEmitter {
         const filamentPaths = [];
         let processPath;
         let parsedProfile = null;
+        let processSource;
         if (hasSlicerProfile) {
             try {
                 parsedProfile = this.readJsonFile(slicerProfile);
@@ -229,6 +230,7 @@ export class STLManipulator extends EventEmitter {
             }
         }
         if (parsedProfile && typeof parsedProfile === 'object') {
+            processSource = { filePath: slicerProfile, profile: parsedProfile };
             const inheritedProcessName = (typeof parsedProfile.inherits === 'string' && parsedProfile.inherits) ||
                 (typeof parsedProfile.print_settings_id === 'string' &&
                     parsedProfile.print_settings_id !== parsedProfile.name
@@ -318,6 +320,7 @@ export class STLManipulator extends EventEmitter {
         return {
             settingsArg: settingsParts.length > 0 ? settingsParts.join(';') : undefined,
             filamentPaths,
+            processSource,
         };
     }
     /** Resolve BBL dependencies before invoking the CLI; failures stop the slice. */
@@ -369,7 +372,12 @@ export class STLManipulator extends EventEmitter {
         };
         const flat = await flattenForCli({
             machineLeaf: leafName(machinePath, machine),
-            processLeaf: leafName(processPath, processProfile),
+            // A generated path loses bundled provenance; inherited metadata can also
+            // make a custom preset look like a system profile. Use the original source
+            // only for identity and retain the prepared values in sourceProfiles below.
+            processLeaf: bundle.processSource
+                ? leafName(bundle.processSource.filePath, bundle.processSource.profile)
+                : leafName(processPath, processProfile),
             filamentLeaves: filaments.map((profile, i) => leafName(bundle.filamentPaths[i], profile)),
             profilesRoot,
             tempDir: this.tempDir,

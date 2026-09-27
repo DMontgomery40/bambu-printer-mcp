@@ -24,7 +24,20 @@ const DEFAULT_BAMBU_DEV_ID = process.env.BAMBU_DEV_ID || DEFAULT_BAMBU_SERIAL;
 // spawned with a cwd we don't control (and may not be writable), so a
 // cwd-relative default here can throw at module load via the mkdirSync
 // below and kill the server before it ever opens the stdio transport.
-const TEMP_DIR = process.env.TEMP_DIR || fs.mkdtempSync(path.join(os.tmpdir(), "bambu-printer-mcp-"));
+const AUTOMATIC_TEMP_DIR = process.env.TEMP_DIR ? undefined : fs.mkdtempSync(path.join(os.tmpdir(), "bambu-printer-mcp-"));
+const TEMP_DIR = process.env.TEMP_DIR || AUTOMATIC_TEMP_DIR;
+if (AUTOMATIC_TEMP_DIR) {
+    // The exit event also covers startup failures and normal event-loop exit.
+    // Only the directory created above belongs to us; explicit TEMP_DIR is retained.
+    process.once("exit", () => {
+        try {
+            fs.rmSync(AUTOMATIC_TEMP_DIR, { recursive: true, force: true });
+        }
+        catch (error) {
+            console.error("Unable to remove the server's temporary directory:", error);
+        }
+    });
+}
 // Printer model and bed type
 const DEFAULT_BAMBU_MODEL = process.env.BAMBU_PRINTER_MODEL?.trim().toLowerCase() ||
     process.env.BAMBU_MODEL?.trim().toLowerCase() ||
@@ -750,6 +763,7 @@ if (!fs.existsSync(TEMP_DIR)) {
 class BambuPrinterMCPServer {
     constructor() {
         this.blender = new BlenderMcpBridge();
+        this.shuttingDown = false;
         this.runtimeConfig = readRuntimeConfig();
         this.server = new Server({
             name: "bambu-printer-mcp",
@@ -2856,7 +2870,24 @@ class BambuPrinterMCPServer {
     async startStdio() {
         const transport = new StdioServerTransport();
         await this.server.connect(transport);
+        process.stdin.once("end", () => { void this.shutdown(); });
         console.error("Bambu Printer MCP server running on stdio");
+    }
+    async shutdown(exitCode = 0) {
+        if (this.shuttingDown)
+            return;
+        this.shuttingDown = true;
+        try {
+            // Closing the MCP transport aborts its active requests before exit cleanup.
+            await this.server.close();
+            this.httpRuntime?.httpServer.close();
+        }
+        catch (error) {
+            console.error("[MCP Shutdown]", error);
+        }
+        finally {
+            process.exit(exitCode);
+        }
     }
     async startHttp() {
         const { httpHost, httpPort, httpPath, statefulSession, enableJsonResponse, allowedOrigins } = this.runtimeConfig;
@@ -2897,4 +2928,6 @@ class BambuPrinterMCPServer {
     }
 }
 const server = new BambuPrinterMCPServer();
+process.once("SIGINT", () => { void server.shutdown(130); });
+process.once("SIGTERM", () => { void server.shutdown(143); });
 server.run().catch(console.error);

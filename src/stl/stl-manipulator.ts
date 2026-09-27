@@ -174,6 +174,13 @@ export interface BambuSliceOptions {
   slicePlate?: number;         // --slice N: which plate (default: 0 = all)
 }
 
+interface BambuSettingsBundle {
+  settingsArg?: string;
+  filamentPaths: string[];
+  /** Identity provenance before the process is merged into a generated file. */
+  processSource?: { filePath: string; profile: Record<string, unknown> };
+}
+
 export class STLManipulator extends EventEmitter {
   private tempDir: string;
   private activeOperations: Map<string, boolean> = new Map();
@@ -319,7 +326,7 @@ export class STLManipulator extends EventEmitter {
     printerPreset?: string,
     bambuOptions?: BambuSliceOptions,
     activeProfilesRoot?: string
-  ): { settingsArg?: string; filamentPaths: string[] } {
+  ): BambuSettingsBundle {
     const roots = activeProfilesRoot
       ? [path.join(activeProfilesRoot, 'BBL'), ...this.getAvailableProfileRoots()]
       : this.getAvailableProfileRoots();
@@ -335,6 +342,7 @@ export class STLManipulator extends EventEmitter {
 
     let processPath: string | undefined;
     let parsedProfile: any = null;
+    let processSource: BambuSettingsBundle['processSource'];
 
     if (hasSlicerProfile) {
       try {
@@ -345,6 +353,7 @@ export class STLManipulator extends EventEmitter {
     }
 
     if (parsedProfile && typeof parsedProfile === 'object') {
+      processSource = { filePath: slicerProfile!, profile: parsedProfile };
       const inheritedProcessName =
         (typeof parsedProfile.inherits === 'string' && parsedProfile.inherits) ||
         (typeof parsedProfile.print_settings_id === 'string' &&
@@ -455,15 +464,16 @@ export class STLManipulator extends EventEmitter {
     return {
       settingsArg: settingsParts.length > 0 ? settingsParts.join(';') : undefined,
       filamentPaths,
+      processSource,
     };
   }
 
   /** Resolve BBL dependencies before invoking the CLI; failures stop the slice. */
   private async maybeFlattenBundle(
-    bundle: { settingsArg?: string; filamentPaths: string[] },
+    bundle: BambuSettingsBundle,
     bambuOptions?: BambuSliceOptions,
     activeSlicerPath?: string
-  ): Promise<{ settingsArg?: string; filamentPaths: string[] }> {
+  ): Promise<BambuSettingsBundle> {
     const parts = bundle.settingsArg?.split(';').filter(Boolean) ?? [];
     const readProfile = (filePath: string): Record<string, unknown> => {
       try {
@@ -514,7 +524,12 @@ export class STLManipulator extends EventEmitter {
     };
     const flat = await flattenForCli({
       machineLeaf: leafName(machinePath, machine),
-      processLeaf: leafName(processPath, processProfile),
+      // A generated path loses bundled provenance; inherited metadata can also
+      // make a custom preset look like a system profile. Use the original source
+      // only for identity and retain the prepared values in sourceProfiles below.
+      processLeaf: bundle.processSource
+        ? leafName(bundle.processSource.filePath, bundle.processSource.profile)
+        : leafName(processPath, processProfile),
       filamentLeaves: filaments.map((profile, i) => leafName(bundle.filamentPaths[i], profile)),
       profilesRoot,
       tempDir: this.tempDir,
@@ -540,8 +555,8 @@ export class STLManipulator extends EventEmitter {
   /** --load-filaments is positional; a single override must cover every project slot. */
   private async expandProjectFilaments(
     inputPath: string,
-    bundle: { settingsArg?: string; filamentPaths: string[] }
-  ): Promise<{ settingsArg?: string; filamentPaths: string[] }> {
+    bundle: BambuSettingsBundle
+  ): Promise<BambuSettingsBundle> {
     if (!inputPath.toLowerCase().endsWith('.3mf') || bundle.filamentPaths.length === 0) return bundle;
     const JSZip = (await import('jszip')).default;
     const zip = await JSZip.loadAsync(await fs.promises.readFile(inputPath));

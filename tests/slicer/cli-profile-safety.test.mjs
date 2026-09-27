@@ -109,15 +109,46 @@ test('bundled leaf settings come from the selected profile tree', async t => {
 
 test('custom process inheritance preserves its overrides while flattening the machine', async t => {
   const f = await fixture(t);
+  // A custom preset must not inherit the parent's system provenance along
+  // with its settings, whether or not it explicitly declares from: User.
+  await f.write('process', { name: 'SAFETY process', from: 'system', inherits: 'SAFETY process base' });
   const profile = path.join(f.root, 'custom-process.json');
-  await fs.writeFile(profile, JSON.stringify({ name: 'Custom process', inherits: 'SAFETY process', wall_loops: '7' }));
-  await f.slice({}, profile);
-  const args = await f.args();
-  const [machineFile, processFile] = args[args.indexOf('--load-settings') + 1].split(';');
-  assert.equal(JSON.parse(await fs.readFile(machineFile, 'utf8')).machine_start_gcode, 'M620 S0A ; correct machine');
-  const config = JSON.parse(await fs.readFile(processFile, 'utf8'));
-  assert.equal(config.wall_loops, '7');
-  assert.equal(config.layer_height, '0.2');
+  for (const from of [undefined, 'User']) {
+    await fs.writeFile(profile, JSON.stringify({ name: 'Custom process', from, inherits: 'SAFETY process', wall_loops: '7' }));
+    await f.slice({}, profile);
+    const args = await f.args();
+    const [machineFile, processFile] = args[args.indexOf('--load-settings') + 1].split(';');
+    assert.equal(JSON.parse(await fs.readFile(machineFile, 'utf8')).machine_start_gcode, 'M620 S0A ; correct machine');
+    const config = JSON.parse(await fs.readFile(processFile, 'utf8'));
+    assert.equal(config.wall_loops, '7');
+    assert.equal(config.layer_height, '0.2');
+    assert.equal(config.name, 'Custom process');
+    assert.equal(config.inherits, 'SAFETY process');
+    assert.equal(config.print_settings_id, 'SAFETY process');
+  }
+});
+
+test('an explicit bundled process retains the same leaf identity as the default preset', async t => {
+  const f = await fixture(t);
+  await f.write('process', { name: 'SAFETY process', inherits: 'SAFETY process base', wall_loops: '5', layer_height: '0.16' });
+  const readProcess = async () => {
+    const args = await f.args();
+    return JSON.parse(await fs.readFile(args[args.indexOf('--load-settings') + 1].split(';')[1], 'utf8'));
+  };
+  await f.slice();
+  const defaultProcess = await readProcess();
+  for (const input of [f.stl, await f.project(3)]) {
+    await f.slice({ loadFilaments: f.filament }, f.processFile, input);
+    const explicitProcess = await readProcess();
+    assert.equal(explicitProcess.name, 'SAFETY process');
+    assert.equal(explicitProcess.inherits, 'SAFETY process');
+    assert.equal(explicitProcess.print_settings_id, 'SAFETY process');
+    assert.equal(explicitProcess.wall_loops, '5');
+    assert.equal(explicitProcess.layer_height, '0.16');
+    // Explicit preparation adds type; preserving provenance must keep that
+    // prepared content instead of reloading the original bundled JSON.
+    assert.deepEqual(explicitProcess, { ...defaultProcess, type: 'process' });
+  }
 });
 
 test('standalone custom process and filament settings survive alongside a resolved machine', async t => {
