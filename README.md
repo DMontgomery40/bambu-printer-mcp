@@ -43,8 +43,8 @@ or tokens in chat. Never guess the printer model.
 
 Use direct LAN printing by default. Explain any LAN/Developer Mode setting
 I need to enable. Prefer FULU OrcaSlicer-bambulab GUI slicing/export; discover
-an existing slicer before suggesting an install. Do not configure FULU/Orca
-CLI auto-slicing while its machine-preset safety gate is missing (see guide).
+an existing slicer before suggesting an install. For FULU/Orca CLI auto-slicing,
+require MCP 1.1.11+ and its matching installed profile tree (see guide).
 A slicer is not needed here to print a pre-sliced file. Configure the optional FULU
 BambuNetwork bridge only if I choose it, and explain its runtime/auth needs.
 X2D supports status and slicing here, but direct printing is not supported.
@@ -137,7 +137,7 @@ See the [changelog](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main
 
 ## FULU and open-source printing
 
-[FULU OrcaSlicer-bambulab](https://github.com/FULU-Foundation/OrcaSlicer-bambulab) is a supported slicer target (`SLICER_TYPE=orcaslicer-bambulab`; aliases include `fulu-orca` and `orca-studio`). Use its GUI to export a sliced project for direct LAN printing. FULU/Orca CLI aliases are recognized, but **do not use them for unattended slicing or auto-slicing** while the [machine-preset safety gate is missing](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#fulu-and-orca-cli-safety-limit).
+[FULU OrcaSlicer-bambulab](https://github.com/FULU-Foundation/OrcaSlicer-bambulab) is a supported slicer target (`SLICER_TYPE=orcaslicer-bambulab`; aliases include `fulu-orca` and `orca-studio`). Use its GUI to export a sliced project for direct LAN printing, or configure its CLI with matching installed profiles. From 1.1.11, FULU/Orca share the [machine-preset gate and profile safety checks](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#fulu-and-orca-cli-safety-limit).
 
 The optional FULU **BambuNetwork bridge** exposes `bambu_network_bridge_status`, `bambu_network_call`, and `print_3mf_bambu_network`, also reachable through `print_3mf` with `connection_mode: "bambu_network"`. Slicer selection does not enable the bridge. It needs a separately installed FULU runtime and an explicit launch command; cloud printing also needs an authenticated BambuNetwork session.
 
@@ -169,7 +169,7 @@ The optional FULU **BambuNetwork bridge** exposes `bambu_network_bridge_status`,
 - Start G-code files already stored on the printer
 - **Collar charm print wrapper** (`print_collar_charm`) — specialized two-color workflow with fixed tray policy for inner (black, AMS 1 slot 1) and outer (white, AMS 2 slot 1) charm parts
 - STL manipulation: scale, rotate, extend base, merge vertices, center at origin, lay flat, and inspect model info
-- Slice STL or 3MF files using an external CLI. For Bambu headless workflows, use the validated BambuStudio profile path; FULU/Orca users should [GUI-export while the CLI safety limitation remains](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#fulu-and-orca-cli-safety-limit).
+- Slice STL or 3MF files using an external CLI. BambuStudio, FULU, and Orca require the exact machine preset and resolve BBL dependencies before slicing; see [FULU/Orca CLI setup and validation limits](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#fulu-and-orca-cli-safety-limit).
 - Inspect slicer settings from a saved 3MF template or extracted profile via `get_slice_settings`
 - Enumerate saved slicing templates from the local registry via `list_templates`
 - Save templates into the local registry via `save_template`
@@ -856,7 +856,7 @@ The primary tool for starting a Bambu print. **Recommended input: a pre-sliced `
 }
 ```
 
-`bambu_model` is **required** for model-specific routing and preset selection. It does not by itself validate the G-code or guarantee matching output from the FULU/Orca CLI; use GUI-exported sliced projects for those slicers while the machine-preset gate is missing. Using the wrong model can damage hardware. If `bambu_model` is not provided in the tool call and `BAMBU_MODEL` is not set in the environment, the server will ask you interactively via MCP elicitation (if your client supports it) or return a clear error.
+`bambu_model` is **required** for model-specific routing and preset selection. It does not by itself validate pre-sliced G-code. BambuStudio, FULU, and Orca CLI preparation additionally require the exact model/nozzle machine preset and reject incomplete profiles. Using the wrong model can damage hardware. If `bambu_model` is not provided in the tool call and `BAMBU_MODEL` is not set in the environment, the server will ask you interactively via MCP elicitation (if your client supports it) or return a clear error.
 
 `bed_type` defaults to `textured_plate` if omitted. `ams_slots` is the preferred override input; `ams_mapping` remains the raw escape hatch. On AMS-equipped H2 printers, `use_ams: false` does not suppress mapping lookup if the sliced file declares filaments. If no mapping is provided for an H2 pre-sliced job with declared filaments, the server fails before sending; pass explicit `ams_slots`, raw `ams_mapping`, or `auto_match_ams: true`.
 
@@ -1015,7 +1015,7 @@ Slice an STL or 3MF file using an external slicer and return the path to the out
 
 `slicer_type` options: `bambustudio`, `orcaslicer`, `orcaslicer-bambulab` (FULU), `prusaslicer`, `cura`, `slic3r`. Aliases include `fulu-orca` and `orca-studio`. When omitted, the value from the `SLICER_TYPE` environment variable is used (default: `bambustudio`).
 
-**FULU/Orca CLI limitation:** recognized slicer names do not guarantee that a missing machine preset is rejected. Use GUI-exported sliced projects instead of those CLI backends until the [machine-preset gate is implemented](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#fulu-and-orca-cli-safety-limit).
+**FULU/Orca CLI safety:** from 1.1.11, these backends require the exact model/nozzle preset from the selected installation and stop on profile preparation failures. A process override cannot bypass that gate. See [configuration and validation limits](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#fulu-and-orca-cli-safety-limit).
 
 `slicer_path` and `slicer_profile` fall back to the `SLICER_PATH` and `SLICER_PROFILE` environment variables when omitted. Per-call `slicer_path` overrides require `MCP_ALLOW_EXECUTABLE_ARG=1`.
 
@@ -1228,7 +1228,7 @@ After connecting the MCP server in Claude Desktop or Claude Code, you can ask Cl
 
 Understanding these constraints will help you avoid frustrating errors and set appropriate expectations.
 
-1. **Printable 3MF required for print_3mf.** The `print_3mf` tool expects a sliced 3MF containing at least one `Metadata/plate_<n>.gcode` entry. If you pass an unsliced 3MF (one exported from a CAD tool without slicing), the server attempts auto-slicing. Use the validated BambuStudio CLI path for that; FULU/Orca users must supply GUI-exported sliced files while their CLI preset gate is missing — any inspection or slicing failure stops before upload. For a previewable workflow, pre-slice in FULU OrcaSlicer-bambulab, OrcaSlicer, or Bambu Studio and pass the resulting `.gcode.3mf`. See [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md) for the full procedure.
+1. **Printable 3MF required for print_3mf.** The `print_3mf` tool expects a sliced 3MF containing at least one `Metadata/plate_<n>.gcode` entry. If you pass an unsliced 3MF (one exported from a CAD tool without slicing), the server attempts auto-slicing. BambuStudio, FULU, and Orca CLI paths require the matching machine preset and complete profile preparation; any inspection or slicing failure stops before upload. For a previewable workflow, pre-slice in FULU OrcaSlicer-bambulab, OrcaSlicer, or Bambu Studio and pass the resulting `.gcode.3mf`. See [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md) for the full procedure.
 
 2. **Layer height, temperature, and slicer settings are baked in.** The `project_file` MQTT command tells the printer which plate to run. It does not support overriding layer height, temperature targets, infill percentage, or other slicing parameters at print time. These must be set in your slicer before generating the 3MF.
 

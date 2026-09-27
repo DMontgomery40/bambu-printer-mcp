@@ -2095,7 +2095,7 @@ class BambuPrinterMCPServer {
                   description: "Type of slicer to use. Bambu-compatible choices (bambustudio, orcaslicer, orcaslicer-bambulab) export sliced 3MF; aliases such as fulu-orca and orca-studio are accepted."
                 },
                 slicer_path: { type: "string", description: "Path to the slicer executable (default: value from env). Per-call overrides require MCP_ALLOW_EXECUTABLE_ARG=1." },
-                slicer_profile: { type: "string", description: "Path to the slicer profile/config file (optional, overrides bambu_model preset)" },
+                slicer_profile: { type: "string", description: "Path to an optional process profile/config file. The exact bambu_model/nozzle machine preset is still required." },
                 template_3mf_path: { type: "string", description: "Optional template 3MF whose embedded Bambu slicer settings should be reused when slicing a new STL or 3MF." },
                 template_name: { type: "string", description: "Optional named template from the local registry. Resolves to template_3mf_path automatically." },
                 template_dir: { type: "string", description: "Optional template directory override when resolving template_name." },

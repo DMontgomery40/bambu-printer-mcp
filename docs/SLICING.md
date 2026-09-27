@@ -7,7 +7,8 @@
 | Use case | Path | Status |
 |---|---|---|
 | Single-colour BambuStudio CLI slicing | MCP slices via CLI with automatic BBL profile resolution | ✅ Works (verified H2S, H2D, X1C, P1S on 02.06.01.55). H2C requires Bambu Studio 2.4.0+ and `BAMBU_MODEL=h2c`. |
-| Multi-color CLI slicing | MCP prepares every filament slot's colour and a fallback tower position | Contributor-verified on Windows BambuStudio 02.08.02.60, including four-colour X2D slicing. See version limits below. |
+| FULU/Orca CLI preparation (1.1.11+) | Same exact-machine gate and BBL dependency resolution | Regression-tested preparation and failure handling; live slicer/version validation remains separate. |
+| Multi-color BambuStudio CLI slicing | MCP prepares every filament slot's colour and a fallback tower position | Contributor-verified on Windows BambuStudio 02.08.02.60, including four-colour X2D slicing. See version limits below. |
 | X2D status and slicing | `BAMBU_MODEL=x2d` with an installed X2D preset | Available. Direct X2D printing is deferred pending the native eMMC transport. |
 | Pre-sliced `.gcode.3mf` → printer | MCP `print_3mf` | ✅ Works (verified live on Kingpin H2D) |
 | Other slicing combinations | Pre-slice in the GUI, then use `print_3mf` for a supported printer | Inspect the preview and use the printer's supported transport. |
@@ -21,10 +22,10 @@ Mesh ──► chosen slicer GUI ──► sliced .gcode.3mf ──► MCP print
          slice + preview + export
 ```
 
-**Path B — let the MCP slice via BambuStudio CLI (BBL printers only):**
+**Path B — let the MCP slice via BambuStudio, FULU, or Orca CLI (BBL printers only):**
 
 ```
-STL/3MF ──► MCP slice_stl / print_3mf ──► (auto-flatten profiles) ──► BambuStudio CLI ──► sliced .gcode.3mf
+STL/3MF ──► MCP slice_stl / print_3mf ──► (auto-flatten profiles) ──► chosen CLI ──► sliced .gcode.3mf
 ```
 
 Path B works because the MCP now flattens BBL profile inheritance before
@@ -43,13 +44,13 @@ Missing parents, missing or malformed includes, cycles, and unresolved filament
 slots stop the slice before the CLI runs; the MCP does not fall back to partial
 profiles. Standalone custom process and filament configs remain usable, and
 custom BBL-derived profiles retain their settings on top of resolved parents.
-For BambuStudio CLI tools, `slicer_profile` supplies process settings; the
+For BambuStudio, FULU, and Orca CLI tools, `slicer_profile` supplies process settings; the
 selected model's bundled machine preset must still be available. It is not a
 replacement machine configuration or a way to bypass model validation.
 Pre-sliced 3MF printing does not require running this CLI profile preparation.
 
 Profile discovery follows the active executable: macOS app bundles, Windows
-`resources/profiles`, and Linux `share/BambuStudio/profiles` layouts are
+`resources/profiles`, and Linux `share/BambuStudio/profiles` / `share/OrcaSlicer/profiles` layouts are
 recognized. For AppImages or other layouts whose profiles are not accessible
 beside the executable, set `BAMBU_PROFILES_ROOT` to the matching installation's
 directory containing `BBL`. An unavailable tree produces an error rather than
@@ -89,15 +90,15 @@ print routes remain unchanged.
 
 GUI slicing lets you inspect supports, colours, tool changes, and tower placement before printing. It is also the fallback when a CLI build rejects flags, cannot resolve the selected profiles, or crashes.
 
-BambuStudio CLI preparation supports bundled BBL presets and standalone custom process/filament overrides; custom BBL-derived settings are retained after dependency resolution. The selected model's bundled machine preset is still required. FULU/Orca CLI aliases exist, but currently lack equivalent rejection of missing machine presets. Use GUI exports for those slicers, not unattended MCP auto-slicing. See the [FULU/Orca CLI safety limit](./FULU.md#fulu-and-orca-cli-safety-limit).
+Bambu-compatible CLI preparation supports bundled BBL presets and standalone custom process/filament overrides; custom BBL-derived settings are retained after dependency resolution. The selected model's bundled machine preset is still required. FULU/Orca and their aliases use the same machine-preset gate from 1.1.11. See [FULU/Orca CLI setup and validation limits](./FULU.md#fulu-and-orca-cli-safety-limit).
 
 A failed inspection or auto-slice stops before upload. The server never deliberately sends the original unsliced project as a fallback.
 
 ## Path B mechanics (CLI auto-flatten)
 
-Before BambuStudio CLI slicing, the MCP:
+Before BambuStudio, FULU, or Orca CLI slicing, the MCP:
 
-1. Reads each leaf BBL profile JSON the slicer would have used.
+1. Requires the exact model/nozzle machine preset in the selected installation's BBL tree, validates its identity, and reads each leaf profile JSON.
 2. Resolves `inherits` and `include` recursively: inherited settings first,
    include templates in order, then the profile's own keys. Cycles and
    unresolved references are errors, including within templates.

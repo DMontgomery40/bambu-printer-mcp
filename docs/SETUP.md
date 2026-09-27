@@ -14,7 +14,7 @@ The README provides the copy-and-paste setup request. Use this reference for exa
 - **ffmpeg** *(only for RTSP camera snapshots)*, configured in `PATH` or through `FFMPEG_PATH`.
 
 
-**FULU/Orca:** use GUI-exported sliced files. Their MCP CLI backends currently lack the required missing-machine-preset gate; do not configure unattended auto-slicing through them. See the [CLI safety limit](./FULU.md#fulu-and-orca-cli-safety-limit).
+**FULU/Orca:** GUI export and CLI slicing are available. From 1.1.11, CLI slicing requires the exact machine preset and matching BBL profile tree, with the same preparation checks as BambuStudio. See [CLI setup and validation limits](./FULU.md#fulu-and-orca-cli-safety-limit).
 
 ### Run without installing (npx)
 
@@ -102,12 +102,12 @@ BLENDER_MCP_TIMEOUT_MS=120000
 | `PRINTER_HOST` | `localhost` | Direct LAN | IP address of the Bambu printer. Alias: `BAMBU_PRINTER_HOST` |
 | `BAMBU_SERIAL` | | Direct LAN | Printer serial number. Alias: `BAMBU_PRINTER_SERIAL` |
 | `BAMBU_TOKEN` | | Direct LAN | LAN access token. Alias: `BAMBU_PRINTER_ACCESS_TOKEN` |
-| `BAMBU_MODEL` | | **Slicing and printing** | Printer model: `p1s`, `p1p`, `p2s`, `x1c`, `x1e`, `a1`, `a1mini`, `h2d`, `h2s`, `h2c`, `x2d`. **Required** for model-specific routing and preset selection; it does not itself validate a pre-sliced file or FULU/Orca CLI output. X2D supports status and slicing only; direct X2D printing is rejected. Alias: `BAMBU_PRINTER_MODEL`. If omitted and the MCP client supports elicitation, the server will ask you interactively. Use `h2c` for H2C and `x2d` for X2D; do not use `h2d` as a fallback. |
+| `BAMBU_MODEL` | | **Slicing and printing** | Printer model: `p1s`, `p1p`, `p2s`, `x1c`, `x1e`, `a1`, `a1mini`, `h2d`, `h2s`, `h2c`, `x2d`. **Required** for model-specific routing and preset selection; it does not itself validate a pre-sliced file or prove a successful physical print. X2D supports status and slicing only; direct X2D printing is rejected. Alias: `BAMBU_PRINTER_MODEL`. If omitted and the MCP client supports elicitation, the server will ask you interactively. Use `h2c` for H2C and `x2d` for X2D; do not use `h2d` as a fallback. |
 | `BED_TYPE` | `textured_plate` | No | Bed plate type: `textured_plate`, `cool_plate`, `engineering_plate`, `hot_plate`, `supertack_plate` |
-| `NOZZLE_DIAMETER` | `0.4` | No | Nozzle diameter in mm. Used to select the correct BambuStudio machine preset. |
+| `NOZZLE_DIAMETER` | `0.4` | No | Nozzle diameter in mm. Used to select the correct model/nozzle machine preset. |
 | `SLICER_TYPE` | `bambustudio` | No | `bambustudio`, `orcaslicer-bambulab` (FULU), `orcaslicer`, `prusaslicer`, `cura`, or `slic3r` |
 | `SLICER_PATH` | Platform default for the selected slicer | No | Full path to the slicer executable. `BAMBU_STUDIO_PATH` supplies the BambuStudio default only |
-| `SLICER_PROFILE` | | No | Process profile/config file; `BAMBU_SLICER_PROFILE` takes precedence. Does not replace the required BambuStudio machine preset |
+| `SLICER_PROFILE` | | No | Process profile/config file; `BAMBU_SLICER_PROFILE` takes precedence. Does not replace the required machine preset for BambuStudio, Orca, or FULU |
 | `BAMBU_DEV_ID` | | Bridge printing | Fallback device ID when no serial is resolved; an explicit `dev_id` tool argument takes priority over both. See [FULU setup](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#configure-the-bridge) |
 | `BAMBU_NETWORK_BRIDGE_COMMAND` | | Bridge tools | Trusted shell command launching FULU's binary-protocol host or platform wrapper, not the slicer GUI |
 | `BAMBU_NETWORK_CONFIG_DIR` | `~/.config/bambu-printer-mcp/bambu-network` | No | Persistent bridge configuration/log directory |
@@ -130,7 +130,7 @@ BLENDER_MCP_TIMEOUT_MS=120000
 | `BLENDER_MCP_TIMEOUT_MS` | `120000` | No | Connection/discovery/call deadline, 100–300000 ms; interrupted edits are never retried automatically |
 | `BLENDER_MCP_BRIDGE_COMMAND` | | No | Legacy custom executable receiving `MCP_BLENDER_PAYLOAD`; separate from the standard MCP integration |
 | `BAMBU_CLI_FLATTEN` | automatic | No | Legacy setting; BBL profile resolution now always runs when profiles contain inheritance or includes. A false/unset value cannot bypass required machine G-code. Standalone custom files without dependencies pass through. See [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md). |
-| `BAMBU_PROFILES_ROOT` | derived from `SLICER_PATH` | No | Override path to the BambuStudio `Resources/profiles` directory used by the CLI flattener. Useful for non-standard installs or dev environments. |
+| `BAMBU_PROFILES_ROOT` | derived from `SLICER_PATH` | No | Override path to the selected slicer's `Resources/profiles` directory containing `BBL`. BambuStudio, Orca, and FULU use this tree exclusively for bundled profiles. Useful for non-standard installs or dev environments. |
 
 SuperTack can be passed for pre-sliced print jobs, but BambuStudio CLI slicing currently fails fast for `supertack_plate` because the accepted CLI bed identifier is not verified. Use a pre-sliced 3MF for SuperTack until this is confirmed.
 

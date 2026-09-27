@@ -39,11 +39,14 @@ import crypto from "node:crypto";
  * abstract bases like `fdm_machine_common` and `fdm_bbl_3dp_001_common`,
  * because those are the parents we'll walk to.
  */
-async function buildNameIndex(profilesRoot, vendor) {
+async function buildNameIndex(profilesRoot, vendor, userProfileRoots = []) {
     const index = new Map();
     const subdirs = ["machine", "process", "filament"];
-    for (const sub of subdirs) {
-        const dir = path.join(profilesRoot, vendor, sub);
+    const directories = [
+        ...subdirs.map(sub => path.join(profilesRoot, vendor, sub)),
+        ...userProfileRoots.flatMap(root => ['process', 'filament'].map(sub => path.join(root, sub))),
+    ];
+    for (const dir of directories) {
         let entries;
         try {
             entries = await fs.readdir(dir);
@@ -72,6 +75,8 @@ async function buildNameIndex(profilesRoot, vendor) {
                 // Malformed profile -- skip, don't poison the index.
                 continue;
             }
+            if (!data || typeof data !== 'object' || Array.isArray(data))
+                continue;
             const name = data["name"];
             if (typeof name !== "string" || name.length === 0)
                 continue;
@@ -122,6 +127,10 @@ function flattenData(data, index, visiting = new Set()) {
     Object.assign(merged, data);
     delete merged["include"];
     return merged;
+}
+/** Resolve bundled machine defaults before choosing process and filament leaves. */
+export async function resolveBblMachineProfile(profilesRoot, machineLeaf) {
+    return flattenByName(machineLeaf, await buildNameIndex(profilesRoot, 'BBL'));
 }
 /** Keys of an include template that describe the template, not the config. */
 const INCLUDE_METADATA_KEYS = new Set(["name", "type", "from", "instantiation", "inherits", "include", "setting_id"]);
@@ -514,14 +523,18 @@ export async function flattenForCli(opts) {
         throw new Error(`profile-flatten: profilesRoot "${opts.profilesRoot}" does not contain "${vendor}/machine". ` +
             `Set BAMBU_PROFILES_ROOT or check your BambuStudio install.`);
     }
-    const index = await buildNameIndex(opts.profilesRoot, vendor);
+    // Machine inheritance must never resolve through user process/filament files.
+    const machineIndex = await buildNameIndex(opts.profilesRoot, vendor);
+    const index = opts.userProfileRoots?.length
+        ? await buildNameIndex(opts.profilesRoot, vendor, opts.userProfileRoots)
+        : machineIndex;
     // Flatten each leaf.
     if (opts.sourceProfiles?.filaments && opts.sourceProfiles.filaments.length !== opts.filamentLeaves.length) {
         throw new Error("Every filament slot must have a source profile.");
     }
     const machineFlat = opts.sourceProfiles?.machine
-        ? flattenData(opts.sourceProfiles.machine, index)
-        : flattenByName(opts.machineLeaf, index);
+        ? flattenData(opts.sourceProfiles.machine, machineIndex)
+        : flattenByName(opts.machineLeaf, machineIndex);
     const processFlat = opts.sourceProfiles?.process
         ? flattenData(opts.sourceProfiles.process, index)
         : flattenByName(opts.processLeaf, index);
@@ -531,7 +544,7 @@ export async function flattenForCli(opts) {
     });
     // CLI-specific post-processing on machine profile only.
     deriveNozzleVolumeType(machineFlat, opts.nozzleVolumeType);
-    applyMachineModelBedMetadata(machineFlat, index);
+    applyMachineModelBedMetadata(machineFlat, machineIndex);
     // A standalone custom machine can accompany process/filament profiles that
     // need BBL resolution; do not impose bundled model config on that machine.
     const sourceMachine = opts.sourceProfiles?.machine;
@@ -603,7 +616,7 @@ async function writeTemp(tempDir, kind, leafName, data) {
  *
  * Override via BAMBU_PROFILES_ROOT env.
  */
-export function detectProfilesRoot(slicerPath) {
+export function detectProfilesRoot(slicerPath, slicerType = 'bambustudio') {
     if (process.env["BAMBU_PROFILES_ROOT"]) {
         return process.env["BAMBU_PROFILES_ROOT"];
     }
@@ -622,14 +635,18 @@ export function detectProfilesRoot(slicerPath) {
         }
         catch { /* Probe the supplied path below. */ }
         const bin = path.dirname(executable);
+        const installNames = slicerType === 'bambustudio'
+            ? ['BambuStudio', 'bambu-studio']
+            : ['OrcaSlicer', 'orca-slicer', 'OrcaStudio', 'orca-studio'];
         const candidates = path.basename(bin) === 'MacOS'
             ? [path.resolve(bin, '..', 'Resources', 'profiles')]
             : [
                 path.join(bin, 'resources', 'profiles'),
                 path.join(bin, 'Resources', 'profiles'),
-                path.resolve(bin, '..', 'share', 'BambuStudio', 'profiles'),
-                path.resolve(bin, '..', 'share', 'bambu-studio', 'profiles'),
-                path.resolve(bin, '..', 'share', 'BambuStudio', 'resources', 'profiles'),
+                ...installNames.flatMap(name => [
+                    path.resolve(bin, '..', 'share', name, 'profiles'),
+                    path.resolve(bin, '..', 'share', name, 'resources', 'profiles'),
+                ]),
             ];
         const found = candidates.find(root => existsSync(path.join(root, 'BBL', 'machine')));
         // Do not select another installation if this executable has no profile tree.
@@ -637,5 +654,7 @@ export function detectProfilesRoot(slicerPath) {
         return found ?? candidates[0];
     }
     // Default macOS install.
-    return "/Applications/BambuStudio.app/Contents/Resources/profiles";
+    return slicerType === 'bambustudio'
+        ? '/Applications/BambuStudio.app/Contents/Resources/profiles'
+        : '/Applications/OrcaSlicer.app/Contents/Resources/profiles';
 }

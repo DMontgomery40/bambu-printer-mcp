@@ -9,7 +9,7 @@ import { promisify } from 'util';
 import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
 import { execFile } from 'child_process';
-import { flattenForCli, detectProfilesRoot } from '../slicer/profile-flatten.js';
+import { flattenForCli, detectProfilesRoot, resolveBblMachineProfile } from '../slicer/profile-flatten.js';
 
 const readFileAsync = promisify(fs.readFile);
 const writeFileAsync = promisify(fs.writeFile);
@@ -324,24 +324,39 @@ export class STLManipulator extends EventEmitter {
     return outPath;
   }
 
-  private resolveBambuLikeSettingsBundle(
+  private async resolveBambuLikeSettingsBundle(
     outputBase: string,
     slicerType: 'orcaslicer' | 'orcaslicer-bambulab' | 'bambustudio',
     slicerProfile?: string,
     printerPreset?: string,
     bambuOptions?: BambuSliceOptions,
     activeProfilesRoot?: string
-  ): BambuSettingsBundle {
+  ): Promise<BambuSettingsBundle> {
     const roots = activeProfilesRoot
-      ? [path.join(activeProfilesRoot, 'BBL'), ...this.getAvailableProfileRoots()]
+      ? [path.join(activeProfilesRoot, 'BBL')]
       : this.getAvailableProfileRoots();
     const findProfile = (kind: 'machine' | 'process' | 'filament', name?: string) =>
-      this.findProfileFile(kind, name, roots);
-    const machinePath = findProfile('machine', printerPreset);
-    if (slicerType === 'bambustudio' && printerPreset && !machinePath) {
-      throw new Error(`Printer profile "${printerPreset}" was not found. Set BAMBU_PROFILES_ROOT to the matching BambuStudio profile tree; refusing to use printer defaults.`);
+      this.findProfileFile(kind, name, kind === 'machine' ? roots : [...roots, ...configuredBambuProfileDirs()]);
+    if (!printerPreset) {
+      throw new Error('Printer preset is required for Bambu-compatible CLI slicing; select the exact bambu_model and nozzle_diameter.');
     }
-    const machineConfig = machinePath ? this.readJsonFile(machinePath) : null;
+    const machinePath = findProfile('machine', printerPreset);
+    if (!machinePath) {
+      throw new Error(`Printer profile "${printerPreset}" was not found. Set BAMBU_PROFILES_ROOT to the matching ${slicerType} profile tree; refusing to use printer defaults.`);
+    }
+    let machineConfig: any;
+    try {
+      machineConfig = this.readJsonFile(machinePath);
+      if (!machineConfig || Array.isArray(machineConfig) || machineConfig.name !== printerPreset) {
+        throw new Error('expected a JSON machine profile with the selected preset name');
+      }
+    } catch (error: any) {
+      throw new Error(`Printer profile "${printerPreset}" is invalid: ${error?.message ?? error}`);
+    }
+    // Some FULU/Orca machine leaves inherit their default process/filaments.
+    // Resolve those selections before building the positional CLI bundle.
+    machineConfig = await resolveBblMachineProfile(
+      activeProfilesRoot ?? path.dirname(path.dirname(path.dirname(machinePath))), printerPreset);
     const hasSlicerProfile = !!slicerProfile && fs.existsSync(slicerProfile);
     const filamentPaths: string[] = [];
 
@@ -405,7 +420,7 @@ export class STLManipulator extends EventEmitter {
       }
 
       if (!bambuOptions?.loadFilaments && filamentPaths.length === 0 && Array.isArray(parsedProfile.filament_ids)) {
-        const filamentIdIndex = this.buildFilamentIdIndex(roots);
+        const filamentIdIndex = this.buildFilamentIdIndex([...roots, ...configuredBambuProfileDirs()]);
         for (const filamentId of parsedProfile.filament_ids) {
           const filamentPath = filamentIdIndex.get(String(filamentId));
           if (filamentPath) {
@@ -477,7 +492,7 @@ export class STLManipulator extends EventEmitter {
   private async maybeFlattenBundle(
     bundle: BambuSettingsBundle,
     bambuOptions?: BambuSliceOptions,
-    activeSlicerPath?: string
+    activeProfilesRoot?: string
   ): Promise<BambuSettingsBundle> {
     const parts = bundle.settingsArg?.split(';').filter(Boolean) ?? [];
     const readProfile = (filePath: string): Record<string, unknown> => {
@@ -494,8 +509,8 @@ export class STLManipulator extends EventEmitter {
     const settings = parts.map(readProfile);
     // Read every slot: filtering unreadable names would change positional mapping.
     const filaments = bundle.filamentPaths.map(readProfile);
-    const profilesRoot = detectProfilesRoot(activeSlicerPath || process.env.SLICER_PATH);
-    const profileRoots = [path.join(profilesRoot, 'BBL'), ...this.getAvailableProfileRoots()];
+    const profilesRoot = activeProfilesRoot ?? detectProfilesRoot(process.env.SLICER_PATH);
+    const profileRoots = [path.join(profilesRoot, 'BBL')];
     const hasReferences = (profile: Record<string, unknown>) =>
       (typeof profile.inherits === 'string' && profile.inherits.length > 0) ||
       (profile.include !== undefined && profile.include !== null);
@@ -537,6 +552,7 @@ export class STLManipulator extends EventEmitter {
         : leafName(processPath, processProfile),
       filamentLeaves: filaments.map((profile, i) => leafName(bundle.filamentPaths[i], profile)),
       profilesRoot,
+      userProfileRoots: configuredBambuProfileDirs(),
       tempDir: this.tempDir,
       bedType: this.resolveBambuStudioBedType(bambuOptions?.bedType),
       filamentColours: bambuOptions?.filamentColours ?? bundle.filamentColours,
@@ -1591,19 +1607,27 @@ export class STLManipulator extends EventEmitter {
             const outputBase = path.basename(stlFilePath, is3mf ? '.3mf' : '.stl');
             const bambuOutputPath = path.join(this.tempDir, outputBase + '_sliced.3mf');
             const outputDir = path.dirname(bambuOutputPath);
-            const rawBundle = this.resolveBambuLikeSettingsBundle(
+            const profilesRoot = detectProfilesRoot(slicerPath, slicerType);
+            const rawBundle = await this.resolveBambuLikeSettingsBundle(
               outputBase,
               slicerType,
               slicerProfile,
               printerPreset,
               bambuOptions,
-              slicerType === 'bambustudio' ? detectProfilesRoot(slicerPath) : undefined
+              profilesRoot
             );
             // Resolve every BBL dependency before launching the slicer.
-            const settingsBundle = slicerType === 'bambustudio'
-              ? await this.maybeFlattenBundle(
-                  await this.expandProjectFilaments(stlFilePath, rawBundle), bambuOptions, slicerPath)
-              : rawBundle;
+            const settingsBundle = await this.maybeFlattenBundle(
+              await this.expandProjectFilaments(stlFilePath, rawBundle), bambuOptions, profilesRoot);
+            // Inherited process G-code is now present; apply Orca's existing
+            // absolute-extrusion normalization after resolving those ancestors.
+            if (slicerType === 'orcaslicer' && settingsBundle.settingsArg) {
+              const [machinePath, processPath] = settingsBundle.settingsArg.split(';');
+              settingsBundle.settingsArg = [machinePath, this.writeTempJson(
+                outputBase, 'process_orca_resolved',
+                this.sanitizeProcessForOrca(this.readJsonFile(processPath), printerPreset)
+              )].join(';');
+            }
             args = [
               '--slice', String(bambuOptions?.slicePlate ?? 0),
               '--outputdir', outputDir,
