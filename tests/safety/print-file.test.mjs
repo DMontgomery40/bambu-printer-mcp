@@ -331,3 +331,21 @@ test('actual H2D startup setup forms preserve declared PLA240 and PETG270 target
     assert.equal(result.maxNozzleTemperature,target);
   }
 });
+
+test('all-nozzle and physical-heater warmups do not add unused project filament slots',async t=>{
+  const project=JSON.parse(await fs.readFile(new URL('../fixtures/h2d_gui_sliced/project_settings.config',import.meta.url),'utf8'));
+  const plate=JSON.parse(await fs.readFile(new URL('../fixtures/h2d_gui_sliced/plate_1.json',import.meta.url),'utf8'));
+  assert.equal(project.filament_type.length,8);assert.deepEqual(plate.filament_ids,[4]);
+  for(const warmup of ['M104 S140 A','M104 S140 T0','M109 S140 T1','M104 S140']) {
+    const result=await inspect(t,'',{model:'h2d'},{'Metadata/project_settings.config':project,'Metadata/plate_1.json':plate,'Metadata/plate_1.gcode':warmup+'\nM140 S60\nT4\nM104 S220\n'});
+    assert.deepEqual(result.usedFilamentPositions,[4],warmup);
+  }
+});
+
+test('ambiguous heater candidates still enforce every possible material temperature ceiling',async t=>{
+  const entries={'Metadata/project_settings.config':{printer_model:'h2d',nozzle_diameter:['0.4','0.4'],filament_type:['PLA','PA']},'Metadata/plate_1.json':{filament_ids:[1]}};
+  for(const heater of ['M104 S300 A','M104 S300 T0','M109 R300 T1'])
+    await assert.rejects(inspect(t,'',{model:'h2d'},{...entries,'Metadata/plate_1.gcode':'T1\n'+heater+'\n'}),/PLA|material.*limit/i);
+  const selected=await inspect(t,'',{model:'h2d'},{...entries,'Metadata/plate_1.gcode':'T1\nM104 S300\n'});
+  assert.deepEqual(selected.usedFilamentPositions,[1]);
+});

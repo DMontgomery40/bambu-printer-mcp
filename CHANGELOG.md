@@ -8,6 +8,7 @@
 - Add shared print safety checks for declared model, nozzle, material, selected plate, and every supported heating command in the final printable file.
 - Require fresh MQTT identity, nozzle configuration, ready state, and error checks before upload and dispatch; compare declared material with available mapped-spool reports.
 - Preserve complete mixed dual-nozzle diameter metadata and accept explicit per-nozzle diameter requirements for pre-sliced direct and bridge jobs.
+- Preserve the selected plate's used filament slots during all-nozzle warmup checks; temperature candidates do not create extra AMS mapping requirements.
 - Apply independent printer/component and material temperature ceilings, reject nonfinite values before connecting, and require declared material for manual nozzle heating. Keep heater-off commands available.
 - Inspect private file snapshots and use unique remote print names. Download and inspect remote G-code before starting a verified copy.
 - Check the currently loaded material for manual heating and G-code-file dispatch, bind resume to an inspected paused job, and let stop/heater-off requests cancel pending operations before dispatch.

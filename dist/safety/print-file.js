@@ -312,11 +312,12 @@ export async function inspectPrintFile(filePath, options) {
             validateStartupPurgeTemperature(value, model, affected.map(index => materials[index]));
         else
             validateTemperature(component, value, model, affected.map(index => materials[index]));
+        // Candidate materials constrain heat, but only plate metadata and explicit
+        // filament selections establish physical spool use. Heating a nozzle is not
+        // evidence that every project filament must be mapped into the AMS.
         if (component === 'nozzle') {
             nozzleTarget = value;
             maxNozzleTemperature = Math.max(maxNozzleTemperature, value);
-            if (value > 0)
-                affected.forEach(index => used.add(index));
         }
         else if (component === 'bed')
             maxBedTemperature = Math.max(maxBedTemperature, value);
