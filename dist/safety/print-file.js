@@ -338,6 +338,16 @@ export async function inspectPrintFile(filePath, options) {
             line = line.replace(/^N\d+\s*/i, '').replace(/\*\d+\s*$/, '');
             if (/[{}\[\]#]/.test(line))
                 fail('unresolved dynamic command syntax');
+            if (/^SYNC(?=$|\s)/i.test(line)) {
+                // H2D change_filament_gcode emits SYNC T{ceil(flush_length / 125) * 5}.
+                // T is a synchronization duration here, not a nozzle temperature. The
+                // vendor template establishes no independent maximum duration.
+                const args = parameters(line.slice(4));
+                if (args.size !== 1 || !args.has('T') || !Number.isFinite(args.get('T')) || args.get('T') < 0)
+                    fail('unsupported SYNC duration parameters');
+                commandCount++;
+                continue;
+            }
             const command = line.match(/^([GMT])(\d+(?:\.\d+)?)(?=$|\s|[A-Z+-])/i);
             if (!command)
                 fail(`unsupported G-code command syntax '${line.slice(0, 100)}'`);
@@ -445,6 +455,15 @@ export async function inspectPrintFile(filePath, options) {
             }
             else if (/^G383\./.test(code)) {
                 fail(`unsupported thermal-affecting probing command ${code}`);
+            }
+            else if (code === 'M620.13') {
+                // Verified H2D prime-tower interface form, after T[next_extruder]: L is
+                // purge volume, T is the active filament's temperature, W/R are zero.
+                const args = parameters(argumentsText);
+                if (args.size !== 4 || args.get('W') !== 0 || args.get('R') !== 0 || !args.has('T') ||
+                    !args.has('L') || !Number.isFinite(args.get('L')) || args.get('L') < 0)
+                    fail('unsupported M620.13 prime-tower temperature parameters');
+                heat('nozzle', args.get('T'), active);
             }
             else if (code === 'M620.15') {
                 // H2D change_filament_gcode supplies the incoming filament's cooling

@@ -230,3 +230,84 @@ test('non-FFF job declarations and laser activation commands cannot use the FFF 
   entries['Metadata/plate_1.gcode']+='M960 S1 P1 ; ordinary FFF lidar/calibration light\nM960 S1 P0\n';
   await inspect(t,'',{model:'h2d'},entries);
 });
+
+test('checked-in H2D prime-tower interface M620.13 validates the active filament temperature',async t=>{
+  const {project}=await h2dGuiData();
+  const prime=templateLine(project.change_filament_gcode,'M620.13')
+    .replace('{filament_tower_interface_purge_volume}','10').replace('{filament_tower_interface_print_temp}','320');
+  const result=await inspect(t,header('H2D','PLA;PA-CF','0.4;0.4')+'T0\nM620 S1A\nT1\n;LAYER_CHANGE\n'+prime+'\n',{model:'h2d'});
+  assert.equal(result.maxNozzleTemperature,320);
+  // A pending PA tool change must not relabel a still-active PLA filament.
+  await assert.rejects(inspect(t,header('H2D','PLA;PA-CF','0.4;0.4')+'T0\nM620 S1A\n'+prime+'\n',{model:'h2d'}),/PLA|material|temperature/i);
+  for(const command of ['M620.13 W0 L10 T400 R0','M620.13 W0 L10 T270 R0','M620.13 W0 L10 TNaN R0','M620.13 W0 L10 T-1 R0','M620.13 W0 L10 R0','M620.13 W1 L10 T220 R0','M620.13 W0 L-1 T220 R0','M620.13 W0 L10 T220 R1','M620.13 W0 L10 T220 R0 S400'])
+    await assert.rejects(inspect(t,header('H2D','PLA','0.4;0.4')+command+'\n',{model:'h2d'}),/temperature|unsupported|parameter|limit|material/i,command);
+});
+
+const h2dRoutines=['machine_start_gcode','change_filament_gcode','machine_end_gcode'];
+function expandH2dFamilyLine(line) {
+  const value=expression=>/chamber_temperature/.test(expression)?'40':/bed_temperature/.test(expression)?'60':/nozzle_diameter/.test(expression)?'0.4':
+    /(?:temperature|temp)/.test(expression)?'220':/filament_type/.test(expression)?'PLA':
+    /(?:volumetric|feedrate)/.test(expression)?'100':
+    /(?:initial_no_support_extruder|current_extruder|next_extruder|first_non_support_filaments|first_filaments)/.test(expression)?'0':'10';
+  return line.replace(/\{[^{}]*\}/g,value).replace(/\[[^\[\]]*\]/g,value).split(';')[0].trim();
+}
+async function inspectH2dFamilyInventory(t,profile) {
+  const commands=new Set();const forms=new Set();
+  for(const key of h2dRoutines) for(const line of (profile[key]??'').split('\n')) {
+    if(!/^\s*(?:M62[01]|G383|G150)(?:\.|\s|$)/.test(line)) continue;
+    const expanded=expandH2dFamilyLine(line);const command=expanded.match(/^\S+/)[0];commands.add(command);forms.add(expanded);
+  }
+  for(const expanded of forms) {
+    await assert.doesNotReject(inspect(t,header('H2D','PLA','0.4;0.4')+expanded+'\n',{model:'h2d'}),expanded);
+    const command=expanded.match(/^\S+/)[0];
+    const thermalKeys=command==='M620.10'?['T','P']:command==='M620.13'?['T']:command==='M620.15'?['C']:command==='M620.17'?['S']:['G383','G383.3','G150'].includes(command)?['T']:[];
+    for(const key of thermalKeys) {
+      const target=new RegExp(`\\b${key}[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)`);
+      if(!target.test(expanded)) continue;
+      const unsafe=expanded.replace(target,key+'400');
+      await assert.rejects(inspect(t,header('H2D','PLA','0.4;0.4')+unsafe+'\n',{model:'h2d'}),/temperature|limit|material/i,unsafe);
+    }
+  }
+  return [...commands].sort();
+}
+test('every M620 G383 and G150 form in the checked-in H2D templates is parsed and its thermal targets checked',async t=>{
+  const {project}=await h2dGuiData();
+  assert.deepEqual(await inspectH2dFamilyInventory(t,project),['G150','G150.1','G150.2','G150.3','G383','G383.3','M620','M620.10','M620.11','M620.13','M620.15','M620.17','M620.6','M621']);
+});
+test('every M620 G383 and G150 form in installed H2D templates is parsed and its thermal targets checked',async t=>{
+  const base='/Applications/BambuStudio.app/Contents/Resources/profiles/BBL/machine';
+  let names;try {names=(await fs.readdir(base)).filter(name=>/^Bambu Lab H2D(?: |\.json)/.test(name));}catch {t.skip('installed BambuStudio H2D profiles unavailable');return;}
+  if(!names.length) {t.skip('installed BambuStudio H2D profiles unavailable');return;}
+  const commands=new Set();
+  for(const name of names) for(const command of await inspectH2dFamilyInventory(t,JSON.parse(await fs.readFile(path.join(base,name),'utf8')))) commands.add(command);
+  assert.ok(commands.has('G383.4'));assert.ok(commands.has('M620.10'));assert.ok(commands.has('G150'));
+});
+
+test('checked-in H2D SYNC T is a nonnegative duration rather than a heater target',async t=>{
+  const {project}=await h2dGuiData();
+  const sync=templateLine(project.change_filament_gcode,'SYNC').replace('{ceil(flush_length / 125) * 5}','5');
+  const result=await inspect(t,header('H2D','PLA','0.4;0.4')+'M104 S220\n'+sync+'\n',{model:'h2d'});
+  assert.equal(result.maxNozzleTemperature,220);
+  for(const command of ['SYNC T-1','SYNC TNaN','SYNC TInfinity','SYNC T','SYNC S5','SYNC T5 S400','SYNC T5 T10','SYNC T5 M104 S400'])
+    await assert.rejects(inspect(t,header('H2D','PLA','0.4;0.4')+command+'\n',{model:'h2d'}),/syntax|parameter|unsupported|duration|target/i,command);
+});
+test('all literal H2D startup change and end template commands retain numeric format compatibility',async t=>{
+  const {project}=await h2dGuiData();
+  const profiles=[project];const base='/Applications/BambuStudio.app/Contents/Resources/profiles/BBL/machine';
+  try {for(const name of (await fs.readdir(base)).filter(name=>/^Bambu Lab H2D(?: |\.json)/.test(name))) profiles.push(JSON.parse(await fs.readFile(path.join(base,name),'utf8')));}catch(error) {if(error.code!=='ENOENT') throw error;}
+  const nonGmt=new Set();
+  for(const profile of profiles) for(const key of h2dRoutines) for(const line of (profile[key]??'').split('\n')) {
+    const literal=line.trim().match(/^([A-Za-z][A-Za-z0-9.]*)/);
+    if(literal && !/^(?:[GMT]\d|T$)/.test(literal[1])) nonGmt.add(literal[1]);
+  }
+  assert.deepEqual([...nonGmt].sort(),['SYNC']);
+  // This is command-format coverage: substitute safe numeric examples into every
+  // literal command, including both conditional branches. It is not macro/firmware
+  // execution or a claim that the substituted values reproduce a real sliced job.
+  for(const profile of profiles) {
+    const lines=h2dRoutines.flatMap(key=>(profile[key]??'').split('\n')).filter(line=>/^\s*(?:[GM]\d|T[\d[{]|SYNC\s)/.test(line)).map(expandH2dFamilyLine);
+    if(!lines.length) continue;
+    await assert.doesNotReject(inspect(t,header('H2D','PLA','0.4;0.4')+lines.join('\n'),{model:'h2d'}));
+    t.diagnostic(`Parsed ${lines.length} literal H2D startup/change/end lines with safe example substitutions`);
+  }
+});

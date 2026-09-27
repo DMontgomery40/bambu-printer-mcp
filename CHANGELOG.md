@@ -12,7 +12,7 @@
 - Inspect private file snapshots and use unique remote print names. Download and inspect remote G-code before starting a verified copy.
 - Check the currently loaded material for manual heating and G-code-file dispatch, bind resume to an inspected paused job, and let stop/heater-off requests cancel pending operations before dispatch.
 - Register successful inspected BambuNetwork jobs for the same verified resume path, using unique submitted task identities.
-- Reject ambiguous ZIP entries and bind the dispatched plate and checksum to inspected bytes; bound archive inspection and check every printable plate on upload-only requests.
+- Reject ambiguous ZIP entries and bind the dispatched plate and checksum to inspected bytes; bound archive inspection and check every printable plate on upload-only requests, refusing noncanonical plate names and unrecognized G-code entries.
 - Preserve existing remote files with unique upload names and destination collision checks; verify uploaded job model/nozzles against fresh printer reports.
 - Add human print/heating preflight through MCP elicitation, mandatory finished-bed clearance, and confirmed hardware-error clearing with acknowledgment on the next print.
 - Validate H2D probing, wipe, and tool-change thermal commands and normalize GUI nozzle-variant tables. Apply a 260°C normal PLA ceiling with narrowly bounded vendor startup-purge exceptions; refuse explicit non-FFF jobs and recognized laser-enabling commands.

@@ -1290,12 +1290,20 @@ export class BambuImplementation {
         if (printable) {
           if (sourceExtension === ".3mf") {
             const { zip } = await readSafe3mfArchive(snapshot);
-            const plates = Object.values(zip.files).filter(entry => !entry.dir && /^Metadata\/plate_\d+\.gcode$/.test(entry.name));
+            const plates = Object.values(zip.files).filter(entry => !entry.dir && /\.gcode$/i.test(entry.name));
             if (!plates.length) throw new Error("Printable 3MF uploads require a sliced archive containing Metadata/plate_<n>.gcode.");
             // A later touchscreen start may select any plate in this archive.
             for (const plate of plates) {
-              const plateIndex = Number(plate.name.match(/plate_(\d+)\.gcode$/)![1]) - 1;
-              inspections.push(await inspectPrintFile(snapshot, { model: model!, plateIndex }));
+              const match = plate.name.match(/^Metadata\/plate_([1-9]\d*)\.gcode$/);
+              const plateNumber = match ? Number(match[1]) : NaN;
+              if (!Number.isSafeInteger(plateNumber)) {
+                throw new Error(`Noncanonical printable G-code entry '${plate.name}'. Re-export using exact Metadata/plate_<positive integer>.gcode paths without aliases.`);
+              }
+              const inspection = await inspectPrintFile(snapshot, { model: model!, plateIndex: plateNumber - 1 });
+              if (inspection.plateInternalPath !== plate.name) {
+                throw new Error(`Printable G-code entry '${plate.name}' does not match the inspected plate path.`);
+              }
+              inspections.push(inspection);
             }
           } else {
             inspections.push(await inspectPrintFile(snapshot, { model: model! }));

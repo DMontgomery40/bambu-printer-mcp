@@ -94,6 +94,28 @@ test("upload-only 3MF inspects every printable plate", async t => {
   assert.deepEqual(uploads, [], "an unsafe non-default plate must stop the whole upload");
 });
 
+for (const entry of [
+  "Metadata/plate_01.gcode",
+  "Metadata/plate_2.GCODE",
+  "Metadata/Plate_2.gcode",
+  "metadata/plate_2.gcode",
+  "Metadata/extra.gcode",
+  "Objects/plate_2.gcode",
+  "plate_2.gcode",
+  "Metadata/plate_0.gcode",
+  "Metadata/plate_9007199254740993.gcode",
+]) {
+  test(`upload-only refuses noncanonical printable entry ${entry}`, async t => {
+    const file = await project(t, [[1, code()]]);
+    const zip = await JSZip.loadAsync(await fs.readFile(file));
+    zip.file(entry, code("M104 S400\n"), { createFolders: false });
+    await fs.writeFile(file, await zip.generateAsync({ type: "nodebuffer" }));
+    const { printer, uploads } = capturedUpload();
+    await assert.rejects(printer.uploadFile(...credentials, file, "job.3mf", false, "p1s"), /noncanonical.*gcode/i);
+    assert.deepEqual(uploads, [], "every executable archive entry must be identified and inspected exactly before upload");
+  });
+}
+
 test("upload-only refuses an unsliced 3MF", async t => {
   const file = await project(t, []);
   const { printer, uploads } = capturedUpload();
