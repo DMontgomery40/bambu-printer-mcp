@@ -22,3 +22,13 @@ result.json
 
 # Packed Claude Desktop extension bundle
 *.mcpb
+
+# Agent scratch notes and handoffs are local; keep shared rules/public docs.
+*.md
+!/AGENTS.md
+!/CLAUDE.md
+!/.claude/agents.md
+!/README.md
+!/CHANGELOG.md
+!/CONTRIBUTORS.md
+!/docs/SLICING.md

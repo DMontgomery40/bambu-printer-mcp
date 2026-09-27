@@ -1286,7 +1286,7 @@ export class BambuImplementation {
     // integration's models.py shows the printer reports its own
     // `ipcam.rtsp_url` for these models, and Parker (H2S) rejects the
     // A1/P1 80-byte auth packet on port 6000 (verified 2026-04-27 --
-    // see PROGRESS.md "H2 probe results").
+    // confirmed by local H2 camera transport probes).
     const RTSP_MODELS = new Set([
       "x1", "x1c", "x1carbon", "x1e", "p2s",
       "h2", "h2s", "h2d", "h2c", "h2dpro",

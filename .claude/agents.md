@@ -1,20 +1,5 @@
-# Agent Instructions for bambu-printer-mcp
+# Agent instructions for bambu-printer-mcp
 
-## Release Rules
+Read [AGENTS.md](../AGENTS.md) at the repository root. It is the shared source of truth; do not duplicate or override its release ordering, validation requirements, printer safety, or Blender MCP rules here.
 
-- **Always bump the npm version** (`npm version patch`) and `npm publish` after any change that gets pushed to main -- code, docs, config, anything.
-- Commit the version bump and push it as part of the same push.
-
-## Before Pushing
-
-1. `npm run build` -- must be zero errors.
-2. `node --test tests/behavior.test.mjs` -- must pass all tests.
-3. `npm version patch` -- bump the version.
-4. `npm publish` -- publish to npm.
-5. Commit the version bump, push everything.
-
-## Key Context
-
-- This is a Bambu Lab-only MCP server (fork of mcp-3D-printer-server).
-- Real printer credentials live in `.env` (gitignored). Tests override with dummy values.
-- `BAMBU_MODEL` env var must be explicitly set to `""` in test environments to override dotenv loading from `.env`.
+Real printer credentials belong in the ignored .env file. Use dummy values for tests, and set BAMBU_MODEL explicitly to an empty string when testing missing-model behavior so dotenv cannot supply the user's printer model.

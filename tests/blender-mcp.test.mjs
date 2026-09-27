@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
@@ -13,6 +14,20 @@ const fixture = path.join(root, "tests/fixtures/blender-mcp-server.mjs");
 const sample = path.join(root, "test/sample_cube.stl");
 const data = (result) => result.structuredContent ?? JSON.parse(result.content[0].text);
 const errorText = (result) => result.content?.filter((item) => item.type === "text").map((item) => item.text).join("\n") ?? "";
+
+async function assertProcessExited(pid) {
+  assert.ok(Number.isInteger(pid) && pid > 0, "fixture must record its actual child PID");
+  const deadline = Date.now() + 2000;
+  while (true) {
+    try { process.kill(pid, 0); }
+    catch (error) {
+      if (error.code === "ESRCH") return;
+      throw error;
+    }
+    assert.ok(Date.now() < deadline, `Blender MCP child ${pid} is still running after the tool returned`);
+    await sleep(20);
+  }
+}
 
 async function start(t, mode = "normal", overrides = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-blender-test-"));
@@ -89,15 +104,31 @@ test("Blender tool failures preserve isError; protocol failures redact peer/conf
 });
 
 test("Blender request deadlines cover startup, discovery and calls without replaying mutations", async (t) => {
-  for (const mode of ["startup-timeout", "list-timeout", "call-timeout"]) {
+  for (const mode of ["startup-timeout", "startup-timeout-no-close-log", "list-timeout", "call-timeout"]) {
     await t.test(mode, async (t) => {
       const peer = await start(t, mode);
-      const result = await peer.call("blender_mcp_call", { tool_name: "execute_blender_code", arguments: { code: "pass" }, timeout_ms: 300 });
+      // Leave time for each intended protocol phase on shared CI workers.
+      const result = await peer.call("blender_mcp_call", { tool_name: "execute_blender_code", arguments: { code: "pass" }, timeout_ms: 1000 });
       assert.equal(result.isError, true);
       assert.match(errorText(result), /timed out|timeout/i);
-      const calls = peer.events().filter((event) => event.method === "tools/call");
+      const events = peer.events();
+      const pid = events.find((event) => event.event === "spawn")?.pid;
+      let exited = false;
+      t.after(() => {
+        // If the cleanup assertion fails, do not leave its test child behind.
+        if (!exited && Number.isInteger(pid)) {
+          try { process.kill(pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+        }
+      });
+      await assertProcessExited(pid);
+      exited = true;
+      const expectedMethod = mode.startsWith("startup-timeout") ? "initialize" : mode === "list-timeout" ? "tools/list" : "tools/call";
+      assert.ok(events.some((event) => event.method === expectedMethod), `test must reach ${expectedMethod}, not time out in an earlier phase`);
+      const expectedPhase = mode.startsWith("startup-timeout") ? "initialization" : mode === "list-timeout" ? "tool discovery" : "tool request";
+      assert.match(errorText(result), new RegExp(`during ${expectedPhase}`));
+      const calls = events.filter((event) => event.method === "tools/call");
       assert.equal(calls.length, mode === "call-timeout" ? 1 : 0);
-      assert.equal(peer.events().at(-1).event, "closed");
+      if (mode === "startup-timeout-no-close-log") assert.equal(events.some((event) => event.event === "closed"), false);
     });
   }
 });

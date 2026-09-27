@@ -13,8 +13,6 @@ Built with help from our [contributors](./CONTRIBUTORS.md). Huge thanks to every
 
 This is a stripped-down, Bambu-only fork of [mcp-3D-printer-server](https://github.com/DMontgomery40/mcp-3D-printer-server). All OctoPrint, Klipper, Duet, Repetier, Prusa Connect, and Creality Cloud support has been removed. What remains is a focused, lean implementation for Bambu Lab hardware.
 
-Local handoff note: see [REMOTE-DEPLOYMENT.md](./REMOTE-DEPLOYMENT.md) for the custom H2D/H2S/H2C patches, per-printer MCP split, and remote deployment plan used in this clone.
-
 ---
 
 ## What's new in bambu-printer-mcp

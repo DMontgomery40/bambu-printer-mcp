@@ -14,7 +14,7 @@ reader.on("line", (line) => {
   const request = JSON.parse(line);
   log(request);
   if (request.method === "initialize") {
-    if (mode === "startup-timeout") return;
+    if (mode.startsWith("startup-timeout")) return;
     return send(request.id, { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "mock-blender", version: "1" } });
   }
   if (request.method === "tools/list") {
@@ -53,4 +53,8 @@ reader.on("line", (line) => {
     _meta: { source: "mock-blender" },
   });
 });
-reader.on("close", () => { log({ event: "closed" }); });
+reader.on("close", () => {
+  // Model an MCP peer that exits without writing a graceful-shutdown log.
+  if (mode === "startup-timeout-no-close-log") process.exit(0);
+  log({ event: "closed" });
+});
