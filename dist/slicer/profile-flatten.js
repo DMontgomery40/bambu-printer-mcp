@@ -551,6 +551,9 @@ export async function flattenForCli(opts) {
     }
     filamentFlats.forEach((f, i) => ensureFilamentColour(f, opts.filamentColours?.[i]));
     applyBedType(processFlat, opts.bedType);
+    if (processFlat["wipe_tower_x"] === undefined && processFlat["wipe_tower_y"] === undefined) {
+        Object.assign(processFlat, opts.projectTowerPosition);
+    }
     placePrimeTowerForAllNozzles(machineFlat, processFlat);
     // Mirror the GUI's auto-extend behavior: when the caller explicitly
     // chose a process or filament that wasn't pre-declared compatible with

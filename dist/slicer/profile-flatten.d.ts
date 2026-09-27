@@ -76,6 +76,11 @@ export interface FlattenOptions {
      * fall back to DEFAULT_FILAMENT_COLOUR.
      */
     filamentColours?: (string | undefined)[];
+    /** Saved per-plate positions, used only when the process sets no position. */
+    projectTowerPosition?: {
+        wipe_tower_x?: unknown;
+        wipe_tower_y?: unknown;
+    };
 }
 /** Best-effort extruder count for fallback nozzle_volume_type sizing. */
 /** BambuStudio's built-in filament_colour default. */

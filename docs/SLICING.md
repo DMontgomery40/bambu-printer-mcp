@@ -5,13 +5,14 @@
 | Use case | Path | Status |
 |---|---|---|
 | Single-color slice (any BBL printer) | MCP slices via CLI with automatic BBL profile resolution | ✅ Works (verified H2S, H2D, X1C, P1S on 02.06.01.55). H2C requires Bambu Studio 2.4.0+ and `BAMBU_MODEL=h2c`. |
-| Multi-color slice on H2-family printers | None — **upstream BambuStudio CLI is blocked for the verified H2D multi-color path** | ❌ See "Multi-color CLI gap" below |
+| Multi-color CLI slicing | MCP prepares every filament slot's colour and a fallback tower position | Contributor-verified on Windows BambuStudio 02.08.02.60, including four-colour X2D slicing. See version limits below. |
+| X2D status and slicing | `BAMBU_MODEL=x2d` with an installed X2D preset | Available. Direct X2D printing is deferred pending the native eMMC transport. |
 | Pre-sliced `.gcode.3mf` → printer | MCP `print_3mf` | ✅ Works (verified live on Kingpin H2D) |
-| Anything else | Pre-slice in Bambu Studio GUI, hand to `print_3mf` | ✅ Works always |
+| Other slicing combinations | Pre-slice in the GUI, then use `print_3mf` for a supported printer | Inspect the preview and use the printer's supported transport. |
 
 There are two slicing paths. Pick the one that matches your situation.
 
-**Path A — pre-slice in Bambu Studio (recommended, always works):**
+**Path A — pre-slice in Bambu Studio:**
 
 ```
 Mesh ──► Bambu Studio (GUI) ──► sliced .gcode.3mf ──► MCP print_3mf
@@ -29,8 +30,8 @@ calling the CLI — a workaround for several upstream bugs in BambuStudio's
 CLI mode (issues
 [#9636](https://github.com/bambulab/BambuStudio/issues/9636) and
 [#9968](https://github.com/bambulab/BambuStudio/issues/9968)). Verified
-on H2S, H2D, X1C, and P1S with stock BBL profiles. This verification is
-single-color only; it does not cover H2D two-color/multi-material slicing.
+on H2S, H2D, X1C, and P1S with stock BBL profiles for single-colour slicing.
+The newer multi-colour evidence and version limits are described below.
 H2C is accepted as `BAMBU_MODEL=h2c`; use Bambu Studio 2.4.0 or newer for
 the H2C printer preset and do not substitute `h2d`.
 
@@ -52,35 +53,35 @@ beside the executable, set `BAMBU_PROFILES_ROOT` to the matching installation's
 directory containing `BBL`. An unavailable tree produces an error rather than
 using another installation's settings.
 
-## Multi-color CLI gap (2026-04-28)
+## Multi-colour CLI support and version limits
 
-`BambuStudio --slice` is still blocked on H2D dual-extruder, multi-color
-projects. Version `02.06.00.51` SIGSEGVed in the slicer setup path, and
-version `02.06.01.55` still fails the same repro: exported-project CLI slicing
-reaches `Detect overhangs for auto-lift` then reports `No valid nozzle found.
-Please check nozzle count.` / `return_code=-100`; raw `--load-assemble-list`
-still exits `139`. Filed as
-[bambulab/BambuStudio#10408](https://github.com/bambulab/BambuStudio/issues/10408)
-with repro files attached.
+The CLI can crash when a project uses a filament after the first but its
+loaded profiles leave `filament_colour` at a single-entry default. The MCP
+now supplies one colour per slot. Explicit `filament_colours` values take
+priority, then the input 3MF's colours, each profile's own colour, and finally
+the BambuStudio default. Custom filament settings remain intact.
 
-What this means in practice:
+For multi-nozzle printers, an unset tower position is placed within the
+shared nozzle area. Saved project positions and explicit process positions
+are preserved. This does not guarantee a collision-free layout: inspect the
+slicer preview for the actual model and tower geometry.
 
-- **Single-color slicing works.** The CLI path slices
-  H2S/H2D/X1C/P1S models cleanly and produces printable `.gcode.3mf` output.
-  H2C follows the H2 print path but needs a Bambu Studio install that includes
-  the `Bambu Lab H2C <nozzle> nozzle` preset.
-- **Multi-color slicing must use the GUI.** Open the model in Bambu Studio,
-  paint or split-and-assign filaments, export the sliced `.gcode.3mf`, hand it
-  to MCP `print_3mf` (or `print_collar_charm` for two-part charm projects).
-- **The dispatch path is fine.** Once you have a sliced `.gcode.3mf`, the MCP
-  uploads it via FTPS and starts the print correctly — verified live on H2S
-  (Parker) and H2D (Kingpin).
+[Sebastian's contribution](https://github.com/DMontgomery40/bambu-printer-mcp/pull/18)
+includes real Windows BambuStudio `02.08.02.60` bisection and a successful
+four-colour X2D slice. This is slicing evidence, not a physical-print test.
 
-The MCP includes `scripts/build-charm-3mf.mjs` which constructs valid
-multi-object source 3MFs (per-object extruder assignment, plate filament_maps).
-That tool is correct end-to-end; it produces input the BambuStudio CLI parses
-without complaint. The crash is downstream, in BambuStudio's slicer setup
-itself. The script is ready to use the moment upstream ships #10408.
+Older H2D failures remain separate evidence: `02.06.00.51` crashed during
+slicer setup, and `02.06.01.55` reported `No valid nozzle found` / code `-100`
+on an exported multi-colour project. These were filed in
+[BambuStudio#10408](https://github.com/bambulab/BambuStudio/issues/10408).
+The colour fix does not establish that every older-version or multi-material
+failure is resolved. Use a GUI-sliced project when a CLI combination fails.
+
+X2D has its own preset, status identification, and slicing support. Direct
+X2D printing is deliberately rejected before slicing or upload because its
+internal eMMC needs a native transport that has not shipped. Print through a
+supported slicer; do not choose H2D as a substitute model. Existing H2S/H2D
+print routes remain unchanged.
 
 ## Why Path A is still recommended
 

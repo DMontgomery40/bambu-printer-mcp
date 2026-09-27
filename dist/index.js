@@ -14,7 +14,7 @@ import { BambuNetworkBridge } from "./bambu-network-bridge.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
 import { hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue } from "./ams-mapping.js";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, parse3MF } from './3mf_parser.js';
-import { BambuImplementation } from "./printers/bambu.js";
+import { BambuImplementation, assertDirectPrintSupported } from "./printers/bambu.js";
 dotenv.config();
 const DEFAULT_HOST = process.env.BAMBU_PRINTER_HOST || process.env.PRINTER_HOST || "localhost";
 const DEFAULT_BAMBU_SERIAL = process.env.BAMBU_PRINTER_SERIAL || process.env.BAMBU_SERIAL || "";
@@ -45,9 +45,7 @@ const DEFAULT_BAMBU_MODEL = process.env.BAMBU_PRINTER_MODEL?.trim().toLowerCase(
 const DEFAULT_BED_TYPE = process.env.BED_TYPE?.trim().toLowerCase() || "textured_plate";
 const DEFAULT_NOZZLE_DIAMETER = process.env.NOZZLE_DIAMETER?.trim() || "0.4";
 const VALID_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s", "h2c", "x2d"];
-// Models that use the H2-generation print route (project_file + ams_mapping2).
-// X2D is a dual-nozzle H2D-class machine on the same firmware generation.
-const H2_BAMBU_MODELS = new Set(["h2d", "h2s", "h2c", "x2d"]);
+const H2_BAMBU_MODELS = new Set(["h2d", "h2s", "h2c"]);
 const VALID_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"];
 const VALID_BAMBUSTUDIO_CLI_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"];
 // Map model IDs to BambuStudio --load-machine preset names
@@ -2127,7 +2125,7 @@ class BambuPrinterMCPServer {
                                 bambu_model: {
                                     type: "string",
                                     enum: [...VALID_BAMBU_MODELS],
-                                    description: "REQUIRED: Bambu Lab printer model. H2D, H2S, H2C, and X2D are the primary intended paths."
+                                    description: "REQUIRED: Bambu Lab printer model. H2D, H2S, and H2C are the primary intended paths. X2D direct printing is not supported."
                                 },
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
@@ -2363,23 +2361,27 @@ class BambuPrinterMCPServer {
                         }
                         break;
                     }
-                    case "upload_file":
+                    case "upload_file": {
                         if (!args?.file_path || !args?.filename) {
                             throw new Error("Missing required parameters: file_path and filename");
                         }
-                        if (Boolean(args.print ?? false)) {
-                            await this.resolveBambuModel(args?.bambu_model);
-                        }
-                        result = await this.bambu.uploadFile(host, bambuSerial, bambuToken, String(args.file_path), String(args.filename), Boolean(args.print ?? false));
+                        const print = Boolean(args.print ?? false);
+                        const uploadModel = print ? await this.resolveBambuModel(args?.bambu_model) : undefined;
+                        if (print)
+                            assertDirectPrintSupported(uploadModel, bambuSerial);
+                        result = await this.bambu.uploadFile(host, bambuSerial, bambuToken, String(args.file_path), String(args.filename), print, uploadModel);
                         break;
+                    }
                     case "start_print":
-                    case "start_print_job":
+                    case "start_print_job": {
                         if (!args?.filename) {
                             throw new Error("Missing required parameter: filename");
                         }
-                        await this.resolveBambuModel(args?.bambu_model);
-                        result = await this.bambu.startJob(host, bambuSerial, bambuToken, String(args.filename));
+                        const startModel = await this.resolveBambuModel(args?.bambu_model);
+                        assertDirectPrintSupported(startModel, bambuSerial);
+                        result = await this.bambu.startJob(host, bambuSerial, bambuToken, String(args.filename), startModel);
                         break;
+                    }
                     case "cancel_print":
                         result = await this.bambu.cancelJob(host, bambuSerial, bambuToken);
                         break;
@@ -2652,6 +2654,7 @@ class BambuPrinterMCPServer {
                         }
                         const { slicerType, slicerPath, slicerProfile } = this.resolveSlicerConfigFromArgs(args, "print_3mf");
                         const printModel = await this.resolveBambuModel(args?.bambu_model);
+                        assertDirectPrintSupported(printModel, bambuSerial);
                         const printBedType = resolveBedType(args?.bed_type);
                         const printNozzle = String(args?.nozzle_diameter || DEFAULT_NOZZLE_DIAMETER);
                         const activeSlicerProfile = await resolveTemplateFirstSlicerProfilePath(args, slicerProfile || undefined, resolveTemplatePathFromName(["json", "config", "3mf"]) || explicitTemplatePath || undefined, TEMP_DIR);
@@ -2792,6 +2795,7 @@ class BambuPrinterMCPServer {
                         }
                         const { slicerType, slicerPath, slicerProfile } = this.resolveSlicerConfigFromArgs(args, "print_collar_charm");
                         const printModel = await this.resolveBambuModel(args?.bambu_model);
+                        assertDirectPrintSupported(printModel, bambuSerial);
                         const printBedType = resolveBedType(args?.bed_type);
                         const printNozzle = String(args?.nozzle_diameter || DEFAULT_NOZZLE_DIAMETER);
                         const activeSlicerProfile = await resolveTemplateFirstSlicerProfilePath(args, slicerProfile || undefined, resolvedTemplateSourcePath || explicitTemplatePath || undefined, TEMP_DIR);

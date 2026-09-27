@@ -1,3 +1,4 @@
+export declare function assertDirectPrintSupported(model: string | undefined, serial?: string): void;
 interface BambuPrintOptionsInternal {
     projectName: string;
     filePath: string;
@@ -67,8 +68,8 @@ export declare class BambuImplementation {
         name: string;
         exists: boolean;
     }>;
-    uploadFile(host: string, serial: string, token: string, filePath: string, filename: string, print: boolean): Promise<Record<string, unknown>>;
-    startJob(host: string, serial: string, token: string, filename: string): Promise<{
+    uploadFile(host: string, serial: string, token: string, filePath: string, filename: string, print: boolean, bambuModel?: string): Promise<Record<string, unknown>>;
+    startJob(host: string, serial: string, token: string, filename: string, bambuModel?: string): Promise<{
         status: string;
         message: string;
         file: string;

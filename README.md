@@ -108,7 +108,8 @@ This fork adds a substantial set of printer control tools beyond the upstream `m
 - List, upload, and delete files on the printer's SD card via FTPS
 - Capture a JPEG snapshot from the chamber camera. Supports A1, A1 mini, P1S, P1P (TCP-on-6000), and X1, X1C, X1E, P2S, H2, H2S, H2D, H2C, H2D Pro, X2D (RTSP via ffmpeg). Requires ffmpeg in PATH for the RTSP path.
 - Upload and print pre-sliced `.gcode.3mf` files with full plate selection and calibration flag control (recommended path — see [docs/SLICING.md](./docs/SLICING.md))
-- Optional single-color auto-slice path via BambuStudio CLI. BBL profile inheritance and include templates resolve automatically before slicing; missing dependencies stop the slice. Standalone custom configurations remain supported. H2C requires a compatible installed Bambu Studio profile tree and `BAMBU_MODEL=h2c`. The previously documented H2D multi-color CLI limitation remains; use a GUI-sliced `.gcode.3mf` for that workflow. See [docs/SLICING.md](./docs/SLICING.md).
+- Slice through BambuStudio CLI with automatic BBL inheritance/include resolution, per-slot filament colours, and fallback prime-tower placement for multi-nozzle printers. Missing dependencies stop the slice; custom settings and saved project tower positions are preserved. Multi-colour slicing is verified by the contributor on BambuStudio 02.08.02.60 for Windows; older CLI versions have separate limitations. See [docs/SLICING.md](./docs/SLICING.md).
+- Recognize X2D status and slice with its own installed BambuStudio preset (`BAMBU_MODEL=x2d`). **Direct X2D printing is not supported yet**: the internal eMMC transport is pending. These print requests stop before slicing, uploading, or issuing printer commands. Print exported projects through a supported slicer instead.
 - Parse AMS mapping from the 3MF's embedded slicer metadata (`Metadata/plate_<n>.json` + gcode filament header) and send it correctly formatted per the OpenBambuAPI spec, with correct H2S/H2D/H2C `ams_mapping2` parallel array format
 - **Auto-match AMS slots by RFID** (`auto_match_ams` flag on `print_3mf`). Resolves required `tray_info_idx` from the sliced 3MF against live AMS inventory. Handles same-SKU different-color filaments by matching on `(tray_info_idx, tray_color)` and tracking already-claimed slots. Dry-run with `resolve_3mf_ams_slots` before printing.
 - Cancel, pause, and resume in-progress print jobs via MQTT
@@ -1246,7 +1247,7 @@ When `slicer_type` is `bambustudio` (the default), these additional parameters a
 | `skip_objects` | string | Object indices to skip, comma-separated (e.g. `"3,5,10"`) |
 | `load_filaments` | string | Filament profile paths, semicolon-separated |
 | `load_filament_ids` | string | Filament-to-object mapping, comma-separated |
-| `filament_colours` | string | Slot colours, one `#RRGGBB` per filament slot, semicolon-separated (defaults to the input 3MF project colours) |
+| `filament_colours` | string | Slot colours, one `#RRGGBB` per filament slot, semicolon-separated. Explicit values take priority, followed by input 3MF colours, each custom profile's colour, then the BambuStudio default. |
 | `enable_timelapse` | boolean | Enable timelapse-aware slicing |
 | `allow_mix_temp` | boolean | Allow mixed-temperature filaments on one plate |
 | `scale` | number | Uniform scale factor |

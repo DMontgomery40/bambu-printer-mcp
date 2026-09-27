@@ -561,7 +561,7 @@ test("H2 family print_3mf rejects pre-sliced filament jobs without explicit AMS 
   t.after(async () => { await closeTransport(transport); });
 
   await client.connect(transport);
-  for (const bambuModel of ["h2s", "h2d", "h2c", "x2d"]) {
+  for (const bambuModel of ["h2s", "h2d", "h2c"]) {
     const result = await client.callTool({
       name: "print_3mf",
       arguments: {
@@ -621,8 +621,7 @@ test("H2 ams_slots expand into project-level ams_mapping and ams_mapping2", asyn
   }
 });
 
-for (const bambuModel of ["h2c", "x2d"]) {
-test(`${bambuModel.toUpperCase()} model routes project files through the H2 print path independent of serial prefix`, async () => {
+test("H2C model routes project files through the H2 print path independent of serial prefix", async () => {
   const threeMfPath = await writeSliced3mfFixture({ plateFilamentIds: [1] });
   const bambu = new BambuImplementation();
   let uploadedPath = null;
@@ -639,9 +638,9 @@ test(`${bambuModel.toUpperCase()} model routes project files through the H2 prin
 
   try {
     const result = await bambu.print3mf("127.0.0.1", "01P00TEST0000000", "TEST_TOKEN", {
-      projectName: `${bambuModel}-cube`,
+      projectName: "h2c-cube",
       filePath: threeMfPath,
-      bambuModel,
+      bambuModel: "h2c",
       plateIndex: 0,
       useAMS: true,
       amsSlots: [1],
@@ -650,7 +649,7 @@ test(`${bambuModel.toUpperCase()} model routes project files through the H2 prin
 
     assert.equal(result.status, "success");
     assert.equal(uploadedPath, `/${path.basename(threeMfPath)}`);
-    assert.ok(publishedPayload?.print, `${bambuModel} should publish a project_file payload`);
+    assert.ok(publishedPayload?.print, "H2C should publish a project_file payload");
     assert.equal(publishedPayload.print.command, "project_file");
     assert.match(publishedPayload.print.url, /^ftp:\/\/\//);
     assert.deepEqual(publishedPayload.print.ams_mapping, [-1, 1, -1, -1]);
@@ -664,7 +663,6 @@ test(`${bambuModel.toUpperCase()} model routes project files through the H2 prin
     fs.rmSync(threeMfPath, { force: true });
   }
 });
-}
 
 async function captureP2SPrint({ serial, bambuModel }) {
   const threeMfPath = await writeSliced3mfFixture({ name: "p2s-cube", plateFilamentIds: [1] });

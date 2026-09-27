@@ -46,8 +46,13 @@ const MODEL_ID_TO_NAME = {
     "BL-P002": "X1",
     C13: "X1E",
 };
-// X2D shares the H2-generation upload/project_file route.
-const H2_MODEL_NAMES = new Set(["h2", "h2c", "h2d", "h2dpro", "h2d pro", "h2s", "x2d"]);
+const H2_MODEL_NAMES = new Set(["h2", "h2c", "h2d", "h2dpro", "h2d pro", "h2s"]);
+export function assertDirectPrintSupported(model, serial) {
+    if (model?.trim().toLowerCase() === "x2d" || serial?.trim().toUpperCase().startsWith("20P")) {
+        throw new Error("X2D direct printing is not supported pending native eMMC transport support. " +
+            "X2D status and slicing remain available; use a supported slicer to print.");
+    }
+}
 function isH2ModelName(model) {
     return H2_MODEL_NAMES.has(String(model ?? "").trim().toLowerCase().replace(/\s+/g, " "));
 }
@@ -461,6 +466,7 @@ export class BambuImplementation {
         }
     }
     async print3mf(host, serial, token, options) {
+        assertDirectPrintSupported(options.bambuModel, serial);
         if (!options.filePath.toLowerCase().endsWith(".3mf")) {
             throw new Error("print3mf requires a .3mf input file.");
         }
@@ -477,7 +483,6 @@ export class BambuImplementation {
         // P2S firmware 01.02.00.00; file:///sdcard/... fails with ERROR STATE).
         const isH2 = serial.startsWith("093") ||
             serial.startsWith("094") ||
-            serial.startsWith("20P") ||
             isH2ModelName(options.bambuModel);
         const isP2S = serial.startsWith("22E") || isP2SModelName(options.bambuModel);
         const isA1 = String(options.bambuModel ?? "").trim().toLowerCase() === "a1" ||
@@ -934,7 +939,9 @@ export class BambuImplementation {
             exists,
         };
     }
-    async uploadFile(host, serial, token, filePath, filename, print) {
+    async uploadFile(host, serial, token, filePath, filename, print, bambuModel) {
+        if (print)
+            assertDirectPrintSupported(bambuModel, serial);
         await fs.access(filePath);
         const normalizedFileName = filename.replace(/^\/+/, "");
         const remotePath = normalizedFileName.includes("/")
@@ -950,7 +957,7 @@ export class BambuImplementation {
         };
         if (print) {
             if (remotePath.toLowerCase().endsWith(".gcode")) {
-                response.startResult = await this.startJob(host, serial, token, remotePath);
+                response.startResult = await this.startJob(host, serial, token, remotePath, bambuModel);
             }
             else if (remotePath.toLowerCase().endsWith(".3mf")) {
                 response.note =
@@ -962,7 +969,8 @@ export class BambuImplementation {
         }
         return response;
     }
-    async startJob(host, serial, token, filename) {
+    async startJob(host, serial, token, filename, bambuModel) {
+        assertDirectPrintSupported(bambuModel, serial);
         const lower = filename.toLowerCase();
         if (lower.endsWith(".3mf") && !lower.endsWith(".gcode.3mf")) {
             throw new Error("Use print_3mf for .3mf project files.");

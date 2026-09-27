@@ -84,6 +84,8 @@ export interface FlattenOptions {
    * fall back to DEFAULT_FILAMENT_COLOUR.
    */
   filamentColours?: (string | undefined)[];
+  /** Saved per-plate positions, used only when the process sets no position. */
+  projectTowerPosition?: { wipe_tower_x?: unknown; wipe_tower_y?: unknown };
 }
 
 interface IndexedProfile {
@@ -684,6 +686,9 @@ export async function flattenForCli(opts: FlattenOptions): Promise<FlattenedProf
   }
   filamentFlats.forEach((f, i) => ensureFilamentColour(f, opts.filamentColours?.[i]));
   applyBedType(processFlat, opts.bedType);
+  if (processFlat["wipe_tower_x"] === undefined && processFlat["wipe_tower_y"] === undefined) {
+    Object.assign(processFlat, opts.projectTowerPosition);
+  }
   placePrimeTowerForAllNozzles(machineFlat, processFlat);
 
   // Mirror the GUI's auto-extend behavior: when the caller explicitly
