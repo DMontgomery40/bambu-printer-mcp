@@ -13,6 +13,8 @@
 
 A Bambu Lab-focused MCP server for controlling Bambu printers, manipulating STL files, and managing end-to-end 3MF print workflows from Claude Desktop, Claude Code, or any MCP-compatible client.
 
+**[Browse the documentation site](https://dmontgomery40.github.io/bambu-printer-mcp/)** for searchable setup guides, slicing and AMS guidance, and the full tool reference. It is generated from this README and the docs folder.
+
 Built with help from our [contributors](./CONTRIBUTORS.md). Huge thanks to everyone sharing fixes, careful bug reports, and real printer testing!
 
 This is a stripped-down, Bambu-only fork of [mcp-3D-printer-server](https://github.com/DMontgomery40/mcp-3D-printer-server). All OctoPrint, Klipper, Duet, Repetier, Prusa Connect, and Creality Cloud support has been removed. What remains is a focused, lean implementation for Bambu Lab hardware.
@@ -60,6 +62,43 @@ worked and whether I need to restart or reload the harness.
 
 [Setup reference](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SETUP.md) · [FULU guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md) · [Optional code mode](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SETUP.md#optional-code-mode)
 
+## What to ask your agent
+
+Ask for the result you want, not the steps. Current models plan across tools: they search the web, read photos, look up exact dimensions, edit models, slice, and print. Expect a question or two when a choice matters, such as which filament to use or whether to start the print.
+
+This server provides the printer, slicing, AMS, and mesh tools. Web search, photos, and Blender edits come from your agent and its other connections, such as a [Blender MCP server](#blender-mcp). Printing a model your agent edited uses CLI slicing with your installed slicer presets; see the [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md).
+
+### Start from anything
+
+- **"Here's a phone stand on MakerWorld. Make it fit the new iPhone and print it in black."**\
+  Your agent looks up Apple's published dimensions, adjusts the stand in Blender, slices it for your printer, and finds the AMS tray with black filament.
+- **"I want one of these."** *(with a photo of a planter you saw at a café)*\
+  It works out the shape and size from the photo, finds or models a matching design, and asks about anything the photo can't show.
+- **"Can you print a replacement?"** *(with a photo of a snapped dishwasher rack clip)*\
+  It asks for a measurement or two where the fit matters, models the part, and prints it in a loaded material that suits the job.
+
+### From anywhere, while it prints
+
+If your agent is always on, such as OpenClaw or Hermes Agent running on a computer at home, message it from Telegram or any other chat app. For direct LAN printing, the server runs on the printer's local network; you don't have to.
+
+- **"How's the print going? Send me a picture."**\
+  It reports progress and time remaining, and sends a snapshot from the chamber camera.
+- **"The corner is lifting. Pause it."**\
+  It pauses the job so you can decide whether to resume or cancel.
+- **"One of the parts came loose. Skip it and keep printing the rest."**\
+  It finds that object on the plate and skips only that one.
+- **"Start drying the PETG so it's ready when I get home."**\
+  On a heated AMS, it starts the drying cycle for the unit holding that spool.
+
+### Before you print
+
+- **"Take a picture and make sure the bed is clear, then start the bracket I sliced last night."**\
+  It checks the camera image before it sends the job.
+- **"What's loaded in the AMS? Print this in whatever black I have."**\
+  It reads the live AMS inventory and matches the file's filaments to your trays.
+- **"Are there any errors on the printer?"**\
+  It reads the printer's HMS diagnostics and explains them.
+
 <details>
 <summary><strong>Start here</strong></summary>
 
@@ -69,6 +108,7 @@ worked and whether I need to restart or reload the harness.
 |---|---|
 | Use open-source slicing and a cloud-free print workflow | [FULU setup: slicer, LAN, and optional bridge](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md) |
 | Connect this MCP to my agent | [Copy the setup request](#set-up-with-your-agent) |
+| See what my agent can do with it | [What to ask your agent](#what-to-ask-your-agent) |
 | Troubleshoot setup or configure it manually | [Installation, environment variables, and LAN reference](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SETUP.md) |
 | Prepare a printable file or troubleshoot slicing | [Slicing guide and model routing](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md) |
 | Choose filament trays or inspect a printer | [AMS setup](#ams-automatic-material-system-setup) and [printer tools](#printer-control-tools) |
@@ -96,6 +136,7 @@ See the [changelog](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main
 - [FULU and open-source printing](#fulu-and-open-source-printing)
 - [Features](#features)
 - [Set up with your agent](#set-up-with-your-agent)
+- [What to ask your agent](#what-to-ask-your-agent)
 - [AMS (Automatic Material System) Setup](#ams-automatic-material-system-setup)
 - [Bambu Communication Notes (MQTT and FTP)](#bambu-communication-notes-mqtt-and-ftp)
   - [What this fork fixes](#what-this-fork-fixes)
@@ -106,7 +147,6 @@ See the [changelog](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main
   - [Slicing Tools](#slicing-tools)
   - [Advanced Tools](#advanced-tools)
 - [Available Resources](#available-resources)
-- [Example Commands for Claude](#example-commands-for-claude)
 - [Bambu Lab Printer Limitations](#bambu-lab-printer-limitations)
 - [General Limitations and Considerations](#general-limitations-and-considerations)
   - [Memory usage](#memory-usage)
@@ -1168,62 +1208,6 @@ Resources follow the MCP resource protocol and can be read by calling `ReadResou
 - `printer://{host}/hms` -- HMS and error diagnostics from the latest status payload. Returns connection state, printer status, explicit HMS payloads when present, and shallow raw fields whose names indicate errors, failures, warnings, or HMS data.
 
 **Example:** To read the status of the default printer, use URI `printer://192.168.1.100/status`. The host segment must match a configured printer IP; the server uses `PRINTER_HOST` if the default URI template is used.
-
-</details>
-
-<details>
-<summary><strong>Example Commands for Claude</strong></summary>
-
-## Example Commands for Claude
-
-After connecting the MCP server in Claude Desktop or Claude Code, you can ask Claude to perform these operations directly in conversation.
-
-### Printer status and control
-
-- "What is the current status of my Bambu printer?"
-- "What temperature is the bed at right now?"
-- "Show me the files on my printer's SD card."
-- "Cancel the current print job."
-- "Set the nozzle temperature to 220 degrees."
-- "Set the bed to 65 degrees."
-- "Turn the chamber light on."
-- "Set the chamber fan to 40 percent."
-- "List the object IDs in this sliced 3MF."
-- "Skip object 6495 on the current print."
-- "Start the AMS drying cycle on AMS 0."
-- "Stop drying on AMS 1."
-- "Match the AMS slots for this 3MF against my loaded filaments without printing."
-- "Auto-match AMS slots and print this 3MF."
-- "Take a camera snapshot of the print bed."
-- "Show me the HMS error codes on the printer."
-- "What speed mode is the printer in?"
-- "Set the airduct to cooling mode."
-
-### Printing 3MF files
-
-- "Print the file at ~/Downloads/bracket.3mf on my Bambu printer."
-- "Upload bracket.3mf to the printer and start printing with AMS slots 0 and 1."
-- "Print my_model.3mf with bed leveling enabled and vibration calibration off."
-- "Upload this 3MF without printing it yet."
-- "Use FULU OrcaSlicer-bambulab to prepare this model, then show me the sliced output before printing."
-- "Probe the FULU BambuNetwork bridge without starting a print."
-
-### STL manipulation
-
-- "What are the dimensions of this STL file?"
-- "Scale model.stl to twice its current size."
-- "Scale this model so it is 150% as wide but stays the same height."
-- "Rotate this STL 90 degrees around the Z axis."
-- "Extend the base of this model by 3mm so it sticks to the bed better."
-- "Center this model at the origin."
-- "Orient this model so its largest flat face is on the bottom."
-- "Merge any near-duplicate vertices in this STL to clean it up."
-
-### Combined workflows
-
-- "Rotate model.stl 45 degrees around Z, extend the base by 2mm, then print it on my Bambu P1S."
-- "Take this unsliced 3MF, slice it with BambuStudio, and print the result."
-- "Scale this part to 80% of its size, lay it flat, and start a print."
 
 </details>
 
