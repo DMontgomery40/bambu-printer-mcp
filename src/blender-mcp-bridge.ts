@@ -92,7 +92,11 @@ async function regularStl(filePath: string): Promise<{ bytes: number; triangles:
   try {
     geometry = new STLLoader().parse(Uint8Array.from(buffer).buffer);
     const positions = geometry.getAttribute("position");
-    if (!positions || positions.count < 3 || positions.count % 3 !== 0 || !Array.from(positions.array).every(Number.isFinite)) throw new Error("invalid vertices");
+    if (!positions || positions.count < 3 || positions.count % 3 !== 0) throw new Error("invalid vertices");
+    // Scan the typed array in place; boxing a large mesh can exhaust the JS heap.
+    for (let index = 0; index < positions.array.length; index++) {
+      if (!Number.isFinite(positions.array[index])) throw new Error("invalid vertices");
+    }
     return { bytes: stat.size, triangles: positions.count / 3 };
   } catch { throw new BlenderError("STL contains no valid finite triangle mesh."); }
   finally { geometry?.dispose(); }

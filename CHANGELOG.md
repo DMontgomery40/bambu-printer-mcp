@@ -10,6 +10,7 @@
 - Package a Claude Desktop extension with prompted printer settings, safe staging, and synchronized release versions ([#11](https://github.com/DMontgomery40/bambu-printer-mcp/pull/11)).
 
 ### Fixed
+- Validate large Blender STL meshes without boxing coordinate arrays, keeping finite-geometry checks within a bounded JavaScript heap.
 - Preserve the selected bundled process preset identity through generated settings, and remove automatically created temporary roots on shutdown while retaining explicitly configured TEMP_DIR contents.
 - Stop before printer uploads when automatic slicing or required profile preparation fails, preserving the original diagnostic. Validate model CLI configuration before flattening and advertise the required output path for standard Blender MCP edits.
 - Apply the required printer dependency patch to the resolved installed package, including hoisted npm installations, and fail installation if it cannot be applied.
