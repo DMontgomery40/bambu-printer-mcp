@@ -37,6 +37,7 @@ const MODEL_ID_TO_NAME = {
     O1D: "H2D",
     O1E: "H2D Pro",
     O1S: "H2S",
+    N6: "X2D",
     N2S: "A1",
     A1M: "A1 Mini",
     C11: "P1P",
@@ -46,6 +47,12 @@ const MODEL_ID_TO_NAME = {
     C13: "X1E",
 };
 const H2_MODEL_NAMES = new Set(["h2", "h2c", "h2d", "h2dpro", "h2d pro", "h2s"]);
+export function assertDirectPrintSupported(model, serial) {
+    if (model?.trim().toLowerCase() === "x2d" || serial?.trim().toUpperCase().startsWith("20P")) {
+        throw new Error("X2D direct printing is not supported pending native eMMC transport support. " +
+            "X2D status and slicing remain available; use a supported slicer to print.");
+    }
+}
 function isH2ModelName(model) {
     return H2_MODEL_NAMES.has(String(model ?? "").trim().toLowerCase().replace(/\s+/g, " "));
 }
@@ -95,6 +102,8 @@ class TolerantBambuClient extends BambuClient {
             return "H2C";
         if (sn.startsWith("31B"))
             return "H2DPRO";
+        if (sn.startsWith("20P"))
+            return "X2D";
         if (sn.startsWith("00M"))
             return "X1C";
         if (sn.startsWith("00W"))
@@ -457,6 +466,7 @@ export class BambuImplementation {
         }
     }
     async print3mf(host, serial, token, options) {
+        assertDirectPrintSupported(options.bambuModel, serial);
         if (!options.filePath.toLowerCase().endsWith(".3mf")) {
             throw new Error("print3mf requires a .3mf input file.");
         }
@@ -929,7 +939,9 @@ export class BambuImplementation {
             exists,
         };
     }
-    async uploadFile(host, serial, token, filePath, filename, print) {
+    async uploadFile(host, serial, token, filePath, filename, print, bambuModel) {
+        if (print)
+            assertDirectPrintSupported(bambuModel, serial);
         await fs.access(filePath);
         const normalizedFileName = filename.replace(/^\/+/, "");
         const remotePath = normalizedFileName.includes("/")
@@ -945,7 +957,7 @@ export class BambuImplementation {
         };
         if (print) {
             if (remotePath.toLowerCase().endsWith(".gcode")) {
-                response.startResult = await this.startJob(host, serial, token, remotePath);
+                response.startResult = await this.startJob(host, serial, token, remotePath, bambuModel);
             }
             else if (remotePath.toLowerCase().endsWith(".3mf")) {
                 response.note =
@@ -957,7 +969,8 @@ export class BambuImplementation {
         }
         return response;
     }
-    async startJob(host, serial, token, filename) {
+    async startJob(host, serial, token, filename, bambuModel) {
+        assertDirectPrintSupported(bambuModel, serial);
         const lower = filename.toLowerCase();
         if (lower.endsWith(".3mf") && !lower.endsWith(".gcode.3mf")) {
             throw new Error("Use print_3mf for .3mf project files.");
@@ -1007,7 +1020,7 @@ export class BambuImplementation {
         // P1/A1 series still use the proprietary TCP-on-6000 framed JPEG path
         // (per https://github.com/Doridian/OpenBambuAPI/blob/main/video.md).
         const TCP_CAMERA_MODELS = new Set(["a1", "a1mini", "p1s", "p1p"]);
-        // X1, P2S, AND H2 (H2S/H2D/H2C) all use RTSP on port 322. The
+        // X1, P2S, H2 (H2S/H2D/H2C), AND X2D all use RTSP on port 322. The
         // OpenBambuAPI doc only mentions X1/P2S, but the HA bambulab
         // integration's models.py shows the printer reports its own
         // `ipcam.rtsp_url` for these models, and Parker (H2S) rejects the
@@ -1015,7 +1028,7 @@ export class BambuImplementation {
         // confirmed by local H2 camera transport probes).
         const RTSP_MODELS = new Set([
             "x1", "x1c", "x1carbon", "x1e", "p2s",
-            "h2", "h2s", "h2d", "h2c", "h2dpro",
+            "h2", "h2s", "h2d", "h2c", "h2dpro", "x2d",
         ]);
         if (!model) {
             throw new Error("camera_snapshot requires bambu_model or BAMBU_MODEL so it can choose the correct Bambu camera protocol.");

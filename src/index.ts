@@ -29,7 +29,7 @@ import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
 import { hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue } from "./ams-mapping.js";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, parse3MF } from './3mf_parser.js';
 import type { ThreeMFAmsRequirements } from "./types.js";
-import { BambuImplementation } from "./printers/bambu.js";
+import { BambuImplementation, assertDirectPrintSupported } from "./printers/bambu.js";
 
 dotenv.config();
 
@@ -64,7 +64,7 @@ const DEFAULT_BAMBU_MODEL =
 const DEFAULT_BED_TYPE = process.env.BED_TYPE?.trim().toLowerCase() || "textured_plate";
 const DEFAULT_NOZZLE_DIAMETER = process.env.NOZZLE_DIAMETER?.trim() || "0.4";
 
-const VALID_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s", "h2c"] as const;
+const VALID_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s", "h2c", "x2d"] as const;
 type BambuModel = typeof VALID_BAMBU_MODELS[number];
 const H2_BAMBU_MODELS = new Set<string>(["h2d", "h2s", "h2c"]);
 
@@ -83,6 +83,7 @@ const BAMBU_MODEL_PRESETS: Record<string, (nozzle: string) => string> = {
   h2d: (n) => `Bambu Lab H2D ${n} nozzle`,
   h2s: (n) => `Bambu Lab H2S ${n} nozzle`,
   h2c: (n) => `Bambu Lab H2C ${n} nozzle`,
+  x2d: (n) => `Bambu Lab X2D ${n} nozzle`,
 };
 
 const FILAMENT_PROFILE_DIR =
@@ -98,6 +99,7 @@ const FILAMENT_MODEL_CODES: Record<string, string> = {
   h2d: "H2D",
   h2s: "H2S",
   h2c: "H2C",
+  x2d: "X2D",
 };
 
 type FilamentProfileIndex = {
@@ -514,6 +516,19 @@ function extractPrinterDiagnostics(status: any): Record<string, unknown> {
     hms: raw.hms ?? raw.hms_info ?? raw.hms_list ?? null,
     diagnostic_fields: diagnosticFields,
   };
+}
+
+/** Parse "#RRGGBB;#RRGGBB" (leading '#' optional) into positional slot colours. */
+function parseFilamentColours(value: string): string[] {
+  const colours = value.split(";").map((c) => c.trim()).filter(Boolean)
+    .map((c) => (c.startsWith("#") ? c : `#${c}`).toUpperCase());
+  for (const c of colours) {
+    if (!/^#[0-9A-F]{6}([0-9A-F]{2})?$/.test(c)) {
+      throw new Error(`Invalid filament colour "${c}"; expected #RRGGBB.`);
+    }
+  }
+  if (colours.length === 0) throw new Error("filament_colours must list at least one colour.");
+  return colours;
 }
 
 function validateBambuModel(model: string): string {
@@ -1108,6 +1123,7 @@ class BambuPrinterMCPServer {
                 { const: "h2d", title: "H2D" },
                 { const: "h2s", title: "H2S" },
                 { const: "h2c", title: "H2C" },
+                { const: "x2d", title: "X2D" },
               ],
             },
           },
@@ -2045,6 +2061,7 @@ class BambuPrinterMCPServer {
                 bambu_token: { type: "string", description: "Access token (default: value from env)" },
                 load_filaments: { type: "string", description: "Override filament profiles. Semicolon-separated paths to filament JSON configs." },
                 load_filament_ids: { type: "string", description: "Optional filament-to-object mapping string." },
+                filament_colours: { type: "string", description: "Optional slot colours, one #RRGGBB per filament slot in order, separated by ';' (e.g. '#161616;#FFFFFF'). Defaults to the input 3MF's project colours, else the BambuStudio default." },
                 ensure_on_bed: { type: "boolean", description: "Lift floating models onto the bed." },
                 arrange: { type: "boolean", description: "Auto-arrange objects on the build plate." },
                 orient: { type: "boolean", description: "Auto-orient model for optimal printability." },
@@ -2099,6 +2116,7 @@ class BambuPrinterMCPServer {
                 load_filaments: { type: "string", description: "Override filament profiles. Semicolon-separated paths to filament JSON configs, e.g. 'pla_basic.json;petg_cf.json'." },
                 filament_profile: { type: "string", description: "Compatibility alias for load_filaments. Semicolon-separated Orca/Bambu filament profile JSON paths." },
                 load_filament_ids: { type: "string", description: "Map filaments to objects/parts. Comma-separated IDs matching load_filaments order, e.g. '1,2,3,1' assigns filament 1 to objects 0 and 3." },
+                filament_colours: { type: "string", description: "Optional slot colours, one #RRGGBB per filament slot in order, separated by ';' (e.g. '#161616;#FFFFFF'). Defaults to the input 3MF's project colours, else the BambuStudio default." },
                 enable_timelapse: { type: "boolean", description: "Insert timelapse parking moves into gcode. The toolhead parks at a fixed position each layer for camera capture. Adds ~10% print time." },
                 allow_mix_temp: { type: "boolean", description: "Allow filaments with different temperature requirements on the same plate. Required for multi-material prints mixing e.g. PLA and PETG." },
                 scale: { type: "number", description: "Uniform scale factor applied to all axes. 1.0 = original size, 2.0 = double, 0.5 = half. Applied before slicing." },
@@ -2603,7 +2621,7 @@ class BambuPrinterMCPServer {
                 bambu_model: {
                   type: "string",
                   enum: [...VALID_BAMBU_MODELS],
-                  description: "REQUIRED: Bambu Lab printer model. H2D, H2S, and H2C are the primary intended paths."
+                  description: "REQUIRED: Bambu Lab printer model. H2D, H2S, and H2C are the primary intended paths. X2D direct printing is not supported."
                 },
                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
@@ -2895,28 +2913,31 @@ class BambuPrinterMCPServer {
             break;
           }
 
-          case "upload_file":
+          case "upload_file": {
             if (!args?.file_path || !args?.filename) {
               throw new Error("Missing required parameters: file_path and filename");
             }
-            if (Boolean(args.print ?? false)) {
-              await this.resolveBambuModel(args?.bambu_model as string | undefined);
-            }
+            const print = Boolean(args.print ?? false);
+            const uploadModel = print ? await this.resolveBambuModel(args?.bambu_model as string | undefined) : undefined;
+            if (print) assertDirectPrintSupported(uploadModel, bambuSerial);
             result = await this.bambu.uploadFile(
               host, bambuSerial, bambuToken,
               String(args.file_path), String(args.filename),
-              Boolean(args.print ?? false)
+              print, uploadModel
             );
             break;
+          }
 
           case "start_print":
-          case "start_print_job":
+          case "start_print_job": {
             if (!args?.filename) {
               throw new Error("Missing required parameter: filename");
             }
-            await this.resolveBambuModel(args?.bambu_model as string | undefined);
-            result = await this.bambu.startJob(host, bambuSerial, bambuToken, String(args.filename));
+            const startModel = await this.resolveBambuModel(args?.bambu_model as string | undefined);
+            assertDirectPrintSupported(startModel, bambuSerial);
+            result = await this.bambu.startJob(host, bambuSerial, bambuToken, String(args.filename), startModel);
             break;
+          }
 
           case "cancel_print":
             result = await this.bambu.cancelJob(host, bambuSerial, bambuToken);
@@ -3118,6 +3139,7 @@ class BambuPrinterMCPServer {
               sliceBambuOptions.loadFilaments = String(args.filament_profile);
             }
             if (args?.load_filament_ids !== undefined) sliceBambuOptions.loadFilamentIds = String(args.load_filament_ids);
+            if (args?.filament_colours !== undefined) sliceBambuOptions.filamentColours = parseFilamentColours(String(args.filament_colours));
             sliceBambuOptions.bedType = resolveBambuStudioCliBedType(args?.bed_type as string | undefined);
             if (args?.enable_timelapse !== undefined) sliceBambuOptions.enableTimelapse = Boolean(args.enable_timelapse);
             if (args?.allow_mix_temp !== undefined) sliceBambuOptions.allowMixTemp = Boolean(args.allow_mix_temp);
@@ -3203,6 +3225,7 @@ class BambuPrinterMCPServer {
               sliceBambuOptions.loadFilaments = String(args.filament_profile);
             }
             if (args?.load_filament_ids !== undefined) sliceBambuOptions.loadFilamentIds = String(args.load_filament_ids);
+            if (args?.filament_colours !== undefined) sliceBambuOptions.filamentColours = parseFilamentColours(String(args.filament_colours));
             sliceBambuOptions.bedType = resolveBambuStudioCliBedType(args?.bed_type as string | undefined);
             if (args?.enable_timelapse !== undefined) sliceBambuOptions.enableTimelapse = Boolean(args.enable_timelapse);
             if (args?.allow_mix_temp !== undefined) sliceBambuOptions.allowMixTemp = Boolean(args.allow_mix_temp);
@@ -3265,6 +3288,7 @@ class BambuPrinterMCPServer {
               "print_3mf"
             );
             const printModel = await this.resolveBambuModel(args?.bambu_model as string | undefined);
+            assertDirectPrintSupported(printModel, bambuSerial);
             const printBedType = resolveBedType(args?.bed_type as string | undefined);
             const printNozzle = String(args?.nozzle_diameter || DEFAULT_NOZZLE_DIAMETER);
             const activeSlicerProfile = await resolveTemplateFirstSlicerProfilePath(
@@ -3450,6 +3474,7 @@ class BambuPrinterMCPServer {
               "print_collar_charm"
             );
             const printModel = await this.resolveBambuModel(args?.bambu_model as string | undefined);
+            assertDirectPrintSupported(printModel, bambuSerial);
             const printBedType = resolveBedType(args?.bed_type as string | undefined);
             const printNozzle = String(args?.nozzle_diameter || DEFAULT_NOZZLE_DIAMETER);
             const activeSlicerProfile = await resolveTemplateFirstSlicerProfilePath(

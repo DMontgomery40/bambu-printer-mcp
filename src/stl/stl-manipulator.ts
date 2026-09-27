@@ -162,6 +162,7 @@ export interface BambuSliceOptions {
   skipObjects?: string;        // --skip-objects "3,5,10": skip specific objects
   loadFilaments?: string;      // --load-filaments "f1.json;f2.json": filament profiles
   loadFilamentIds?: string;    // --load-filament-ids "1,2,3,1": filament-to-object mapping
+  filamentColours?: string[];  // positional #RRGGBB per loaded filament slot
   bedType?: string;            // Bambu bed type, e.g. textured_plate or cool_plate
   enableTimelapse?: boolean;   // --enable-timelapse: timelapse-aware slicing
   allowMixTemp?: boolean;      // --allow-mix-temp: allow mixed-temp filaments
@@ -177,6 +178,10 @@ export interface BambuSliceOptions {
 interface BambuSettingsBundle {
   settingsArg?: string;
   filamentPaths: string[];
+  /** Positional slot colours declared by the input 3MF project. */
+  filamentColours?: string[];
+  /** Saved per-plate tower coordinates must survive default process loading. */
+  projectTowerPosition?: { wipe_tower_x?: unknown; wipe_tower_y?: unknown };
   /** Identity provenance before the process is merged into a generated file. */
   processSource?: { filePath: string; profile: Record<string, unknown> };
 }
@@ -534,21 +539,32 @@ export class STLManipulator extends EventEmitter {
       profilesRoot,
       tempDir: this.tempDir,
       bedType: this.resolveBambuStudioBedType(bambuOptions?.bedType),
+      filamentColours: bambuOptions?.filamentColours ?? bundle.filamentColours,
+      projectTowerPosition: bundle.projectTowerPosition,
       sourceProfiles: {
         machine: isBundledFile(machinePath) ? undefined : machine,
         process: isBundledFile(processPath) ? undefined : processProfile,
         filaments: filaments.map((profile, i) => isBundledFile(bundle.filamentPaths[i]) ? undefined : profile),
       },
     });
-    // Standalone custom files have no BBL dependencies; preserve their identity
-    // and content. Other profiles retain user values through sourceProfiles.
+    // Standalone files retain their own identity and settings, but still need
+    // the CLI colour/tower fields. Do not discard those required overlays when
+    // choosing the original profile instead of the normalized BBL output.
+    const withCliFields = (filePath: string, profile: Record<string, unknown>, flatPath: string, keys: string[]): string => {
+      const flattened = readProfile(flatPath);
+      const fields = Object.fromEntries(keys.filter(key => flattened[key] !== undefined).map(key => [key, flattened[key]]));
+      if (Object.entries(fields).every(([key, value]) => JSON.stringify(profile[key]) === JSON.stringify(value))) return filePath;
+      return this.writeTempJson(path.basename(filePath, '.json'), 'cli', { ...profile, ...fields });
+    };
     return {
       settingsArg: [
         needsResolution(machinePath, machine) ? flat.machinePath : machinePath,
-        needsResolution(processPath, processProfile) ? flat.processPath : processPath,
+        needsResolution(processPath, processProfile) ? flat.processPath
+          : withCliFields(processPath, processProfile, flat.processPath, ['wipe_tower_x', 'wipe_tower_y']),
       ].join(';'),
       filamentPaths: filaments.map((profile, i) =>
-        needsResolution(bundle.filamentPaths[i], profile) ? flat.filamentPaths[i] : bundle.filamentPaths[i]),
+        needsResolution(bundle.filamentPaths[i], profile) ? flat.filamentPaths[i]
+          : withCliFields(bundle.filamentPaths[i], profile, flat.filamentPaths[i], ['filament_colour'])),
     };
   }
 
@@ -571,13 +587,20 @@ export class STLManipulator extends EventEmitter {
     const count = Math.max(0, ...['filament_settings_id', 'filament_type', 'filament_colour', 'filament_diameter']
       .map(key => Array.isArray(data[key]) ? data[key].length : 0));
     if (count === 0) throw new Error('Cannot determine project filament slots from project_settings.config.');
+    // Keep the project's slot colours; loaded profiles carry none of their own.
+    const colours = Array.isArray(data.filament_colour) && data.filament_colour.length === count &&
+      data.filament_colour.every(c => typeof c === 'string' && /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/.test(c))
+      ? data.filament_colour as string[]
+      : undefined;
+    const projectTowerPosition = Object.fromEntries(['wipe_tower_x', 'wipe_tower_y']
+      .filter(key => data[key] !== undefined).map(key => [key, data[key]]));
     if (bundle.filamentPaths.length === 1) {
-      return { ...bundle, filamentPaths: Array(count).fill(bundle.filamentPaths[0]) };
+      return { ...bundle, filamentPaths: Array(count).fill(bundle.filamentPaths[0]), filamentColours: colours, projectTowerPosition };
     }
     if (bundle.filamentPaths.length !== count) {
       throw new Error(`Project declares ${count} filament slots, but ${bundle.filamentPaths.length} profiles were supplied. Provide one profile for all slots or one per slot.`);
     }
-    return bundle;
+    return { ...bundle, filamentColours: colours, projectTowerPosition };
   }
 
   private resolveBambuStudioBedType(bedType?: string): string | undefined {

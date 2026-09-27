@@ -36,6 +36,7 @@ export interface BambuSliceOptions {
     skipObjects?: string;
     loadFilaments?: string;
     loadFilamentIds?: string;
+    filamentColours?: string[];
     bedType?: string;
     enableTimelapse?: boolean;
     allowMixTemp?: boolean;

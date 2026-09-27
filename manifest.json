@@ -2,7 +2,7 @@
     "manifest_version": "0.2",
     "name": "bambu-printer-mcp",
     "display_name": "Bambu Printer MCP",
-    "version": "1.1.8",
+    "version": "1.1.9",
     "description": "Drive Bambu Lab 3D printers from Claude -- upload and slice models, start and monitor prints, and manage AMS filament, over MQTT and FTPS on your local network.",
     "author": {
         "name": "David Montgomery"
@@ -67,7 +67,7 @@
         "bambu_model": {
             "type": "string",
             "title": "Printer model",
-            "description": "Required for safe G-code generation. One of: p1s, p1p, p2s, x1c, x1e, a1, a1mini, h2d, h2s, h2c.",
+            "description": "Required for safe G-code generation. One of: p1s, p1p, p2s, x1c, x1e, a1, a1mini, h2d, h2s, h2c, x2d. X2D supports status and slicing; direct printing is not yet supported.",
             "required": true
         },
         "blender_mcp_command": {

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+- Recognize X2D (`N6`, serial prefix `20P`) for status, camera routing, and slicing with its own installed BambuStudio preset. Direct X2D printing remains deferred pending the native eMMC transport and stops before printer side effects. Contribution and hardware/status/slicing evidence: [#18](https://github.com/DMontgomery40/bambu-printer-mcp/pull/18), by Sebastian (@sebas1986).
+
+### Fixed
+- Give every CLI filament slot its own colour to address the multi-filament access violation reproduced by the contributor on Windows BambuStudio 02.08.02.60. Preserve explicit colours, input-project colours, and custom profile settings.
+- Place an unset prime tower within the area shared by all nozzles, while retaining saved project positions and explicit process overrides.
+- Apply required colour and tower overlays to standalone custom profiles without replacing unrelated settings.
+- Correct the desktop-release workflow's Node setup cache option so extension packaging can run automatically.
+
+## [1.1.8] – 2026-09-27
+
 ### Changed
 - Consolidate shared agent rules for local and GitHub review, retain public documentation, and keep scratch plans, progress logs, and handoff notes out of Git.
 
