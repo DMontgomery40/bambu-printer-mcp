@@ -100,10 +100,10 @@
 
 Initial public release with core print, upload, slice, and status tooling.
 
-[1.1.3]: https://github.com/rowbotik/bambu-printer-mcp/compare/v1.1.2...v1.1.3
-[1.1.1]: https://github.com/rowbotik/bambu-printer-mcp/compare/v1.1.0...v1.1.1
-[1.1.0]: https://github.com/rowbotik/bambu-printer-mcp/compare/v1.0.5...v1.1.0
-[1.0.5]: https://github.com/rowbotik/bambu-printer-mcp/releases/tag/v1.0.5
+[1.1.3]: https://github.com/DMontgomery40/bambu-printer-mcp/commit/d9742202bd931bf8ca39a348713efa6ef05f784c
+[1.1.1]: https://github.com/DMontgomery40/bambu-printer-mcp/tree/v1.1.1
+[1.1.0]: https://github.com/DMontgomery40/bambu-printer-mcp/commit/29b8ec4565ec4dd0858e14441b4fe1cd1d4d45a0
+[1.0.5]: https://github.com/DMontgomery40/bambu-printer-mcp/tree/v1.0.5
 
 [1.1.9]: https://github.com/DMontgomery40/bambu-printer-mcp/releases/tag/v1.1.9
 [1.1.8]: https://github.com/DMontgomery40/bambu-printer-mcp/releases/tag/v1.1.8
