@@ -229,7 +229,7 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
   let maxNozzleTemperature=0,maxBedTemperature=0,maxChamberTemperature=0,commandCount=0;
   let depositionStarted=false,commonFlushUsed=false;
   const heat=(component:'nozzle'|'bed'|'chamber',value:number,position?:number,allMaterials=false,startupPurge=false)=>{
-    const affected=allMaterials ? materials.map((_,index)=>index) : position===undefined ? [...(used.size?used:new Set(materials.map((_,index)=>index)))] : [requirePosition(position)];
+    const affected=allMaterials || position===undefined ? materials.map((_,index)=>index) : [requirePosition(position)];
     if(component==='nozzle' && startupPurge) validateStartupPurgeTemperature(value,model,affected.map(index=>materials[index]));
     else validateTemperature(component,value,model,affected.map(index=>materials[index]));
     // Candidate materials constrain heat, but only plate metadata and explicit

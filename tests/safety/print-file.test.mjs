@@ -346,6 +346,8 @@ test('ambiguous heater candidates still enforce every possible material temperat
   const entries={'Metadata/project_settings.config':{printer_model:'h2d',nozzle_diameter:['0.4','0.4'],filament_type:['PLA','PA']},'Metadata/plate_1.json':{filament_ids:[1]}};
   for(const heater of ['M104 S300 A','M104 S300 T0','M109 R300 T1'])
     await assert.rejects(inspect(t,'',{model:'h2d'},{...entries,'Metadata/plate_1.gcode':'T1\n'+heater+'\n'}),/PLA|material.*limit/i);
+  for(const unknownSelection of ['M104 S300','M104 S140 A\nM104 S300','M104 T0 S140\nM109 R300'])
+    await assert.rejects(inspect(t,'',{model:'h2d'},{...entries,'Metadata/plate_1.gcode':unknownSelection+'\n'}),/PLA|material.*limit/i);
   const selected=await inspect(t,'',{model:'h2d'},{...entries,'Metadata/plate_1.gcode':'T1\nM104 S300\n'});
   assert.deepEqual(selected.usedFilamentPositions,[1]);
 });
