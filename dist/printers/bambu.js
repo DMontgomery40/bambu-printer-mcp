@@ -49,6 +49,9 @@ const H2_MODEL_NAMES = new Set(["h2", "h2c", "h2d", "h2dpro", "h2d pro", "h2s"])
 function isH2ModelName(model) {
     return H2_MODEL_NAMES.has(String(model ?? "").trim().toLowerCase().replace(/\s+/g, " "));
 }
+function isP2SModelName(model) {
+    return String(model ?? "").trim().toLowerCase() === "p2s";
+}
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -102,6 +105,8 @@ class TolerantBambuClient extends BambuClient {
             return "P1P";
         if (sn.startsWith("01P"))
             return "P1S";
+        if (sn.startsWith("22E"))
+            return "P2S";
         if (sn.startsWith("030"))
             return "A1";
         if (sn.startsWith("039"))
@@ -462,23 +467,29 @@ export class BambuImplementation {
         remoteFileName = remoteFileName.replace(/\.gcode\.3mf\.gcode\.3mf$/i, ".gcode.3mf");
         // H2-series printers land files at the FTP root and reference them via ftp:///<name>.
         // P1/A1/X1 use /cache/<name> and file:///sdcard/cache/<name>.
+        // P2S keeps the /cache/<name> upload but only accepts the H2-style
+        // project_file command, referenced via ftp:///cache/<name> (verified on
+        // P2S firmware 01.02.00.00; file:///sdcard/... fails with ERROR STATE).
         const isH2 = serial.startsWith("093") ||
             serial.startsWith("094") ||
             isH2ModelName(options.bambuModel);
+        const isP2S = serial.startsWith("22E") || isP2SModelName(options.bambuModel);
+        const usesH2ProjectFile = isH2 || isP2S;
         const remoteProjectPath = isH2 ? remoteFileName : `cache/${remoteFileName}`;
         const remoteUploadPath = isH2 ? `/${remoteFileName}` : `/cache/${remoteFileName}`;
-        const projectUrl = isH2
-            ? `ftp:///${remoteFileName}`
+        const projectUrl = usesH2ProjectFile
+            ? `ftp:///${remoteProjectPath}`
             : `file:///sdcard/${remoteProjectPath}`;
         // Upload via basic-ftp directly (bypasses bambu-js double-path bug)
         await this.ftpUpload(host, token, options.filePath, remoteUploadPath);
         // Pre-sliced .gcode.3mf files: routing depends on firmware generation.
         // P1/A1/X1 series: project_file returns 405004002 for .gcode.3mf (firmware
         // doesn't recognise the container), so use gcode_file instead.
-        // H2-series: gcode_file is not supported; project_file works because the
+        // H2-series and P2S: gcode_file is not supported (P2S answers 0500-4002
+        // "Unsupported file path or name"); project_file works because the
         // firmware can open the zip and find Metadata/plate_<n>.gcode directly.
         if (options.filePath.toLowerCase().endsWith(".gcode.3mf")) {
-            if (!isH2) {
+            if (!usesH2ProjectFile) {
                 const printer = await this.getPrinter(host, serial, token);
                 await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath }));
                 return {
@@ -487,7 +498,7 @@ export class BambuImplementation {
                     remoteProjectPath,
                 };
             }
-            // H2-series: fall through to project_file path below
+            // H2-series and P2S: fall through to project_file path below
         }
         const projectMetadata = await this.resolveProjectFileMetadata(options.filePath, options.plateIndex);
         // Send project_file command via bambu-node MQTT (bypasses bambu-js
@@ -554,7 +565,7 @@ export class BambuImplementation {
         }
         let amsMapping;
         let amsMapping2;
-        if (isH2) {
+        if (usesH2ProjectFile) {
             const projLen = Math.max(projectMetadata.projectFilamentCount, baseMapping.length, 1);
             amsMapping = Array.from({ length: projLen }, (_, i) => i < baseMapping.length ? baseMapping[i] : -1);
             amsMapping2 = amsMapping.map((v) => {
@@ -573,7 +584,7 @@ export class BambuImplementation {
         }
         const b = (v) => (v ? 1 : 0);
         let projectFileCmd;
-        if (isH2) {
+        if (usesH2ProjectFile) {
             const submissionId = String(Date.now() & 0x7fffffff);
             projectFileCmd = {
                 print: {

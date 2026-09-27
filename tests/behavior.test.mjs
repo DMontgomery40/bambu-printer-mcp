@@ -664,6 +664,81 @@ test("H2C model routes project files through the H2 print path independent of se
   }
 });
 
+async function captureP2SPrint({ serial, bambuModel }) {
+  const threeMfPath = await writeSliced3mfFixture({ name: "p2s-cube", plateFilamentIds: [1] });
+  const bambu = new BambuImplementation();
+  let uploadedPath = null;
+  const published = [];
+
+  bambu.ftpUpload = async (_host, _token, _filePath, remotePath) => {
+    uploadedPath = remotePath;
+  };
+  bambu.getPrinter = async () => ({
+    publish: async (payload) => {
+      published.push(payload);
+    },
+  });
+
+  try {
+    const result = await bambu.print3mf("127.0.0.1", serial, "TEST_TOKEN", {
+      projectName: "p2s-cube",
+      filePath: threeMfPath,
+      bambuModel,
+      plateIndex: 0,
+      useAMS: true,
+      amsSlots: [1],
+      bedType: "supertack_plate",
+    });
+    return { result, uploadedPath, published, fileName: path.basename(threeMfPath) };
+  } finally {
+    fs.rmSync(threeMfPath, { force: true });
+  }
+}
+
+test("P2S pre-sliced .gcode.3mf uses H2-style project_file from /cache instead of gcode_file", async () => {
+  const { result, uploadedPath, published, fileName } = await captureP2SPrint({
+    serial: "TESTSERIAL00000",
+    bambuModel: "p2s",
+  });
+
+  assert.equal(result.status, "success");
+  assert.equal(uploadedPath, `/cache/${fileName}`);
+  assert.equal(published.length, 1, "P2S should publish exactly one command");
+  const cmd = published[0].print;
+  assert.equal(cmd.command, "project_file", "P2S rejects gcode_file with 0500-4002");
+  assert.equal(cmd.url, `ftp:///cache/${fileName}`);
+  assert.equal(cmd.file, fileName);
+  assert.equal(cmd.param, "Metadata/plate_1.gcode");
+  assert.notEqual(cmd.task_id, "0", "P2S needs non-zero submission ids");
+  assert.deepEqual(cmd.ams_mapping, [-1, 1, -1, -1]);
+  assert.deepEqual(cmd.ams_mapping2, [
+    { ams_id: 255, slot_id: 255 },
+    { ams_id: 0, slot_id: 1 },
+    { ams_id: 255, slot_id: 255 },
+    { ams_id: 255, slot_id: 255 },
+  ]);
+});
+
+test("P2S is detected from its serial prefix when no model is passed", async () => {
+  const { published, fileName } = await captureP2SPrint({ serial: "22E00TEST000000" });
+
+  assert.equal(published.length, 1);
+  assert.equal(published[0].print.command, "project_file");
+  assert.equal(published[0].print.url, `ftp:///cache/${fileName}`);
+});
+
+test("P1S pre-sliced .gcode.3mf still uses gcode_file from /cache", async () => {
+  const { published, uploadedPath, fileName } = await captureP2SPrint({
+    serial: "TESTSERIAL00000",
+    bambuModel: "p1s",
+  });
+
+  assert.equal(uploadedPath, `/cache/${fileName}`);
+  assert.equal(published.length, 1);
+  assert.equal(published[0].print.command, "gcode_file");
+  assert.equal(published[0].print.param, `cache/${fileName}`);
+});
+
 test("H2 two-color ams_slots expand at sparse project-level filament positions", async () => {
   const threeMfPath = await writeSliced3mfFixture({
     name: "h2d-two-color-project-filament",
