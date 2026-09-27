@@ -382,6 +382,7 @@ export class STLManipulator extends EventEmitter {
             profilesRoot,
             tempDir: this.tempDir,
             bedType: this.resolveBambuStudioBedType(bambuOptions?.bedType),
+            filamentColours: bambuOptions?.filamentColours ?? bundle.filamentColours,
             sourceProfiles: {
                 machine: isBundledFile(machinePath) ? undefined : machine,
                 process: isBundledFile(processPath) ? undefined : processProfile,
@@ -417,13 +418,18 @@ export class STLManipulator extends EventEmitter {
             .map(key => Array.isArray(data[key]) ? data[key].length : 0));
         if (count === 0)
             throw new Error('Cannot determine project filament slots from project_settings.config.');
+        // Keep the project's slot colours; loaded profiles carry none of their own.
+        const colours = Array.isArray(data.filament_colour) && data.filament_colour.length === count &&
+            data.filament_colour.every(c => typeof c === 'string' && /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/.test(c))
+            ? data.filament_colour
+            : undefined;
         if (bundle.filamentPaths.length === 1) {
-            return { ...bundle, filamentPaths: Array(count).fill(bundle.filamentPaths[0]) };
+            return { ...bundle, filamentPaths: Array(count).fill(bundle.filamentPaths[0]), filamentColours: colours };
         }
         if (bundle.filamentPaths.length !== count) {
             throw new Error(`Project declares ${count} filament slots, but ${bundle.filamentPaths.length} profiles were supplied. Provide one profile for all slots or one per slot.`);
         }
-        return bundle;
+        return { ...bundle, filamentColours: colours };
     }
     resolveBambuStudioBedType(bedType) {
         if (!bedType)

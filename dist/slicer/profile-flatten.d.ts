@@ -70,7 +70,16 @@ export interface FlattenOptions {
         process?: Record<string, unknown>;
         filaments?: (Record<string, unknown> | undefined)[];
     };
+    /**
+     * Positional `#RRGGBB` colour per filament slot (e.g. from the input 3MF
+     * project or the caller). Missing entries keep the profile's own colour or
+     * fall back to DEFAULT_FILAMENT_COLOUR.
+     */
+    filamentColours?: (string | undefined)[];
 }
+/** Best-effort extruder count for fallback nozzle_volume_type sizing. */
+/** BambuStudio's built-in filament_colour default. */
+export declare const DEFAULT_FILAMENT_COLOUR = "#00AE42";
 /**
  * Flatten the leaf profiles, post-process for CLI, and write to temp files.
  *

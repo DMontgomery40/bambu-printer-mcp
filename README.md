@@ -1246,6 +1246,7 @@ When `slicer_type` is `bambustudio` (the default), these additional parameters a
 | `skip_objects` | string | Object indices to skip, comma-separated (e.g. `"3,5,10"`) |
 | `load_filaments` | string | Filament profile paths, semicolon-separated |
 | `load_filament_ids` | string | Filament-to-object mapping, comma-separated |
+| `filament_colours` | string | Slot colours, one `#RRGGBB` per filament slot, semicolon-separated (defaults to the input 3MF project colours) |
 | `enable_timelapse` | boolean | Enable timelapse-aware slicing |
 | `allow_mix_temp` | boolean | Allow mixed-temperature filaments on one plate |
 | `scale` | number | Uniform scale factor |

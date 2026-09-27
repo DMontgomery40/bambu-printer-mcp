@@ -78,6 +78,12 @@ export interface FlattenOptions {
     process?: Record<string, unknown>;
     filaments?: (Record<string, unknown> | undefined)[];
   };
+  /**
+   * Positional `#RRGGBB` colour per filament slot (e.g. from the input 3MF
+   * project or the caller). Missing entries keep the profile's own colour or
+   * fall back to DEFAULT_FILAMENT_COLOUR.
+   */
+  filamentColours?: (string | undefined)[];
 }
 
 interface IndexedProfile {
@@ -308,6 +314,91 @@ function enforceMatchingNozzles(arr: unknown[]): void {
 }
 
 /** Best-effort extruder count for fallback nozzle_volume_type sizing. */
+/** BambuStudio's built-in filament_colour default. */
+export const DEFAULT_FILAMENT_COLOUR = "#00AE42";
+const FILAMENT_COLOUR_RE = /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/;
+
+/**
+ * No BBL filament profile defines `filament_colour`; the GUI fills it from
+ * the AMS. Without it the CLI keeps a single-entry colour vector however many
+ * filaments are loaded and crashes (access violation) as soon as a slice uses
+ * any filament after the first. Give every slot exactly one colour.
+ */
+function ensureFilamentColour(flat: Record<string, unknown>, colour?: string): void {
+  if (colour !== undefined) {
+    if (!FILAMENT_COLOUR_RE.test(colour)) {
+      throw new Error(`Invalid filament colour "${colour}"; expected #RRGGBB.`);
+    }
+    flat["filament_colour"] = [colour];
+    return;
+  }
+  const own = flat["filament_colour"];
+  if (Array.isArray(own) && typeof own[0] === "string" && FILAMENT_COLOUR_RE.test(own[0])) {
+    flat["filament_colour"] = [own[0]];
+    return;
+  }
+  flat["filament_colour"] = [DEFAULT_FILAMENT_COLOUR];
+}
+
+// BambuStudio's defaults when a process sets no prime tower position/width.
+const DEFAULT_WIPE_TOWER_X = 15;
+const DEFAULT_WIPE_TOWER_Y = 220;
+const DEFAULT_PRIME_TOWER_WIDTH = 35;
+// Clearance inside the shared nozzle area for the auto-sized tower brim and
+// the CLI's own safety margin (X2D fails at 5 mm from the edge, passes at 6).
+const WIPE_TOWER_MARGIN = 15;
+
+interface Rect { minX: number; maxX: number; minY: number; maxY: number }
+
+function parseArea(area: string): Rect {
+  const points = area.split(",").map((p) => p.trim().split("x").map(Number));
+  if (points.length < 3 || points.some((p) => p.length !== 2 || p.some((n) => !Number.isFinite(n)))) {
+    throw new Error(`Malformed extruder_printable_area entry "${area}".`);
+  }
+  const xs = points.map((p) => p[0]);
+  const ys = points.map((p) => p[1]);
+  return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+}
+
+/**
+ * On multi-nozzle machines (H2D, X2D) each nozzle reaches only part of the
+ * bed (`extruder_printable_area`), and the prime tower must be reachable by
+ * every nozzle. The CLI's default tower position (x=15) lies outside the
+ * X2D/H2D right-nozzle area, so slicing fails with "G-code outside of the
+ * printable area". When the process sets no position and the default does
+ * not fit, move the tower inside the area all nozzles share.
+ */
+function placePrimeTowerForAllNozzles(
+  machineFlat: Record<string, unknown>,
+  processFlat: Record<string, unknown>
+): void {
+  if (processFlat["wipe_tower_x"] !== undefined || processFlat["wipe_tower_y"] !== undefined) return;
+  if (["0", "false"].includes(String(processFlat["enable_prime_tower"]).toLowerCase())) return;
+  const areas = machineFlat["extruder_printable_area"];
+  if (!Array.isArray(areas) || areas.length < 2) return;
+  const rects = areas.map((a) => {
+    if (typeof a !== "string") throw new Error("Malformed extruder_printable_area in machine profile.");
+    return parseArea(a);
+  });
+  const shared: Rect = {
+    minX: Math.max(...rects.map((r) => r.minX)) + WIPE_TOWER_MARGIN,
+    maxX: Math.min(...rects.map((r) => r.maxX)) - WIPE_TOWER_MARGIN,
+    minY: Math.max(...rects.map((r) => r.minY)) + WIPE_TOWER_MARGIN,
+    maxY: Math.min(...rects.map((r) => r.maxY)) - WIPE_TOWER_MARGIN,
+  };
+  const width = Number(processFlat["prime_tower_width"] ?? DEFAULT_PRIME_TOWER_WIDTH);
+  const size = Number.isFinite(width) && width > 0 ? width : DEFAULT_PRIME_TOWER_WIDTH;
+  if (shared.maxX - shared.minX < size || shared.maxY - shared.minY < size) {
+    throw new Error("No bed area is reachable by every nozzle for the prime tower.");
+  }
+  const clamp = (v: number, lo: number, hi: number) => Math.min(Math.max(v, lo), hi);
+  const x = clamp(DEFAULT_WIPE_TOWER_X, shared.minX, shared.maxX - size);
+  const y = clamp(DEFAULT_WIPE_TOWER_Y, shared.minY, shared.maxY - size);
+  if (x === DEFAULT_WIPE_TOWER_X && y === DEFAULT_WIPE_TOWER_Y) return;
+  processFlat["wipe_tower_x"] = [String(x)];
+  processFlat["wipe_tower_y"] = [String(y)];
+}
+
 function inferExtruderCount(flat: Record<string, unknown>): number {
   for (const key of ["nozzle_diameter", "extruder_type", "extruder_variant_list"]) {
     const v = flat[key];
@@ -586,7 +677,14 @@ export async function flattenForCli(opts: FlattenOptions): Promise<FlattenedProf
   normalizeForCli(machineFlat, "machine", opts.machineLeaf);
   normalizeForCli(processFlat, "process", opts.processLeaf);
   filamentFlats.forEach((f, i) => normalizeForCli(f, "filament", opts.filamentLeaves[i]));
+  if (opts.filamentColours && opts.filamentColours.length !== filamentFlats.length) {
+    throw new Error(
+      `${opts.filamentColours.length} filament colours were supplied for ${filamentFlats.length} filament slots.`
+    );
+  }
+  filamentFlats.forEach((f, i) => ensureFilamentColour(f, opts.filamentColours?.[i]));
   applyBedType(processFlat, opts.bedType);
+  placePrimeTowerForAllNozzles(machineFlat, processFlat);
 
   // Mirror the GUI's auto-extend behavior: when the caller explicitly
   // chose a process or filament that wasn't pre-declared compatible with

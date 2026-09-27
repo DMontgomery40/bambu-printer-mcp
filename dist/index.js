@@ -375,6 +375,19 @@ function extractPrinterDiagnostics(status) {
         diagnostic_fields: diagnosticFields,
     };
 }
+/** Parse "#RRGGBB;#RRGGBB" (leading '#' optional) into positional slot colours. */
+function parseFilamentColours(value) {
+    const colours = value.split(";").map((c) => c.trim()).filter(Boolean)
+        .map((c) => (c.startsWith("#") ? c : `#${c}`).toUpperCase());
+    for (const c of colours) {
+        if (!/^#[0-9A-F]{6}([0-9A-F]{2})?$/.test(c)) {
+            throw new Error(`Invalid filament colour "${c}"; expected #RRGGBB.`);
+        }
+    }
+    if (colours.length === 0)
+        throw new Error("filament_colours must list at least one colour.");
+    return colours;
+}
 function validateBambuModel(model) {
     const normalized = model.trim().toLowerCase();
     if (!VALID_BAMBU_MODELS.includes(normalized)) {
@@ -1554,6 +1567,7 @@ class BambuPrinterMCPServer {
                                 bambu_token: { type: "string", description: "Access token (default: value from env)" },
                                 load_filaments: { type: "string", description: "Override filament profiles. Semicolon-separated paths to filament JSON configs." },
                                 load_filament_ids: { type: "string", description: "Optional filament-to-object mapping string." },
+                                filament_colours: { type: "string", description: "Optional slot colours, one #RRGGBB per filament slot in order, separated by ';' (e.g. '#161616;#FFFFFF'). Defaults to the input 3MF's project colours, else the BambuStudio default." },
                                 ensure_on_bed: { type: "boolean", description: "Lift floating models onto the bed." },
                                 arrange: { type: "boolean", description: "Auto-arrange objects on the build plate." },
                                 orient: { type: "boolean", description: "Auto-orient model for optimal printability." },
@@ -1608,6 +1622,7 @@ class BambuPrinterMCPServer {
                                 load_filaments: { type: "string", description: "Override filament profiles. Semicolon-separated paths to filament JSON configs, e.g. 'pla_basic.json;petg_cf.json'." },
                                 filament_profile: { type: "string", description: "Compatibility alias for load_filaments. Semicolon-separated Orca/Bambu filament profile JSON paths." },
                                 load_filament_ids: { type: "string", description: "Map filaments to objects/parts. Comma-separated IDs matching load_filaments order, e.g. '1,2,3,1' assigns filament 1 to objects 0 and 3." },
+                                filament_colours: { type: "string", description: "Optional slot colours, one #RRGGBB per filament slot in order, separated by ';' (e.g. '#161616;#FFFFFF'). Defaults to the input 3MF's project colours, else the BambuStudio default." },
                                 enable_timelapse: { type: "boolean", description: "Insert timelapse parking moves into gcode. The toolhead parks at a fixed position each layer for camera capture. Adds ~10% print time." },
                                 allow_mix_temp: { type: "boolean", description: "Allow filaments with different temperature requirements on the same plate. Required for multi-material prints mixing e.g. PLA and PETG." },
                                 scale: { type: "number", description: "Uniform scale factor applied to all axes. 1.0 = original size, 2.0 = double, 0.5 = half. Applied before slicing." },
@@ -2504,6 +2519,8 @@ class BambuPrinterMCPServer {
                         }
                         if (args?.load_filament_ids !== undefined)
                             sliceBambuOptions.loadFilamentIds = String(args.load_filament_ids);
+                        if (args?.filament_colours !== undefined)
+                            sliceBambuOptions.filamentColours = parseFilamentColours(String(args.filament_colours));
                         sliceBambuOptions.bedType = resolveBambuStudioCliBedType(args?.bed_type);
                         if (args?.enable_timelapse !== undefined)
                             sliceBambuOptions.enableTimelapse = Boolean(args.enable_timelapse);
@@ -2581,6 +2598,8 @@ class BambuPrinterMCPServer {
                         }
                         if (args?.load_filament_ids !== undefined)
                             sliceBambuOptions.loadFilamentIds = String(args.load_filament_ids);
+                        if (args?.filament_colours !== undefined)
+                            sliceBambuOptions.filamentColours = parseFilamentColours(String(args.filament_colours));
                         sliceBambuOptions.bedType = resolveBambuStudioCliBedType(args?.bed_type);
                         if (args?.enable_timelapse !== undefined)
                             sliceBambuOptions.enableTimelapse = Boolean(args.enable_timelapse);

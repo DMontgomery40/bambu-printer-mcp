@@ -162,6 +162,7 @@ export interface BambuSliceOptions {
   skipObjects?: string;        // --skip-objects "3,5,10": skip specific objects
   loadFilaments?: string;      // --load-filaments "f1.json;f2.json": filament profiles
   loadFilamentIds?: string;    // --load-filament-ids "1,2,3,1": filament-to-object mapping
+  filamentColours?: string[];  // positional #RRGGBB per loaded filament slot
   bedType?: string;            // Bambu bed type, e.g. textured_plate or cool_plate
   enableTimelapse?: boolean;   // --enable-timelapse: timelapse-aware slicing
   allowMixTemp?: boolean;      // --allow-mix-temp: allow mixed-temp filaments
@@ -177,6 +178,8 @@ export interface BambuSliceOptions {
 interface BambuSettingsBundle {
   settingsArg?: string;
   filamentPaths: string[];
+  /** Positional slot colours declared by the input 3MF project. */
+  filamentColours?: string[];
   /** Identity provenance before the process is merged into a generated file. */
   processSource?: { filePath: string; profile: Record<string, unknown> };
 }
@@ -534,6 +537,7 @@ export class STLManipulator extends EventEmitter {
       profilesRoot,
       tempDir: this.tempDir,
       bedType: this.resolveBambuStudioBedType(bambuOptions?.bedType),
+      filamentColours: bambuOptions?.filamentColours ?? bundle.filamentColours,
       sourceProfiles: {
         machine: isBundledFile(machinePath) ? undefined : machine,
         process: isBundledFile(processPath) ? undefined : processProfile,
@@ -571,13 +575,18 @@ export class STLManipulator extends EventEmitter {
     const count = Math.max(0, ...['filament_settings_id', 'filament_type', 'filament_colour', 'filament_diameter']
       .map(key => Array.isArray(data[key]) ? data[key].length : 0));
     if (count === 0) throw new Error('Cannot determine project filament slots from project_settings.config.');
+    // Keep the project's slot colours; loaded profiles carry none of their own.
+    const colours = Array.isArray(data.filament_colour) && data.filament_colour.length === count &&
+      data.filament_colour.every(c => typeof c === 'string' && /^#[0-9A-Fa-f]{6}([0-9A-Fa-f]{2})?$/.test(c))
+      ? data.filament_colour as string[]
+      : undefined;
     if (bundle.filamentPaths.length === 1) {
-      return { ...bundle, filamentPaths: Array(count).fill(bundle.filamentPaths[0]) };
+      return { ...bundle, filamentPaths: Array(count).fill(bundle.filamentPaths[0]), filamentColours: colours };
     }
     if (bundle.filamentPaths.length !== count) {
       throw new Error(`Project declares ${count} filament slots, but ${bundle.filamentPaths.length} profiles were supplied. Provide one profile for all slots or one per slot.`);
     }
-    return bundle;
+    return { ...bundle, filamentColours: colours };
   }
 
   private resolveBambuStudioBedType(bedType?: string): string | undefined {

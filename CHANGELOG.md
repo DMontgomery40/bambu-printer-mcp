@@ -6,11 +6,13 @@
 - Consolidate shared agent rules for local and GitHub review, retain public documentation, and keep scratch plans, progress logs, and handoff notes out of Git.
 
 ### Added
-- Accept `x2d` as a printer model. X2D uses the H2-generation print route (FTP-root upload, `project_file`, `ams_mapping2`), RTSP camera snapshots, and the bundled `Bambu Lab X2D <nozzle> nozzle` BambuStudio preset. Printer-reported model ID `N6` and serial prefix `20P` resolve to X2D (observed via SSDP on X2D firmware 01.02.00.00). Covered by mocked routing and model-validation tests only; not yet verified against physical X2D hardware.
+- Accept `x2d` as a printer model. X2D uses the H2-generation print route (FTP-root upload, `project_file`, `ams_mapping2`), RTSP camera snapshots, and the bundled `Bambu Lab X2D <nozzle> nozzle` BambuStudio preset. Printer-reported model ID `N6` and serial prefix `20P` resolve to X2D (observed via SSDP on X2D firmware 01.02.00.00). Verified on a physical X2D for live status and CLI slicing; printing through this route is not yet tested on hardware.
 - Connect to standard Blender MCP servers with tool discovery, schema-checked calls, timeouts/cancellation, and verified STL import/edit/export. Keep the custom-executable bridge available with explicit verification status.
 - Package a Claude Desktop extension with prompted printer settings, safe staging, and synchronized release versions ([#11](https://github.com/DMontgomery40/bambu-printer-mcp/pull/11)).
 
 ### Fixed
+- Give every flattened CLI filament profile a `filament_colour`. BambuStudio CLI crashed (access violation) whenever a slice used any filament after the first, on every printer model, because no bundled filament profile declares a colour. Colours come from the new `filament_colours` argument, the input 3MF project, or the BambuStudio default. Verified with BambuStudio 02.08.02.60 on Windows for X1C and X2D.
+- Place the prime tower inside the bed area every nozzle can reach on multi-nozzle printers (H2D, X2D) when the process does not position it. The CLI default (x=15) lies outside the X2D/H2D right-nozzle area and failed with "G-code outside of the printable area". A four-colour X2D project now slices with the CLI; not yet printed on hardware.
 - Validate large Blender STL meshes without boxing coordinate arrays, keeping finite-geometry checks within a bounded JavaScript heap.
 - Preserve the selected bundled process preset identity through generated settings, and remove automatically created temporary roots on shutdown while retaining explicitly configured TEMP_DIR contents.
 - Stop before printer uploads when automatic slicing or required profile preparation fails, preserving the original diagnostic. Validate model CLI configuration before flattening and advertise the required output path for standard Blender MCP edits.

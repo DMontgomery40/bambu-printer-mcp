@@ -359,3 +359,61 @@ test('custom machines inheriting BBL settings still require the model CLI config
     sourceProfiles: { machine: { name: 'Custom inherited machine', from: 'User', inherits: 'Bambu Lab SAFETY 0.4 nozzle' } },
   }), /cli_config\.json/);
 });
+
+// BambuStudio CLI crashes when a slice uses a filament slot that has no colour entry.
+test('every flattened filament slot carries exactly one colour', async t => {
+  const f = await fixture(t);
+  const opts = { machineLeaf: 'Bambu Lab SAFETY 0.4 nozzle', processLeaf: 'SAFETY process', filamentLeaves: ['SAFETY filament', 'SAFETY filament'], profilesRoot: f.profiles, tempDir: path.join(f.root, 'out') };
+  const colours = async (result) => Promise.all(result.filamentPaths.map(async p => JSON.parse(await fs.readFile(p, 'utf8')).filament_colour));
+  assert.deepEqual(await colours(await flattenForCli(opts)), [['#00AE42'], ['#00AE42']]);
+  assert.deepEqual(await colours(await flattenForCli({ ...opts, filamentColours: ['#161616', '#C12E1F'] })), [['#161616'], ['#C12E1F']]);
+  const own = await flattenForCli({ ...opts, sourceProfiles: { filaments: [{ name: 'Mine', inherits: 'SAFETY filament', filament_colour: ['#123456'] }, undefined] } });
+  assert.deepEqual(await colours(own), [['#123456'], ['#00AE42']]);
+  await assert.rejects(flattenForCli({ ...opts, filamentColours: ['#161616'] }), /1 filament colours.*2 filament slots/);
+  await assert.rejects(flattenForCli({ ...opts, filamentColours: ['#161616', 'red'] }), /Invalid filament colour "red"/);
+});
+
+test('input 3MF project colours reach the flattened filament slots', async t => {
+  const f = await fixture(t);
+  process.env.BAMBU_CLI_FLATTEN = 'true';
+  const zip = new JSZip();
+  zip.file('Metadata/project_settings.config', JSON.stringify({ filament_settings_id: ['A', 'B'], filament_type: ['PLA', 'PLA'], filament_colour: ['#FFFFFF', '#9B9EA0'] }));
+  const project = path.join(f.root, 'colours.3mf');
+  await fs.writeFile(project, await zip.generateAsync({ type: 'nodebuffer' }));
+  await f.slice({ loadFilaments: f.filament }, undefined, project);
+  const loaded = await f.loaded();
+  assert.deepEqual(await Promise.all(loaded.map(async p => JSON.parse(await fs.readFile(p, 'utf8')).filament_colour)), [['#FFFFFF'], ['#9B9EA0']]);
+  // An explicit list wins over the project's colours.
+  await f.slice({ loadFilaments: f.filament, filamentColours: ['#161616', '#C12E1F'] }, undefined, project);
+  assert.deepEqual(await Promise.all((await f.loaded()).map(async p => JSON.parse(await fs.readFile(p, 'utf8')).filament_colour)), [['#161616'], ['#C12E1F']]);
+});
+
+test('multi-nozzle machines get a prime tower every nozzle can reach', async t => {
+  const f = await fixture(t);
+  const opts = { machineLeaf: 'Bambu Lab SAFETY 0.4 nozzle', processLeaf: 'SAFETY process', filamentLeaves: ['SAFETY filament'], profilesRoot: f.profiles, tempDir: path.join(f.root, 'out') };
+  const tower = async (result) => {
+    const p = JSON.parse(await fs.readFile(result.processPath, 'utf8'));
+    return [p.wipe_tower_x, p.wipe_tower_y];
+  };
+  // Single-nozzle machines keep the CLI default position.
+  assert.deepEqual(await tower(await flattenForCli(opts)), [undefined, undefined]);
+
+  // X2D/H2D shape: the second nozzle cannot reach x < 20.5, where the default tower (x=15) sits.
+  await f.write('machine', { name: 'SAFETY start', machine_start_gcode: 'M620 S0A ; correct machine', nozzle_diameter: ['0.4', '0.4'],
+    extruder_printable_area: ['0x0,256x0,256x256,0x256', '20.5x0,256x0,256x256,20.5x256'] });
+  const [x, y] = await tower(await flattenForCli(opts));
+  assert.ok(Number(x[0]) >= 20.5 + 15, `tower x ${x} must clear the second nozzle's edge`);
+  assert.ok(Number(y[0]) + 35 <= 256 - 15, `tower y ${y} must fit on the bed`);
+
+  // An explicit process position is the user's choice and is preserved.
+  const explicit = await flattenForCli({ ...opts, sourceProfiles: { process: { name: 'Custom', inherits: 'SAFETY process', wipe_tower_x: ['165'], wipe_tower_y: ['200'] } } });
+  assert.deepEqual(await tower(explicit), [['165'], ['200']]);
+
+  // Nozzle areas that leave no room for the tower stop preparation.
+  await f.write('machine', { name: 'SAFETY start', machine_start_gcode: 'M620 S0A ; correct machine',
+    extruder_printable_area: ['0x0,60x0,60x256,0x256', '40x0,256x0,256x256,40x256'] });
+  await assert.rejects(flattenForCli(opts), /reachable by every nozzle/);
+  // Without a prime tower there is nothing to place.
+  const noTower = await flattenForCli({ ...opts, sourceProfiles: { process: { name: 'No tower', inherits: 'SAFETY process', enable_prime_tower: '0' } } });
+  assert.deepEqual(await tower(noTower), [undefined, undefined]);
+});
