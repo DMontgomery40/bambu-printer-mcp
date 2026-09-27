@@ -17,7 +17,7 @@ async function capture(t, model, serial, { sparse = false, useAMS = true, suffix
   zip.file("Metadata/project_settings.config", JSON.stringify({ printer_model: model, nozzle_diameter: nozzleDiameters.map(String), filament_type: Array(filamentCount).fill("PLA") }));
   zip.file("Metadata/plate_1.json", JSON.stringify({ filament_ids: [sparse ? 5 : 0] }));
   await fs.writeFile(file, await zip.generateAsync({ type: "nodebuffer" }));
-  const printer = new BambuImplementation();
+  const printer = new BambuImplementation(async () => true);
   let uploadedPath;
   const published = [];
   printer.ftpUpload = async (_host, _token, _file, remote) => { uploadedPath = remote; };

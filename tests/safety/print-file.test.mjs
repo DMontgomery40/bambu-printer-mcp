@@ -54,7 +54,7 @@ test('checksum artifacts and unsliced archives are never printable',async t=>{
 });
 test('independent material ceilings override editable self-reported maxima',async t=>{
   for(const temp of [300,400]) await assert.rejects(inspect(t,header('H2D')+'; nozzle_temperature_range_high = 500\nM104 S'+temp+'\n',{model:'h2d'}),/material|PLA|temperature/i);
-  const r=await inspect(t,header('X1E')+'M109 S290 ; official common flush\n',{model:'x1e'});assert.equal(r.maxNozzleTemperature,290);
+  const r=await inspect(t,header('X1E')+'M109 S290\nM106 P1 S0\nG92 E0\nG1 E50 F200\nM400\nM104 S220\n',{model:'x1e'});assert.equal(r.maxNozzleTemperature,290);
 });
 test('tool changes and Bambu purge parameters retain positional material ceilings',async t=>{
   await assert.rejects(inspect(t,header('H2D','PLA;PA-CF','0.4;0.4')+'T0\nM104 S320\n',{model:'h2d'}),/PLA|material/i);
@@ -132,4 +132,101 @@ test('selected plate nozzle diameters must match project metadata with float pre
   await assert.rejects(inspect(t,'',{model:'h2d'},entries),/plate.*nozzle|nozzle.*contradict/i);
   entries['Metadata/plate_1.json'].nozzle_diameter=[0.4,0.6];
   await assert.rejects(inspect(t,'',{model:'h2d'},entries),/plate.*nozzle|nozzle.*contradict/i);
+});
+
+async function h2dGuiData() {
+  const base=new URL('../fixtures/h2d_gui_sliced/',import.meta.url);
+  return {project:JSON.parse(await fs.readFile(new URL('project_settings.config',base),'utf8')),plate:JSON.parse(await fs.readFile(new URL('plate_1.json',base),'utf8'))};
+}
+function templateLine(template,command) {
+  const line=template.split('\n').map(value=>value.trim()).find(value=>value.startsWith(command+' '));
+  assert.ok(line,`checked-in H2D template contains ${command}`);return line;
+}
+test('checked-in H2D G383.3 probing temperature is inspected with its filament position',async t=>{
+  const {project}=await h2dGuiData();
+  const probe=templateLine(project.machine_start_gcode,'G383.3')
+    .replace('{nozzle_temperature_initial_layer[initial_no_support_extruder]}','255').replace('{initial_no_support_extruder}','0');
+  const source=header('H2D','PETG','0.4;0.4')+probe+'\n';
+  assert.equal((await inspect(t,source,{model:'h2d'})).maxNozzleTemperature,255);
+  for(const command of [probe.replace('255','400'),'G383.3 T-1 L0','G383.3 TNaN L0','G383.3 L0','G383.3 T220 L8','G383.4 T400'])
+    await assert.rejects(inspect(t,header('H2D','PETG','0.4;0.4')+command+'\n',{model:'h2d'}),/temperature|limit|target|parameter|unsupported|material|filament/i,command);
+  await assert.rejects(inspect(t,header('H2D','PA-CF;PLA','0.4;0.4')+'T0\nG383.3 T300 L1\n',{model:'h2d'}),/PLA|material|temperature/i);
+});
+test('checked-in H2D project variant nozzle types resolve to two selected physical nozzles',async t=>{
+  const {project,plate}=await h2dGuiData();
+  assert.equal(project.nozzle_type.length,5);assert.equal(project.nozzle_diameter.length,2);
+  const entries={'Metadata/project_settings.config':project,'Metadata/plate_1.json':plate,'Metadata/plate_1.gcode':'G1 X100 Y100\n'};
+  const result=await inspect(t,'',{model:'h2d'},entries);
+  assert.deepEqual(result.nozzleTypes,['hardened_steel','hardened_steel']);
+  assert.deepEqual(result.nozzleFlows,['high_flow','high_flow']);assert.deepEqual(result.usedFilamentPositions,[4]);
+  project.nozzle_type=['stainless_steel','hardened_steel','hardened_steel','stainless_steel','hardened_steel'];
+  assert.deepEqual((await inspect(t,'',{model:'h2d'},entries)).nozzleTypes,['hardened_steel','stainless_steel']);
+  delete project.printer_extruder_id;
+  await assert.rejects(inspect(t,'',{model:'h2d'},entries),/nozzle.*type|extruder|variant|metadata/i);
+});
+test('ambiguous H2D nozzle variant selections and contradictory header types reject',async t=>{
+  const {project,plate}=await h2dGuiData();
+  const entries={'Metadata/project_settings.config':project,'Metadata/plate_1.json':plate,'Metadata/plate_1.gcode':'; nozzle_type = stainless_steel;hardened_steel\nG1 X100 Y100\n'};
+  await assert.rejects(inspect(t,'',{model:'h2d'},entries),/contradict/i);
+  entries['Metadata/plate_1.gcode']='G1 X100 Y100\n';
+  project.printer_extruder_variant[4]='Direct Drive High Flow';project.nozzle_type[4]='stainless_steel';
+  await assert.rejects(inspect(t,'',{model:'h2d'},entries),/nozzle.*type|extruder|variant|metadata/i);
+});
+test('checked-in H2D M620.15 cooling target uses the incoming filament material',async t=>{
+  const {project}=await h2dGuiData();
+  const cooling=templateLine(project.change_filament_gcode,'M620.15')
+    .replace('{new_filament_temp - filament_cooling_before_tower[next_extruder]}','210');
+  const source=header('H2D','PA-CF;PLA','0.4;0.4')+'T0\nM620 S1A\n'+cooling+'\nT1\nM621 S1A\n';
+  const result=await inspect(t,source,{model:'h2d'});assert.equal(result.maxNozzleTemperature,210);assert.equal(result.selectsAms,true);
+  for(const command of ['M620.15 C300','M620.15 C400','M620.15 C-1','M620.15 CNaN','M620.15 C','M620.15 C210 T400','M620.15'])
+    await assert.rejects(inspect(t,header('H2D','PA-CF;PLA','0.4;0.4')+'T0\nM620 S1A\n'+command+'\n',{model:'h2d'}),/temperature|limit|target|parameter|unsupported|PLA|material/i,command);
+});
+test('complete checked-in H2D project and plate metadata accept their expanded probing and cooling commands',async t=>{
+  const {project,plate}=await h2dGuiData();const position=plate.first_extruder;
+  const probing=project.machine_start_gcode.split('\n').map(value=>value.trim()).filter(value=>/^G383(?:\.3)? /.test(value))
+    .map(value=>value.replace('{nozzle_temperature_initial_layer[initial_no_support_extruder]}','255').replace('{initial_no_support_extruder}',String(position)));
+  assert.equal(probing.length,3);
+  const change=['M620','M620.15','M621'].map(command=>templateLine(project.change_filament_gcode,command)
+    .replace('{new_filament_temp - filament_cooling_before_tower[next_extruder]}','245').replace('[next_extruder]',String(position)));
+  const entries={'Metadata/project_settings.config':project,'Metadata/plate_1.json':plate,'Metadata/plate_1.gcode':[...probing,...change,'G1 X100 Y100'].join('\n')};
+  const result=await inspect(t,'',{model:'h2d',nozzleDiameters:[0.4],bedType:'textured_plate'},entries);
+  assert.equal(result.maxNozzleTemperature,255);assert.deepEqual(result.usedFilamentPositions,[4]);assert.deepEqual(result.nozzleTypes,['hardened_steel','hardened_steel']);
+});
+
+// Exact common-flush block from the official X1E machine_start_gcode. The
+// fixed E50/F200 purge ends with a normal temperature, before the load line.
+const x1eCommonFlush='M109 S290\nM106 P1 S0\nG92 E0\nG1 E50 F200\nM400\nM104 S220\n';
+test('PLA normal heating rejects sustained high targets but preserves a bounded vendor startup purge',async t=>{
+  const {validateTemperature}=await import('../../dist/safety/limits.js');
+  assert.equal(validateTemperature('nozzle',260,'x1e',['PLA']),260);
+  assert.throws(()=>validateTemperature('nozzle',290,'x1e',['PLA']),/PLA|material|260/i);
+  for(const command of ['M104 S290\nG1 X20 Y20 E10\n','M109 S290\n','M104 S261\n'])
+    await assert.rejects(inspect(t,header('X1E')+command,{model:'x1e'}),/PLA|material|260|purge/i);
+  const result=await inspect(t,header('X1E')+x1eCommonFlush+';LAYER_CHANGE\nG1 X20 Y20 E1\n',{model:'x1e'});
+  assert.equal(result.maxNozzleTemperature,290);
+});
+test('vendor PLA purge exceptions cannot be extended repeated or moved into printing',async t=>{
+  for(const program of [x1eCommonFlush.replace('E50 F200','E5000 F1'),x1eCommonFlush.replace('E50 F200','X20 Y20 E50 F200'),x1eCommonFlush.replace('M104 S220','G4 S3600\nM104 S220'),x1eCommonFlush.replace('M104 S220','M104 S290'),x1eCommonFlush+x1eCommonFlush,';LAYER_CHANGE\n'+x1eCommonFlush,'; layer num/total_layer_count: 1/20\n'+x1eCommonFlush,'G1 X20 Y20 E1\n'+x1eCommonFlush])
+    await assert.rejects(inspect(t,header('X1E')+program,{model:'x1e'}),/PLA|material|260|purge/i,program);
+  await assert.rejects(inspect(t,header()+x1eCommonFlush),/PLA|material|260|purge/i);
+  await assert.rejects(inspect(t,header('H2D','PLA','0.4;0.4')+';LAYER_CHANGE\nM620.10 A0 F74.8347 H0.4 T270 P220 S1\n',{model:'h2d'}),/PLA|material|260|purge/i);
+  for(const boundary of [';LAYER_CHANGE','G1 X20 Y20 E10']) await assert.rejects(inspect(t,header('X1E')+'M620.1 E F100 T290\n'+boundary+'\n',{model:'x1e'}),/PLA|material|260|purge/i);
+});
+test('H2D G150 wipe temperatures cannot bypass the hardware or material policy',async t=>{
+  const {project}=await h2dGuiData();
+  const wipe=templateLine(project.machine_start_gcode,'G150').replace('{nozzle_temperature_initial_layer[initial_no_support_extruder]}','220');
+  assert.equal((await inspect(t,header('H2D','PLA','0.4;0.4')+wipe+'\n',{model:'h2d'})).maxNozzleTemperature,220);
+  for(const command of ['G150 T400','G150 T290','G150 TNaN','G150 T-1','G150.3 T400'])
+    await assert.rejects(inspect(t,header('H2D','PLA','0.4;0.4')+command+'\n',{model:'h2d'}),/temperature|material|limit|unsupported|target|parameter/i);
+});
+test('non-FFF job declarations and laser activation commands cannot use the FFF print path',async t=>{
+  for(const declaration of ['printer_technology = Laser','printer_technology = SLA','job_type = laser_engraving','plate_type = cutting','laser_mode = 1','cutter_enabled = true'])
+    await assert.rejects(inspect(t,header('H2D','PLA','0.4;0.4')+'; '+declaration+'\nG1 X20 Y20\n',{model:'h2d'}),/laser|cut|FFF|technology|unsupported/i);
+  for(const command of ['M3 S1000','M04 S100','M452','M3.1 S1000'])
+    await assert.rejects(inspect(t,header('H2D','PLA','0.4;0.4')+command+'\n',{model:'h2d'}),/laser|cut|FFF|unsupported/i);
+  const entries={'Metadata/project_settings.config':{printer_technology:'FFF'},'Metadata/plate_1.json':{job_type:'laser'},'Metadata/plate_1.gcode':header('H2D','PLA','0.4;0.4')+'G1 X20 Y20\n'};
+  await assert.rejects(inspect(t,'',{model:'h2d'},entries),/laser|cut|FFF|unsupported/i);
+  delete entries['Metadata/plate_1.json'].job_type;
+  entries['Metadata/plate_1.gcode']+='M960 S1 P1 ; ordinary FFF lidar/calibration light\nM960 S1 P0\n';
+  await inspect(t,'',{model:'h2d'},entries);
 });

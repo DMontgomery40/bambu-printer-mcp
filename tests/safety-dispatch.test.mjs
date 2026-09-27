@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import JSZip from "jszip";
 import { BambuImplementation } from "../dist/printers/bambu.js";
@@ -42,7 +43,7 @@ async function fixture(t, { model = "p1s", nozzle = "0.4", nozzleDiameters, mate
 }
 
 function isolatedPrinter(status = safetyStatus()) {
-  const printer = new BambuImplementation();
+  const printer = new BambuImplementation(async () => true);
   const events = [];
   printer.ftpUpload = async (_host, _token, file, remote) => events.push({ action: "upload", file, remote, bytes: await fs.readFile(file) });
   printer.getSafetyStatus = async () => { events.push({ action: "status" }); return status; };
@@ -116,7 +117,7 @@ test("printer becoming busy during upload stops the final print command", async 
   const file = await fixture(t);
   const { printer, events } = isolatedPrinter();
   let reads = 0;
-  printer.getSafetyStatus = async () => safetyStatus({ state: ++reads === 1 ? "IDLE" : "RUNNING" });
+  printer.getSafetyStatus = async () => safetyStatus({ state: ++reads <= 2 ? "IDLE" : "RUNNING" });
   await assert.rejects(printer.print3mf(host, serial, token, { projectName: "state-changed", filePath: file, bambuModel: "p1s", useAMS: false }), /state|busy|RUNNING/i);
   assert.equal(events.filter(({ action }) => action === "upload").length, 1);
   assert.equal(events.filter(({ action }) => action === "publish").length, 0);
@@ -301,11 +302,12 @@ for (const [name, changes, error] of [
   });
 }
 
-async function interceptedMcp(t, { blockBridgeInitialization = false, realBridgeRequest = false, model = "p1s", nozzleDiameters = [0.4], ams } = {}) {
+async function interceptedMcp(t, { blockBridgeInitialization = false, realBridgeRequest = false, model = "p1s", nozzleDiameters = [0.4], ams, bridgeResponse = { ok: true, value: 0 } } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-bridge-safety-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const eventsPath = path.join(dir, "events.jsonl");
   const releasePath = path.join(dir, "release-agent");
+  const statusPath = path.join(dir, "reported-status.json");
   const preload = path.join(dir, "boundaries.mjs");
   await fs.writeFile(preload, `
     import fs from 'node:fs';
@@ -319,8 +321,9 @@ async function interceptedMcp(t, { blockBridgeInitialization = false, realBridge
     STLManipulator.prototype.sliceSTL = async () => { log({action:'slice'}); throw new Error('Test slicer must not be invoked'); };
     BambuImplementation.prototype.getSafetyStatus = async () => {
       const now = Date.now();
-      return {connected:true, model:${JSON.stringify(model)}, status:'IDLE', serial:${JSON.stringify(serial)},
-        raw:{model:${JSON.stringify(model)},gcode_state:'IDLE',nozzle_diameter:${JSON.stringify(String(nozzleDiameters[0]))},device:{nozzle:{info:${JSON.stringify(nozzleDiameters.map((diameter, id) => ({ id, diameter, type: "HH01", stat: 0 })))}}},print_error:0,hms:[],...${JSON.stringify(ams ? { ams } : {})}},
+      const reported=fs.existsSync(${JSON.stringify(statusPath)}) ? JSON.parse(fs.readFileSync(${JSON.stringify(statusPath)},'utf8')) : {};
+      return {connected:true, model:${JSON.stringify(model)}, status:reported.gcode_state??'IDLE', serial:${JSON.stringify(serial)},
+        raw:{model:${JSON.stringify(model)},gcode_state:'IDLE',nozzle_diameter:${JSON.stringify(String(nozzleDiameters[0]))},device:{nozzle:{info:${JSON.stringify(nozzleDiameters.map((diameter, id) => ({ id, diameter, type: "HH01", stat: 0 })))}}},print_error:0,hms:[],...${JSON.stringify(ams ? { ams } : {})},...reported},
         observation:{source:'mqtt',requestedAt:now,receivedAt:now,identitySource:'report'}};
     };
     BambuNetworkBridge.prototype.ensureAgent = async () => {
@@ -331,7 +334,7 @@ async function interceptedMcp(t, { blockBridgeInitialization = false, realBridge
       this.child = {exitCode:0, stdin:{write:(frame, callback) => {
         const message=JSON.parse(frame.subarray(16).toString('utf8'));
         log({action:'bridge-frame',...message});
-        const payload=Buffer.from(JSON.stringify({ok:true,value:0}));
+        const payload=Buffer.from(JSON.stringify(${JSON.stringify(bridgeResponse)}));
         const response=Buffer.alloc(16+payload.length);
         response.writeUInt32LE(0x52424a50,0); response.writeUInt32LE(2,4);
         response.writeUInt32LE(frame.readUInt32LE(8),8); response.writeUInt32LE(payload.length,12); payload.copy(response,16);
@@ -339,14 +342,15 @@ async function interceptedMcp(t, { blockBridgeInitialization = false, realBridge
       }}};
     };` : `BambuNetworkBridge.prototype.request = async (method, payload) => {
       log({ action:'bridge', method, payload });
-      return { ok: true, value: 0 };
+      return ${JSON.stringify(bridgeResponse)};
     };`}
   `);
   const transport = new StdioClientTransport({ command: process.execPath, args: ["--import", preload, path.join(root, "dist/index.js")], cwd: dir, stderr: "pipe", env: { ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "", BAMBU_PRINTER_MODEL: "", BAMBU_PRINTER_HOST: host, BAMBU_PRINTER_SERIAL: serial, BAMBU_SERIAL: serial, BAMBU_PRINTER_ACCESS_TOKEN: token, BAMBU_TOKEN: token, BAMBU_DEV_ID: serial, BAMBU_NETWORK_BRIDGE_COMMAND: "" } });
-  const client = new Client({ name: "safety-dispatch-tests", version: "1" });
+  const client = new Client({ name: "safety-dispatch-tests", version: "1" }, { capabilities: { elicitation: { form: {} } } });
+  client.setRequestHandler(ElicitRequestSchema, async () => ({ action: "accept", content: { confirmed: true } }));
   t.after(() => client.close());
   await client.connect(transport);
-  return { client, eventsPath, releaseAgent: () => fs.writeFile(releasePath, "release") };
+  return { client, eventsPath, releaseAgent: () => fs.writeFile(releasePath, "release"), setReportedStatus: reported => fs.writeFile(statusPath, JSON.stringify(reported)) };
 }
 
 test("raw BambuNetwork start_print cannot bypass the inspected print handler", async (t) => {
@@ -402,6 +406,59 @@ test("verified public direct and bridge prints reach their intended transport", 
   assert.match(print.payload.params.dst_file, /^checked-[a-f0-9-]+-job\.gcode\.3mf$/);
   assert.equal(print.payload.params.task_use_ams, false);
   assert.equal(print.payload.params.ams_mapping, "[254]");
+});
+
+async function startBridgeJob(t, options) {
+  const server = await interceptedMcp(t, { realBridgeRequest: true, ...options });
+  const file = await fixture(t);
+  const result = await server.client.callTool({ name: "print_3mf_bambu_network", arguments: { three_mf_path: file, bambu_model: "p1s", bed_type: "textured_plate", use_ams: false, connection_type: "cloud" } });
+  const events = (await fs.readFile(server.eventsPath, "utf8")).trim().split("\n").map(JSON.parse);
+  const params = events.find(event => event.action === "bridge-frame" && event.method === "net.start_print")?.payload.params;
+  assert.ok(params, "the bridge job must reach the native request boundary");
+  return { ...server, result, params };
+}
+
+for (const identityField of ["gcode_file", "subtask_name"]) {
+  test(`a verified bridge job resumes when fresh ${identityField} identifies its unique artifact`, async (t) => {
+    const server = await startBridgeJob(t);
+    assert.notEqual(server.result.isError, true, server.result.content?.[0]?.text);
+    assert.match(server.params.task_name, /^checked-[a-f0-9-]+-job/);
+    const reportedName = identityField === "gcode_file" ? server.params.dst_file : server.params.task_name;
+    await server.setReportedStatus({ gcode_state: "PAUSE", [identityField]: reportedName });
+    await fs.writeFile(server.eventsPath, "");
+    const resumed = await server.client.callTool({ name: "resume_print", arguments: {} });
+    assert.notEqual(resumed.isError, true, resumed.content?.[0]?.text);
+    const events = (await fs.readFile(server.eventsPath, "utf8")).trim().split("\n").map(JSON.parse);
+    assert.deepEqual(events.map(event => event.action), ["publish"]);
+    assert.equal(events[0].payload.print.command, "resume");
+  });
+}
+
+for (const [description, changedReport, expected] of [
+  ["a different paused job", { gcode_file: "unverified.gcode", subtask_name: "other project" }, /identity|artifact|match/i],
+  ["a changed physical nozzle", { nozzle_diameter: "0.6", device: { nozzle: { info: [{ id: 0, diameter: 0.6, type: "HH01", stat: 0 }] } } }, /nozzle|diameter/i],
+]) {
+  test(`bridge-job resume refuses ${description}`, async (t) => {
+    const server = await startBridgeJob(t);
+    assert.notEqual(server.result.isError, true, server.result.content?.[0]?.text);
+    await server.setReportedStatus({ gcode_state: "PAUSE", gcode_file: server.params.dst_file, ...changedReport });
+    await fs.writeFile(server.eventsPath, "");
+    const resumed = await server.client.callTool({ name: "resume_print", arguments: {} });
+    assert.equal(resumed.isError, true);
+    assert.match(resumed.content?.[0]?.text ?? "", expected);
+    assert.equal(await fs.readFile(server.eventsPath, "utf8"), "", "a failed resume must not publish or dispatch");
+  });
+}
+
+test("a rejected bridge start cannot authorize a later resume", async (t) => {
+  const server = await startBridgeJob(t, { bridgeResponse: { ok: true, value: -1 } });
+  assert.equal(server.result.isError, true);
+  await server.setReportedStatus({ gcode_state: "PAUSE", gcode_file: server.params.dst_file });
+  await fs.writeFile(server.eventsPath, "");
+  const resumed = await server.client.callTool({ name: "resume_print", arguments: {} });
+  assert.equal(resumed.isError, true);
+  assert.match(resumed.content?.[0]?.text ?? "", /inspected|server instance|verified/i);
+  assert.equal(await fs.readFile(server.eventsPath, "utf8"), "", "failed submission cannot leave a resumable job receipt");
 });
 
 test("public print schemas expose ordered nozzle diameter arrays", async (t) => {
@@ -592,4 +649,82 @@ test("public stop during bridge agent initialization prevents the actual native 
   const events = (await fs.readFile(eventsPath, "utf8")).trim().split("\n").map(JSON.parse);
   assert.equal(events.filter(event => event.action === "publish" && event.payload?.print?.command === "stop").length, 1);
   assert.equal(events.filter(event => event.action === "bridge-frame").length, 0, "the real bridge request must stop before stdin.write");
+});
+
+test("human preflight declines before upload and shows inspected settings", async (t) => {
+  const file = await fixture(t);
+  const { printer, events } = isolatedPrinter();
+  const prompts = [];
+  printer.confirm = async message => { prompts.push(message); return false; };
+  await assert.rejects(printer.print3mf(host, serial, token, { projectName: "confirm", filePath: file, bambuModel: "p1s", useAMS: false }), /confirmation.*declined/i);
+  assertNoDispatch(events);
+  assert.match(prompts[0], /P1S.*0\.4 mm.*PLA.*220°C.*60°C.*SHA-256/s);
+});
+
+test("human preflight rechecks printer state after confirmation", async (t) => {
+  const file = await fixture(t);
+  const { printer, events } = isolatedPrinter();
+  printer.confirm = async () => { printer.getSafetyStatus = async () => safetyStatus({ state: "RUNNING" }); return true; };
+  await assert.rejects(printer.print3mf(host, serial, token, { projectName: "confirm", filePath: file, bambuModel: "p1s", useAMS: false }), /not safely idle/i);
+  assertNoDispatch(events);
+});
+
+test("FINISH requires bed clearance even with ordinary headless prompts disabled", async (t) => {
+  const previous = process.env.BAMBU_REQUIRE_CONFIRMATION;
+  process.env.BAMBU_REQUIRE_CONFIRMATION = "0";
+  t.after(() => { if (previous === undefined) delete process.env.BAMBU_REQUIRE_CONFIRMATION; else process.env.BAMBU_REQUIRE_CONFIRMATION = previous; });
+  const file = await fixture(t);
+  const { printer, events } = isolatedPrinter(safetyStatus({ state: "FINISH", subtask_name: "previous-part" }));
+  const prompts = [];
+  printer.confirm = async message => { prompts.push(message); return false; };
+  await assert.rejects(printer.print3mf(host, serial, token, { projectName: "confirm", filePath: file, bambuModel: "p1s", useAMS: false }), /confirmation.*declined/i);
+  assert.match(prompts[0], /FINISH.*remove the previous part/i);
+  assertNoDispatch(events);
+});
+
+test("bed clearance cannot authorize a different finished job", async (t) => {
+  const file = await fixture(t);
+  const { printer, events } = isolatedPrinter(safetyStatus({ state: "FINISH", subtask_name: "previous-part" }));
+  printer.confirm = async () => { printer.getSafetyStatus = async () => safetyStatus({ state: "FINISH", subtask_name: "another-part" }); return true; };
+  await assert.rejects(printer.print3mf(host, serial, token, { projectName: "confirm", filePath: file, bambuModel: "p1s", useAMS: false }), /newly finished job/i);
+  assertNoDispatch(events);
+});
+
+test("manual positive heating requires confirmation but heater-off does not", async () => {
+  const { printer, events } = isolatedPrinter();
+  printer.confirm = async () => false;
+  await assert.rejects(printer.setTemperature(host, serial, token, "nozzle", 220, "p1s", "PLA"), /confirmation.*declined/i);
+  assertNoDispatch(events);
+  await printer.setTemperature(host, serial, token, "nozzle", 0);
+  assert.match(events.find(event => event.action === "publish").payload.print.param, /M104 S0/);
+});
+
+test("hardware errors cannot be cleared without human confirmation", async () => {
+  const { printer, events } = isolatedPrinter(safetyStatus({ print_error: 123, hms: [{ attr: 1, code: 0x20001 }] }));
+  const prompts = [];
+  printer.confirm = async message => { prompts.push(message); return false; };
+  await assert.rejects(printer.clearHmsErrors(host, serial, token), /confirmation.*declined/i);
+  assert.match(prompts[0], /print_error:123.*hms:1:131073|hms:1:131073.*print_error:123/);
+  assertNoDispatch(events);
+});
+
+test("cleared hardware codes are returned and acknowledged again before printing", async (t) => {
+  const file = await fixture(t);
+  const { printer, events } = isolatedPrinter(safetyStatus({ print_error: 123, hms: [] }));
+  const cleared = await printer.clearHmsErrors(host, serial, token);
+  assert.deepEqual(cleared.cleared_codes, ["print_error:123"]);
+  events.length = 0;
+  printer.getSafetyStatus = async () => safetyStatus();
+  const prompts = [];
+  printer.confirm = async message => { prompts.push(message); return false; };
+  await assert.rejects(printer.print3mf(host, serial, token, { projectName: "confirm", filePath: file, bambuModel: "p1s", useAMS: false }), /confirmation.*declined/i);
+  assert.match(prompts[0], /Previously cleared hardware codes: print_error:123/);
+  assertNoDispatch(events);
+});
+
+test("changed hardware codes during confirmation are not cleared", async () => {
+  const { printer, events } = isolatedPrinter(safetyStatus({ print_error: 123, hms: [] }));
+  printer.confirm = async () => { printer.getSafetyStatus = async () => safetyStatus({ print_error: 456, hms: [] }); return true; };
+  await assert.rejects(printer.clearHmsErrors(host, serial, token), /errors changed/i);
+  assertNoDispatch(events);
 });

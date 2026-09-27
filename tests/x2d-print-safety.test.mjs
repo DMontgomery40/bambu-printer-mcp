@@ -91,7 +91,8 @@ test("X2D MCP print requests stop before slicing, status, uploads, and connectio
   });
   const client = new Client({ name: "x2d-print-safety", version: "0" }, { capabilities: { elicitation: { form: {} } } });
   let elicitations = 0;
-  client.setRequestHandler(ElicitRequestSchema, async () => {
+  client.setRequestHandler(ElicitRequestSchema, async request => {
+    if (request.params.requestedSchema.properties.confirmed) return { action: "accept", content: { confirmed: true } };
     elicitations += 1;
     return { action: "accept", content: { bambu_model: "x2d" } };
   });

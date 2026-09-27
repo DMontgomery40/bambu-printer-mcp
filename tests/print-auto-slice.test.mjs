@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import JSZip from "jszip";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -72,7 +73,8 @@ BambuImplementation.prototype.getSafetyStatus = async function () {
     },
     stderr: "pipe",
   });
-  const client = new Client({ name: "auto-slice-tests", version: "1" });
+  const client = new Client({ name: "auto-slice-tests", version: "1" }, { capabilities: { elicitation: { form: {} } } });
+  client.setRequestHandler(ElicitRequestSchema, async () => ({ action: "accept", content: { confirmed: true } }));
   t.after(async () => { await client.close(); fs.rmSync(directory, { recursive: true, force: true }); });
   await client.connect(transport);
   return {

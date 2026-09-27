@@ -284,7 +284,7 @@ export function validatePrinterState(status, requirements) {
     });
     const filaments = [];
     // Heating the bed alone has no filament requirement. All other callers declare each used material.
-    if (requirements.materials !== undefined || requirements.nozzleDiameters.length) {
+    if (requirements.verifyMaterials !== false && (requirements.materials !== undefined || requirements.nozzleDiameters.length)) {
         const materials = requirements.materials ?? [];
         const positions = requirements.usedFilamentPositions ?? materials.map((_, index) => index);
         if (!positions.length)

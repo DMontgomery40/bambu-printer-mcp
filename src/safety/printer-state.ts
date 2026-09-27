@@ -100,6 +100,8 @@ export interface PrinterStateRequirements {
   amsMapping?: number[];
   useAMS?: boolean;
   requireIdle?: boolean;
+  /** Upload-only identity checks do not select or consume a physical filament slot. */
+  verifyMaterials?: boolean;
   /** Zero-based firmware nozzle indices corresponding positionally to nozzleDiameters. */
   usedNozzleIndices?: number[];
   nozzleTypes?: string[];
@@ -263,7 +265,7 @@ export function validatePrinterState(status: any, requirements: PrinterStateRequ
   });
   const filaments: ReportedFilament[] = [];
   // Heating the bed alone has no filament requirement. All other callers declare each used material.
-  if (requirements.materials !== undefined || requirements.nozzleDiameters.length) {
+  if (requirements.verifyMaterials !== false && (requirements.materials !== undefined || requirements.nozzleDiameters.length)) {
     const materials = requirements.materials ?? [];
     const positions = requirements.usedFilamentPositions ?? materials.map((_, index) => index);
     if (!positions.length) throw new Error("A declared material is required for each used filament or external spool.");

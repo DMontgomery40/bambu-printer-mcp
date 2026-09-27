@@ -1,3 +1,5 @@
+import { inspectPrintFile } from "../safety/print-file.js";
+import { type PrinterStateRequirements } from "../safety/printer-state.js";
 export declare function assertDirectPrintSupported(model: string | undefined, serial?: string): void;
 interface BambuPrintOptionsInternal {
     projectName: string;
@@ -25,10 +27,18 @@ interface BambuPrintOptionsInternal {
     md5?: string;
 }
 export declare class BambuImplementation {
+    private readonly confirm?;
     private printerStore;
     private checkedJobs;
-    constructor();
+    private clearedErrors;
+    constructor(confirm?: ((message: string) => Promise<boolean>) | undefined);
+    confirmHardwareAction(message: string, physicalCheck?: boolean): Promise<void>;
+    private finishedJobIdentity;
+    confirmPrintPreflight(serial: string, status: any, inspection: Awaited<ReturnType<typeof inspectPrintFile>>): Promise<string | undefined>;
+    assertBedClearance(status: any, confirmedFinishedJob: string | undefined): void;
     private getPrinter;
+    /** Internal handoff from a successful inspected transport; never exposed as an MCP tool. */
+    recordCheckedJob(host: string, serial: string, remotePath: string, requirements: PrinterStateRequirements): void;
     private validateLoadedGcodeState;
     private resolveProjectFileMetadata;
     /** Safety reads never use the display cache or configured-serial model inference. */
@@ -77,14 +87,15 @@ export declare class BambuImplementation {
     uploadFile(host: string, serial: string, token: string, filePath: string, filename: string, print: boolean, bambuModel?: string): Promise<{
         status: string;
         uploaded: boolean;
-        printRequested: boolean;
         remotePath: string;
-        message: string;
+        printRequested: boolean;
+        inspected: boolean;
     } | {
         status: string;
         uploaded: boolean;
-        remotePath: string;
         printRequested: boolean;
+        remotePath: string;
+        message: string;
     }>;
     private printRawPrepared;
     startJob(host: string, serial: string, token: string, filename: string, bambuModel?: string): Promise<{

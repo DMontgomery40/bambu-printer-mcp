@@ -1,7 +1,6 @@
-import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
-import JSZip from 'jszip';
-import { MACHINE_LIMITS, normalizeMaterial, normalizeModel, validateTemperature } from './limits.js';
+import { readBoundedPrintFile, loadSafe3mfArchive } from './archive.js';
+import { MACHINE_LIMITS, normalizeMaterial, normalizeModel, validateStartupPurgeTemperature, validateTemperature } from './limits.js';
 const NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 const fail = (message) => { throw new Error(`Print safety: ${message}`); };
 function list(value) {
@@ -80,6 +79,46 @@ function parameters(text, flags = '') {
     }
     return result;
 }
+// Layer comments only close a startup exception; they can never enable one.
+const isLayerMarker = (line) => /^\s*;\s*(?:LAYER_CHANGE|CHANGE_LAYER|LAYER\s*:|layer num\/total_layer_count\s*:)/i.test(line);
+function boundedX1ePurge(lines, index) {
+    // Official X1E common flush: 50 mm at 200 mm/min, followed immediately by
+    // lowering the target. No dwell, XY extrusion, repeated block or open-ended
+    // high-temperature program receives this exception. This bounds command form,
+    // not firmware heating time, which cannot be predicted from a file.
+    const expected = [['M106', { P: 1, S: 0 }], ['G92', { E: 0 }], ['G1', { E: 50, F: 200 }], ['M400', {}], ['M104', {}]];
+    let next = 0;
+    for (let cursor = index + 1; cursor < lines.length; cursor++) {
+        if (isLayerMarker(lines[cursor]))
+            return false;
+        const line = stripComments(lines[cursor]).replace(/^N\d+\s*/i, '').replace(/\*\d+\s*$/, '');
+        if (!line)
+            continue;
+        const match = line.match(/^([GM])(\d+)(?=$|\s|[A-Z+-])/i);
+        if (!match || match[1].toUpperCase() + Number(match[2]) !== expected[next][0])
+            return false;
+        const args = parameters(line.slice(match[0].length));
+        if (next === 4)
+            return args.size === 1 && args.has('S') && args.get('S') >= 0 && args.get('S') <= 260;
+        const entries = Object.entries(expected[next][1]);
+        if (args.size !== entries.length || entries.some(([key, value]) => args.get(key) !== value))
+            return false;
+        next++;
+    }
+    return false;
+}
+function validateFffJob(metadata) {
+    for (const data of metadata)
+        for (const [key, value] of Object.entries(data)) {
+            if (key === 'printer_technology' && (typeof value !== 'string' || value.trim().toUpperCase() !== 'FFF'))
+                fail('only FFF printing is supported; non-FFF printer technology is not permitted');
+            const text = typeof value === 'string' ? value.trim().toLowerCase() : String(value);
+            if ((/(?:^|_)(?:type|mode|technology)$/.test(key) && /(?:^|[ _-])(?:laser|cutting|cutter|engraving|engrave|plotter)(?:$|[ _-])/.test(text)) ||
+                (/^(?:laser|cutting|cutter|engraving)_(?:enabled|mode|power)$/.test(key) && !['', '0', 'false', 'off', 'disabled', 'none'].includes(text))) {
+                fail(`laser/cutting job metadata '${key}' is unsupported by the FFF print path`);
+            }
+        }
+}
 function validateBounds(headers, model, plate) {
     const volume = MACHINE_LIMITS[model].volume;
     const boxes = [];
@@ -129,14 +168,14 @@ export async function inspectPrintFile(filePath, options) {
         return fail('selected plate index must be a nonnegative integer');
     if (/\.md5$/i.test(filePath))
         return fail('a checksum file is not a printable artifact');
-    const bytes = await readFile(filePath);
+    const bytes = await readBoundedPrintFile(filePath);
     const sha256 = createHash('sha256').update(bytes).digest('hex');
     let source;
     let project = {};
     let plate = {};
     let plateInternalPath;
     if (/\.3mf$/i.test(filePath)) {
-        const zip = await JSZip.loadAsync(bytes, { checkCRC32: true });
+        const zip = await loadSafe3mfArchive(bytes);
         plateInternalPath = `Metadata/plate_${plateIndex + 1}.gcode`;
         const entry = zip.file(plateInternalPath);
         if (!entry)
@@ -173,6 +212,7 @@ export async function inspectPrintFile(filePath, options) {
         if (match)
             metadata.push({ [match[1].toLowerCase()]: match[2] });
     }
+    validateFffJob([...metadata, plate]);
     const declaredModel = consistent(metadataValues(metadata, ['printer_model']), normalizeModel, 'printer model');
     if (declaredModel !== model)
         return fail(`file model ${declaredModel} contradicts requested model ${model}`);
@@ -190,15 +230,50 @@ export async function inspectPrintFile(filePath, options) {
             fail('selected plate nozzle diameter metadata contradicts the sliced project nozzles');
         }
     }
-    const nozzleMetadata = (keys) => {
+    const normalizedEntries = (value) => {
+        const entries = list(value).map(entry => entry.toLowerCase().replace(/[\s_-]+/g, '_'));
+        return entries.length && entries.every(Boolean) ? entries : undefined;
+    };
+    const nozzleMetadata = (keys, variantRows = false) => {
         const values = metadataValues(metadata, keys);
         return values.length ? consistent(values, value => {
-            const entries = list(value).map(entry => entry.toLowerCase().replace(/[\s_-]+/g, '_'));
-            return entries.length === nozzleDiameters.length && entries.every(Boolean) ? entries : undefined;
+            const entries = normalizedEntries(value);
+            if (!entries)
+                return undefined;
+            if (entries.length === nozzleDiameters.length)
+                return entries;
+            if (!variantRows)
+                return undefined;
+            // Bambu GUI projects may store nozzle types per extruder variant, while
+            // diameters and selected flow types are per physical extruder. Never truncate
+            // that variant table or mistake its rows for filament/nozzle positions.
+            const ids = consistent(metadataValues(metadata, ['printer_extruder_id']), value => {
+                const ids = list(value);
+                return ids.length === entries.length && ids.every(id => /^[1-9]\d*$/.test(id) && Number(id) <= nozzleDiameters.length) ? ids.map(Number) : undefined;
+            }, 'printer extruder id');
+            const resolved = [];
+            for (let index = 0; index < nozzleDiameters.length; index++) {
+                const rows = ids.flatMap((id, row) => id === index + 1 ? [row] : []);
+                if (!rows.length)
+                    return undefined;
+                if (rows.every(row => entries[row] === entries[rows[0]])) {
+                    resolved.push(entries[rows[0]]);
+                    continue;
+                }
+                const variants = consistent(metadataValues(metadata, ['printer_extruder_variant']), normalizedEntries, 'printer extruder variant');
+                const extruders = consistent(metadataValues(metadata, ['extruder_type']), normalizedEntries, 'extruder type');
+                if (variants.length !== entries.length || extruders.length !== nozzleDiameters.length || !nozzleFlows)
+                    return undefined;
+                const selected = rows.filter(row => variants[row] === `${extruders[index]}_${nozzleFlows[index]}`);
+                if (selected.length !== 1)
+                    return undefined;
+                resolved.push(entries[selected[0]]);
+            }
+            return resolved;
         }, keys[0].replace(/_/g, ' ')) : undefined;
     };
-    const nozzleTypes = nozzleMetadata(['nozzle_type']);
     const nozzleFlows = nozzleMetadata(['nozzle_flow', 'nozzle_volume_type']);
+    const nozzleTypes = nozzleMetadata(['nozzle_type'], true);
     const materials = consistent(metadataValues(metadata, ['filament_type']), value => {
         const values = list(value);
         return values.length && values.every(v => !!normalizeMaterial(v)) ? values.map(v => normalizeMaterial(v)) : undefined;
@@ -230,9 +305,13 @@ export async function inspectPrintFile(filePath, options) {
     let pending;
     let previous;
     let maxNozzleTemperature = 0, maxBedTemperature = 0, maxChamberTemperature = 0, commandCount = 0;
-    const heat = (component, value, position, allMaterials = false) => {
+    let depositionStarted = false, commonFlushUsed = false;
+    const heat = (component, value, position, allMaterials = false, startupPurge = false) => {
         const affected = allMaterials ? materials.map((_, index) => index) : position === undefined ? [...(used.size ? used : new Set(materials.map((_, index) => index)))] : [requirePosition(position)];
-        validateTemperature(component, value, model, affected.map(index => materials[index]));
+        if (component === 'nozzle' && startupPurge)
+            validateStartupPurgeTemperature(value, model, affected.map(index => materials[index]));
+        else
+            validateTemperature(component, value, model, affected.map(index => materials[index]));
         if (component === 'nozzle') {
             nozzleTarget = value;
             maxNozzleTemperature = Math.max(maxNozzleTemperature, value);
@@ -244,8 +323,15 @@ export async function inspectPrintFile(filePath, options) {
         else
             maxChamberTemperature = Math.max(maxChamberTemperature, value);
     };
+    const closeStartupWindow = () => {
+        depositionStarted = true;
+        const affected = active === undefined ? (used.size ? [...used].map(position => materials[position]) : materials) : [materials[active]];
+        validateTemperature('nozzle', nozzleTarget, model, affected);
+    };
     for (let index = 0; index < lines.length; index++) {
         try {
+            if (isLayerMarker(lines[index]))
+                closeStartupWindow();
             let line = stripComments(lines[index]);
             if (!line || line === '%')
                 continue;
@@ -261,6 +347,12 @@ export async function inspectPrintFile(filePath, options) {
             commandCount++;
             if (!['M117', 'M118', 'M1002', 'M1006', 'M900', 'M970', 'M983.1', 'G383'].includes(code) && /[GM]\s*\d/i.test(argumentsText))
                 fail('multiple commands on one line are unsupported');
+            // Coordinated extrusion closes the startup-only allowance even when the
+            // source omits layer comments. Retraction also closes it conservatively.
+            if (['G0', 'G1', 'G2', 'G3'].includes(code) && /E/i.test(argumentsText) && /[XY]/i.test(argumentsText))
+                closeStartupWindow();
+            if (/^M(?:3|4|452)(?:\.|$)/.test(code))
+                fail(`laser/cutter command ${code} is unsupported by the FFF print path`);
             if (/^T\d+$/.test(code)) {
                 const position = Number(code.slice(1));
                 if ([254, 255, 1000, 1001, 1100, 65279, 65535].includes(position)) {
@@ -288,9 +380,12 @@ export async function inspectPrintFile(filePath, options) {
                 if (args.has('T') && (!Number.isInteger(args.get('T')) || args.get('T') < 0 || args.get('T') >= nozzleDiameters.length))
                     fail('physical heater target has no declared nozzle');
                 const position = args.has('T') ? undefined : active;
+                const commonFlush = code === 'M109' && args.size === 1 && args.get('S') === 290 && model === 'x1e' && !depositionStarted && !commonFlushUsed && boundedX1ePurge(lines, index);
+                if (commonFlush)
+                    commonFlushUsed = true;
                 for (const key of ['S', 'R'])
                     if (args.has(key))
-                        heat(component, args.get(key), position, args.has('T') || args.has('A'));
+                        heat(component, args.get(key), position, args.has('T') || args.has('A'), commonFlush);
             }
             else if (code === 'M620' || code === 'M621') {
                 const args = parameters(argumentsText, 'MA');
@@ -320,15 +415,44 @@ export async function inspectPrintFile(filePath, options) {
             else if (code === 'M620.1' || code === 'M620.10') {
                 const args = parameters(argumentsText, 'E');
                 const position = code === 'M620.10' && args.get('A') === 1 ? pending ?? active : code === 'M620.10' && args.get('A') === 0 ? active : undefined;
+                const startupSetup = !depositionStarted && (code === 'M620.1' ? args.has('E') && args.get('F') > 0 :
+                    [0, 1].includes(args.get('A')) && args.get('F') > 0 && [0.2, 0.4, 0.6, 0.8].includes(args.get('H')) && args.has('P'));
                 for (const key of code === 'M620.10' ? ['T', 'P'] : ['T'])
                     if (args.has(key))
-                        heat('nozzle', args.get(key), position);
+                        heat('nozzle', args.get(key), position, false, startupSetup && key === 'T');
             }
-            else if (code === 'G383') {
-                // Bambu probing command carries a nozzle-temperature threshold in T.
+            else if (code === 'G150') {
+                // Official H2D nozzle-wipe routine carries the temperature in T.
                 const args = parameters(argumentsText);
                 if (args.has('T'))
                     heat('nozzle', args.get('T'), active);
+            }
+            else if (/^G150\./.test(code) && /T/i.test(argumentsText)) {
+                fail(`unsupported thermal-affecting wipe command ${code}`);
+            }
+            else if (code === 'G383' || code === 'G383.3') {
+                // Bambu probing routines carry nozzle temperature in T and optionally
+                // the project filament position in L (including the H2D G383.3 form).
+                const args = parameters(argumentsText);
+                if (code === 'G383.3' && (!args.has('T') || [...args.keys()].some(key => !'TL'.includes(key))))
+                    fail('unsupported G383.3 temperature parameters');
+                const position = args.has('L') ? requirePosition(args.get('L')) : active;
+                if (args.has('T'))
+                    heat('nozzle', args.get('T'), position);
+            }
+            else if (code === 'G383.4' && !argumentsText) {
+                // Official H2D startup: left-extruder load status detection, no target.
+            }
+            else if (/^G383\./.test(code)) {
+                fail(`unsupported thermal-affecting probing command ${code}`);
+            }
+            else if (code === 'M620.15') {
+                // H2D change_filament_gcode supplies the incoming filament's cooling
+                // temperature as C{new_filament_temp - filament_cooling_before_tower}.
+                const args = parameters(argumentsText);
+                if (args.size !== 1 || !args.has('C'))
+                    fail('unsupported M620.15 cooling temperature parameters');
+                heat('nozzle', args.get('C'), pending ?? active);
             }
             else if (code === 'M620.17') {
                 const args = parameters(argumentsText);

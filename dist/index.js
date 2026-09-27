@@ -813,7 +813,23 @@ class BambuPrinterMCPServer {
                 tools: {}
             }
         });
-        this.bambu = new BambuImplementation();
+        this.bambu = new BambuImplementation(async (message) => {
+            try {
+                const response = await this.server.elicitInput({
+                    mode: "form",
+                    message,
+                    requestedSchema: {
+                        type: "object",
+                        properties: { confirmed: { type: "boolean", title: "I checked the printer and confirm this operation", default: false } },
+                        required: ["confirmed"],
+                    },
+                });
+                return response.action === "accept" && response.content?.confirmed === true;
+            }
+            catch {
+                throw new Error("Human hardware confirmation requires an MCP client with elicitation support. For deliberately headless operation, BAMBU_REQUIRE_CONFIRMATION=0 disables ordinary print/heat prompts; finished-bed clearance and hardware-error confirmation still require elicitation.");
+            }
+        });
         this.bambuNetwork = new BambuNetworkBridge();
         this.stlManipulator = new STLManipulator(TEMP_DIR);
         this.setupHandlers();
@@ -1045,7 +1061,7 @@ class BambuPrinterMCPServer {
         const { threeMFPath, autoSliced } = await this.ensurePrintableThreeMFPath(args, printModel, printPreset, printBedType);
         const { useAMS, finalAmsMapping, finalAmsSlots } = await this.resolveAmsPrintSettings(threeMFPath, args, host, bambuSerial, bambuToken, printModel, printNozzle);
         const threeMfFilename = path.basename(threeMFPath);
-        const projectName = String(args?.project_name || threeMfFilename.replace(/\.3mf$/i, ''));
+        const projectName = String(args?.project_name || args?.task_name || threeMfFilename.replace(/\.3mf$/i, ''));
         const presetName = String(args?.preset_name || `${projectName}_plate_${plateIndex + 1}`);
         const clientJobId = args?.client_job_id !== undefined ? Number(args.client_job_id) : Date.now();
         return withPrinterOperation(devIp, devId, assertActive => withPrintSnapshot(threeMFPath, async (snapshot) => {
@@ -1062,11 +1078,19 @@ class BambuPrinterMCPServer {
                 inspection.usedFilamentPositions.forEach(position => { mapping[position] = 254; });
             }
             const requirements = { ...inspection, amsMapping: mapping, useAMS };
-            validatePrinterState(await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken), requirements);
+            const initialStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
+            validatePrinterState(initialStatus, requirements);
+            const bedClearance = await this.bambu.confirmPrintPreflight(devId, initialStatus, inspection);
+            const confirmedStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
+            validatePrinterState(confirmedStatus, requirements);
+            this.bambu.assertBedClearance(confirmedStatus, bedClearance);
             const amsMapping = stringifyBridgeJson(mapping);
+            const remoteFileName = uniquePrintName(threeMFPath);
             const params = {
                 dev_id: devId,
-                task_name: String(args?.task_name || projectName),
+                // Firmware can report the task name instead of the uploaded filename.
+                // Bind either report to this inspected artifact for a later safe resume.
+                task_name: remoteFileName.replace(/(?:\.gcode)?\.3mf$/i, ""),
                 project_name: projectName,
                 preset_name: presetName,
                 filename: snapshot,
@@ -1086,7 +1110,7 @@ class BambuPrinterMCPServer {
                 stl_design_id: args?.stl_design_id !== undefined ? Number(args.stl_design_id) : 0,
                 origin_model_id: String(args?.origin_model_id || ""),
                 print_type: String(args?.print_type || "from_normal"),
-                dst_file: uniquePrintName(threeMFPath),
+                dst_file: remoteFileName,
                 dev_name: String(args?.dev_name || ""),
                 dev_ip: devIp,
                 use_ssl_for_ftp: args?.use_ssl_for_ftp !== undefined ? Boolean(args.use_ssl_for_ftp) : true,
@@ -1115,7 +1139,9 @@ class BambuPrinterMCPServer {
                     if (method !== bridgeMethod)
                         return;
                     assertActive();
-                    validatePrinterState(await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken), requirements);
+                    const dispatchStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
+                    validatePrinterState(dispatchStatus, requirements);
+                    this.bambu.assertBedClearance(dispatchStatus, bedClearance);
                 },
                 assertDispatchAllowed: method => { if (method === bridgeMethod)
                     assertActive(); },
@@ -1130,6 +1156,8 @@ class BambuPrinterMCPServer {
                 const value = bridgeResult.value;
                 throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} returned non-zero result ${value}.`);
             }
+            assertActive();
+            this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements);
             return {
                 status: "success",
                 message: `FULU BambuNetwork ${bridgePrintMethod} command for ${threeMfFilename} sent successfully.`,
@@ -1764,7 +1792,7 @@ class BambuPrinterMCPServer {
                                 plate_index: { type: "number", description: "Zero-based plate index to print from the sliced 3MF; converted to FULU's one-based PrintParams plate_index." },
                                 project_name: { type: "string", description: "Optional project name sent in FULU PrintParams; defaults to the 3MF filename without extension." },
                                 preset_name: { type: "string", description: "Optional preset name sent in FULU PrintParams; defaults to project plus one-based plate index." },
-                                task_name: { type: "string", description: "Optional BambuNetwork task name; defaults to the project name." },
+                                task_name: { type: "string", description: "Optional project label when project_name is omitted. The submitted task name uses a unique inspected-job identity for safe resume." },
                                 config_filename: { type: "string", description: "Optional config 3MF path for cloud print; defaults to the same 3MF path." },
                                 bridge_command: { type: "string", description: "Override command for the FULU bridge host or macOS/WSL wrapper; defaults to BAMBU_NETWORK_BRIDGE_COMMAND. Per-call overrides require MCP_ALLOW_EXECUTABLE_ARG=1." },
                                 bambu_network_config_dir: { type: "string", description: "Config/log directory used by the BambuNetwork agent; defaults to BAMBU_NETWORK_CONFIG_DIR or a user config directory." },
@@ -1839,13 +1867,14 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "upload_gcode",
-                        description: "Upload a G-code file to the Bambu Lab printer",
+                        description: "Inspect a G-code file and upload a uniquely named copy without overwriting existing printer files.",
                         inputSchema: {
                             type: "object",
                             properties: {
                                 filename: { type: "string", description: "Name for the file on the printer" },
                                 gcode: { type: "string", description: "G-code content to upload, or a readable local .gcode path. Required unless gcode_path is provided. For large files, prefer gcode_path." },
                                 gcode_path: { type: "string", description: "Local path to a .gcode file to upload. Required unless gcode is provided. This avoids sending large G-code bodies through the MCP request." },
+                                bambu_model: { type: "string", enum: [...VALID_BAMBU_MODELS], description: "Required printer model for inspecting the uploaded G-code, even when not starting it." },
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
                                 bambu_token: { type: "string", description: "Access token (default: value from env)" }
@@ -1865,7 +1894,7 @@ class BambuPrinterMCPServer {
                                 bambu_model: {
                                     type: "string",
                                     enum: [...VALID_BAMBU_MODELS],
-                                    description: "Required when print is true. Bambu Lab printer model used as a safety confirmation before starting the uploaded file."
+                                    description: "Required for every printable .gcode or .3mf upload, including upload-only operations."
                                 },
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
@@ -2421,7 +2450,8 @@ class BambuPrinterMCPServer {
                         }
                         const uploadSource = resolveUploadGcodeSource(args);
                         try {
-                            result = await this.bambu.uploadFile(host, bambuSerial, bambuToken, uploadSource.filePath, String(args.filename), false);
+                            const uploadModel = await this.resolveBambuModel(args?.bambu_model);
+                            result = await this.bambu.uploadFile(host, bambuSerial, bambuToken, uploadSource.filePath, String(args.filename), false, uploadModel);
                         }
                         finally {
                             if (uploadSource.cleanupDir) {
@@ -2435,7 +2465,8 @@ class BambuPrinterMCPServer {
                             throw new Error("Missing required parameters: file_path and filename");
                         }
                         const print = Boolean(args.print ?? false);
-                        const uploadModel = print ? await this.resolveBambuModel(args?.bambu_model) : undefined;
+                        const printableUpload = /\.(?:gcode|3mf)$/i.test(String(args.file_path)) || /\.(?:gcode|3mf)$/i.test(String(args.filename));
+                        const uploadModel = print || printableUpload ? await this.resolveBambuModel(args?.bambu_model) : undefined;
                         if (print)
                             assertDirectPrintSupported(uploadModel, bambuSerial);
                         result = await this.bambu.uploadFile(host, bambuSerial, bambuToken, String(args.file_path), String(args.filename), print, uploadModel);

@@ -45,6 +45,8 @@ This file is the repository's shared source of truth for local agents and GitHub
 - Preserve custom overrides and filament-slot ordering. One explicit filament override replaces every declared project slot; partial positional lists must not silently reuse foreign profiles.
 - Prepare one filament colour per slot, preserving explicit colours, project colours, and custom profile values in that order. Apply required colour overlays to standalone custom filament files without replacing their unrelated settings. Preserve an input project's saved prime-tower coordinates unless the caller explicitly overrides them; automatic multi-nozzle placement is only a fallback for an unset position.
 - Never swallow inspection or auto-slice failures and upload the original unsliced project. Preserve the actionable error and stop before upload/print dispatch. A .gcode.md5 checksum is not printable G-code.
+- Bind dispatched plate paths and checksums to inspected bytes. Reject duplicate/case-colliding ZIP names and inconsistent central/local records before JSZip can collapse them. Printable upload-only requests inspect every plate, verify live model/nozzles, and use unique remote names without overwriting existing files.
+- Print and positive-heating preflight use human MCP elicitation by default. Only explicit `BAMBU_REQUIRE_CONFIRMATION=0` opts out of ordinary prompts; finished-bed clearance and hardware-error clearing/re-acknowledgment still require human confirmation. Recheck fresh state after a human response. Stop and heater-off never require confirmation.
 
 ## Blender MCP
 

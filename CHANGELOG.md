@@ -11,6 +11,11 @@
 - Apply independent printer/component and material temperature ceilings, reject nonfinite values before connecting, and require declared material for manual nozzle heating. Keep heater-off commands available.
 - Inspect private file snapshots and use unique remote print names. Download and inspect remote G-code before starting a verified copy.
 - Check the currently loaded material for manual heating and G-code-file dispatch, bind resume to an inspected paused job, and let stop/heater-off requests cancel pending operations before dispatch.
+- Register successful inspected BambuNetwork jobs for the same verified resume path, using unique submitted task identities.
+- Reject ambiguous ZIP entries and bind the dispatched plate and checksum to inspected bytes; bound archive inspection and check every printable plate on upload-only requests.
+- Preserve existing remote files with unique upload names and destination collision checks; verify uploaded job model/nozzles against fresh printer reports.
+- Add human print/heating preflight through MCP elicitation, mandatory finished-bed clearance, and confirmed hardware-error clearing with acknowledgment on the next print.
+- Validate H2D probing, wipe, and tool-change thermal commands and normalize GUI nozzle-variant tables. Apply a 260°C normal PLA ceiling with narrowly bounded vendor startup-purge exceptions; refuse explicit non-FFF jobs and recognized laser-enabling commands.
 - Apply the checks to the optional BambuNetwork print wrapper and restrict raw bridge calls to named read-only probes. Require LAN telemetry even when the bridge submits through a cloud session.
 - Require a single external-spool plate for legacy `.gcode.3mf` dispatch; use a `.3mf` project export when verified AMS mappings or plate selection are needed.
 - Credit Boardy (@boardyai) for raising the nozzle-verification question and David Montgomery for the temperature and hardware-safety reports. Validation uses mocked printer boundaries; physical printer acceptance remains a separate check.

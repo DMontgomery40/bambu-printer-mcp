@@ -24,3 +24,6 @@ export declare const MACHINE_LIMITS: Readonly<Record<string, {
 export declare function normalizeModel(value: unknown): string | undefined;
 export declare function normalizeMaterial(value: unknown): string | undefined;
 export declare function validateTemperature(component: 'nozzle' | 'bed' | 'chamber', value: unknown, model: string, materials?: string[]): number;
+/** Inspector-only exception: the caller must have verified the bounded startup
+ * purge form and that no layer/deposition has begun. Never use for manual heat. */
+export declare function validateStartupPurgeTemperature(value: unknown, model: string, materials: string[]): number;

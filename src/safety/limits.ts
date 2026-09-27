@@ -39,12 +39,14 @@ export function normalizeModel(value: unknown): string | undefined {
 }
 
 /** Policy ceilings, NOT manufacturer-recommended print temperatures or decomposition
- * thresholds. PLA 290 preserves the bundled X1E machine_start_gcode's unconditional
- * `M109 S290 ;set nozzle to common flush temp`; P1S/A1 purge at 250/260 also pass.
+ * thresholds. The normal PLA ceiling of 260 C includes Bambu PLA Aero's bundled
+ * range_high=260 (other bundled PLA ranges are lower). A separate 290 C startup
+ * allowance is only used by the inspector for bounded verified vendor purge forms;
+ * it must never authorize manual heating or sustained deposition at that target.
  * File/profile nozzle_temperature_range_high and RFID limits cannot raise this policy.
  */
 const MATERIAL_LIMITS: Readonly<Record<string, number>> = {
-  PLA:290, PETG:300, ABS:300, ASA:300, TPU:290, PVA:290, BVOH:290,
+  PLA:260, PETG:300, ABS:300, ASA:300, TPU:290, PVA:290, BVOH:290,
   HIPS:300, PP:300, POM:250, PET:350, PA:350, PC:350, PPA:350, PPS:350,
   'SUPPORT-PLA':290, 'SUPPORT-PA':350,
 };
@@ -58,7 +60,7 @@ export function normalizeMaterial(value: unknown): string | undefined {
   return match ? match[1].replace(/^PA(?:6|12|HT)$/, 'PA') : undefined;
 }
 
-export function validateTemperature(component: 'nozzle'|'bed'|'chamber', value: unknown, model: string, materials?: string[]): number {
+function validate(component: 'nozzle'|'bed'|'chamber', value: unknown, model: string, materials: string[]|undefined, startupPurge=false): number {
   if ((typeof value !== 'number' && (typeof value !== 'string' || !/^[+]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value.trim()))) || !Number.isFinite(Number(value)) || Number(value) < 0)
     throw new Error(`${component} temperature must be a finite nonnegative number; received ${String(value)}`);
   const temperature = Number(value);
@@ -73,8 +75,19 @@ export function validateTemperature(component: 'nozzle'|'bed'|'chamber', value: 
     for (const declaration of materials) {
       const material = normalizeMaterial(declaration);
       if (!material) throw new Error(`Unknown material '${declaration}'; cannot authorize positive nozzle temperature`);
-      if (temperature > MATERIAL_LIMITS[material]) throw new Error(`${material} nozzle temperature ${temperature} C exceeds the independent ${MATERIAL_LIMITS[material]} C material policy limit`);
+      const ceiling = startupPurge && material === 'PLA' ? 290 : MATERIAL_LIMITS[material];
+      if (temperature > ceiling) throw new Error(`${material} nozzle temperature ${temperature} C exceeds the independent ${ceiling} C material policy limit`);
     }
   }
   return temperature;
+}
+
+export function validateTemperature(component: 'nozzle'|'bed'|'chamber', value: unknown, model: string, materials?: string[]): number {
+  return validate(component,value,model,materials);
+}
+
+/** Inspector-only exception: the caller must have verified the bounded startup
+ * purge form and that no layer/deposition has begun. Never use for manual heat. */
+export function validateStartupPurgeTemperature(value: unknown, model: string, materials: string[]): number {
+  return validate('nozzle',value,model,materials,true);
 }

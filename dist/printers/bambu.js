@@ -5,7 +5,7 @@ import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { Readable } from "node:stream";
-import JSZip from "jszip";
+import { readSafe3mfArchive } from "../safety/archive.js";
 import { inspectPrintFile } from "../safety/print-file.js";
 import { normalizeModel, validateTemperature } from "../safety/limits.js";
 import { validatePrinterState, manualHeatingRequirements } from "../safety/printer-state.js";
@@ -352,12 +352,45 @@ class BambuClientStore {
     }
 }
 export class BambuImplementation {
-    constructor() {
+    constructor(confirm) {
+        this.confirm = confirm;
         this.checkedJobs = new Map();
+        this.clearedErrors = new Map();
         this.printerStore = new BambuClientStore();
+    }
+    async confirmHardwareAction(message, physicalCheck = false) {
+        if (!physicalCheck && process.env.BAMBU_REQUIRE_CONFIRMATION === "0")
+            return;
+        if (!this.confirm || !(await this.confirm(message))) {
+            throw new Error("Hardware safety confirmation was declined or unavailable. Use an MCP client with elicitation support. No command was sent.");
+        }
+    }
+    finishedJobIdentity(status) {
+        return status.raw.gcode_state === "FINISH" ? JSON.stringify([status.raw.gcode_file, status.raw.subtask_name, status.raw.task_id, status.raw.subtask_id]) : undefined;
+    }
+    async confirmPrintPreflight(serial, status, inspection) {
+        const finishedJob = this.finishedJobIdentity(status);
+        const cleared = this.clearedErrors.get(serial);
+        await this.confirmHardwareAction(`Start a checked print on ${inspection.model.toUpperCase()} (${serial})? Nozzles: ${inspection.nozzleDiameters.join(", ")} mm. ` +
+            `Materials: ${inspection.materials.join(", ")}. Peak targets: nozzle ${inspection.maxNozzleTemperature}°C, bed ${inspection.maxBedTemperature}°C, chamber ${inspection.maxChamberTemperature}°C. ` +
+            `File SHA-256: ${inspection.sha256}. Confirm the physical spool labels and that the build plate is clear.` +
+            (finishedJob !== undefined ? " The printer reports FINISH: remove the previous part and debris before confirming." : "") +
+            (cleared ? ` Previously cleared hardware codes: ${cleared.join(", ")}. Confirm their physical causes have been resolved.` : ""), finishedJob !== undefined || !!cleared);
+        this.clearedErrors.delete(serial);
+        return finishedJob;
+    }
+    assertBedClearance(status, confirmedFinishedJob) {
+        const current = this.finishedJobIdentity(status);
+        if (current !== undefined && current !== confirmedFinishedJob) {
+            throw new Error("Printer reports a newly finished job. Confirm that its part and debris have been removed before retrying the print.");
+        }
     }
     async getPrinter(host, serial, token) {
         return this.printerStore.getPrinter(host, serial, token);
+    }
+    /** Internal handoff from a successful inspected transport; never exposed as an MCP tool. */
+    recordCheckedJob(host, serial, remotePath, requirements) {
+        this.checkedJobs.set(`${host}\n${serial}`, { remotePath, requirements: structuredClone(requirements) });
     }
     validateLoadedGcodeState(status, inspection) {
         const usedMaterials = inspection.usedFilamentPositions.map(position => inspection.materials[position]);
@@ -370,22 +403,15 @@ export class BambuImplementation {
         validatePrinterState(status, requirements);
         return requirements;
     }
-    async resolveProjectFileMetadata(localThreeMfPath, plateIndex) {
-        const archive = await fs.readFile(localThreeMfPath);
-        const zip = await JSZip.loadAsync(archive);
-        const plateEntries = Object.values(zip.files).filter((entry) => !entry.dir && /^Metadata\/plate_\d+\.gcode$/i.test(entry.name));
-        if (plateEntries.length === 0) {
-            throw new Error("3MF does not contain any Metadata/plate_<n>.gcode entries. Re-slice and export a printable 3MF.");
+    async resolveProjectFileMetadata(localThreeMfPath, plateIndex, inspectedPlatePath) {
+        const { zip } = await readSafe3mfArchive(localThreeMfPath);
+        const expectedEntryName = `Metadata/plate_${(plateIndex ?? 0) + 1}.gcode`;
+        if (inspectedPlatePath !== undefined && inspectedPlatePath !== expectedEntryName) {
+            throw new Error("Inspected plate path does not match the requested print plate.");
         }
-        let selectedEntry = plateEntries.sort((a, b) => a.name.localeCompare(b.name))[0];
-        if (plateIndex !== undefined) {
-            const expectedEntryName = `Metadata/plate_${plateIndex + 1}.gcode`;
-            const matchedEntry = plateEntries.find((entry) => entry.name.toLowerCase() === expectedEntryName.toLowerCase());
-            if (!matchedEntry) {
-                const available = plateEntries.map((entry) => entry.name).join(", ");
-                throw new Error(`Requested plateIndex=${plateIndex} (${expectedEntryName}) not present in 3MF. Available: ${available}`);
-            }
-            selectedEntry = matchedEntry;
+        const selectedEntry = zip.file(inspectedPlatePath ?? expectedEntryName);
+        if (!selectedEntry) {
+            throw new Error(`Selected inspected plate ${expectedEntryName} is not present in 3MF. Re-slice that plate.`);
         }
         const gcodeBuffer = await selectedEntry.async("nodebuffer");
         const md5 = createHash("md5").update(gcodeBuffer).digest("hex");
@@ -523,7 +549,7 @@ export class BambuImplementation {
         const inspection = await inspectPrintFile(options.filePath, {
             model, nozzleDiameters: options.nozzleDiameters, plateIndex: options.plateIndex ?? 0, bedType: options.bedType,
         });
-        const projectMetadata = await this.resolveProjectFileMetadata(options.filePath, options.plateIndex);
+        const projectMetadata = await this.resolveProjectFileMetadata(options.filePath, options.plateIndex, inspection.plateInternalPath);
         // Send project_file command via bambu-node MQTT (bypasses bambu-js
         // hardcoded use_ams=true and missing ams_mapping support)
         const md5 = projectMetadata.md5;
@@ -619,7 +645,7 @@ export class BambuImplementation {
             if (options.useAMS !== false || inspection.selectsAms) {
                 throw new Error("Legacy .gcode.3mf transport cannot apply verified AMS mappings. Export a .3mf project for AMS printing, or use an external-spool-only job with use_ams:false.");
             }
-            const archive = await JSZip.loadAsync(await fs.readFile(options.filePath));
+            const { zip: archive } = await readSafe3mfArchive(options.filePath);
             const plates = Object.values(archive.files).filter(entry => !entry.dir && /^Metadata\/plate_\d+\.gcode$/i.test(entry.name));
             if (plates.length !== 1 || inspection.plateInternalPath?.toLowerCase() !== "metadata/plate_1.gcode") {
                 throw new Error("Legacy gcode_file printing requires a single plate_1.gcode. Export only the selected plate or use a .3mf project_file export.");
@@ -631,6 +657,13 @@ export class BambuImplementation {
             requirements = this.validateLoadedGcodeState(initialStatus, inspection);
         else
             validatePrinterState(initialStatus, requirements);
+        const bedClearance = await this.confirmPrintPreflight(serial, initialStatus, inspection);
+        const confirmedStatus = await this.getSafetyStatus(host, serial, token);
+        if (legacyContainer)
+            requirements = this.validateLoadedGcodeState(confirmedStatus, inspection);
+        else
+            validatePrinterState(confirmedStatus, requirements);
+        this.assertBedClearance(confirmedStatus, bedClearance);
         assertActive();
         await this.ftpUpload(host, token, options.filePath, remoteUploadPath);
         // Uploads can be long. Recheck current state before the command is dispatched.
@@ -639,6 +672,7 @@ export class BambuImplementation {
             requirements = this.validateLoadedGcodeState(dispatchStatus, inspection);
         else
             validatePrinterState(dispatchStatus, requirements);
+        this.assertBedClearance(dispatchStatus, bedClearance);
         const printer = await this.getPrinter(host, serial, token);
         assertActive();
         if (legacyContainer) {
@@ -654,7 +688,7 @@ export class BambuImplementation {
                 print: {
                     sequence_id: "0",
                     command: "project_file",
-                    param: `Metadata/${projectMetadata.plateFileName}`,
+                    param: projectMetadata.plateInternalPath,
                     url: projectUrl,
                     file: remoteFileName,
                     md5,
@@ -684,7 +718,7 @@ export class BambuImplementation {
             projectFileCmd = {
                 print: {
                     command: "project_file",
-                    param: `Metadata/${projectMetadata.plateFileName}`,
+                    param: projectMetadata.plateInternalPath,
                     url: projectUrl,
                     subtask_name: remoteFileName.replace(/\.3mf$/i, ""),
                     md5,
@@ -760,15 +794,24 @@ export class BambuImplementation {
         });
     }
     async clearHmsErrors(host, serial, token) {
-        const printer = await this.getPrinter(host, serial, token);
-        await printer.publish({
-            print: {
-                command: "clean_print_error",
-                sequence_id: "0",
-            },
+        return withPrinterOperation(host, serial, async (assertActive) => {
+            const codesFor = (status) => {
+                if (!Array.isArray(status.raw?.hms) || status.raw?.print_error === undefined)
+                    throw new Error("Fresh error codes are required before clearing hardware errors.");
+                return [`print_error:${status.raw.print_error}`, ...status.raw.hms.map((entry) => `hms:${entry.attr}:${entry.code}`)].sort();
+            };
+            const codes = codesFor(await this.getSafetyStatus(host, serial, token));
+            await this.confirmHardwareAction(`Clear reported hardware errors on ${serial}: ${codes.join(", ")}? Inspect the printer and resolve the physical cause first. Confirm only after removing obstructions and correcting the fault.`, true);
+            const current = codesFor(await this.getSafetyStatus(host, serial, token));
+            if (JSON.stringify(current) !== JSON.stringify(codes))
+                throw new Error("Hardware errors changed during confirmation. Inspect the new report before retrying.");
+            const printer = await this.getPrinter(host, serial, token);
+            assertActive();
+            await printer.publish({ print: { command: "clean_print_error", sequence_id: "0" } });
+            this.clearedErrors.set(serial, codes);
+            await sleep(COMMAND_SETTLE_MS);
+            return { status: "success", message: "Confirmed HMS clear command sent. The next print requires acknowledgment of these cleared codes.", cleared_codes: codes };
         });
-        await sleep(COMMAND_SETTLE_MS);
-        return { status: "success", message: "HMS clear command sent." };
     }
     async setPrintSpeed(host, serial, token, speedMode) {
         const printer = await this.getPrinter(host, serial, token);
@@ -867,6 +910,11 @@ export class BambuImplementation {
                 const status = await this.getSafetyStatus(host, serial, token);
                 validatePrinterState(status, heater === "nozzle"
                     ? manualHeatingRequirements(status, model, nozzleDiameter, material)
+                    : { model: model, nozzleDiameters: [] });
+                await this.confirmHardwareAction(`Heat ${heater} on ${model.toUpperCase()} (${serial}) to ${targetTemperature}°C?${material ? ` Declared material: ${material}. Confirm the physical spool label.` : ""}`);
+                const confirmedStatus = await this.getSafetyStatus(host, serial, token);
+                validatePrinterState(confirmedStatus, heater === "nozzle"
+                    ? manualHeatingRequirements(confirmedStatus, model, nozzleDiameter, material)
                     : { model: model, nozzleDiameters: [] });
             }
             const printer = await this.getPrinter(host, serial, token);
@@ -1015,8 +1063,42 @@ export class BambuImplementation {
     async uploadFile(host, serial, token, filePath, filename, print, bambuModel) {
         const remotePath = normalizedRemotePath(filename);
         if (!print) {
-            await this.ftpUpload(host, token, filePath, `/${remotePath}`);
-            return { status: "success", uploaded: true, remotePath, printRequested: false };
+            const sourceExtension = path.extname(filePath).toLowerCase();
+            const destinationExtension = path.posix.extname(remotePath).toLowerCase();
+            const printable = [sourceExtension, destinationExtension].some(extension => extension === ".gcode" || extension === ".3mf");
+            const model = normalizeModel(bambuModel);
+            if (printable && !model)
+                throw new Error("A supported bambuModel is required to inspect printable uploads, even when print is false.");
+            if (printable && sourceExtension !== destinationExtension) {
+                throw new Error("Printable uploads require matching .gcode or .3mf source and destination extensions.");
+            }
+            return withPrinterOperation(host, serial, assertActive => withPrintSnapshot(filePath, async (snapshot) => {
+                const inspections = [];
+                if (printable) {
+                    if (sourceExtension === ".3mf") {
+                        const { zip } = await readSafe3mfArchive(snapshot);
+                        const plates = Object.values(zip.files).filter(entry => !entry.dir && /^Metadata\/plate_\d+\.gcode$/.test(entry.name));
+                        if (!plates.length)
+                            throw new Error("Printable 3MF uploads require a sliced archive containing Metadata/plate_<n>.gcode.");
+                        // A later touchscreen start may select any plate in this archive.
+                        for (const plate of plates) {
+                            const plateIndex = Number(plate.name.match(/plate_(\d+)\.gcode$/)[1]) - 1;
+                            inspections.push(await inspectPrintFile(snapshot, { model: model, plateIndex }));
+                        }
+                    }
+                    else {
+                        inspections.push(await inspectPrintFile(snapshot, { model: model }));
+                    }
+                    const status = await this.getSafetyStatus(host, serial, token);
+                    for (const inspection of inspections) {
+                        validatePrinterState(status, { ...inspection, verifyMaterials: false, requireIdle: false });
+                    }
+                }
+                assertActive();
+                const destination = path.posix.join(path.posix.dirname(remotePath), uniquePrintName(remotePath));
+                await this.ftpUpload(host, token, snapshot, `/${destination}`);
+                return { status: "success", uploaded: true, remotePath: destination, printRequested: false, inspected: printable };
+            }));
         }
         assertDirectPrintSupported(bambuModel, serial);
         if (!remotePath.toLowerCase().endsWith(".gcode") || !filePath.toLowerCase().endsWith(".gcode")) {
@@ -1031,11 +1113,18 @@ export class BambuImplementation {
         const inspection = await inspectPrintFile(filePath, { model });
         if (inspection.selectsAms)
             throw new Error("Raw G-code with AMS selection requires a .3mf project export with verified physical slot mappings.");
-        let requirements = this.validateLoadedGcodeState(await this.getSafetyStatus(host, serial, token), inspection);
+        const initialStatus = await this.getSafetyStatus(host, serial, token);
+        let requirements = this.validateLoadedGcodeState(initialStatus, inspection);
+        const bedClearance = await this.confirmPrintPreflight(serial, initialStatus, inspection);
+        const confirmedStatus = await this.getSafetyStatus(host, serial, token);
+        requirements = this.validateLoadedGcodeState(confirmedStatus, inspection);
+        this.assertBedClearance(confirmedStatus, bedClearance);
         assertActive();
         const remotePath = path.posix.join(path.posix.dirname(filename), uniquePrintName(filename));
         await this.ftpUpload(host, token, filePath, `/${remotePath}`);
-        requirements = this.validateLoadedGcodeState(await this.getSafetyStatus(host, serial, token), inspection);
+        const dispatchStatus = await this.getSafetyStatus(host, serial, token);
+        requirements = this.validateLoadedGcodeState(dispatchStatus, inspection);
+        this.assertBedClearance(dispatchStatus, bedClearance);
         const printer = await this.getPrinter(host, serial, token);
         assertActive();
         await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remotePath }));
@@ -1403,6 +1492,11 @@ export class BambuImplementation {
             await this.waitForTlsSession(client);
             // Use absolute path to avoid CWD side-effects
             const absoluteRemote = remotePath.startsWith("/") ? remotePath : `/${remotePath}`;
+            const entries = await client.list(path.posix.dirname(absoluteRemote));
+            const destinationName = path.posix.basename(absoluteRemote).toLowerCase();
+            if (entries.some(entry => entry.name.toLowerCase() === destinationName)) {
+                throw new Error(`Refusing to overwrite existing printer file ${absoluteRemote}. Choose a new filename.`);
+            }
             const fileData = await fs.readFile(localPath);
             await client.uploadFrom(Readable.from(fileData), absoluteRemote);
         }

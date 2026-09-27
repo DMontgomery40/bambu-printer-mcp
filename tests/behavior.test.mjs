@@ -284,6 +284,7 @@ test("printer model safety: schema requires bambu_model, rejects missing/invalid
       "start_print",
       "start_print_job",
       "upload_file",
+      "upload_gcode",
     ],
     "all tools that expose bambu_model must be covered by the model enum invariant"
   );
@@ -606,7 +607,7 @@ test("H2 family print_3mf rejects pre-sliced filament jobs without explicit AMS 
 
 test("H2 ams_slots expand into project-level ams_mapping and ams_mapping2", async () => {
   const threeMfPath = await writeSliced3mfFixture({ plateFilamentIds: [1] });
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   stubFreshSafetyStatus(bambu, "h2s");
   let uploaded = false;
   let publishedPayload = null;
@@ -650,7 +651,7 @@ test("H2 ams_slots expand into project-level ams_mapping and ams_mapping2", asyn
 
 test("H2C model routes project files through the H2 print path independent of serial prefix", async () => {
   const threeMfPath = await writeSliced3mfFixture({ bambuModel: "h2c", bedType: "Textured PEI Plate", plateFilamentIds: [1] });
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   stubFreshSafetyStatus(bambu, "h2c");
   let uploadedPath = null;
   let publishedPayload = null;
@@ -696,7 +697,7 @@ test("H2C model routes project files through the H2 print path independent of se
 
 async function captureP2SPrint({ serial, bambuModel }) {
   const threeMfPath = await writeSliced3mfFixture({ name: "p2s-cube", bambuModel: bambuModel ?? "p2s", plateFilamentIds: [1] });
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   stubFreshSafetyStatus(bambu, bambuModel ?? "p2s");
   let uploadedPath = null;
   const published = [];
@@ -778,7 +779,7 @@ test("H2 two-color ams_slots expand at sparse project-level filament positions",
     projectFilamentTypes: ["PETG", "PETG", "PETG", "PETG", "PETG", "PETG", "PETG", "PLA"],
     plateFilamentIds: [3, 4],
   });
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   stubFreshSafetyStatus(bambu, "h2s");
   let publishedPayload = null;
 
@@ -826,7 +827,7 @@ test("H2 ams_mapping2 preserves external spool and HT tray encodings", async () 
     projectFilamentTypes: ["PETG", "PETG", "PETG", "PLA"],
     plateFilamentIds: [0, 1, 2, 3],
   });
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   stubFreshSafetyStatus(bambu, "h2s");
   let publishedPayload = null;
 
@@ -987,7 +988,7 @@ test("sliceSTL allows slicer executables resolved from PATH", async (t) => {
 });
 
 test("camera_snapshot routes H2 series through RTSP (verified live on Parker H2S)", async () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   const fakeJpeg = Buffer.from([0xff, 0xd8, 0x12, 0x34, 0xff, 0xd9]);
   let rtspCalls = 0;
   let tcpCalls = 0;
@@ -1004,7 +1005,7 @@ test("camera_snapshot routes H2 series through RTSP (verified live on Parker H2S
 });
 
 test("camera_snapshot routes X1/P2S through RTSP", async () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   const fakeJpeg = Buffer.from([0xff, 0xd8, 0xab, 0xcd, 0xff, 0xd9]);
   bambu.fetchRtspCameraFrame = async () => fakeJpeg;
   bambu.fetchTcpCameraFrame = async () => {
@@ -1020,7 +1021,7 @@ test("camera_snapshot routes X1/P2S through RTSP", async () => {
 });
 
 test("camera_snapshot rejects unknown model strings", async () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   await assert.rejects(
     bambu.cameraSnapshot("127.0.0.1", "S", "T", { bambuModel: "ender3" }),
     /not a known Bambu Lab printer model/i
@@ -1028,7 +1029,7 @@ test("camera_snapshot rejects unknown model strings", async () => {
 });
 
 test("camera_snapshot requires a model before choosing a wire protocol", async () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   bambu.fetchTcpCameraFrame = async () => {
     throw new Error("missing model must not default to TCP");
   };
@@ -1043,7 +1044,7 @@ test("camera_snapshot requires a model before choosing a wire protocol", async (
 });
 
 test("camera_snapshot supported models reach the wire path (mocked) and decode a JPEG frame", async () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
 
   // Stub the private wire fetcher so we can verify the routing without
   // talking to a real printer. Returns a tiny synthetic JPEG.
@@ -1060,7 +1061,7 @@ test("camera_snapshot supported models reach the wire path (mocked) and decode a
 });
 
 test("camera_snapshot RTSP path: ffmpeg ENOENT yields a clear, actionable error", async () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   // Don't mock fetchRtspCameraFrame -- exercise it with a bogus binary
   // path and confirm the surfacing.
   await assert.rejects(
@@ -1073,7 +1074,7 @@ test("camera_snapshot RTSP path: ffmpeg ENOENT yields a clear, actionable error"
 });
 
 test("camera_snapshot save_path writes the jpeg to disk", async (t) => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   const fakeJpeg = Buffer.from([0xff, 0xd8, 0x42, 0x42, 0xff, 0xd9]);
   bambu.fetchTcpCameraFrame = async () => fakeJpeg;
 
@@ -1091,7 +1092,7 @@ test("camera_snapshot save_path writes the jpeg to disk", async (t) => {
 });
 
 test("delete_printer_file requires confirm:true and skips FTP when omitted", async () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   let ftpCalled = false;
   bambu.ftpDelete = async () => {
     ftpCalled = true;
@@ -1112,7 +1113,7 @@ test("delete_printer_file requires confirm:true and skips FTP when omitted", asy
 });
 
 test("delete_printer_file treats loose confirm values as not confirmed", async () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   let ftpCalls = 0;
   bambu.ftpDelete = async () => {
     ftpCalls++;
@@ -1134,7 +1135,7 @@ test("delete_printer_file treats loose confirm values as not confirmed", async (
 });
 
 test("delete_printer_file rejects path traversal", async () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   bambu.ftpDelete = async () => {
     throw new Error("ftpDelete should not be reached on traversal input");
   };
@@ -1146,7 +1147,7 @@ test("delete_printer_file rejects path traversal", async () => {
 });
 
 test("delete_printer_file rejects directories outside cache/timelapse/logs", async () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   bambu.ftpDelete = async () => {
     throw new Error("ftpDelete should not be reached for disallowed parent");
   };
@@ -1158,7 +1159,7 @@ test("delete_printer_file rejects directories outside cache/timelapse/logs", asy
 });
 
 test("delete_printer_file with confirm:true normalizes bare names to cache/ and calls ftpDelete with absolute path", async () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   let ftpArgs = null;
   bambu.ftpDelete = async (host, token, remote) => {
     ftpArgs = { host, token, remote };
@@ -1183,7 +1184,7 @@ test("delete_printer_file with confirm:true normalizes bare names to cache/ and 
 });
 
 test("delete_printer_file accepts explicit timelapse/ and logs/ paths", async () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   const calls = [];
   bambu.ftpDelete = async (_host, _token, remote) => {
     calls.push(remote);
@@ -1196,7 +1197,7 @@ test("delete_printer_file accepts explicit timelapse/ and logs/ paths", async ()
 });
 
 test("set_ams_drying rejects invalid action values", async () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   bambu.getPrinter = async () => ({
     publish: async () => {},
   });
@@ -1212,7 +1213,7 @@ test("set_ams_drying rejects invalid action values", async () => {
 });
 
 test("set_ams_drying rejects invalid ams_id values", async () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   bambu.getPrinter = async () => ({
     publish: async () => {},
   });
@@ -1232,7 +1233,7 @@ test("set_ams_drying rejects invalid ams_id values", async () => {
 });
 
 test("set_ams_drying sends correct MQTT command for start", async () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   let publishPayload = null;
   bambu.getPrinter = async () => ({
     publish: async (payload) => {
@@ -1257,7 +1258,7 @@ test("set_ams_drying sends correct MQTT command for start", async () => {
 });
 
 test("set_ams_drying sends correct MQTT command for stop", async () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   let publishPayload = null;
   bambu.getPrinter = async () => ({
     publish: async (payload) => {
@@ -1282,7 +1283,7 @@ test("set_ams_drying sends correct MQTT command for stop", async () => {
 });
 
 test("Bambu report snapshots are cleared with connection state", () => {
-  const bambu = new BambuImplementation();
+  const bambu = new BambuImplementation(async () => true);
   const store = bambu.printerStore;
   const key = "127.0.0.1-SERIAL-TOKEN";
 
