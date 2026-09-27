@@ -67,6 +67,29 @@ const DEFAULT_BAMBU_MODEL =
 const DEFAULT_BED_TYPE = process.env.BED_TYPE?.trim().toLowerCase() || "textured_plate";
 const DEFAULT_NOZZLE_DIAMETER = process.env.NOZZLE_DIAMETER?.trim() || "0.4";
 
+function requestedPrintNozzles(args: Record<string, any>): number[] | undefined {
+  if (args.nozzle_diameters !== undefined && args.nozzle_diameter !== undefined) {
+    throw new Error("Supply nozzle_diameters or nozzle_diameter, not both.");
+  }
+  const raw = args.nozzle_diameters !== undefined ? args.nozzle_diameters :
+    args.nozzle_diameter !== undefined ? [args.nozzle_diameter] : undefined;
+  // A pre-sliced job already declares every nozzle; compare those with the
+  // printer rather than broadcasting the CLI's default diameter over them.
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw) || !raw.length || raw.length > 2 || raw.some(value =>
+    (typeof value !== "number" && typeof value !== "string") || ![0.2, 0.4, 0.6, 0.8].includes(Number(value)))) {
+    throw new Error("Nozzle diameters must contain one or two supported sizes: 0.2, 0.4, 0.6, 0.8 mm.");
+  }
+  return raw.map(Number);
+}
+
+function assertUniformCliNozzles(args: Record<string, any>): void {
+  const nozzles = requestedPrintNozzles(args);
+  if (nozzles && new Set(nozzles).size > 1) {
+    throw new Error("Mixed nozzle diameters require a pre-sliced 3MF with complete per-nozzle metadata. Export it from the slicer GUI before printing.");
+  }
+}
+
 const VALID_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s", "h2c", "x2d"] as const;
 type BambuModel = typeof VALID_BAMBU_MODELS[number];
 const H2_BAMBU_MODELS = new Set<string>(["h2d", "h2s", "h2c"]);
@@ -1241,6 +1264,7 @@ class BambuPrinterMCPServer {
     if (hasGcode) {
       return { threeMFPath, autoSliced: false };
     }
+    assertUniformCliNozzles(args);
 
     if (bedType === "supertack_plate") {
       throw new Error(
@@ -1361,7 +1385,8 @@ class BambuPrinterMCPServer {
 
     const printModel = await this.resolveBambuModel(args?.bambu_model as string | undefined);
     const printBedType = resolveBedType(args?.bed_type as string | undefined);
-    const printNozzle = String(args?.nozzle_diameter || DEFAULT_NOZZLE_DIAMETER);
+    const printNozzles = requestedPrintNozzles(args);
+    const printNozzle = String(printNozzles?.[0] ?? DEFAULT_NOZZLE_DIAMETER);
     const printPreset = BAMBU_MODEL_PRESETS[printModel]?.(printNozzle);
     const plateIndex = args?.plate_index !== undefined ? Number(args.plate_index) : 0;
 
@@ -1424,7 +1449,7 @@ class BambuPrinterMCPServer {
     const clientJobId = args?.client_job_id !== undefined ? Number(args.client_job_id) : Date.now();
 
     return withPrinterOperation(devIp, devId, assertActive => withPrintSnapshot(threeMFPath, async snapshot => {
-      const inspection = await inspectPrintFile(snapshot, { model: printModel, nozzleDiameters: [Number(printNozzle)], plateIndex, bedType: printBedType });
+      const inspection = await inspectPrintFile(snapshot, { model: printModel, nozzleDiameters: printNozzles, plateIndex, bedType: printBedType });
       let mapping = finalAmsMapping?.slice();
       if (finalAmsSlots) {
         if (finalAmsSlots.length !== inspection.usedFilamentPositions.length) throw new Error("ams_slots must supply exactly one physical tray per used filament.");
@@ -2243,6 +2268,7 @@ class BambuPrinterMCPServer {
                 slicer_path: { type: "string", description: "Path to the slicer executable for auto-slicing; defaults to value from env or a platform default. Per-call overrides require MCP_ALLOW_EXECUTABLE_ARG=1." },
                 slicer_profile: { type: "string", description: "Path to an optional slicer profile/config file for auto-slicing." },
                 nozzle_diameter: { type: "string", description: "Nozzle diameter in mm for auto-slicing (default: 0.4)." },
+                nozzle_diameters: { type: "array", minItems: 1, maxItems: 2, items: { type: "number", enum: [0.2, 0.4, 0.6, 0.8] }, description: "Complete per-nozzle diameters for pre-sliced jobs, e.g. [0.4, 0.6]. Omit to verify file metadata against every reported nozzle; cannot combine with nozzle_diameter." },
                 use_ams: { type: "boolean", description: "Whether to use the AMS; defaults to auto-detect from the 3MF mapping." },
                 ams_mapping: { type: "array", description: "AMS slot mapping array used by both local MCP printing and FULU PrintParams.", items: { type: "number" } },
                 ams_slots: { type: "array", description: "Per-used-filament AMS slot list, matching the local LAN print path.", items: { type: "number" } },
@@ -2639,7 +2665,8 @@ class BambuPrinterMCPServer {
                                 template_3mf_path: { type: "string", description: "Optional template 3MF whose embedded Bambu slicer settings should be reused when auto-slicing this print job." },
                                 template_name: { type: "string", description: "Optional named template from the local registry. Resolves to template_3mf_path automatically." },
                                 template_dir: { type: "string", description: "Optional template directory override when resolving template_name." },
-                                nozzle_diameter: { type: "string", description: "Nozzle diameter in mm for auto-slicing (default: 0.4)" }
+                nozzle_diameter: { type: "string", description: "Nozzle diameter in mm for auto-slicing (default: 0.4)" },
+                nozzle_diameters: { type: "array", minItems: 1, maxItems: 2, items: { type: "number", enum: [0.2, 0.4, 0.6, 0.8] }, description: "Complete per-nozzle diameters for a pre-sliced job, e.g. [0.4, 0.6]. Omit to verify its declared diameters against live telemetry; cannot combine with nozzle_diameter." }
                               },
               required: ["three_mf_path", "bambu_model"]
             }
@@ -3336,7 +3363,8 @@ class BambuPrinterMCPServer {
             const printModel = await this.resolveBambuModel(args?.bambu_model as string | undefined);
             assertDirectPrintSupported(printModel, bambuSerial);
             const printBedType = resolveBedType(args?.bed_type as string | undefined);
-            const printNozzle = String(args?.nozzle_diameter || DEFAULT_NOZZLE_DIAMETER);
+            const printNozzles = requestedPrintNozzles(args as Record<string, any>);
+            const printNozzle = String(printNozzles?.[0] ?? DEFAULT_NOZZLE_DIAMETER);
             const activeSlicerProfile = await resolveTemplateFirstSlicerProfilePath(
               args,
               slicerProfile || undefined,
@@ -3361,6 +3389,7 @@ class BambuPrinterMCPServer {
               entry => !entry.dir && /\.gcode$/i.test(entry.name)
             );
             if (!hasGcode) {
+              assertUniformCliNozzles(args as Record<string, any>);
               if (printBedType === "supertack_plate") {
                 throw new Error(
                   'BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF for SuperTack or choose textured_plate, cool_plate, engineering_plate, or hot_plate.'
@@ -3460,6 +3489,7 @@ class BambuPrinterMCPServer {
             }
             if (
               isH2Print &&
+              args?.use_ams !== false &&
               !hasUserAmsMapping &&
               !hasUserAmsSlots &&
               args?.auto_match_ams !== true &&
@@ -3490,7 +3520,7 @@ class BambuPrinterMCPServer {
               projectName,
               filePath: threeMFPath,
               bambuModel: printModel,
-              nozzleDiameters: [Number(printNozzle)],
+              nozzleDiameters: printNozzles,
               plateIndex,
               useAMS: useAMS,
               amsMapping: finalAmsMapping,

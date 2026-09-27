@@ -23,18 +23,19 @@ function safetyStatus({ model = "p1s", nozzle = "0.4", state = "IDLE", ...raw } 
   };
 }
 
-async function fixture(t, { model = "p1s", nozzle = "0.4", material = "PLA", gcode = "M104 S220\nM140 S60\nG1 X10 Y10 Z1\n", raw = false } = {}) {
+async function fixture(t, { model = "p1s", nozzle = "0.4", nozzleDiameters, material = "PLA", gcode = "M104 S220\nM140 S60\nG1 X10 Y10 Z1\n", raw = false } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-safety-dispatch-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, raw ? "job.gcode" : "job.gcode.3mf");
-  const content = `; printer_model = Bambu Lab ${model === "a1mini" ? "A1 mini" : model.toUpperCase()}\n; nozzle_diameter = ${nozzle}\n; filament_type = ${material}\n; filament_colour = #FFFFFF\n; curr_bed_type = Textured PEI Plate\n${gcode}`;
+  const nozzles = (nozzleDiameters ?? [nozzle]).map(String);
+  const content = `; printer_model = Bambu Lab ${model === "a1mini" ? "A1 mini" : model.toUpperCase()}\n; nozzle_diameter = ${nozzles.join(";")}\n; filament_type = ${material}\n; filament_colour = #FFFFFF\n; curr_bed_type = Textured PEI Plate\n${gcode}`;
   if (raw) await fs.writeFile(file, content);
   else {
     const zip = new JSZip();
     zip.file("3D/3dmodel.model", '<?xml version="1.0"?><model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources><object id="1" type="model" name="cube.stl"><mesh><vertices/><triangles/></mesh></object></resources><build><item objectid="1"/></build></model>');
     zip.file("Metadata/plate_1.gcode", content);
     zip.file("Metadata/plate_1.json", JSON.stringify({ filament_ids: [0] }));
-    zip.file("Metadata/project_settings.config", JSON.stringify({ printer_model: model, nozzle_diameter: [nozzle], filament_type: [material], curr_bed_type: "Textured PEI Plate" }));
+    zip.file("Metadata/project_settings.config", JSON.stringify({ printer_model: model, nozzle_diameter: nozzles, filament_type: [material], curr_bed_type: "Textured PEI Plate" }));
     await fs.writeFile(file, await zip.generateAsync({ type: "nodebuffer" }));
   }
   return file;
@@ -300,7 +301,7 @@ for (const [name, changes, error] of [
   });
 }
 
-async function interceptedMcp(t, { blockBridgeInitialization = false, realBridgeRequest = false } = {}) {
+async function interceptedMcp(t, { blockBridgeInitialization = false, realBridgeRequest = false, model = "p1s", nozzleDiameters = [0.4], ams } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-bridge-safety-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const eventsPath = path.join(dir, "events.jsonl");
@@ -310,14 +311,16 @@ async function interceptedMcp(t, { blockBridgeInitialization = false, realBridge
     import fs from 'node:fs';
     import { BambuImplementation } from ${JSON.stringify(pathToFileURL(path.join(root, "dist/printers/bambu.js")).href)};
     import { BambuNetworkBridge } from ${JSON.stringify(pathToFileURL(path.join(root, "dist/bambu-network-bridge.js")).href)};
+    import { STLManipulator } from ${JSON.stringify(pathToFileURL(path.join(root, "dist/stl/stl-manipulator.js")).href)};
     const log = event => fs.appendFileSync(${JSON.stringify(eventsPath)}, JSON.stringify(event) + '\\n');
     BambuImplementation.prototype.ftpUpload = async (_host, _token, file, remote) => log({action:'upload', file, remote});
     BambuImplementation.prototype.ftpDownload = async () => { throw new Error('Remote artifact unavailable for inspection'); };
     BambuImplementation.prototype.getPrinter = async () => ({publish: async payload => log({action:'publish', payload})});
+    STLManipulator.prototype.sliceSTL = async () => { log({action:'slice'}); throw new Error('Test slicer must not be invoked'); };
     BambuImplementation.prototype.getSafetyStatus = async () => {
       const now = Date.now();
-      return {connected:true, model:'p1s', status:'IDLE', serial:${JSON.stringify(serial)},
-        raw:{model:'p1s',gcode_state:'IDLE',nozzle_diameter:'0.4',print_error:0,hms:[]},
+      return {connected:true, model:${JSON.stringify(model)}, status:'IDLE', serial:${JSON.stringify(serial)},
+        raw:{model:${JSON.stringify(model)},gcode_state:'IDLE',nozzle_diameter:${JSON.stringify(String(nozzleDiameters[0]))},device:{nozzle:{info:${JSON.stringify(nozzleDiameters.map((diameter, id) => ({ id, diameter, type: "HH01", stat: 0 })))}}},print_error:0,hms:[],...${JSON.stringify(ams ? { ams } : {})}},
         observation:{source:'mqtt',requestedAt:now,receivedAt:now,identitySource:'report'}};
     };
     BambuNetworkBridge.prototype.ensureAgent = async () => {
@@ -400,6 +403,98 @@ test("verified public direct and bridge prints reach their intended transport", 
   assert.equal(print.payload.params.task_use_ams, false);
   assert.equal(print.payload.params.ams_mapping, "[254]");
 });
+
+test("public print schemas expose ordered nozzle diameter arrays", async (t) => {
+  const { client } = await interceptedMcp(t);
+  const { tools } = await client.listTools();
+  for (const name of ["print_3mf", "print_3mf_bambu_network"]) {
+    const schema = tools.find(tool => tool.name === name)?.inputSchema;
+    assert.equal(schema?.properties?.nozzle_diameters?.type, "array", `${name} must accept per-nozzle diameters`);
+    assert.equal(schema.properties.nozzle_diameters.items.type, "number");
+  }
+});
+
+for (const tool of ["print_3mf", "print_3mf_bambu_network"]) {
+  for (const [description, nozzleArgs] of [
+    ["explicit ordered nozzle diameters", { nozzle_diameters: [0.4, 0.6] }],
+    ["job metadata when no nozzle argument is supplied", {}],
+  ]) {
+    test(`${tool} accepts mixed H2D nozzles using ${description}`, async (t) => {
+      const { client, eventsPath } = await interceptedMcp(t, { model: "h2d", nozzleDiameters: [0.4, 0.6], realBridgeRequest: true });
+      const file = await fixture(t, { model: "h2d", nozzleDiameters: [0.4, 0.6] });
+      const result = await client.callTool({ name: tool, arguments: { three_mf_path: file, bambu_model: "h2d", bed_type: "textured_plate", use_ams: false, ...nozzleArgs } });
+      assert.notEqual(result.isError, true, result.content?.[0]?.text);
+      const events = (await fs.readFile(eventsPath, "utf8")).trim().split("\n").map(JSON.parse);
+      if (tool === "print_3mf") {
+        assert.deepEqual(events.map(event => event.action), ["upload", "publish"]);
+        assert.equal(events[1].payload.print.command, "project_file");
+        assert.equal(events[1].payload.print.param, "Metadata/plate_1.gcode");
+      } else {
+        assert.equal(events.filter(event => event.action === "bridge-frame" && event.method === "net.start_print").length, 1);
+      }
+    });
+  }
+
+  test(`${tool} accepts mixed H2D nozzles with a verified AMS mapping`, async (t) => {
+    const { client, eventsPath } = await interceptedMcp(t, {
+      model: "h2d", nozzleDiameters: [0.4, 0.6], realBridgeRequest: true,
+      ams: { tray_now: "0", ams: [{ id: "0", tray: [{ id: "0", tray_type: "PLA", nozzle_temp_min: "190", nozzle_temp_max: "240" }] }] },
+    });
+    const file = await fixture(t, { model: "h2d", nozzleDiameters: [0.4, 0.6] });
+    const result = await client.callTool({ name: tool, arguments: { three_mf_path: file, bambu_model: "h2d", nozzle_diameters: [0.4, 0.6], bed_type: "textured_plate", ams_slots: [0] } });
+    assert.notEqual(result.isError, true, result.content?.[0]?.text);
+    const events = (await fs.readFile(eventsPath, "utf8")).trim().split("\n").map(JSON.parse);
+    if (tool === "print_3mf") {
+      assert.deepEqual(events.find(event => event.action === "publish")?.payload.print.ams_mapping, [0]);
+    } else {
+      assert.equal(events.find(event => event.action === "bridge-frame" && event.method === "net.start_print")?.payload.params.ams_mapping, "[0]");
+    }
+  });
+
+  for (const [description, nozzleArgs] of [
+    ["an explicit scalar that does not match every nozzle", { nozzle_diameter: "0.4" }],
+    ["an array with the nozzle positions reversed", { nozzle_diameters: [0.6, 0.4] }],
+  ]) {
+    test(`${tool} rejects ${description}`, async (t) => {
+      const { client, eventsPath } = await interceptedMcp(t, { model: "h2d", nozzleDiameters: [0.4, 0.6] });
+      const file = await fixture(t, { model: "h2d", nozzleDiameters: [0.4, 0.6] });
+      const result = await client.callTool({ name: tool, arguments: { three_mf_path: file, bambu_model: "h2d", ...nozzleArgs, bed_type: "textured_plate", use_ams: false } });
+      assert.equal(result.isError, true);
+      assert.match(result.content?.[0]?.text ?? "", /nozzle|diameter/i);
+      await assert.rejects(fs.access(eventsPath), { code: "ENOENT" });
+    });
+  }
+
+  test(`${tool} rejects a mixed H2D file when the live second nozzle differs`, async (t) => {
+    const { client, eventsPath } = await interceptedMcp(t, { model: "h2d", nozzleDiameters: [0.4, 0.8], realBridgeRequest: true });
+    const file = await fixture(t, { model: "h2d", nozzleDiameters: [0.4, 0.6] });
+    const result = await client.callTool({ name: tool, arguments: { three_mf_path: file, bambu_model: "h2d", nozzle_diameters: [0.4, 0.6], bed_type: "textured_plate", use_ams: false } });
+    assert.equal(result.isError, true);
+    assert.match(result.content?.[0]?.text ?? "", /nozzle.*1.*diameter|nozzle.*match/i);
+    await assert.rejects(fs.access(eventsPath), { code: "ENOENT" });
+  });
+
+  test(`${tool} rejects conflicting scalar and array nozzle arguments`, async (t) => {
+    const { client, eventsPath } = await interceptedMcp(t, { model: "h2d", nozzleDiameters: [0.4, 0.6] });
+    const file = await fixture(t, { model: "h2d", nozzleDiameters: [0.4, 0.6] });
+    const result = await client.callTool({ name: tool, arguments: { three_mf_path: file, bambu_model: "h2d", nozzle_diameter: "0.4", nozzle_diameters: [0.4, 0.6], bed_type: "textured_plate", use_ams: false } });
+    assert.equal(result.isError, true);
+    assert.match(result.content?.[0]?.text ?? "", /both|conflict|one of|either/i);
+    await assert.rejects(fs.access(eventsPath), { code: "ENOENT" });
+  });
+
+  test(`${tool} rejects mixed-nozzle auto-slicing before the slicer or printer is invoked`, async (t) => {
+    const { client, eventsPath } = await interceptedMcp(t, { model: "h2d", nozzleDiameters: [0.4, 0.6] });
+    const file = await fixture(t, { model: "h2d", nozzleDiameters: [0.4, 0.6] });
+    const zip = await JSZip.loadAsync(await fs.readFile(file));
+    zip.remove("Metadata/plate_1.gcode");
+    await fs.writeFile(file, await zip.generateAsync({ type: "nodebuffer" }));
+    const result = await client.callTool({ name: tool, arguments: { three_mf_path: file, bambu_model: "h2d", nozzle_diameters: [0.4, 0.6], bed_type: "textured_plate", use_ams: false } });
+    assert.equal(result.isError, true);
+    assert.match(result.content?.[0]?.text ?? "", /mixed|pre-sliced|already.sliced/i);
+    await assert.rejects(fs.access(eventsPath), { code: "ENOENT" });
+  });
+}
 
 function bridgeWithCapturedFrames(t, beforeStartup = async () => {}) {
   const bridge = new BambuNetworkBridge();
