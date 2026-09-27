@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- Keep H2C/H2D/H2S status connections alive when delayed OTA version messages arrive; recognize H2 serial prefixes, preserve unknown model identities, and accept unexpected status transitions without terminating the MQTT listener ([#7](https://github.com/DMontgomery40/bambu-printer-mcp/issues/7)).
+
 ### Security
 - Per-call `slicer_path`, `ffmpeg_path`, and `bridge_command` executable selectors are now rejected by default. Trusted server-side environment configuration remains available, including `FFMPEG_PATH` for RTSP camera snapshots; set `MCP_ALLOW_EXECUTABLE_ARG=1` only when intentional per-call overrides are required. `MCP_ALLOW_BRIDGE_COMMAND_ARG` remains a compatibility alias for `bridge_command` only.
 
