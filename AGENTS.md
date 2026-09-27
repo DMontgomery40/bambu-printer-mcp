@@ -33,6 +33,10 @@ This file is the repository's shared source of truth for local agents and GitHub
 
 ## Printer and slicer safety
 
+- All print routes must inspect the exact dispatched file snapshot and selected plate, enforce independent model/component and declared-material temperature ceilings, and require fresh observed MQTT identity, nozzle configuration, ready state, and actionable-error checks. Configured serial inference and cached display status are not live safety evidence.
+- Keep complete physical filament mappings and compare available reported materials. Manual non-RFID material declarations remain supported; do not claim they prove physical spool contents or installed nozzle hardware.
+- Remote starts must inspect the actual remote artifact and dispatch an immutable checked copy. Raw bridge methods and option overrides must not bypass the shared gate. Heater-off and stop/cancel controls remain available.
+
 - BAMBU_MODEL (or the explicit tool model) is required for every print operation. Elicit it when missing. Never skip validation: G-code for the wrong model can damage hardware.
 - Preserve model-specific upload/command routes and complete positional AMS mappings. Add regressions for the changed model and unaffected routes, including external-spool use where supported.
 - X2D is recognized for status and slicing with its own installed preset. Direct X2D print paths must reject before slicing, connecting, or uploading: internal eMMC needs a native transport that has not shipped. Do not infer working X2D printing from MQTT status, a successful slice, or mocked H2 routing. The explicitly configured BambuNetwork bridge is a separate transport and is not proof of direct-print support.
@@ -41,6 +45,8 @@ This file is the repository's shared source of truth for local agents and GitHub
 - Preserve custom overrides and filament-slot ordering. One explicit filament override replaces every declared project slot; partial positional lists must not silently reuse foreign profiles.
 - Prepare one filament colour per slot, preserving explicit colours, project colours, and custom profile values in that order. Apply required colour overlays to standalone custom filament files without replacing their unrelated settings. Preserve an input project's saved prime-tower coordinates unless the caller explicitly overrides them; automatic multi-nozzle placement is only a fallback for an unset position.
 - Never swallow inspection or auto-slice failures and upload the original unsliced project. Preserve the actionable error and stop before upload/print dispatch. A .gcode.md5 checksum is not printable G-code.
+- Bind dispatched plate paths and checksums to inspected bytes. Reject duplicate/case-colliding ZIP names and inconsistent central/local records before JSZip can collapse them. Printable upload-only requests inspect every plate, verify live model/nozzles, and use unique remote names without overwriting existing files.
+- Print and positive-heating preflight use human MCP elicitation by default. Only explicit `BAMBU_REQUIRE_CONFIRMATION=0` opts out of ordinary prompts; finished-bed clearance and hardware-error clearing/re-acknowledgment still require human confirmation. Recheck fresh state after a human response. Stop and heater-off never require confirmation.
 
 ## Blender MCP
 

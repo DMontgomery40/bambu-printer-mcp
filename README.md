@@ -194,7 +194,7 @@ The optional FULU **BambuNetwork bridge** exposes `bambu_network_bridge_status`,
 - Query live AMS inventory with resolved Bambu/Orca filament profile paths via `get_printer_filaments`. Includes per-tray display names, match confidence (`high`/`medium`/`low`/`none`), resolution tier (`exact-model-nozzle`/`model`/`generic`/`unresolved`), and a summary with recommended auto-slice filament. Retries automatically when AMS data hasn't arrived yet (common on first MQTT push from idle printers).
 - List, upload, and delete files on the printer's SD card via FTPS
 - Capture a JPEG snapshot from the chamber camera. Supports A1, A1 mini, P1S, P1P (TCP-on-6000), and X1, X1C, X1E, P2S, H2, H2S, H2D, H2C, H2D Pro, X2D (RTSP via ffmpeg). Requires ffmpeg in PATH for the RTSP path.
-- Upload and print pre-sliced `.gcode.3mf` files with full plate selection and calibration flag control (recommended path — see [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md))
+- Upload and print pre-sliced `.3mf` projects with checked plate selection and calibration flags. Legacy `.gcode.3mf` routes require a single external-spool-only plate; see the [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md).
 - Slice through BambuStudio CLI with automatic BBL inheritance/include resolution, per-slot filament colours, and fallback prime-tower placement for multi-nozzle printers. Missing dependencies stop the slice; custom settings and saved project tower positions are preserved. Multi-colour slicing is verified by the contributor on BambuStudio 02.08.02.60 for Windows; older CLI versions have separate limitations. See [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md).
 - Recognize X2D status and slice with its own installed BambuStudio preset (`BAMBU_MODEL=x2d`). **Direct X2D printing is not supported yet**: the internal eMMC transport is pending. These print requests stop before slicing, uploading, or issuing printer commands. Print exported projects through a supported slicer instead.
 - Parse AMS mapping from the 3MF's embedded slicer metadata (`Metadata/plate_<n>.json` + gcode filament header) and send it correctly formatted per the OpenBambuAPI spec, with correct H2S/H2D/H2C `ams_mapping2` parallel array format
@@ -204,6 +204,7 @@ The optional FULU **BambuNetwork bridge** exposes `bambu_network_bridge_status`,
 - Set print speed mode (`silent`/`standard`/`sport`/`ludicrous`), clear HMS/print errors, trigger AMS RFID re-read, and control H2/P2 airduct mode (`cooling`/`heating`) via MQTT
 - **Start/stop AMS filament drying** (`set_ams_drying`) on heated AMS units (AMS Pro / AMS-HT). Sends `print.ams_control` MQTT command.
 - Set nozzle and bed temperature via G-code dispatch over MQTT
+- Confirm print starts and positive manual heating through a human preflight prompt. Finished-bed clearance and hardware-error clearing require explicit human acknowledgment; see [hardware safety and headless configuration](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md).
 - Set fan speed (part, auxiliary, chamber) and chamber light mode (on/off/flashing) via MQTT
 - Read HMS (Health Management System) diagnostics as an MCP resource at `printer://{host}/hms` — read-only error summary from the printer, with automatic settle retry
 - Start G-code files already stored on the printer
@@ -792,12 +793,17 @@ Trigger a Bambu AMS RFID re-read for one AMS slot. This can move AMS filament; u
 
 #### set_temperature
 
-Set the target temperature for the bed or nozzle. Dispatches an M140 (bed) or M104 (nozzle) G-code command via MQTT. Valid range is 0 to 300 degrees Celsius. Accepted values for `component` are `bed`, `nozzle`, `extruder`, `tool`, and `tool0`.
+Set a checked target temperature for the bed or nozzle through MQTT. Positive targets require the printer model and fresh matching printer telemetry; nozzle heating also requires the declared loaded `material` and matching `nozzle_diameter` (default 0.4). Independent model/component and material ceilings apply. A target of zero turns the heater off without requiring material or nozzle metadata. Accepted `component` values are `bed`, `nozzle`, `extruder`, `tool`, and `tool0`.
+
+Manual nozzle heating checks the reported currently loaded AMS tray or external spool. It refuses ambiguous active-nozzle/material selection on multi-nozzle printers; use a checked sliced job or the printer's own controls there. Stop and heater-off commands cancel pending server print/heating operations. Resuming through MCP requires the same paused job inspected and started by this server instance, with fresh matching telemetry; other paused jobs remain controllable at the printer.
 
 ```json
 {
   "component": "nozzle",
   "temperature": 220,
+  "bambu_model": "p1s",
+  "material": "PLA",
+  "nozzle_diameter": 0.4,
   "host": "192.168.1.100",
   "bambu_serial": "01P00A123456789",
   "bambu_token": "your_access_token"
@@ -912,11 +918,11 @@ Inspect the configured FULU bridge without starting it using `{}`. Use `{"connec
 
 #### bambu_network_call
 
-Call a runtime method such as `{"method": "net.is_user_login", "payload": {}}`. The default injects the initialized agent; use `with_agent: false` for `bridge.handshake`. Raw methods can mutate runtime or printer state; use the method contract from your installed FULU build.
+Call an allowed read-only probe such as `{"method": "net.is_user_login", "payload": {}}`. The default injects the initialized agent; use `with_agent: false` for `bridge.handshake`. Raw printer mutations and unknown methods are refused; use the dedicated checked print or printer tools.
 
 #### print_3mf_bambu_network
 
-Submit a sliced project through FULU's separately configured networking runtime. `connection_type` defaults to `cloud`; LAN bridge jobs also require a printer IP and access code. `bambu_model` and a device ID are required. See [print examples and AMS requirements](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#print-through-the-bridge). A zero bridge return code confirms submission, not a physical print or direct X2D support.
+Submit a sliced project through FULU's separately configured networking runtime. `connection_type` defaults to `cloud`. Both cloud and LAN bridge jobs require a printer IP, LAN access code, matching serial/device ID, and fresh MQTT safety telemetry. File, raw AMS/nozzle mapping, and extra-option overrides cannot replace checked parameters. See [print examples and AMS requirements](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#print-through-the-bridge). A zero bridge return code confirms submission, not a physical print or direct X2D support.
 
 #### resolve_3mf_ams_slots
 

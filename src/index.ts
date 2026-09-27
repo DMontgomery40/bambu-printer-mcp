@@ -30,6 +30,9 @@ import { hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayVa
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, parse3MF } from './3mf_parser.js';
 import type { ThreeMFAmsRequirements } from "./types.js";
 import { BambuImplementation, assertDirectPrintSupported } from "./printers/bambu.js";
+import { inspectPrintFile } from "./safety/print-file.js";
+import { validatePrinterState } from "./safety/printer-state.js";
+import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safety/artifact.js";
 
 dotenv.config();
 
@@ -63,6 +66,29 @@ const DEFAULT_BAMBU_MODEL =
   "";
 const DEFAULT_BED_TYPE = process.env.BED_TYPE?.trim().toLowerCase() || "textured_plate";
 const DEFAULT_NOZZLE_DIAMETER = process.env.NOZZLE_DIAMETER?.trim() || "0.4";
+
+function requestedPrintNozzles(args: Record<string, any>): number[] | undefined {
+  if (args.nozzle_diameters !== undefined && args.nozzle_diameter !== undefined) {
+    throw new Error("Supply nozzle_diameters or nozzle_diameter, not both.");
+  }
+  const raw = args.nozzle_diameters !== undefined ? args.nozzle_diameters :
+    args.nozzle_diameter !== undefined ? [args.nozzle_diameter] : undefined;
+  // A pre-sliced job already declares every nozzle; compare those with the
+  // printer rather than broadcasting the CLI's default diameter over them.
+  if (raw === undefined) return undefined;
+  if (!Array.isArray(raw) || !raw.length || raw.length > 2 || raw.some(value =>
+    (typeof value !== "number" && typeof value !== "string") || ![0.2, 0.4, 0.6, 0.8].includes(Number(value)))) {
+    throw new Error("Nozzle diameters must contain one or two supported sizes: 0.2, 0.4, 0.6, 0.8 mm.");
+  }
+  return raw.map(Number);
+}
+
+function assertUniformCliNozzles(args: Record<string, any>): void {
+  const nozzles = requestedPrintNozzles(args);
+  if (nozzles && new Set(nozzles).size > 1) {
+    throw new Error("Mixed nozzle diameters require a pre-sliced 3MF with complete per-nozzle metadata. Export it from the slicer GUI before printing.");
+  }
+}
 
 const VALID_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s", "h2c", "x2d"] as const;
 type BambuModel = typeof VALID_BAMBU_MODELS[number];
@@ -1069,7 +1095,22 @@ class BambuPrinterMCPServer {
       }
     );
 
-    this.bambu = new BambuImplementation();
+    this.bambu = new BambuImplementation(async message => {
+      try {
+        const response = await this.server.elicitInput({
+          mode: "form",
+          message,
+          requestedSchema: {
+            type: "object",
+            properties: { confirmed: { type: "boolean", title: "I checked the printer and confirm this operation", default: false } },
+            required: ["confirmed"],
+          },
+        });
+        return response.action === "accept" && response.content?.confirmed === true;
+      } catch {
+        throw new Error("Human hardware confirmation requires an MCP client with elicitation support. For deliberately headless operation, BAMBU_REQUIRE_CONFIRMATION=0 disables ordinary print/heat prompts; finished-bed clearance and hardware-error confirmation still require elicitation.");
+      }
+    });
     this.bambuNetwork = new BambuNetworkBridge();
     this.stlManipulator = new STLManipulator(TEMP_DIR);
 
@@ -1233,13 +1274,12 @@ class BambuPrinterMCPServer {
     const JSZip = (await import('jszip')).default;
     const zipData = fs.readFileSync(threeMFPath);
     const zip = await JSZip.loadAsync(zipData);
-    const hasGcode = Object.keys(zip.files).some(
-      f => f.match(/Metadata\/plate_\d+\.gcode/i) || f.endsWith('.gcode')
-    );
+    const hasGcode = Object.values(zip.files).some(entry => !entry.dir && /\.gcode$/i.test(entry.name));
 
     if (hasGcode) {
       return { threeMFPath, autoSliced: false };
     }
+    assertUniformCliNozzles(args);
 
     if (bedType === "supertack_plate") {
       throw new Error(
@@ -1360,7 +1400,8 @@ class BambuPrinterMCPServer {
 
     const printModel = await this.resolveBambuModel(args?.bambu_model as string | undefined);
     const printBedType = resolveBedType(args?.bed_type as string | undefined);
-    const printNozzle = String(args?.nozzle_diameter || DEFAULT_NOZZLE_DIAMETER);
+    const printNozzles = requestedPrintNozzles(args);
+    const printNozzle = String(printNozzles?.[0] ?? DEFAULT_NOZZLE_DIAMETER);
     const printPreset = BAMBU_MODEL_PRESETS[printModel]?.(printNozzle);
     const plateIndex = args?.plate_index !== undefined ? Number(args.plate_index) : 0;
 
@@ -1395,6 +1436,13 @@ class BambuPrinterMCPServer {
       throw new Error("bambu_token/access code is required for FULU BambuNetwork LAN/local print methods.");
     }
 
+    if (!bambuSerial || devId !== bambuSerial || !devIp || devIp === "localhost" || !(password || bambuToken)) {
+      throw new Error("Bridge printing requires a matching bambu_serial/dev_id, printer host, and LAN access token for fresh MQTT safety verification, including cloud dispatch.");
+    }
+    for (const field of ["config_filename", "ftp_file", "ftp_file_md5", "ams_mapping_bridge", "ams_mapping2", "ams_mapping_info", "nozzle_mapping", "nozzles_info", "extra_options"]) {
+      if (args[field] !== undefined && args[field] !== "") throw new Error(`${field} cannot override a verified print. Use the structured plate, nozzle, and AMS arguments.`);
+    }
+
     const { threeMFPath, autoSliced } = await this.ensurePrintableThreeMFPath(
       args,
       printModel,
@@ -1411,89 +1459,127 @@ class BambuPrinterMCPServer {
       printNozzle
     );
     const threeMfFilename = path.basename(threeMFPath);
-    const projectName = String(args?.project_name || threeMfFilename.replace(/\.3mf$/i, ''));
+    const projectName = String(args?.project_name || args?.task_name || threeMfFilename.replace(/\.3mf$/i, ''));
     const presetName = String(args?.preset_name || `${projectName}_plate_${plateIndex + 1}`);
     const clientJobId = args?.client_job_id !== undefined ? Number(args.client_job_id) : Date.now();
 
-    const amsMapping = stringifyBridgeJson(args?.ams_mapping_bridge ?? finalAmsMapping ?? finalAmsSlots);
-    const params: Record<string, unknown> = {
-      dev_id: devId,
-      task_name: String(args?.task_name || projectName),
-      project_name: projectName,
-      preset_name: presetName,
-      filename: threeMFPath,
-      config_filename: String(args?.config_filename || threeMFPath),
-      plate_index: plateIndex + 1,
-      ftp_folder: String(args?.ftp_folder || ""),
-      ftp_file: String(args?.ftp_file || ""),
-      ftp_file_md5: String(args?.ftp_file_md5 || ""),
-      nozzle_mapping: stringifyBridgeJson(args?.nozzle_mapping) || "",
-      ams_mapping: amsMapping || "",
-      ams_mapping2: stringifyBridgeJson(args?.ams_mapping2) || "",
-      ams_mapping_info: stringifyBridgeJson(args?.ams_mapping_info) || "",
-      nozzles_info: stringifyBridgeJson(args?.nozzles_info) || "",
-      connection_type: connectionType,
-      comments: String(args?.comments || ""),
-      origin_profile_id: args?.origin_profile_id !== undefined ? Number(args.origin_profile_id) : 0,
-      stl_design_id: args?.stl_design_id !== undefined ? Number(args.stl_design_id) : 0,
-      origin_model_id: String(args?.origin_model_id || ""),
-      print_type: String(args?.print_type || "from_normal"),
-      dst_file: String(args?.dst_file || ""),
-      dev_name: String(args?.dev_name || ""),
-      dev_ip: devIp,
-      use_ssl_for_ftp: args?.use_ssl_for_ftp !== undefined ? Boolean(args.use_ssl_for_ftp) : true,
-      use_ssl_for_mqtt: args?.use_ssl_for_mqtt !== undefined ? Boolean(args.use_ssl_for_mqtt) : true,
-      username: String(args?.username || "bblp"),
-      password,
-      task_bed_leveling: args?.bed_leveling !== undefined ? Boolean(args.bed_leveling) : true,
-      task_flow_cali: args?.flow_calibration !== undefined ? Boolean(args.flow_calibration) : true,
-      task_vibration_cali: args?.vibration_calibration !== undefined ? Boolean(args.vibration_calibration) : true,
-      task_layer_inspect: args?.layer_inspect !== undefined ? Boolean(args.layer_inspect) : false,
-      task_record_timelapse: args?.timelapse !== undefined ? Boolean(args.timelapse) : false,
-      task_use_ams: useAMS,
-      task_bed_type: printBedType,
-      extra_options: stringifyBridgeJson(args?.extra_options) || "",
-      auto_bed_leveling: args?.auto_bed_leveling !== undefined ? Number(args.auto_bed_leveling) : 0,
-      auto_flow_cali: args?.auto_flow_cali !== undefined ? Number(args.auto_flow_cali) : 0,
-      auto_offset_cali: args?.auto_offset_cali !== undefined ? Number(args.auto_offset_cali) : 0,
-      extruder_cali_manual_mode: args?.extruder_cali_manual_mode !== undefined ? Number(args.extruder_cali_manual_mode) : -1,
-      task_ext_change_assist: args?.external_change_assist !== undefined ? Boolean(args.external_change_assist) : false,
-      try_emmc_print: args?.try_emmc_print !== undefined ? Boolean(args.try_emmc_print) : false,
-    };
+    return withPrinterOperation(devIp, devId, assertActive => withPrintSnapshot(threeMFPath, async (snapshot, retainForDispatchedUpload) => {
+      const inspection = await inspectPrintFile(snapshot, { model: printModel, nozzleDiameters: printNozzles, plateIndex, bedType: printBedType });
+      let mapping = finalAmsMapping?.slice();
+      if (finalAmsSlots) {
+        if (finalAmsSlots.length !== inspection.usedFilamentPositions.length) throw new Error("ams_slots must supply exactly one physical tray per used filament.");
+        mapping = Array(inspection.materials.length).fill(-1);
+        inspection.usedFilamentPositions.forEach((position, index) => { mapping![position] = finalAmsSlots[index]; });
+      }
+      if (!useAMS) {
+        mapping = Array(inspection.materials.length).fill(-1);
+        inspection.usedFilamentPositions.forEach(position => { mapping![position] = 254; });
+      }
+      const requirements = { ...inspection, amsMapping: mapping, useAMS };
+      const initialStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
+      validatePrinterState(initialStatus, requirements);
+      const bedClearance = await this.bambu.confirmPrintPreflight(devId, initialStatus, inspection);
+      const confirmedStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
+      validatePrinterState(confirmedStatus, requirements);
+      this.bambu.assertBedClearance(confirmedStatus, bedClearance);
+      const amsMapping = stringifyBridgeJson(mapping);
+      const remoteFileName = uniquePrintName(threeMFPath);
+      const params: Record<string, unknown> = {
+        dev_id: devId,
+        // Firmware can report the task name instead of the uploaded filename.
+        // Bind either report to this inspected artifact for a later safe resume.
+        task_name: remoteFileName.replace(/(?:\.gcode)?\.3mf$/i, ""),
+        project_name: projectName,
+        preset_name: presetName,
+        filename: snapshot,
+        config_filename: snapshot,
+        plate_index: plateIndex + 1,
+        ftp_folder: String(args?.ftp_folder || ""),
+        ftp_file: String(args?.ftp_file || ""),
+        ftp_file_md5: String(args?.ftp_file_md5 || ""),
+        nozzle_mapping: stringifyBridgeJson(args?.nozzle_mapping) || "",
+        ams_mapping: amsMapping || "",
+        ams_mapping2: stringifyBridgeJson(args?.ams_mapping2) || "",
+        ams_mapping_info: stringifyBridgeJson(args?.ams_mapping_info) || "",
+        nozzles_info: stringifyBridgeJson(args?.nozzles_info) || "",
+        connection_type: connectionType,
+        comments: String(args?.comments || ""),
+        origin_profile_id: args?.origin_profile_id !== undefined ? Number(args.origin_profile_id) : 0,
+        stl_design_id: args?.stl_design_id !== undefined ? Number(args.stl_design_id) : 0,
+        origin_model_id: String(args?.origin_model_id || ""),
+        print_type: String(args?.print_type || "from_normal"),
+        dst_file: remoteFileName,
+        dev_name: String(args?.dev_name || ""),
+        dev_ip: devIp,
+        use_ssl_for_ftp: args?.use_ssl_for_ftp !== undefined ? Boolean(args.use_ssl_for_ftp) : true,
+        use_ssl_for_mqtt: args?.use_ssl_for_mqtt !== undefined ? Boolean(args.use_ssl_for_mqtt) : true,
+        username: String(args?.username || "bblp"),
+        password,
+        task_bed_leveling: args?.bed_leveling !== undefined ? Boolean(args.bed_leveling) : true,
+        task_flow_cali: args?.flow_calibration !== undefined ? Boolean(args.flow_calibration) : true,
+        task_vibration_cali: args?.vibration_calibration !== undefined ? Boolean(args.vibration_calibration) : true,
+        task_layer_inspect: args?.layer_inspect !== undefined ? Boolean(args.layer_inspect) : false,
+        task_record_timelapse: args?.timelapse !== undefined ? Boolean(args.timelapse) : false,
+        task_use_ams: useAMS,
+        task_bed_type: printBedType,
+        extra_options: stringifyBridgeJson(args?.extra_options) || "",
+        auto_bed_leveling: args?.auto_bed_leveling !== undefined ? Number(args.auto_bed_leveling) : 0,
+        auto_flow_cali: args?.auto_flow_cali !== undefined ? Number(args.auto_flow_cali) : 0,
+        auto_offset_cali: args?.auto_offset_cali !== undefined ? Number(args.auto_offset_cali) : 0,
+        extruder_cali_manual_mode: args?.extruder_cali_manual_mode !== undefined ? Number(args.extruder_cali_manual_mode) : -1,
+        task_ext_change_assist: args?.external_change_assist !== undefined ? Boolean(args.external_change_assist) : false,
+        try_emmc_print: args?.try_emmc_print !== undefined ? Boolean(args.try_emmc_print) : false,
+      };
 
-    const bridgeResult = await this.bambuNetwork.callWithAgent(
-      bridgeMethod,
-      { client_job_id: clientJobId, params },
-      this.bridgeOptionsFromArgs(args, "print_3mf_bambu_network")
-    );
+      assertActive();
+      const bridgeResult = await this.bambuNetwork.callWithAgent(
+        bridgeMethod,
+        { client_job_id: clientJobId, params },
+        {
+          ...this.bridgeOptionsFromArgs(args, "print_3mf_bambu_network"),
+          beforeDispatch: async method => {
+            if (method !== bridgeMethod) return;
+            assertActive();
+            const dispatchStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
+            validatePrinterState(dispatchStatus, requirements);
+            this.bambu.assertBedClearance(dispatchStatus, bedClearance);
+          },
+          assertDispatchAllowed: method => { if (method === bridgeMethod) assertActive(); },
+          onDispatched: method => { if (method === bridgeMethod) retainForDispatchedUpload(); },
+        }
+      );
 
-    if (typeof bridgeResult === "object" && bridgeResult !== null && (bridgeResult as { ok?: unknown }).ok === false) {
-      throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} failed: ${String((bridgeResult as { error?: unknown }).error || "unknown bridge error")}`);
-    }
-    if (
-      typeof bridgeResult === "object" &&
-      bridgeResult !== null &&
-      typeof (bridgeResult as { value?: unknown }).value === "number" &&
-      (bridgeResult as { value: number }).value !== 0
-    ) {
-      const value = (bridgeResult as { value: number }).value;
-      throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} returned non-zero result ${value}.`);
-    }
+      if (typeof bridgeResult === "object" && bridgeResult !== null && (bridgeResult as { ok?: unknown }).ok === false) {
+        throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} failed: ${String((bridgeResult as { error?: unknown }).error || "unknown bridge error")}`);
+      }
+      if (
+        typeof bridgeResult === "object" &&
+        bridgeResult !== null &&
+        typeof (bridgeResult as { value?: unknown }).value === "number" &&
+        (bridgeResult as { value: number }).value !== 0
+      ) {
+        const value = (bridgeResult as { value: number }).value;
+        throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} returned non-zero result ${value}.`);
+      }
 
-    return {
-      status: "success",
-      message: `FULU BambuNetwork ${bridgePrintMethod} command for ${threeMfFilename} sent successfully.`,
-      bridgeMethod,
-      bridgeResult,
-      clientJobId,
-      autoSliced,
-      projectName,
-      plateIndex,
-      bridgePlateIndex: plateIndex + 1,
-      useAMS,
-      amsMapping: finalAmsMapping ?? finalAmsSlots,
-      params: redactPrintParams(params),
-    };
+      assertActive();
+      this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements);
+
+      return {
+        status: "success",
+        message: `FULU BambuNetwork ${bridgePrintMethod} command for ${threeMfFilename} sent successfully.`,
+        bridgeMethod,
+        bridgeResult,
+        clientJobId,
+        autoSliced,
+        projectName,
+        plateIndex,
+        bridgePlateIndex: plateIndex + 1,
+        useAMS,
+        amsMapping: mapping,
+        params: redactPrintParams(params),
+      };
+    }));
   }
 
   private async getResolvedPrinterFilamentInventory(
@@ -2200,7 +2286,7 @@ class BambuPrinterMCPServer {
                 plate_index: { type: "number", description: "Zero-based plate index to print from the sliced 3MF; converted to FULU's one-based PrintParams plate_index." },
                 project_name: { type: "string", description: "Optional project name sent in FULU PrintParams; defaults to the 3MF filename without extension." },
                 preset_name: { type: "string", description: "Optional preset name sent in FULU PrintParams; defaults to project plus one-based plate index." },
-                task_name: { type: "string", description: "Optional BambuNetwork task name; defaults to the project name." },
+                task_name: { type: "string", description: "Optional project label when project_name is omitted. The submitted task name uses a unique inspected-job identity for safe resume." },
                 config_filename: { type: "string", description: "Optional config 3MF path for cloud print; defaults to the same 3MF path." },
                 bridge_command: { type: "string", description: "Override command for the FULU bridge host or macOS/WSL wrapper; defaults to BAMBU_NETWORK_BRIDGE_COMMAND. Per-call overrides require MCP_ALLOW_EXECUTABLE_ARG=1." },
                 bambu_network_config_dir: { type: "string", description: "Config/log directory used by the BambuNetwork agent; defaults to BAMBU_NETWORK_CONFIG_DIR or a user config directory." },
@@ -2211,6 +2297,7 @@ class BambuPrinterMCPServer {
                 slicer_path: { type: "string", description: "Path to the slicer executable for auto-slicing; defaults to value from env or a platform default. Per-call overrides require MCP_ALLOW_EXECUTABLE_ARG=1." },
                 slicer_profile: { type: "string", description: "Path to an optional slicer profile/config file for auto-slicing." },
                 nozzle_diameter: { type: "string", description: "Nozzle diameter in mm for auto-slicing (default: 0.4)." },
+                nozzle_diameters: { type: "array", minItems: 1, maxItems: 2, items: { type: "number", enum: [0.2, 0.4, 0.6, 0.8] }, description: "Complete per-nozzle diameters for pre-sliced jobs, e.g. [0.4, 0.6]. Omit to verify file metadata against every reported nozzle; cannot combine with nozzle_diameter." },
                 use_ams: { type: "boolean", description: "Whether to use the AMS; defaults to auto-detect from the 3MF mapping." },
                 ams_mapping: { type: "array", description: "AMS slot mapping array used by both local MCP printing and FULU PrintParams.", items: { type: "number" } },
                 ams_slots: { type: "array", description: "Per-used-filament AMS slot list, matching the local LAN print path.", items: { type: "number" } },
@@ -2274,13 +2361,14 @@ class BambuPrinterMCPServer {
           },
           {
             name: "upload_gcode",
-            description: "Upload a G-code file to the Bambu Lab printer",
+            description: "Inspect a G-code file and upload a uniquely named copy without overwriting existing printer files.",
             inputSchema: {
               type: "object",
               properties: {
                 filename: { type: "string", description: "Name for the file on the printer" },
                 gcode: { type: "string", description: "G-code content to upload, or a readable local .gcode path. Required unless gcode_path is provided. For large files, prefer gcode_path." },
                 gcode_path: { type: "string", description: "Local path to a .gcode file to upload. Required unless gcode is provided. This avoids sending large G-code bodies through the MCP request." },
+                bambu_model: { type: "string", enum: [...VALID_BAMBU_MODELS], description: "Required printer model for inspecting the uploaded G-code, even when not starting it." },
                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
                 bambu_token: { type: "string", description: "Access token (default: value from env)" }
@@ -2300,7 +2388,7 @@ class BambuPrinterMCPServer {
                 bambu_model: {
                   type: "string",
                   enum: [...VALID_BAMBU_MODELS],
-                  description: "Required when print is true. Bambu Lab printer model used as a safety confirmation before starting the uploaded file."
+                  description: "Required for every printable .gcode or .3mf upload, including upload-only operations."
                 },
                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
@@ -2448,12 +2536,15 @@ class BambuPrinterMCPServer {
           },
           {
             name: "set_temperature",
-            description: "Set the temperature of a printer component (bed, nozzle)",
+            description: "Set a checked bed or nozzle temperature. Positive heating requires matching fresh printer telemetry; nozzle heating also requires declared material. Zero turns the heater off.",
             inputSchema: {
               type: "object",
               properties: {
                 component: { type: "string", description: "Component to heat: bed, nozzle, or extruder" },
-                temperature: { type: "number", description: "Target temperature in °C" },
+                temperature: { type: "number", minimum: 0, description: "Finite target temperature in °C, checked against model/component and declared material limits" },
+                bambu_model: { type: "string", enum: [...VALID_BAMBU_MODELS], description: "Printer model, required for positive heating unless configured in the environment" },
+                material: { type: "string", description: "Loaded material, for example PLA or PETG. Required for positive nozzle heating, including non-RFID spools." },
+                nozzle_diameter: { type: "number", enum: [0.2, 0.4, 0.6, 0.8], description: "Installed nozzle diameter to compare with printer-reported configuration (default 0.4)" },
                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
                 bambu_token: { type: "string", description: "Access token (default: value from env)" }
@@ -2604,7 +2695,8 @@ class BambuPrinterMCPServer {
                                 template_3mf_path: { type: "string", description: "Optional template 3MF whose embedded Bambu slicer settings should be reused when auto-slicing this print job." },
                                 template_name: { type: "string", description: "Optional named template from the local registry. Resolves to template_3mf_path automatically." },
                                 template_dir: { type: "string", description: "Optional template directory override when resolving template_name." },
-                                nozzle_diameter: { type: "string", description: "Nozzle diameter in mm for auto-slicing (default: 0.4)" }
+                nozzle_diameter: { type: "string", description: "Nozzle diameter in mm for auto-slicing (default: 0.4)" },
+                nozzle_diameters: { type: "array", minItems: 1, maxItems: 2, items: { type: "number", enum: [0.2, 0.4, 0.6, 0.8] }, description: "Complete per-nozzle diameters for a pre-sliced job, e.g. [0.4, 0.6]. Omit to verify its declared diameters against live telemetry; cannot combine with nozzle_diameter." }
                               },
               required: ["three_mf_path", "bambu_model"]
             }
@@ -2852,6 +2944,10 @@ class BambuPrinterMCPServer {
               throw new Error("Missing required parameter: method");
             }
             const bridgeArgs = args as Record<string, any>;
+            const readMethods = new Set(["bridge.handshake", "net.is_user_login", "net.get_user_id", "net.get_user_name", "net.get_user_avatar", "net.get_user_nickanme"]);
+            if (!readMethods.has(String(bridgeArgs.method))) {
+              throw new Error("Raw bridge mutations and unknown methods are disabled. Use print_3mf_bambu_network for verified printing or a dedicated printer tool.");
+            }
             const payload = bridgeArgs.payload && typeof bridgeArgs.payload === "object"
               ? bridgeArgs.payload as Record<string, unknown>
               : {};
@@ -2902,8 +2998,9 @@ class BambuPrinterMCPServer {
             }
             const uploadSource = resolveUploadGcodeSource(args as Record<string, unknown>);
             try {
+              const uploadModel = await this.resolveBambuModel(args?.bambu_model as string | undefined);
               result = await this.bambu.uploadFile(
-                host, bambuSerial, bambuToken, uploadSource.filePath, String(args.filename), false
+                host, bambuSerial, bambuToken, uploadSource.filePath, String(args.filename), false, uploadModel
               );
             } finally {
               if (uploadSource.cleanupDir) {
@@ -2918,7 +3015,8 @@ class BambuPrinterMCPServer {
               throw new Error("Missing required parameters: file_path and filename");
             }
             const print = Boolean(args.print ?? false);
-            const uploadModel = print ? await this.resolveBambuModel(args?.bambu_model as string | undefined) : undefined;
+            const printableUpload = /\.(?:gcode|3mf)$/i.test(String(args.file_path)) || /\.(?:gcode|3mf)$/i.test(String(args.filename));
+            const uploadModel = print || printableUpload ? await this.resolveBambuModel(args?.bambu_model as string | undefined) : undefined;
             if (print) assertDirectPrintSupported(uploadModel, bambuSerial);
             result = await this.bambu.uploadFile(
               host, bambuSerial, bambuToken,
@@ -2982,15 +3080,22 @@ class BambuPrinterMCPServer {
             );
             break;
 
-          case "set_temperature":
+          case "set_temperature": {
             if (!args?.component || args?.temperature === undefined) {
               throw new Error("Missing required parameters: component and temperature");
             }
+            if (typeof args.temperature !== "number" || !Number.isFinite(args.temperature) || args.temperature < 0) {
+              throw new Error("Temperature must be a finite, non-negative number in °C.");
+            }
             result = await this.bambu.setTemperature(
               host, bambuSerial, bambuToken,
-              String(args.component), Number(args.temperature)
+              String(args.component), args.temperature,
+              args.temperature === 0 ? undefined : await this.resolveBambuModel(args?.bambu_model as string | undefined),
+              args?.material !== undefined ? String(args.material) : undefined,
+              Number(args?.nozzle_diameter ?? DEFAULT_NOZZLE_DIAMETER)
             );
             break;
+          }
 
           case "set_fan_speed":
             if (!args?.fan || args?.speed === undefined) {
@@ -3290,7 +3395,8 @@ class BambuPrinterMCPServer {
             const printModel = await this.resolveBambuModel(args?.bambu_model as string | undefined);
             assertDirectPrintSupported(printModel, bambuSerial);
             const printBedType = resolveBedType(args?.bed_type as string | undefined);
-            const printNozzle = String(args?.nozzle_diameter || DEFAULT_NOZZLE_DIAMETER);
+            const printNozzles = requestedPrintNozzles(args as Record<string, any>);
+            const printNozzle = String(printNozzles?.[0] ?? DEFAULT_NOZZLE_DIAMETER);
             const activeSlicerProfile = await resolveTemplateFirstSlicerProfilePath(
               args,
               slicerProfile || undefined,
@@ -3315,6 +3421,7 @@ class BambuPrinterMCPServer {
               entry => !entry.dir && /\.gcode$/i.test(entry.name)
             );
             if (!hasGcode) {
+              assertUniformCliNozzles(args as Record<string, any>);
               if (printBedType === "supertack_plate") {
                 throw new Error(
                   'BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF for SuperTack or choose textured_plate, cool_plate, engineering_plate, or hot_plate.'
@@ -3414,6 +3521,7 @@ class BambuPrinterMCPServer {
             }
             if (
               isH2Print &&
+              args?.use_ams !== false &&
               !hasUserAmsMapping &&
               !hasUserAmsSlots &&
               args?.auto_match_ams !== true &&
@@ -3444,6 +3552,7 @@ class BambuPrinterMCPServer {
               projectName,
               filePath: threeMFPath,
               bambuModel: printModel,
+              nozzleDiameters: printNozzles,
               plateIndex,
               useAMS: useAMS,
               amsMapping: finalAmsMapping,
@@ -3512,6 +3621,7 @@ class BambuPrinterMCPServer {
               projectName,
               filePath: preparedThreeMFPath,
               bambuModel: printModel,
+              nozzleDiameters: [Number(printNozzle)],
               plateIndex: collarAnalysis.plateIndex,
               useAMS: true,
               amsSlots: collarAnalysis.amsSlots,

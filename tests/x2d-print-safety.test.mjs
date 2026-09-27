@@ -20,7 +20,7 @@ async function fixture(t, sliced = true) {
   const zip = new JSZip();
   zip.file("3D/3dmodel.model", '<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources/><build/></model>');
   if (sliced) {
-    zip.file("Metadata/plate_1.gcode", "; filament_colour = #FFFFFF\nG1 X0 Y0\n");
+    zip.file("Metadata/plate_1.gcode", "; printer_model = Bambu Lab X2D\n; nozzle_diameter = 0.4;0.4\n; filament_type = PLA\n; curr_bed_type = Textured PEI Plate\n; filament_colour = #FFFFFF\nG1 X0 Y0\n");
     zip.file("Metadata/plate_1.json", JSON.stringify({ filament_ids: [0] }));
   }
   await fs.writeFile(file, await zip.generateAsync({ type: "nodebuffer" }));
@@ -72,6 +72,11 @@ test("X2D MCP print requests stop before slicing, status, uploads, and connectio
       appendFileSync(${JSON.stringify(bridgeFile)}, JSON.stringify({ method, payload }) + '\\n');
       return { ok: true, value: 0 };
     };
+    BambuImplementation.prototype.getSafetyStatus = async (_host, serial) => ({
+      connected:true, serial, model:'x2d', status:'IDLE',
+      raw:{model:'x2d',gcode_state:'IDLE',print_error:0,hms:[],nozzle_diameter:['0.4','0.4']},
+      observation:{source:'mqtt',requestedAt:Date.now()-1,receivedAt:Date.now(),identitySource:'report'}
+    });
   `;
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -86,7 +91,8 @@ test("X2D MCP print requests stop before slicing, status, uploads, and connectio
   });
   const client = new Client({ name: "x2d-print-safety", version: "0" }, { capabilities: { elicitation: { form: {} } } });
   let elicitations = 0;
-  client.setRequestHandler(ElicitRequestSchema, async () => {
+  client.setRequestHandler(ElicitRequestSchema, async request => {
+    if (request.params.requestedSchema.properties.confirmed) return { action: "accept", content: { confirmed: true } };
     elicitations += 1;
     return { action: "accept", content: { bambu_model: "x2d" } };
   });
@@ -122,7 +128,8 @@ test("X2D MCP print requests stop before slicing, status, uploads, and connectio
   for (const call of bridgeCalls) {
     assert.equal(call.method, "net.start_local_print");
     assert.equal(call.payload.params.dev_id, "20PTEST");
-    assert.equal(call.payload.params.filename, slicedFile);
+    assert.notEqual(call.payload.params.filename, slicedFile, "bridge must receive a checked private snapshot");
+    assert.equal(path.basename(call.payload.params.filename), path.basename(slicedFile));
   }
   assert.equal(await fs.readFile(effectsFile, "utf8"), "", "bridge routing must not use the direct printer transport");
 });

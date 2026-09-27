@@ -161,6 +161,7 @@ export class BambuNetworkBridge {
             throw new Error("BambuNetwork bridge method is required.");
         }
         await this.ensureStarted(options.bridgeCommand);
+        await options.beforeDispatch?.(method);
         const id = this.nextRequestId++;
         const requestPayload = Buffer.from(JSON.stringify({ method, payload }), "utf8");
         const frame = Buffer.alloc(FRAME_HEADER_SIZE + requestPayload.length);
@@ -176,6 +177,7 @@ export class BambuNetworkBridge {
             }, options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
             this.pending.set(id, { method, resolve, reject, timer });
             try {
+                options.assertDispatchAllowed?.(method);
                 this.child.stdin.write(frame, (error) => {
                     if (error) {
                         const pending = this.pending.get(id);
@@ -186,6 +188,7 @@ export class BambuNetworkBridge {
                         }
                     }
                 });
+                options.onDispatched?.(method);
             }
             catch (error) {
                 clearTimeout(timer);

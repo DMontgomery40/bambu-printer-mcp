@@ -26,6 +26,10 @@ export type BambuNetworkBridgeOptions = {
   countryCode?: string;
   userInfo?: string;
   timeoutMs?: number;
+  /** Trusted in-process preflight; never populated from tool arguments. */
+  beforeDispatch?: (method: string) => Promise<void>;
+  assertDispatchAllowed?: (method: string) => void;
+  onDispatched?: (method: string) => void;
 };
 
 export type BambuNetworkBridgeStatus = {
@@ -242,6 +246,7 @@ export class BambuNetworkBridge {
     }
 
     await this.ensureStarted(options.bridgeCommand);
+    await options.beforeDispatch?.(method);
 
     const id = this.nextRequestId++;
     const requestPayload = Buffer.from(JSON.stringify({ method, payload }), "utf8");
@@ -261,6 +266,7 @@ export class BambuNetworkBridge {
       this.pending.set(id, { method, resolve, reject, timer });
 
       try {
+        options.assertDispatchAllowed?.(method);
         this.child!.stdin.write(frame, (error) => {
           if (error) {
             const pending = this.pending.get(id);
@@ -271,6 +277,7 @@ export class BambuNetworkBridge {
             }
           }
         });
+        options.onDispatched?.(method);
       } catch (error) {
         clearTimeout(timer);
         this.pending.delete(id);

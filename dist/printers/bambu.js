@@ -1,10 +1,15 @@
 import { createHash } from "node:crypto";
+import { readFreshPrinterStatus } from "../safety/printer-state.js";
 import fs from "node:fs/promises";
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { Readable } from "node:stream";
-import JSZip from "jszip";
+import { readSafe3mfArchive } from "../safety/archive.js";
+import { inspectPrintFile } from "../safety/print-file.js";
+import { normalizeModel, validateTemperature } from "../safety/limits.js";
+import { validatePrinterState, manualHeatingRequirements } from "../safety/printer-state.js";
+import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRemotePath, cancelPendingPrinterOperations } from "../safety/artifact.js";
 import { Client as FTPClient } from "basic-ftp";
 import { BambuPrinter } from "bambu-js";
 import * as mqtt from "mqtt";
@@ -347,28 +352,66 @@ class BambuClientStore {
     }
 }
 export class BambuImplementation {
-    constructor() {
+    constructor(confirm) {
+        this.confirm = confirm;
+        this.checkedJobs = new Map();
+        this.clearedErrors = new Map();
         this.printerStore = new BambuClientStore();
+    }
+    async confirmHardwareAction(message, physicalCheck = false) {
+        if (!physicalCheck && process.env.BAMBU_REQUIRE_CONFIRMATION === "0")
+            return;
+        if (!this.confirm || !(await this.confirm(message))) {
+            throw new Error("Hardware safety confirmation was declined or unavailable. Use an MCP client with elicitation support. No command was sent.");
+        }
+    }
+    finishedJobIdentity(status) {
+        return status.raw.gcode_state === "FINISH" ? JSON.stringify([status.raw.gcode_file, status.raw.subtask_name, status.raw.task_id, status.raw.subtask_id]) : undefined;
+    }
+    async confirmPrintPreflight(serial, status, inspection) {
+        const finishedJob = this.finishedJobIdentity(status);
+        const cleared = this.clearedErrors.get(serial);
+        await this.confirmHardwareAction(`Start a checked print on ${inspection.model.toUpperCase()} (${serial})? Nozzles: ${inspection.nozzleDiameters.join(", ")} mm. ` +
+            `Materials: ${inspection.materials.join(", ")}. Peak targets: nozzle ${inspection.maxNozzleTemperature}°C, bed ${inspection.maxBedTemperature}°C, chamber ${inspection.maxChamberTemperature}°C. ` +
+            `File SHA-256: ${inspection.sha256}. Confirm the physical spool labels and that the build plate is clear.` +
+            (finishedJob !== undefined ? " The printer reports FINISH: remove the previous part and debris before confirming." : "") +
+            (cleared ? ` Previously cleared hardware codes: ${cleared.join(", ")}. Confirm their physical causes have been resolved.` : ""), finishedJob !== undefined || !!cleared);
+        return finishedJob;
+    }
+    assertBedClearance(status, confirmedFinishedJob) {
+        const current = this.finishedJobIdentity(status);
+        if (current !== undefined && current !== confirmedFinishedJob) {
+            throw new Error("Printer reports a newly finished job. Confirm that its part and debris have been removed before retrying the print.");
+        }
     }
     async getPrinter(host, serial, token) {
         return this.printerStore.getPrinter(host, serial, token);
     }
-    async resolveProjectFileMetadata(localThreeMfPath, plateIndex) {
-        const archive = await fs.readFile(localThreeMfPath);
-        const zip = await JSZip.loadAsync(archive);
-        const plateEntries = Object.values(zip.files).filter((entry) => !entry.dir && /^Metadata\/plate_\d+\.gcode$/i.test(entry.name));
-        if (plateEntries.length === 0) {
-            throw new Error("3MF does not contain any Metadata/plate_<n>.gcode entries. Re-slice and export a printable 3MF.");
+    /** Internal handoff from a successful inspected transport; never exposed as an MCP tool. */
+    recordCheckedJob(host, serial, remotePath, requirements) {
+        this.checkedJobs.set(`${host}\n${serial}`, { remotePath, requirements: structuredClone(requirements) });
+        this.clearedErrors.delete(serial);
+    }
+    validateLoadedGcodeState(status, inspection) {
+        const usedMaterials = inspection.usedFilamentPositions.map(position => inspection.materials[position]);
+        if (new Set(usedMaterials).size !== 1)
+            throw new Error("gcode_file printing cannot verify physical changes between different materials. Use a mapped .3mf project.");
+        const loaded = manualHeatingRequirements(status, inspection.model, inspection.nozzleDiameters[0], usedMaterials[0]);
+        const mapping = Array(inspection.materials.length).fill(-1);
+        inspection.usedFilamentPositions.forEach(position => { mapping[position] = loaded.amsMapping?.[0] ?? 254; });
+        const requirements = { ...inspection, useAMS: loaded.useAMS, amsMapping: mapping, usedNozzleIndices: loaded.usedNozzleIndices, requireLoadedFilament: true };
+        validatePrinterState(status, requirements);
+        return requirements;
+    }
+    async resolveProjectFileMetadata(localThreeMfPath, plateIndex, inspectedPlatePath) {
+        const { zip } = await readSafe3mfArchive(localThreeMfPath);
+        const expectedEntryName = `Metadata/plate_${(plateIndex ?? 0) + 1}.gcode`;
+        if (inspectedPlatePath !== undefined && inspectedPlatePath !== expectedEntryName) {
+            throw new Error("Inspected plate path does not match the requested print plate.");
         }
-        let selectedEntry = plateEntries.sort((a, b) => a.name.localeCompare(b.name))[0];
-        if (plateIndex !== undefined) {
-            const expectedEntryName = `Metadata/plate_${plateIndex + 1}.gcode`;
-            const matchedEntry = plateEntries.find((entry) => entry.name.toLowerCase() === expectedEntryName.toLowerCase());
-            if (!matchedEntry) {
-                const available = plateEntries.map((entry) => entry.name).join(", ");
-                throw new Error(`Requested plateIndex=${plateIndex} (${expectedEntryName}) not present in 3MF. Available: ${available}`);
-            }
-            selectedEntry = matchedEntry;
+        const selectedEntry = zip.file(inspectedPlatePath ?? expectedEntryName);
+        if (!selectedEntry) {
+            throw new Error(`Selected inspected plate ${expectedEntryName} is not present in 3MF. Re-slice that plate.`);
         }
         const gcodeBuffer = await selectedEntry.async("nodebuffer");
         const md5 = createHash("md5").update(gcodeBuffer).digest("hex");
@@ -420,6 +463,10 @@ export class BambuImplementation {
             usedFilamentPositions,
         };
     }
+    /** Safety reads never use the display cache or configured-serial model inference. */
+    async getSafetyStatus(host, serial, token) {
+        return readFreshPrinterStatus(await this.getPrinter(host, serial, token), serial);
+    }
     async getStatus(host, serial, token) {
         try {
             const printer = await this.getPrinter(host, serial, token);
@@ -467,13 +514,19 @@ export class BambuImplementation {
     }
     async print3mf(host, serial, token, options) {
         assertDirectPrintSupported(options.bambuModel, serial);
+        return withPrinterOperation(host, serial, assertActive => withPrintSnapshot(options.filePath, filePath => this.print3mfPrepared(host, serial, token, { ...options, filePath }, assertActive)));
+    }
+    async print3mfPrepared(host, serial, token, options, assertActive) {
+        const model = normalizeModel(options.bambuModel);
+        if (!model)
+            throw new Error("A supported bambuModel is required before printing.");
         if (!options.filePath.toLowerCase().endsWith(".3mf")) {
             throw new Error("print3mf requires a .3mf input file.");
         }
         // Normalise remote filename: collapse double-extension artifacts like
         // "Cube.gcode.3mf.gcode.3mf" -> "Cube.gcode.3mf" so firmware can identify
         // the container format from the extension.
-        let remoteFileName = path.basename(options.filePath);
+        let remoteFileName = uniquePrintName(options.filePath);
         remoteFileName = remoteFileName.replace(/\.gcode\.3mf\.gcode\.3mf$/i, ".gcode.3mf");
         // H2-series printers land files at the FTP root and reference them via ftp:///<name>.
         // Full-size A1 uses SD root/project_file (reported on firmware 01.08.01.00).
@@ -493,31 +546,15 @@ export class BambuImplementation {
         const projectUrl = usesH2ProjectFile
             ? `ftp:///${remoteProjectPath}`
             : `file:///sdcard/${remoteProjectPath}`;
-        // Upload via basic-ftp directly (bypasses bambu-js double-path bug)
-        await this.ftpUpload(host, token, options.filePath, remoteUploadPath);
-        // Pre-sliced .gcode.3mf files: routing depends on firmware generation.
-        // Legacy P1/X1/A1 mini: project_file returns 405004002 for .gcode.3mf (firmware
-        // doesn't recognise the container), so use gcode_file instead.
-        // H2-series and P2S: gcode_file is not supported (P2S answers 0500-4002
-        // "Unsupported file path or name"); project_file works because the
-        // firmware can open the zip and find Metadata/plate_<n>.gcode directly.
-        if (options.filePath.toLowerCase().endsWith(".gcode.3mf")) {
-            if (!usesH2ProjectFile && !isA1) {
-                const printer = await this.getPrinter(host, serial, token);
-                await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath }));
-                return {
-                    status: "success",
-                    message: `Uploaded and started gcode.3mf print: ${options.projectName}`,
-                    remoteProjectPath,
-                };
-            }
-            // H2-series and P2S: fall through to project_file path below
-        }
-        const projectMetadata = await this.resolveProjectFileMetadata(options.filePath, options.plateIndex);
+        const inspection = await inspectPrintFile(options.filePath, {
+            model, nozzleDiameters: options.nozzleDiameters, plateIndex: options.plateIndex ?? 0, bedType: options.bedType,
+        });
+        const projectMetadata = await this.resolveProjectFileMetadata(options.filePath, options.plateIndex, inspection.plateInternalPath);
         // Send project_file command via bambu-node MQTT (bypasses bambu-js
         // hardcoded use_ams=true and missing ams_mapping support)
-        const printer = await this.getPrinter(host, serial, token);
-        const md5 = options.md5 ?? projectMetadata.md5;
+        const md5 = projectMetadata.md5;
+        if (options.md5 !== undefined && options.md5 !== md5)
+            throw new Error("Provided checksum does not match the inspected plate G-code.");
         // Build AMS mapping.
         //
         // Convention: position = project-level filament index, value = absolute
@@ -566,14 +603,14 @@ export class BambuImplementation {
             });
         }
         else {
-            if (isH2 && projectMetadata.usedFilamentPositions.length > 0) {
+            if (options.useAMS !== false && projectMetadata.usedFilamentPositions.length > 0) {
                 throw new Error(`H2 project_file requires amsSlots or amsMapping for sliced files with declared filaments. Plate uses project filament positions ${JSON.stringify(projectMetadata.usedFilamentPositions)}.`);
             }
             const positions = projectMetadata.usedFilamentPositions;
             const projectLen = Math.max(projectMetadata.projectFilamentCount, ...positions.map((p) => p + 1), 1);
             baseMapping = Array(projectLen).fill(-1);
             positions.forEach((pos, i) => {
-                baseMapping[pos] = i;
+                baseMapping[pos] = options.useAMS === false ? 254 : i;
             });
         }
         let amsMapping;
@@ -595,6 +632,54 @@ export class BambuImplementation {
             amsMapping = Array.from({ length: Math.max(5, baseMapping.length, projectMetadata.projectFilamentCount) }, (_, i) => i < baseMapping.length ? baseMapping[i] : -1);
             amsMapping2 = [];
         }
+        for (const position of inspection.usedFilamentPositions) {
+            if (baseMapping[position] === undefined || baseMapping[position] < 0) {
+                throw new Error(`Missing physical filament mapping for project filament ${position}.`);
+            }
+            if (options.useAMS === false && baseMapping[position] !== 254) {
+                throw new Error("External-spool printing requires external spool mapping (254).");
+            }
+        }
+        const legacyContainer = options.filePath.toLowerCase().endsWith(".gcode.3mf") && !usesH2ProjectFile && !isA1;
+        if (legacyContainer) {
+            if (options.useAMS !== false || inspection.selectsAms) {
+                throw new Error("Legacy .gcode.3mf transport cannot apply verified AMS mappings. Export a .3mf project for AMS printing, or use an external-spool-only job with use_ams:false.");
+            }
+            const { zip: archive } = await readSafe3mfArchive(options.filePath);
+            const plates = Object.values(archive.files).filter(entry => !entry.dir && /^Metadata\/plate_\d+\.gcode$/i.test(entry.name));
+            if (plates.length !== 1 || inspection.plateInternalPath?.toLowerCase() !== "metadata/plate_1.gcode") {
+                throw new Error("Legacy gcode_file printing requires a single plate_1.gcode. Export only the selected plate or use a .3mf project_file export.");
+            }
+        }
+        let requirements = { ...inspection, amsMapping: baseMapping, useAMS: options.useAMS !== false };
+        const initialStatus = await this.getSafetyStatus(host, serial, token);
+        if (legacyContainer)
+            requirements = this.validateLoadedGcodeState(initialStatus, inspection);
+        else
+            validatePrinterState(initialStatus, requirements);
+        const bedClearance = await this.confirmPrintPreflight(serial, initialStatus, inspection);
+        const confirmedStatus = await this.getSafetyStatus(host, serial, token);
+        if (legacyContainer)
+            requirements = this.validateLoadedGcodeState(confirmedStatus, inspection);
+        else
+            validatePrinterState(confirmedStatus, requirements);
+        this.assertBedClearance(confirmedStatus, bedClearance);
+        assertActive();
+        await this.ftpUpload(host, token, options.filePath, remoteUploadPath);
+        // Uploads can be long. Recheck current state before the command is dispatched.
+        const dispatchStatus = await this.getSafetyStatus(host, serial, token);
+        if (legacyContainer)
+            requirements = this.validateLoadedGcodeState(dispatchStatus, inspection);
+        else
+            validatePrinterState(dispatchStatus, requirements);
+        this.assertBedClearance(dispatchStatus, bedClearance);
+        const printer = await this.getPrinter(host, serial, token);
+        assertActive();
+        if (legacyContainer) {
+            await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath }));
+            this.recordCheckedJob(host, serial, remoteProjectPath, requirements);
+            return { status: "success", message: `Uploaded and started gcode.3mf print: ${options.projectName}`, remoteProjectPath };
+        }
         const b = (v) => (v ? 1 : 0);
         let projectFileCmd;
         if (usesH2ProjectFile) {
@@ -603,7 +688,7 @@ export class BambuImplementation {
                 print: {
                     sequence_id: "0",
                     command: "project_file",
-                    param: `Metadata/${projectMetadata.plateFileName}`,
+                    param: projectMetadata.plateInternalPath,
                     url: projectUrl,
                     file: remoteFileName,
                     md5,
@@ -633,9 +718,9 @@ export class BambuImplementation {
             projectFileCmd = {
                 print: {
                     command: "project_file",
-                    param: `Metadata/${projectMetadata.plateFileName}`,
+                    param: projectMetadata.plateInternalPath,
                     url: projectUrl,
-                    subtask_name: options.projectName,
+                    subtask_name: remoteFileName.replace(/\.3mf$/i, ""),
                     md5,
                     flow_cali: options.flowCalibration ?? true,
                     layer_inspect: options.layerInspect ?? true,
@@ -654,6 +739,7 @@ export class BambuImplementation {
             };
         }
         await printer.publish(projectFileCmd);
+        this.recordCheckedJob(host, serial, remoteProjectPath, requirements);
         await new Promise((resolve) => setTimeout(resolve, 300));
         return {
             status: "success",
@@ -666,9 +752,12 @@ export class BambuImplementation {
         };
     }
     async cancelJob(host, serial, token) {
+        cancelPendingPrinterOperations(host, serial);
+        this.checkedJobs.delete(`${host}\n${serial}`);
         const printer = await this.getPrinter(host, serial, token);
         try {
             await invokeWithoutAck(printer, new UpdateStateCommand({ state: "stop" }));
+            this.checkedJobs.delete(`${host}\n${serial}`);
             return { status: "success", message: "Cancel command sent successfully." };
         }
         catch (error) {
@@ -686,25 +775,43 @@ export class BambuImplementation {
         }
     }
     async resumeJob(host, serial, token) {
-        const printer = await this.getPrinter(host, serial, token);
-        try {
+        return withPrinterOperation(host, serial, async (assertActive) => {
+            const checked = this.checkedJobs.get(`${host}\n${serial}`);
+            if (!checked)
+                throw new Error("Resume requires a job inspected and started by this server instance. Verify other jobs on the printer before resuming them there.");
+            const status = await this.getSafetyStatus(host, serial, token);
+            validatePrinterState(status, { ...checked.requirements, requireIdle: false });
+            if (status.raw.gcode_state !== "PAUSE")
+                throw new Error("Resume requires a freshly reported paused job.");
+            const stem = (value) => path.posix.basename(value).replace(/(?:\.gcode)?\.3mf$|\.gcode$/i, "");
+            const names = [status.raw.gcode_file, status.raw.subtask_name].filter(value => typeof value === "string");
+            if (!names.some(value => stem(value) === stem(checked.remotePath)))
+                throw new Error("Paused job identity does not match this server's inspected artifact.");
+            const printer = await this.getPrinter(host, serial, token);
+            assertActive();
             await invokeWithoutAck(printer, new UpdateStateCommand({ state: "resume" }));
             return { status: "success", message: "Resume command sent successfully." };
-        }
-        catch (error) {
-            throw new Error(`Failed to resume print: ${error.message}`);
-        }
+        });
     }
     async clearHmsErrors(host, serial, token) {
-        const printer = await this.getPrinter(host, serial, token);
-        await printer.publish({
-            print: {
-                command: "clean_print_error",
-                sequence_id: "0",
-            },
+        return withPrinterOperation(host, serial, async (assertActive) => {
+            const codesFor = (status) => {
+                if (!Array.isArray(status.raw?.hms) || status.raw?.print_error === undefined)
+                    throw new Error("Fresh error codes are required before clearing hardware errors.");
+                return [`print_error:${status.raw.print_error}`, ...status.raw.hms.map((entry) => `hms:${entry.attr}:${entry.code}`)].sort();
+            };
+            const codes = codesFor(await this.getSafetyStatus(host, serial, token));
+            await this.confirmHardwareAction(`Clear reported hardware errors on ${serial}: ${codes.join(", ")}? Inspect the printer and resolve the physical cause first. Confirm only after removing obstructions and correcting the fault.`, true);
+            const current = codesFor(await this.getSafetyStatus(host, serial, token));
+            if (JSON.stringify(current) !== JSON.stringify(codes))
+                throw new Error("Hardware errors changed during confirmation. Inspect the new report before retrying.");
+            const printer = await this.getPrinter(host, serial, token);
+            assertActive();
+            await printer.publish({ print: { command: "clean_print_error", sequence_id: "0" } });
+            this.clearedErrors.set(serial, codes);
+            await sleep(COMMAND_SETTLE_MS);
+            return { status: "success", message: "Confirmed HMS clear command sent. The next print requires acknowledgment of these cleared codes.", cleared_codes: codes };
         });
-        await sleep(COMMAND_SETTLE_MS);
-        return { status: "success", message: "HMS clear command sent." };
     }
     async setPrintSpeed(host, serial, token, speedMode) {
         const printer = await this.getPrinter(host, serial, token);
@@ -780,32 +887,46 @@ export class BambuImplementation {
             slot_id: normalizedSlotId,
         };
     }
-    async setTemperature(host, serial, token, component, temperature) {
-        const printer = await this.getPrinter(host, serial, token);
+    async setTemperature(host, serial, token, component, temperature, bambuModel, material, nozzleDiameter = 0.4) {
         const normalizedComponent = component.toLowerCase();
-        const targetTemperature = Math.round(temperature);
-        if (targetTemperature < 0 || targetTemperature > 300) {
-            throw new Error("Temperature must be between 0 and 300°C.");
-        }
-        let gcode;
-        if (normalizedComponent === "bed") {
-            gcode = `M140 S${targetTemperature}`;
-        }
-        else if (normalizedComponent === "extruder" ||
-            normalizedComponent === "nozzle" ||
-            normalizedComponent === "tool" ||
-            normalizedComponent === "tool0") {
-            gcode = `M104 S${targetTemperature}`;
-        }
-        else {
+        const heater = normalizedComponent === "bed" ? "bed" :
+            ["extruder", "nozzle", "tool", "tool0"].includes(normalizedComponent) ? "nozzle" : undefined;
+        if (!heater) {
             throw new Error(`Unsupported temperature component: ${component}. Use one of: bed, nozzle, extruder.`);
         }
-        await invokeWithoutAck(printer, new GCodeLineCommand({ gcodes: [gcode] }));
-        return {
-            status: "success",
-            message: `Temperature command sent for ${normalizedComponent}.`,
-            command: gcode,
+        if (typeof temperature !== "number" || !Number.isFinite(temperature) || temperature < 0) {
+            throw new Error("Temperature must be a finite, non-negative number in °C.");
+        }
+        const model = normalizeModel(bambuModel);
+        if (temperature > 0 && !model)
+            throw new Error("bambu_model is required before heating.");
+        if (temperature > 0 && heater === "nozzle" && !material?.trim()) {
+            throw new Error("Declare material before nozzle heating, including non-RFID external spools.");
+        }
+        const targetTemperature = temperature === 0 ? 0 : validateTemperature(heater, temperature, model, material ? [material] : undefined);
+        const gcode = `${heater === "bed" ? "M140" : "M104"}${heater === "nozzle" && targetTemperature > 0 ? " T0" : ""} S${targetTemperature}`;
+        const send = async (assertActive) => {
+            if (targetTemperature > 0) {
+                const status = await this.getSafetyStatus(host, serial, token);
+                validatePrinterState(status, heater === "nozzle"
+                    ? manualHeatingRequirements(status, model, nozzleDiameter, material)
+                    : { model: model, nozzleDiameters: [] });
+                await this.confirmHardwareAction(`Heat ${heater} on ${model.toUpperCase()} (${serial}) to ${targetTemperature}°C?${material ? ` Declared material: ${material}. Confirm the physical spool label.` : ""}`);
+                const confirmedStatus = await this.getSafetyStatus(host, serial, token);
+                validatePrinterState(confirmedStatus, heater === "nozzle"
+                    ? manualHeatingRequirements(confirmedStatus, model, nozzleDiameter, material)
+                    : { model: model, nozzleDiameters: [] });
+            }
+            const printer = await this.getPrinter(host, serial, token);
+            assertActive();
+            await invokeWithoutAck(printer, new GCodeLineCommand({ gcodes: [gcode] }));
+            return { status: "success", message: `Temperature command sent for ${normalizedComponent}.`, command: gcode };
         };
+        if (targetTemperature === 0) {
+            cancelPendingPrinterOperations(host, serial);
+            return send(() => undefined);
+        }
+        return withPrinterOperation(host, serial, send);
     }
     async setFanSpeed(host, serial, token, fan, speed) {
         const printer = await this.getPrinter(host, serial, token);
@@ -940,52 +1061,119 @@ export class BambuImplementation {
         };
     }
     async uploadFile(host, serial, token, filePath, filename, print, bambuModel) {
-        if (print)
-            assertDirectPrintSupported(bambuModel, serial);
-        await fs.access(filePath);
-        const normalizedFileName = filename.replace(/^\/+/, "");
-        const remotePath = normalizedFileName.includes("/")
-            ? normalizedFileName
-            : `cache/${normalizedFileName}`;
-        // Use direct FTP upload (bypasses bambu-js double-path bug)
-        await this.ftpUpload(host, token, filePath, `/${remotePath}`);
-        const response = {
-            status: "success",
-            uploaded: true,
-            remotePath,
-            printRequested: print,
-        };
-        if (print) {
-            if (remotePath.toLowerCase().endsWith(".gcode")) {
-                response.startResult = await this.startJob(host, serial, token, remotePath, bambuModel);
+        const remotePath = normalizedRemotePath(filename);
+        if (!print) {
+            const sourceExtension = path.extname(filePath).toLowerCase();
+            const destinationExtension = path.posix.extname(remotePath).toLowerCase();
+            const printable = [sourceExtension, destinationExtension].some(extension => extension === ".gcode" || extension === ".3mf");
+            const model = normalizeModel(bambuModel);
+            if (printable && !model)
+                throw new Error("A supported bambuModel is required to inspect printable uploads, even when print is false.");
+            if (printable && sourceExtension !== destinationExtension) {
+                throw new Error("Printable uploads require matching .gcode or .3mf source and destination extensions.");
             }
-            else if (remotePath.toLowerCase().endsWith(".3mf")) {
-                response.note =
-                    "3MF upload complete. Use print_3mf to start a project print with plate and metadata options.";
-            }
-            else {
-                throw new Error("Automatic print after upload supports .gcode only. Use print_3mf for .3mf project prints.");
-            }
+            return withPrinterOperation(host, serial, assertActive => withPrintSnapshot(filePath, async (snapshot) => {
+                const inspections = [];
+                if (printable) {
+                    if (sourceExtension === ".3mf") {
+                        const { zip } = await readSafe3mfArchive(snapshot);
+                        const plates = Object.values(zip.files).filter(entry => !entry.dir && /\.gcode$/i.test(entry.name));
+                        if (!plates.length)
+                            throw new Error("Printable 3MF uploads require a sliced archive containing Metadata/plate_<n>.gcode.");
+                        // A later touchscreen start may select any plate in this archive.
+                        for (const plate of plates) {
+                            const match = plate.name.match(/^Metadata\/plate_([1-9]\d*)\.gcode$/);
+                            const plateNumber = match ? Number(match[1]) : NaN;
+                            if (!Number.isSafeInteger(plateNumber)) {
+                                throw new Error(`Noncanonical printable G-code entry '${plate.name}'. Re-export using exact Metadata/plate_<positive integer>.gcode paths without aliases.`);
+                            }
+                            const inspection = await inspectPrintFile(snapshot, { model: model, plateIndex: plateNumber - 1 });
+                            if (inspection.plateInternalPath !== plate.name) {
+                                throw new Error(`Printable G-code entry '${plate.name}' does not match the inspected plate path.`);
+                            }
+                            inspections.push(inspection);
+                        }
+                    }
+                    else {
+                        inspections.push(await inspectPrintFile(snapshot, { model: model }));
+                    }
+                    const status = await this.getSafetyStatus(host, serial, token);
+                    for (const inspection of inspections) {
+                        validatePrinterState(status, { ...inspection, verifyMaterials: false, requireIdle: false });
+                    }
+                }
+                assertActive();
+                const destination = path.posix.join(path.posix.dirname(remotePath), uniquePrintName(remotePath));
+                await this.ftpUpload(host, token, snapshot, `/${destination}`);
+                return { status: "success", uploaded: true, remotePath: destination, printRequested: false, inspected: printable };
+            }));
         }
-        return response;
+        assertDirectPrintSupported(bambuModel, serial);
+        if (!remotePath.toLowerCase().endsWith(".gcode") || !filePath.toLowerCase().endsWith(".gcode")) {
+            throw new Error("Automatic print after upload requires .gcode. Use print_3mf for inspected .3mf project prints.");
+        }
+        return withPrinterOperation(host, serial, assertActive => withPrintSnapshot(filePath, snapshot => this.printRawPrepared(host, serial, token, snapshot, remotePath, bambuModel, assertActive)));
+    }
+    async printRawPrepared(host, serial, token, filePath, filename, bambuModel, assertActive) {
+        const model = normalizeModel(bambuModel);
+        if (!model)
+            throw new Error("A supported bambuModel is required before printing.");
+        const inspection = await inspectPrintFile(filePath, { model });
+        if (inspection.selectsAms)
+            throw new Error("Raw G-code with AMS selection requires a .3mf project export with verified physical slot mappings.");
+        const initialStatus = await this.getSafetyStatus(host, serial, token);
+        let requirements = this.validateLoadedGcodeState(initialStatus, inspection);
+        const bedClearance = await this.confirmPrintPreflight(serial, initialStatus, inspection);
+        const confirmedStatus = await this.getSafetyStatus(host, serial, token);
+        requirements = this.validateLoadedGcodeState(confirmedStatus, inspection);
+        this.assertBedClearance(confirmedStatus, bedClearance);
+        assertActive();
+        const remotePath = path.posix.join(path.posix.dirname(filename), uniquePrintName(filename));
+        await this.ftpUpload(host, token, filePath, `/${remotePath}`);
+        const dispatchStatus = await this.getSafetyStatus(host, serial, token);
+        requirements = this.validateLoadedGcodeState(dispatchStatus, inspection);
+        this.assertBedClearance(dispatchStatus, bedClearance);
+        const printer = await this.getPrinter(host, serial, token);
+        assertActive();
+        await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remotePath }));
+        this.recordCheckedJob(host, serial, remotePath, requirements);
+        return { status: "success", uploaded: true, printRequested: true, remotePath, message: `Checked and started ${remotePath}.` };
     }
     async startJob(host, serial, token, filename, bambuModel) {
         assertDirectPrintSupported(bambuModel, serial);
-        const lower = filename.toLowerCase();
-        if (lower.endsWith(".3mf") && !lower.endsWith(".gcode.3mf")) {
-            throw new Error("Use print_3mf for .3mf project files.");
+        if (!normalizeModel(bambuModel))
+            throw new Error("A supported bambuModel is required before printing.");
+        const remotePath = normalizedRemotePath(filename);
+        if (!remotePath.toLowerCase().endsWith(".gcode")) {
+            throw new Error("Remote starts require inspectable .gcode. Use print_3mf with the local project for .3mf printing.");
         }
-        const printer = await this.getPrinter(host, serial, token);
-        const normalizedFileName = filename.replace(/^\/+/, "");
-        const remoteFile = normalizedFileName.includes("/")
-            ? normalizedFileName
-            : `cache/${normalizedFileName}`;
-        await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteFile }));
-        return {
-            status: "success",
-            message: `Start command sent for ${remoteFile}.`,
-            file: remoteFile,
-        };
+        return withPrinterOperation(host, serial, async (assertActive) => {
+            const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-remote-check-"));
+            const localPath = path.join(directory, path.basename(remotePath));
+            try {
+                await this.ftpDownload(host, token, remotePath, localPath);
+                // Send a unique copy of the downloaded, inspected bytes. Starting the
+                // original remote name would allow it to change after inspection.
+                return await withPrintSnapshot(localPath, snapshot => this.printRawPrepared(host, serial, token, snapshot, remotePath, bambuModel, assertActive));
+            }
+            finally {
+                await fs.rm(directory, { recursive: true, force: true });
+            }
+        });
+    }
+    async ftpDownload(host, token, remotePath, localPath) {
+        const client = new FTPClient(15000);
+        try {
+            await client.access({ host, port: 990, user: "bblp", password: token, secure: "implicit", secureOptions: ftpsSecureOptions() });
+            await this.waitForTlsSession(client);
+            const size = await client.size(`/${remotePath}`);
+            if (!Number.isFinite(size) || size <= 0 || size > 512 * 1024 * 1024)
+                throw new Error("Remote print file is empty or exceeds the 512 MiB inspection limit.");
+            await client.downloadTo(localPath, `/${remotePath}`);
+        }
+        finally {
+            client.close();
+        }
     }
     /**
      * Capture a single JPEG frame from the printer's chamber camera.
@@ -1312,6 +1500,11 @@ export class BambuImplementation {
             await this.waitForTlsSession(client);
             // Use absolute path to avoid CWD side-effects
             const absoluteRemote = remotePath.startsWith("/") ? remotePath : `/${remotePath}`;
+            const entries = await client.list(path.posix.dirname(absoluteRemote));
+            const destinationName = path.posix.basename(absoluteRemote).toLowerCase();
+            if (entries.some(entry => entry.name.toLowerCase() === destinationName)) {
+                throw new Error(`Refusing to overwrite existing printer file ${absoluteRemote}. Choose a new filename.`);
+            }
             const fileData = await fs.readFile(localPath);
             await client.uploadFrom(Readable.from(fileData), absoluteRemote);
         }

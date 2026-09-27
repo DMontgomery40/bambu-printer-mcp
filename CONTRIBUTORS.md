@@ -6,6 +6,8 @@ Thank you to everyone who builds, tests, reports problems, and shares real print
 
 | Contributor | Contribution |
 | --- | --- |
+| [Boardy (@boardyai)](https://x.com/boardyai) | Raises the nozzle-verification question that informs the added printer safety checks. |
+| Fable red-team review, shared by David Montgomery | Supplies archive-ambiguity reproductions and hardware-safety review findings used for plate binding, upload checks, temperature policy, and human preflight. Network/security suggestions remain outside this hardware-safety release. |
 | [Sebastian (sebas1986)](https://github.com/sebas1986) | Isolates the multi-filament CLI crash with real BambuStudio bisection, contributes per-slot colours and multi-nozzle prime-tower placement, and verifies X2D identification, status, and slicing in [#18](https://github.com/DMontgomery40/bambu-printer-mcp/pull/18). Direct X2D printing remains deferred pending the native transport. |
 | [Stenslaen](https://github.com/Stenslaen) | Traces the delayed H2 crash to OTA model detection, documents a multi-day workaround, and reports unexpected state-transition crashes in [#7](https://github.com/DMontgomery40/bambu-printer-mcp/issues/7). |
 | [Alejandro Oñate (alexol91)](https://github.com/alexol91) | Reports the missing machine-template G-code and multi-filament override problems in [#12](https://github.com/DMontgomery40/bambu-printer-mcp/issues/12), with measured output and a proposed fix in [#13](https://github.com/DMontgomery40/bambu-printer-mcp/pull/13). |
@@ -19,7 +21,7 @@ Thank you to everyone who builds, tests, reports problems, and shares real print
 
 Thank you also to the existing contributors whose work the project builds on:
 
-- [David Montgomery (DMontgomery40)](https://github.com/DMontgomery40) — project maintainer; flags the FULU/Orca missing-machine-preset safety gap during article review, prompting the 1.1.11 fix.
+- [David Montgomery (DMontgomery40)](https://github.com/DMontgomery40) — project maintainer; contributes the printer-profile, temperature, and hardware-safety reports informing the shared slicing and print checks.
 - [rowbotik](https://github.com/rowbotik) — printer, AMS, slicing, and operational work across the existing release history.
 - [len-foss](https://github.com/len-foss) — project code contribution.
 - [thebitrock](https://github.com/thebitrock) — project code contribution.
