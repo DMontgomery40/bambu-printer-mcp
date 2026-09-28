@@ -6,6 +6,7 @@
 - Interrupt pending native helpers on MCP cancellation, stop, and heater-off; wait for process exit before releasing snapshots, with bounded SIGKILL escalation when SIGTERM is ignored.
 - Route X2D controls from the selected serial when the print model was elicited, without applying the configured X2D transport to an overridden printer.
 - Restrict public raw native controls to validated AMS metadata and calibration queries/selection; exclude motion, loading, heating, and safety-setting mutations.
+- Add a macOS native build/test CI job while preserving the existing Linux test check.
 - Remove machine-specific launchers and unused GUI automation from the upstream change and release archives.
 - Resolve the model before selecting the X2D native route, including MCP model elicitation, and pass that resolved model through dispatch.
 - Reject raw `ams_mapping2` overrides and missing/empty requested AMS mappings before dispatch; derive native mappings from checked structured tray assignments without silently selecting an external spool.
