@@ -196,9 +196,18 @@ class TolerantBambuClient extends BambuClient {
         return [undefined];
     }
 }
-/** Build FTPS secureOptions that include the client cert+key when available. */
-function ftpsSecureOptions() {
-    const opts = { rejectUnauthorized: false };
+/**
+ * Build FTPS secureOptions that include the client cert+key when available.
+ *
+ * `host` must be included: basic-ftp opens each data connection by wrapping
+ * a plain socket with tls.connect(tlsOptions), and without a host Node sends
+ * SNI "localhost". The control connection to an IP sent no SNI, so printers
+ * that require TLS session reuse (vsftpd require_ssl_reuse, e.g. X2D) refuse
+ * to resume the session and reply "522 SSL connection failed: session reuse
+ * required", failing every LIST, STOR and RETR.
+ */
+function ftpsSecureOptions(host) {
+    const opts = { rejectUnauthorized: false, host };
     if (CLIENT_CREDS) {
         opts.cert = CLIENT_CREDS.cert;
         opts.key = CLIENT_CREDS.key;
@@ -1164,7 +1173,7 @@ export class BambuImplementation {
     async ftpDownload(host, token, remotePath, localPath) {
         const client = new FTPClient(15000);
         try {
-            await client.access({ host, port: 990, user: "bblp", password: token, secure: "implicit", secureOptions: ftpsSecureOptions() });
+            await client.access({ host, port: 990, user: "bblp", password: token, secure: "implicit", secureOptions: ftpsSecureOptions(host) });
             await this.waitForTlsSession(client);
             const size = await client.size(`/${remotePath}`);
             if (!Number.isFinite(size) || size <= 0 || size > 512 * 1024 * 1024)
@@ -1466,7 +1475,7 @@ export class BambuImplementation {
                 user: "bblp",
                 password: token,
                 secure: "implicit",
-                secureOptions: ftpsSecureOptions(),
+                secureOptions: ftpsSecureOptions(host),
             });
             await this.waitForTlsSession(client);
             const absoluteRemote = remotePath.startsWith("/") ? remotePath : `/${remotePath}`;
@@ -1491,7 +1500,7 @@ export class BambuImplementation {
                 user: "bblp",
                 password: token,
                 secure: "implicit",
-                secureOptions: ftpsSecureOptions(),
+                secureOptions: ftpsSecureOptions(host),
             });
             // With TLS 1.3 the session ticket arrives asynchronously; basic-ftp calls
             // getSession() when opening the data channel and gets undefined if the

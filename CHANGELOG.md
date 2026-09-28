@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- Include the printer host in FTPS TLS options so data connections resume the control session. basic-ftp wraps each data socket without a host, so Node sent SNI `localhost` and printers requiring TLS session reuse replied `522 SSL connection failed: session reuse required` to every LIST, STOR and RETR. Verified on a physical X2D: uploads previously failed with ECONNRESET after the 522; they now reach STOR, where internal-eMMC storage still refuses writes with `553` (see #10). `list_printer_files` still uses bambu-js's own FTP client and is not covered by this change.
+
 ## [1.1.13] – 2026-09-27
 
 ### Added

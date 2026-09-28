@@ -150,7 +150,7 @@ for (const type of ["gcode", "3mf", "txt"]) {
 
 function fakeFtp(t, entries, listError) {
   const events = [];
-  t.mock.method(FTPClient.prototype, "access", async () => { events.push({ action: "access" }); });
+  t.mock.method(FTPClient.prototype, "access", async options => { events.push({ action: "access", options }); });
   t.mock.method(FTPClient.prototype, "list", async remote => {
     events.push({ action: "list", remote });
     if (listError) throw listError;
@@ -188,6 +188,19 @@ test("FTP retains the exact checked path after confirming it is unused", async t
   assert.equal(events[1].remote, "/cache");
   assert.equal(events[2].remote, "/cache/checked-new.gcode");
   assert.deepEqual(events[2].bytes, await fs.readFile(file));
+});
+
+// basic-ftp reuses these options for every TLS data connection. Without the
+// host, Node sends SNI "localhost" there, and printers requiring TLS session
+// reuse (X2D) answer "522 session reuse required" to every transfer.
+test("FTP TLS options carry the printer host for data-channel session reuse", async t => {
+  const file = await artifact(t);
+  const { printer, events } = fakeFtp(t, []);
+  await printer.ftpUpload("192.168.0.175", credentials[2], file, "/cache/checked-host.gcode");
+  const { options } = events.find(event => event.action === "access");
+  assert.equal(options.host, "192.168.0.175");
+  assert.equal(options.secure, "implicit");
+  assert.equal(options.secureOptions.host, "192.168.0.175");
 });
 
 for (const tool of ["upload_file", "upload_gcode"]) {
