@@ -28,6 +28,8 @@ if (${ignoreTerm}) process.on('SIGTERM', () => {});
 const event = { kind: 'helper', pid: process.pid, mode: process.argv[2], file: e.BAMBU_NATIVE_FILE,
   exists: existsSync(e.BAMBU_NATIVE_FILE || ''), config: e.BAMBU_NATIVE_CONFIG_FILE,
   destination: e.BAMBU_NATIVE_DST_FILE, useAMS: e.BAMBU_NATIVE_USE_AMS,
+  projectName: e.BAMBU_NATIVE_PROJECT_NAME, presetName: e.BAMBU_NATIVE_PRESET_NAME,
+  plateIndex: e.BAMBU_NATIVE_PLATE_INDEX, bedType: e.BAMBU_NATIVE_BED_TYPE,
   mapping: e.BAMBU_NATIVE_AMS_MAPPING, mapping2: e.BAMBU_NATIVE_AMS_MAPPING2,
   command: JSON.parse(e.BAMBU_NATIVE_COMMAND_JSON || '{}') };
 event.olderAlive = readFileSync(${JSON.stringify(eventsFile)}, 'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse)
@@ -168,6 +170,46 @@ test("native upload inspects every plate and cannot upload an unsafe archive", a
   } });
   assert.equal(result.isError, true);
   assert.equal((await s.events()).some(e => e.kind === "helper"), false);
+});
+
+test("native upload honors validated plate and display metadata", async t => {
+  const s = await server(t);
+  const zip = await JSZip.loadAsync(await fs.readFile(s.file));
+  zip.file("Metadata/plate_2.gcode", (await zip.file("Metadata/plate_1.gcode").async("string")).replace("Textured PEI Plate", "Cool Plate"));
+  zip.file("Metadata/plate_2.json", JSON.stringify({ filament_ids: [0] }));
+  await fs.writeFile(s.file, await zip.generateAsync({ type: "nodebuffer" }));
+  const result = await s.client.callTool({ name: "upload_file", arguments: {
+    file_path: s.file, filename: "cube.3mf", connection_mode: "bambu_native",
+    project_name: "My project", preset_name: "My preset", plate_index: 1, bed_type: "cool_plate",
+  } });
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  const call = (await s.events()).find(e => e.kind === "helper");
+  assert.equal(call.mode, "--upload");
+  assert.equal(call.projectName, "My project");
+  assert.equal(call.presetName, "My preset");
+  assert.equal(call.plateIndex, "2");
+  assert.equal(call.bedType, "cool_plate");
+});
+
+test("native upload rejects unsupported print options and invalid metadata before helper dispatch", async t => {
+  const s = await server(t);
+  const rejected = [
+    { plate_index: -1 }, { plate_index: 0.5 }, { plate_index: 1 },
+    { bed_type: "invalid" }, { bed_type: "cool_plate" }, { project_name: 42 }, { preset_name: "" },
+    ...["use_ams", "ams_mapping", "ams_mapping2", "ams_mapping_info", "nozzle_mapping", "nozzles_info",
+      "bed_leveling", "flow_calibration", "vibration_calibration", "layer_inspect", "timelapse"]
+      .map(key => ({ [key]: key === "ams_mapping" ? [0] : key === "use_ams" ? true : "unsupported" })),
+  ];
+  for (const args of rejected) {
+    const result = await s.client.callTool({ name: "upload_file", arguments: {
+      file_path: s.file, filename: "cube.3mf", connection_mode: "bambu_native", ...args,
+    } });
+    assert.equal(result.isError, true, JSON.stringify({ args, result }));
+  }
+  assert.equal((await s.events()).some(e => e.kind === "helper"), false);
+  const schema = (await s.client.listTools()).tools.find(tool => tool.name === "upload_file").inputSchema.properties;
+  assert.equal(schema.use_ams, undefined);
+  assert.equal(schema.ams_mapping2, undefined);
 });
 
 test("raw native controls cannot bypass checked heating, resume or error clearing", async t => {

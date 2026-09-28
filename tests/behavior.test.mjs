@@ -702,25 +702,29 @@ test("printer status maps the Bambu Studio N6 model id to X2D", async () => {
   assert.equal(status.model, "X2D");
 });
 
-test("printer status falls back to the configured model when firmware omits model_id", async () => {
-  const previousModel = process.env.BAMBU_PRINTER_MODEL;
-  process.env.BAMBU_PRINTER_MODEL = "x2d";
+test("printer status preserves unknown reported identity despite a configured model", async () => {
+  const previousModels = [process.env.BAMBU_PRINTER_MODEL, process.env.BAMBU_MODEL];
 
   try {
-    const bambu = new BambuImplementation();
-    bambu.printerStore = {
-      waitForInitialReport: async () => ({ gcode_state: "IDLE", model_id: "" }),
-    };
-    bambu.getPrinter = async () => ({
-      data: { gcode_state: "IDLE", model_id: "" },
-      publish: async () => {},
-    });
+    for (const configuredKey of ["BAMBU_PRINTER_MODEL", "BAMBU_MODEL"]) {
+      process.env.BAMBU_PRINTER_MODEL = "";
+      process.env.BAMBU_MODEL = "";
+      process.env[configuredKey] = "x2d";
+      for (const modelId of ["", "UNRECOGNIZED_MODEL"]) {
+        const data = { gcode_state: "IDLE", model_id: modelId };
+        const bambu = new BambuImplementation();
+        bambu.printerStore = { waitForInitialReport: async () => data };
+        bambu.getPrinter = async () => ({ data, publish: async () => {} });
 
-    const status = await bambu.getStatus("127.0.0.1", "TEST_SERIAL", "TEST_TOKEN");
-    assert.equal(status.model, "X2D");
+        const status = await bambu.getStatus("127.0.0.1", "TEST_SERIAL", "TEST_TOKEN");
+        assert.equal(status.model, "Unknown", `${configuredKey} must not replace reported model_id ${JSON.stringify(modelId)}`);
+      }
+    }
   } finally {
-    if (previousModel === undefined) delete process.env.BAMBU_PRINTER_MODEL;
-    else process.env.BAMBU_PRINTER_MODEL = previousModel;
+    ["BAMBU_PRINTER_MODEL", "BAMBU_MODEL"].forEach((key, index) => {
+      if (previousModels[index] === undefined) delete process.env[key];
+      else process.env[key] = previousModels[index];
+    });
   }
 });
 

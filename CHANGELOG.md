@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Fixed
+- Preserve unknown observed printer identities in status instead of substituting the configured model.
+- Validate and forward native upload plate, bed, project, and preset metadata; explicitly reject unsupported print options instead of silently ignoring them.
 - Keep heater-off on the selected printer transport after model elicitation, including an overridden non-X2D serial.
 - Interrupt pending native helpers on MCP cancellation, stop, and heater-off; wait for process exit before releasing snapshots, with bounded SIGKILL escalation when SIGTERM is ignored.
 - Route X2D controls from the selected serial when the print model was elicited, without applying the configured X2D transport to an overridden printer.

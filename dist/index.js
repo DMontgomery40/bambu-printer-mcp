@@ -1263,12 +1263,34 @@ class BambuPrinterMCPServer {
         const model = await this.resolveBambuModel(args.bambu_model);
         if (model !== "x2d")
             throw new Error("connection_mode=bambu_native is restricted to X2D.");
+        const unsupported = ["use_ams", "ams_mapping", "ams_mapping2", "ams_mapping_info", "nozzle_mapping", "nozzles_info",
+            "bed_leveling", "flow_calibration", "vibration_calibration", "layer_inspect", "timelapse"];
+        for (const key of unsupported) {
+            if (args[key] !== undefined)
+                throw new Error(`${key} is not supported for native upload-only requests; use print_3mf for checked print settings.`);
+        }
+        for (const key of ["project_name", "preset_name"]) {
+            if (args[key] !== undefined && (typeof args[key] !== "string" || !args[key].trim())) {
+                throw new Error(`${key} must be a non-empty string.`);
+            }
+        }
+        const plateIndex = args.plate_index ?? 0;
+        if (!Number.isSafeInteger(plateIndex) || plateIndex < 0)
+            throw new Error("plate_index must be a non-negative integer.");
+        if (path.extname(String(args.file_path)).toLowerCase() !== ".3mf" && plateIndex !== 0) {
+            throw new Error("plate_index is only supported for 3MF uploads.");
+        }
+        const bedType = resolveBedType(args.bed_type ?? "textured_plate");
         return this.bambu.uploadFile(host, bambuSerial, bambuToken, String(args.file_path), String(args.filename), false, model, async (snapshot, destination, assertActive) => {
+            if (path.extname(snapshot).toLowerCase() === ".3mf") {
+                await inspectPrintFile(snapshot, { model, plateIndex, bedType });
+            }
+            assertActive();
             await this.bambu.disconnectAll();
             await uploadWithBambuNative({
                 host, serial: bambuSerial, token: bambuToken, filePath: snapshot,
-                remoteName: destination, projectName: path.posix.basename(destination),
-                presetName: "checked-upload", plateIndex: 0, bedType: "textured_plate", useAMS: false,
+                remoteName: destination, projectName: args.project_name ?? path.posix.basename(String(args.filename)),
+                presetName: args.preset_name ?? "checked-upload", plateIndex, bedType, useAMS: false,
             }, onUpdate, { signal, assertActive });
         });
     }
@@ -2015,18 +2037,7 @@ class BambuPrinterMCPServer {
                                 project_name: { type: "string", description: "Optional project name passed to the native X2D uploader; defaults to filename." },
                                 preset_name: { type: "string", description: "Optional printer preset name passed to the native X2D uploader." },
                                 bed_type: { type: "string", enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"], description: "Bed plate type for the native X2D uploader (default: textured_plate)." },
-                                plate_index: { type: "number", description: "Zero-based plate index passed to the native X2D uploader (default: 0)." },
-                                use_ams: { type: "boolean", description: "Whether the native X2D upload should include AMS mapping metadata (default: false)." },
-                                ams_mapping: { type: "array", description: "Optional project-level AMS mapping array for the native X2D upload.", items: { type: "number" } },
-                                ams_mapping2: { type: "string", description: "Optional raw JSON string for the native X2D ams_mapping2 field." },
-                                ams_mapping_info: { type: "string", description: "Optional raw JSON string for native X2D AMS mapping details." },
-                                nozzle_mapping: { type: "string", description: "Optional raw JSON string for native X2D nozzle mapping." },
-                                nozzles_info: { type: "string", description: "Optional raw JSON string for native X2D nozzle metadata." },
-                                bed_leveling: { type: "boolean", description: "Optional bed-leveling flag passed to the native X2D uploader." },
-                                flow_calibration: { type: "boolean", description: "Optional flow-calibration flag passed to the native X2D uploader." },
-                                vibration_calibration: { type: "boolean", description: "Optional vibration-calibration flag passed to the native X2D uploader." },
-                                layer_inspect: { type: "boolean", description: "Optional first-layer inspection flag passed to the native X2D uploader." },
-                                timelapse: { type: "boolean", description: "Optional timelapse flag passed to the native X2D uploader." },
+                                plate_index: { type: "integer", minimum: 0, description: "Zero-based plate index passed to the native X2D uploader (default: 0)." },
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
                                 bambu_token: { type: "string", description: "Access token (default: value from env)" }
