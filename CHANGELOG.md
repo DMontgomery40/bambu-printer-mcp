@@ -5,6 +5,7 @@
 ### Fixed
 - Interrupt pending native helpers on MCP cancellation, stop, and heater-off; wait for process exit before releasing snapshots, with bounded SIGKILL escalation when SIGTERM is ignored.
 - Route X2D controls from the selected serial when the print model was elicited, without applying the configured X2D transport to an overridden printer.
+- Preserve unit-local filament metadata tray IDs and absolute calibration tray IDs across multiple AMS units and AMS-HT; reject contradictory unit/slot mappings.
 - Restrict public raw native controls to validated AMS metadata and calibration queries/selection; exclude motion, loading, heating, and safety-setting mutations.
 - Add a macOS native build/test CI job while preserving the existing Linux test check.
 - Remove machine-specific launchers and unused GUI automation from the upstream change and release archives.

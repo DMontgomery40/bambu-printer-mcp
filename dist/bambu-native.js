@@ -396,7 +396,7 @@ export function validateBambuNativeMetadata(messageJson) {
         const number = value[key];
         if (!Number.isInteger(number) || number < (key === "cali_idx" ? -1 : 0) ||
             (key === "ams_id" && ![0, 1, 2, 3, 128].includes(number)) ||
-            (["slot_id", "tray_id"].includes(key) && number > 3) ||
+            (key === "slot_id" && number > 3) ||
             (key.startsWith("nozzle_temp_") && number > 300))
             throw new Error(`Invalid metadata ${key}.`);
     }
@@ -410,7 +410,16 @@ export function validateBambuNativeMetadata(messageJson) {
         (value.ams_id === undefined || value.slot_id === undefined || (value.ams_id === 128 && value.slot_id !== 0))) {
         throw new Error("Metadata requires a valid AMS unit and slot (AMS-HT has only slot 0).");
     }
-    return validated.messageJson;
+    if (["ams_filament_setting", "extrusion_cali_sel"].includes(value.command)) {
+        // Studio's filament settings use a unit-local tray_id; PA selection uses
+        // GetTrayIdByAmsSlotId: absolute AMS index, or the AMS-HT unit's index.
+        const trayId = value.command === "ams_filament_setting" ? value.slot_id :
+            value.ams_id === 128 ? 128 : value.ams_id * 4 + value.slot_id;
+        if (value.tray_id !== undefined && value.tray_id !== trayId)
+            throw new Error("Metadata tray_id contradicts the AMS unit/slot.");
+        value.tray_id = trayId;
+    }
+    return JSON.stringify(parsed);
 }
 export async function sendCommandWithBambuNative(options, execution) {
     const validated = validateBambuNativeControlMessage(options.messageJson);

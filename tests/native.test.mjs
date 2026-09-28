@@ -272,11 +272,34 @@ test("public raw control rejects safety settings, extra fields and malformed met
     { print: { command: "ams_filament_setting", sequence_id: "1", ams_id: 0, slot_id: 0, gcode: "M104 S300" } },
     { print: { command: "ams_filament_setting", sequence_id: "1", ams_id: 0, slot_id: 0, nozzle_temp_min: 400 } },
     { print: { command: "extrusion_cali_sel", sequence_id: "1", ams_id: 128, slot_id: 3 } },
+    { print: { command: "extrusion_cali_sel", sequence_id: "1", ams_id: 1, slot_id: 2, tray_id: 2, cali_idx: -1 } },
   ]) {
     const result = await s.client.callTool({ name: "x2d_native_control", arguments: { message_json: JSON.stringify(message) } });
     assert.equal(result.isError, true, JSON.stringify(message));
   }
   assert.deepEqual(await s.events(), []);
+});
+
+test("metadata preserves unit-local filament IDs and absolute calibration IDs across AMS units", async t => {
+  const s = await server(t);
+  for (const [ams_id, slot_id, absolute] of [[0, 1, 1], [1, 2, 6], [3, 3, 15], [128, 0, 128]]) {
+    for (const command of ["ams_filament_setting", "extrusion_cali_sel"]) {
+      const expected = command === "ams_filament_setting" ? slot_id : absolute;
+      for (const explicit of [false, true]) {
+        const result = await s.client.callTool({ name: "x2d_native_control", arguments: {
+          message_json: JSON.stringify({ print: { command, sequence_id: "metadata", ams_id, slot_id,
+            ...(explicit ? { tray_id: expected } : {}),
+            ...(command === "extrusion_cali_sel" ? { cali_idx: -1 } : {}),
+          } }),
+        } });
+        assert.notEqual(result.isError, true, JSON.stringify(result));
+        const call = (await s.events()).at(-1);
+        assert.equal(call.command.print.tray_id, expected);
+        assert.equal(call.command.print.ams_id, ams_id);
+        assert.equal(call.command.print.slot_id, slot_id);
+      }
+    }
+  }
 });
 
 test("elicited X2D heating uses native dispatch only after human preflight", async t => {
