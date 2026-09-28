@@ -928,7 +928,11 @@ The npm package and desktop bundle include `native/bambu-native-print.cpp` and `
 
 For X2D, `print_3mf` defaults to `connection_mode: "bambu_native"`; legacy `lan_mqtt_ftps` requests are redirected to it. Supply `ams_slots`, a complete project-level `ams_mapping`, or `auto_match_ams: true`. An external-spool job requires explicit `use_ams: false`. Raw `ams_mapping2` and nozzle/extra-option overrides are rejected before dispatch; the server derives both AMS representations from the checked structured mapping. Model/nozzle/material inspection, fresh printer-state checks, and human preflight apply before the helper receives a private snapshot. Native upload-only requests use the same all-plate inspection as FTPS uploads.
 
-The helper waits for connection/certificate exchange and retries only the initial `-4030` send once. Previous hardware testing reached `RUNNING` on X2D; this revision is validated with mocked transport regressions and clean installs, not a new physical print. `bambu_connect` is an optional macOS handoff for user review in Bambu Connect and does not start a print. Native task, heater, and error controls retain the common safety checks; raw controls cannot bypass them.
+The helper waits for connection/certificate exchange and retries only the initial `-4030` send once. Previous hardware testing reached `RUNNING` on X2D; this revision is validated with mocked transport regressions and clean installs, not a new physical print. `bambu_connect` is an optional macOS handoff for user review in Bambu Connect and does not start a print. Native task, heater, and error controls retain the common safety checks; raw controls cannot bypass them. Request cancellation, stop, and heater-off interrupt pending native helpers; the server waits for process exit before releasing a checked file. A command already sent to the printer cannot be recalled by cancelling the request, so verify printer state before retrying.
+
+#### x2d_native_control
+
+This optional X2D metadata tool accepts `ams_filament_setting` and `extrusion_cali_sel`, plus the read-only queries `extrusion_cali_get`, `extrusion_cali_get_result`, and `flowrate_get_result`. It validates command fields, numeric metadata, and AMS unit/slot selection. Motion, filament loading, heating, safety-setting changes, and task control are not exposed through raw JSON; use the dedicated checked tools where available. A metadata declaration does not verify the physical spool contents.
 
 #### print_3mf_bambu_network
 

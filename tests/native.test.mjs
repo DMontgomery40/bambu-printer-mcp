@@ -14,7 +14,7 @@ const printerModule = new URL("../dist/printers/bambu.js", import.meta.url).href
 
 // Exercise platform dispatch on every CI OS. Only the OS selector and transport
 // boundaries are mocked; file inspection, AMS validation and preflight are real.
-async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false } = {}) {
+async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-native-test-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const eventsFile = path.join(dir, "events.jsonl");
@@ -22,14 +22,22 @@ async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", g
   const file = path.join(dir, "cube.3mf");
   await fs.writeFile(eventsFile, "");
   await fs.writeFile(helper, `#!/usr/bin/env node
-import { appendFileSync, existsSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 const e = process.env;
-const event = { kind: 'helper', mode: process.argv[2], file: e.BAMBU_NATIVE_FILE,
+if (${ignoreTerm}) process.on('SIGTERM', () => {});
+const event = { kind: 'helper', pid: process.pid, mode: process.argv[2], file: e.BAMBU_NATIVE_FILE,
   exists: existsSync(e.BAMBU_NATIVE_FILE || ''), config: e.BAMBU_NATIVE_CONFIG_FILE,
   destination: e.BAMBU_NATIVE_DST_FILE, useAMS: e.BAMBU_NATIVE_USE_AMS,
   mapping: e.BAMBU_NATIVE_AMS_MAPPING, mapping2: e.BAMBU_NATIVE_AMS_MAPPING2,
   command: JSON.parse(e.BAMBU_NATIVE_COMMAND_JSON || '{}') };
+event.olderAlive = readFileSync(${JSON.stringify(eventsFile)}, 'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse)
+  .filter(old => old.mode === '--print' || old.command?.print?.temp > 0)
+  .filter(old => { try { process.kill(old.pid, 0); return true; } catch { return false; } }).map(old => old.pid);
 appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify(event) + '\\n');
+if (${helperDelay} && (['--print', '--upload'].includes(process.argv[2]) || event.command.print?.temp > 0)) {
+  await new Promise(resolve => setTimeout(resolve, ${helperDelay}));
+  appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({kind:'sent'}) + '\\n');
+}
 console.log('native_print result=0');
 `, { mode: 0o755 });
   const zip = new JSZip();
@@ -75,7 +83,7 @@ console.log('native_print result=0');
   return {
     client, file, dir, prompts,
     events: async () => (await fs.readFile(eventsFile, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse),
-    print: args => client.callTool({ name: "print_3mf", arguments: { three_mf_path: file, ...args } }),
+    print: (args, options) => client.callTool({ name: "print_3mf", arguments: { three_mf_path: file, ...args } }, undefined, options),
   };
 }
 
@@ -164,14 +172,110 @@ test("native upload inspects every plate and cannot upload an unsafe archive", a
 
 test("raw native controls cannot bypass checked heating, resume or error clearing", async t => {
   const s = await server(t);
-  for (const command of ["set_nozzle_temp", "set_bed_temp", "resume", "clean_print_error", "gcode_file"]) {
+  for (const command of ["set_nozzle_temp", "set_bed_temp", "resume", "clean_print_error", "gcode_file", "xyz_ctrl", "ams_change_filament", "select_extruder", "set_ctt", "idle_ignore", "ignore"]) {
     const result = await s.client.callTool({ name: "x2d_native_control", arguments: {
-      message_json: JSON.stringify({ print: { command, temp: 220, target_temp: 220 } }),
+      message_json: JSON.stringify({ print: { command, sequence_id: "test", temp: 220, target_temp: 220 } }),
     } });
     assert.equal(result.isError, true);
-    assert.match(result.content[0].text, /dedicated checked/);
+    // The low-level command validator may reject the shape first; either way
+    // none of these raw requests may reach a helper or printer.
   }
   assert.equal((await s.client.callTool({ name: "resume_print", arguments: {} })).isError, true);
+  assert.deepEqual(await s.events(), []);
+});
+
+async function until(predicate) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const value = await predicate();
+    if (value) return value;
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  assert.fail("Timed out waiting for native helper state");
+}
+
+function exited(pid) {
+  try { process.kill(pid, 0); return false; }
+  catch (error) { if (error.code === "ESRCH") return true; throw error; }
+}
+
+for (const name of ["cancel_print", "set_temperature"]) {
+  test(`${name} terminates a pending native print before its snapshot is released`, async t => {
+    const s = await server(t, { model: "", helperDelay: 3000, ignoreTerm: true });
+    const pending = s.print({ use_ams: false });
+    const call = await until(async () => (await s.events()).find(e => e.mode === "--print"));
+    await fs.access(call.file);
+    const result = await s.client.callTool({ name, arguments: name === "set_temperature"
+      ? { component: "bed", temperature: 0, bambu_model: "x2d" } : {} });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    const interrupted = await pending;
+    assert.equal(interrupted.isError, true);
+    assert.match(interrupted.content[0].text, /cancelled.*verify its state/i);
+    const emergency = (await s.events()).find(e => e.command?.print?.command === "stop" || e.command?.print?.temp === 0);
+    assert.deepEqual(emergency.olderAlive, [], "terminate pending helpers before sending stop/heater-off");
+    assert.equal(exited(call.pid), true, "do not return while a SIGTERM-resistant helper can still send a print");
+    await assert.rejects(fs.access(call.file), { code: "ENOENT" });
+    assert.equal((await s.events()).some(e => e.kind === "sent"), false);
+    assert.equal((await s.events()).some(e => e.kind === "mqtt"), false, "elicited X2D control must retain native routing");
+  });
+}
+
+for (const name of ["print_3mf", "upload_file"]) test(`MCP cancellation terminates a pending ${name} helper`, async t => {
+  const s = await server(t, { helperDelay: 3000, ignoreTerm: true });
+  const controller = new AbortController();
+  const pending = (name === "print_3mf" ? s.print({ use_ams: false }, { signal: controller.signal }) :
+    s.client.callTool({ name, arguments: { file_path: s.file, filename: "cube.3mf", connection_mode: "bambu_native" } }, undefined, { signal: controller.signal }))
+    .catch(error => error);
+  const call = await until(async () => (await s.events()).find(e => ["--print", "--upload"].includes(e.mode)));
+  controller.abort();
+  assert.ok(await pending instanceof Error);
+  await until(() => exited(call.pid));
+  await until(async () => { try { await fs.access(call.file); return false; } catch { return true; } });
+  assert.equal((await s.events()).some(e => e.kind === "sent"), false);
+});
+
+test("heater-off terminates pending native heating before a delayed temperature command", async t => {
+  const s = await server(t, { helperDelay: 3000, ignoreTerm: true });
+  const pending = s.client.callTool({ name: "set_temperature", arguments: { component: "bed", temperature: 50 } });
+  const call = await until(async () => (await s.events()).find(e => e.command?.print?.temp === 50));
+  const off = await s.client.callTool({ name: "set_temperature", arguments: { component: "bed", temperature: 0 } });
+  assert.notEqual(off.isError, true, JSON.stringify(off));
+  assert.equal((await pending).isError, true);
+  assert.deepEqual((await s.events()).find(e => e.command?.print?.temp === 0).olderAlive, []);
+  assert.equal(exited(call.pid), true);
+  assert.equal((await s.events()).some(e => e.kind === "sent"), false);
+});
+
+test("an overridden printer serial does not inherit the default X2D control transport", async t => {
+  const s = await server(t);
+  const result = await s.client.callTool({ name: "pause_print", arguments: { bambu_serial: "01POTHER" } });
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  assert.deepEqual((await s.events()).map(e => e.kind), ["mqtt"]);
+});
+
+test("server shutdown cannot leave a SIGTERM-resistant native print helper running", async t => {
+  const s = await server(t, { helperDelay: 3000, ignoreTerm: true });
+  const pending = s.print({ use_ams: false }).catch(error => error);
+  const call = await until(async () => (await s.events()).find(e => e.mode === "--print"));
+  await s.client.close();
+  await pending;
+  await until(() => exited(call.pid));
+  assert.equal((await s.events()).some(e => e.kind === "sent"), false);
+});
+
+test("public raw control rejects safety settings, extra fields and malformed metadata", async t => {
+  const s = await server(t);
+  for (const message of [
+    { system: { command: "set_door_stat", door_stat: 0 } },
+    { xcam: { command: "xcam_control_set", control: false } },
+    { print: { command: "print_option", nozzle_blob_detect: false } },
+    { print: { command: "ams_filament_setting", sequence_id: "1", ams_id: 0, slot_id: 0, gcode: "M104 S300" } },
+    { print: { command: "ams_filament_setting", sequence_id: "1", ams_id: 0, slot_id: 0, nozzle_temp_min: 400 } },
+    { print: { command: "extrusion_cali_sel", sequence_id: "1", ams_id: 128, slot_id: 3 } },
+  ]) {
+    const result = await s.client.callTool({ name: "x2d_native_control", arguments: { message_json: JSON.stringify(message) } });
+    assert.equal(result.isError, true, JSON.stringify(message));
+  }
   assert.deepEqual(await s.events(), []);
 });
 

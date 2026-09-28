@@ -29,6 +29,11 @@ export type BambuNativeControlOptions = {
     flag?: number;
 };
 export type BambuNativeUpdateCallback = (line: string) => void;
+export type BambuNativeExecution = {
+    signal?: AbortSignal;
+    /** Recheck the shared stop/heater-off generation while the helper runs. */
+    assertActive?: () => void;
+};
 export type BambuNativeFanCommand = {
     fan: "part" | "auxiliary" | "right_auxiliary" | "chamber";
     fanIndex: 1 | 2 | 3 | 10;
@@ -49,7 +54,9 @@ export declare function validateBambuNativeControlMessage(messageJson: string): 
     messageJson: string;
     command: string;
 };
-export declare function sendCommandWithBambuNative(options: BambuNativeControlOptions): Promise<Record<string, unknown>>;
+/** Public raw input is limited to metadata and read-only calibration queries. */
+export declare function validateBambuNativeMetadata(messageJson: string): string;
+export declare function sendCommandWithBambuNative(options: BambuNativeControlOptions, execution?: BambuNativeExecution): Promise<Record<string, unknown>>;
 export declare function probeBambuNative(host: string, token: string): Promise<Record<string, unknown>>;
-export declare function printWithBambuNative(options: BambuNativePrintOptions, onUpdate?: BambuNativeUpdateCallback): Promise<Record<string, unknown>>;
-export declare function uploadWithBambuNative(options: BambuNativePrintOptions, onUpdate?: BambuNativeUpdateCallback): Promise<Record<string, unknown>>;
+export declare function printWithBambuNative(options: BambuNativePrintOptions, onUpdate?: BambuNativeUpdateCallback, execution?: BambuNativeExecution): Promise<Record<string, unknown>>;
+export declare function uploadWithBambuNative(options: BambuNativePrintOptions, onUpdate?: BambuNativeUpdateCallback, execution?: BambuNativeExecution): Promise<Record<string, unknown>>;

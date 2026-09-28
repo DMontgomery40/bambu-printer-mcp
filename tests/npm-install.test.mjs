@@ -74,6 +74,9 @@ test("published tarball patches the resolved dependency in local, global, and np
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-npm-install-"));
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
   const packed = JSON.parse(npm(["pack", "--ignore-scripts", "--json", "--pack-destination", fixture], ROOT));
+  for (const file of packed[0].files) {
+    assert.doesNotMatch(file.path, /studio-control|launch-bambu|call-bambu|cgevent|LOCAL-X2D|local-x2d/, "machine-local adapters must not ship");
+  }
   const tarball = path.join(fixture, packed[0].filename);
   const local = path.join(fixture, "local");
   const global = path.join(fixture, "global");

@@ -920,7 +920,7 @@ export class BambuImplementation {
     }
   }
 
-  async resumeJob(host: string, serial: string, token: string, dispatch?: () => Promise<any>): Promise<any> {
+  async resumeJob(host: string, serial: string, token: string, dispatch?: (assertActive: () => void) => Promise<any>): Promise<any> {
     return withPrinterOperation(host, serial, async assertActive => {
       const checked = this.checkedJobs.get(`${host}\n${serial}`);
       if (!checked) throw new Error("Resume requires a job inspected and started by this server instance. Verify other jobs on the printer before resuming them there.");
@@ -932,13 +932,13 @@ export class BambuImplementation {
       if (!names.some(value => stem(value) === stem(checked.remotePath))) throw new Error("Paused job identity does not match this server's inspected artifact.");
       const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
       assertActive();
-      if (dispatch) await dispatch();
+      if (dispatch) await dispatch(assertActive);
       else await invokeWithoutAck(printer!, new UpdateStateCommand({ state: "resume" }));
       return { status: "success", message: "Resume command sent successfully." };
     });
   }
 
-  async clearHmsErrors(host: string, serial: string, token: string, dispatch?: () => Promise<any>): Promise<any> {
+  async clearHmsErrors(host: string, serial: string, token: string, dispatch?: (assertActive: () => void) => Promise<any>): Promise<any> {
     return withPrinterOperation(host, serial, async assertActive => {
       const codesFor = (status: any): string[] => {
         if (!Array.isArray(status.raw?.hms) || status.raw?.print_error === undefined) throw new Error("Fresh error codes are required before clearing hardware errors.");
@@ -950,7 +950,7 @@ export class BambuImplementation {
       if (JSON.stringify(current) !== JSON.stringify(codes)) throw new Error("Hardware errors changed during confirmation. Inspect the new report before retrying.");
       const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
       assertActive();
-      if (dispatch) await dispatch();
+      if (dispatch) await dispatch(assertActive);
       else await printer!.publish({ print: { command: "clean_print_error", sequence_id: "0" } });
       this.clearedErrors.set(serial, codes);
       await sleep(COMMAND_SETTLE_MS);
@@ -1057,7 +1057,7 @@ export class BambuImplementation {
     bambuModel?: string,
     material?: string,
     nozzleDiameter = 0.4,
-    dispatch?: (heater: "bed" | "nozzle", target: number) => Promise<any>
+    dispatch?: (heater: "bed" | "nozzle", target: number, assertActive: () => void) => Promise<any>
   ) {
     const normalizedComponent = component.toLowerCase();
     const heater = normalizedComponent === "bed" ? "bed" :
@@ -1091,7 +1091,7 @@ export class BambuImplementation {
       }
       const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
       assertActive();
-      if (dispatch) await dispatch(heater, targetTemperature);
+      if (dispatch) await dispatch(heater, targetTemperature, assertActive);
       else await invokeWithoutAck(printer!, new GCodeLineCommand({ gcodes: [gcode] }));
       return { status: "success", message: `Temperature command sent for ${normalizedComponent}.`, command: gcode };
     };
@@ -1292,7 +1292,7 @@ export class BambuImplementation {
   async uploadFile(
     host: string, serial: string, token: string, filePath: string,
     filename: string, print: boolean, bambuModel?: string,
-    upload?: (snapshot: string, destination: string) => Promise<void>
+    upload?: (snapshot: string, destination: string, assertActive: () => void) => Promise<void>
   ) {
     const remotePath = normalizedRemotePath(filename);
     if (!print) {
@@ -1334,7 +1334,7 @@ export class BambuImplementation {
         }
         assertActive();
         const destination = path.posix.join(path.posix.dirname(remotePath), uniquePrintName(remotePath));
-        if (upload) await upload(snapshot, destination);
+        if (upload) await upload(snapshot, destination, assertActive);
         else await this.ftpUpload(host, token, snapshot, `/${destination}`);
         return { status: "success", uploaded: true, remotePath: destination, printRequested: false, inspected: printable };
       }));

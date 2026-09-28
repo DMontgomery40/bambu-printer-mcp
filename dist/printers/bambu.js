@@ -806,7 +806,7 @@ export class BambuImplementation {
             const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
             assertActive();
             if (dispatch)
-                await dispatch();
+                await dispatch(assertActive);
             else
                 await invokeWithoutAck(printer, new UpdateStateCommand({ state: "resume" }));
             return { status: "success", message: "Resume command sent successfully." };
@@ -827,7 +827,7 @@ export class BambuImplementation {
             const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
             assertActive();
             if (dispatch)
-                await dispatch();
+                await dispatch(assertActive);
             else
                 await printer.publish({ print: { command: "clean_print_error", sequence_id: "0" } });
             this.clearedErrors.set(serial, codes);
@@ -942,7 +942,7 @@ export class BambuImplementation {
             const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
             assertActive();
             if (dispatch)
-                await dispatch(heater, targetTemperature);
+                await dispatch(heater, targetTemperature, assertActive);
             else
                 await invokeWithoutAck(printer, new GCodeLineCommand({ gcodes: [gcode] }));
             return { status: "success", message: `Temperature command sent for ${normalizedComponent}.`, command: gcode };
@@ -1130,7 +1130,7 @@ export class BambuImplementation {
                 assertActive();
                 const destination = path.posix.join(path.posix.dirname(remotePath), uniquePrintName(remotePath));
                 if (upload)
-                    await upload(snapshot, destination);
+                    await upload(snapshot, destination, assertActive);
                 else
                     await this.ftpUpload(host, token, snapshot, `/${destination}`);
                 return { status: "success", uploaded: true, remotePath: destination, printRequested: false, inspected: printable };

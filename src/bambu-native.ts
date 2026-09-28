@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,6 +42,12 @@ type NativeHelperResult = {
 };
 
 export type BambuNativeUpdateCallback = (line: string) => void;
+
+export type BambuNativeExecution = {
+  signal?: AbortSignal;
+  /** Recheck the shared stop/heater-off generation while the helper runs. */
+  assertActive?: () => void;
+};
 
 export type BambuNativeFanCommand = {
   fan: "part" | "auxiliary" | "right_auxiliary" | "chamber";
@@ -97,12 +103,37 @@ function tail(value: string, maxLength = 4000): string {
   return value.length > maxLength ? value.slice(-maxLength) : value;
 }
 
+type ActiveHelper = { serial: string; interrupt: () => void; closed: Promise<void>; emergency: boolean };
+const activeHelpers = new Map<ChildProcess, ActiveHelper>();
+process.once("exit", () => {
+  // Server shutdown can exit before the asynchronous SIGTERM grace expires.
+  for (const child of activeHelpers.keys()) child.kill("SIGKILL");
+});
+
+function isEmergencyCommand(messageJson: string): boolean {
+  const command = JSON.parse(messageJson).print;
+  return command?.command === "stop" ||
+    (command?.command === "set_bed_temp" && command.temp === 0) ||
+    (command?.command === "set_nozzle_temp" && command.target_temp === 0);
+}
+
+async function interruptNativeOperations(serial: string): Promise<void> {
+  const pending = [...activeHelpers.values()].filter(helper => helper.serial === serial && !helper.emergency);
+  for (const helper of pending) helper.interrupt();
+  // Send stop/heater-off only after an older helper can no longer send a
+  // delayed print/heating command after that emergency control.
+  await Promise.all(pending.map(helper => helper.closed));
+}
+
 function runNativeHelper(
   mode: "--probe" | "--print" | "--upload" | "--command",
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
-  onUpdate?: BambuNativeUpdateCallback
+  onUpdate?: BambuNativeUpdateCallback,
+  execution: BambuNativeExecution = {}
 ): Promise<NativeHelperResult> {
+  execution.signal?.throwIfAborted();
+  execution.assertActive?.();
   assertBambuNativeAvailable();
   const helper = resolveNativeHelper();
   return new Promise((resolve, reject) => {
@@ -110,16 +141,47 @@ function runNativeHelper(
       env,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    let markClosed!: () => void;
+    const closed = new Promise<void>(resolve => { markClosed = resolve; });
     const updates: string[] = [];
     let stdout = "";
     let stderr = "";
     let settled = false;
-    const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
+    let failure: Error | undefined;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    const stop = (error: Error) => {
+      if (settled || failure) return;
+      failure = error;
       child.kill("SIGTERM");
-      reject(new Error(`Bambu native helper timed out after ${timeoutMs} ms.`));
-    }, timeoutMs);
+      // Do not release the checked snapshot or operation lock until the process
+      // has actually exited, even if the plug-in ignores SIGTERM.
+      killTimer = setTimeout(() => { child.kill("SIGKILL"); }, 1000);
+    };
+    const interrupted = (reason: string) => new Error(
+      `${reason} The native command may already have reached the printer; verify its state before retrying.`
+    );
+    const onAbort = () => stop(interrupted("Native request cancelled."));
+    const timer = setTimeout(() => stop(interrupted(`Bambu native helper timed out after ${timeoutMs} ms.`)), timeoutMs);
+    const guard = execution.assertActive ? setInterval(() => {
+      try { execution.assertActive!(); }
+      catch (error) { stop(interrupted(error instanceof Error ? error.message : String(error))); }
+    }, 25) : undefined;
+    const cleanup = () => {
+      activeHelpers.delete(child);
+      markClosed();
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      if (guard) clearInterval(guard);
+      execution.signal?.removeEventListener("abort", onAbort);
+    };
+    activeHelpers.set(child, {
+      serial: env.BAMBU_NATIVE_SERIAL || "",
+      emergency: mode === "--command" && isEmergencyCommand(env.BAMBU_NATIVE_COMMAND_JSON || "{}"),
+      closed,
+      interrupt: () => stop(interrupted("Native operation cancelled by stop or heater-off.")),
+    });
+    execution.signal?.addEventListener("abort", onAbort, { once: true });
+    if (execution.signal?.aborted) onAbort();
 
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
@@ -137,15 +199,14 @@ function runNativeHelper(
       stderr = tail(stderr + chunk.toString("utf8"));
     });
     child.on("error", (error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      reject(error);
+      // Node emits close after a spawn failure too. Keep one exit/cleanup path.
+      failure ??= error;
     });
     child.on("close", (code, signal) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      cleanup();
+      if (failure) { reject(failure); return; }
       const trailing = stdout.trim();
       if (trailing) {
         updates.push(trailing);
@@ -398,8 +459,47 @@ export function validateBambuNativeControlMessage(messageJson: string): {
   throw new Error(`X2D native control command is not allowed: ${command || "<missing>"}.`);
 }
 
-export async function sendCommandWithBambuNative(options: BambuNativeControlOptions): Promise<Record<string, unknown>> {
+/** Public raw input is limited to metadata and read-only calibration queries. */
+export function validateBambuNativeMetadata(messageJson: string): string {
+  const validated = validateBambuNativeControlMessage(messageJson);
+  const parsed = JSON.parse(validated.messageJson);
+  const value = parsed.print;
+  const fields: Record<string, string[]> = {
+    ams_filament_setting: ["ams_id", "slot_id", "tray_id", "tray_info_idx", "setting_id", "tray_color", "nozzle_temp_min", "nozzle_temp_max", "tray_type"],
+    extrusion_cali_sel: ["ams_id", "slot_id", "tray_id", "cali_idx", "filament_id", "nozzle_diameter"],
+    extrusion_cali_get: ["filament_id", "nozzle_diameter"],
+    extrusion_cali_get_result: ["filament_id", "nozzle_diameter"],
+    flowrate_get_result: ["filament_id", "nozzle_diameter"],
+  };
+  const allowed = value && fields[value.command];
+  if (!allowed) throw new Error("Use a dedicated checked tool: raw native control only permits AMS metadata and read-only calibration queries.");
+  if (Object.keys(value).some(key => !["command", "sequence_id", ...allowed].includes(key))) {
+    throw new Error("Raw native metadata contains unsupported fields.");
+  }
+  if (typeof value.sequence_id !== "string" || !value.sequence_id.length) throw new Error("Metadata sequence_id is required.");
+  for (const key of ["ams_id", "slot_id", "tray_id", "cali_idx", "nozzle_temp_min", "nozzle_temp_max"]) {
+    if (value[key] === undefined) continue;
+    const number = value[key];
+    if (!Number.isInteger(number) || number < (key === "cali_idx" ? -1 : 0) ||
+        (key === "ams_id" && ![0, 1, 2, 3, 128].includes(number)) ||
+        (["slot_id", "tray_id"].includes(key) && number > 3) ||
+        (key.startsWith("nozzle_temp_") && number > 300)) throw new Error(`Invalid metadata ${key}.`);
+  }
+  if (value.nozzle_temp_min > value.nozzle_temp_max) throw new Error("Metadata temperature range is reversed.");
+  for (const key of ["tray_info_idx", "setting_id", "tray_color", "tray_type", "filament_id", "nozzle_diameter"]) {
+    if (value[key] !== undefined && (typeof value[key] !== "string" || value[key].length > 256)) throw new Error(`Invalid metadata ${key}.`);
+  }
+  if (["ams_filament_setting", "extrusion_cali_sel"].includes(value.command) &&
+      (value.ams_id === undefined || value.slot_id === undefined || (value.ams_id === 128 && value.slot_id !== 0))) {
+    throw new Error("Metadata requires a valid AMS unit and slot (AMS-HT has only slot 0).");
+  }
+  return validated.messageJson;
+}
+
+export async function sendCommandWithBambuNative(options: BambuNativeControlOptions, execution?: BambuNativeExecution): Promise<Record<string, unknown>> {
   const validated = validateBambuNativeControlMessage(options.messageJson);
+  execution?.signal?.throwIfAborted();
+  if (isEmergencyCommand(validated.messageJson)) await interruptNativeOperations(options.serial);
   const qos = options.qos === undefined ? 0 : Math.trunc(options.qos);
   const flag = options.flag === undefined ? 0 : Math.trunc(options.flag);
   if (!Number.isFinite(qos) || !Number.isFinite(flag) || qos < 0 || qos > 1 || flag < 0 || flag > 1) {
@@ -418,7 +518,9 @@ export async function sendCommandWithBambuNative(options: BambuNativeControlOpti
       BAMBU_NATIVE_COMMAND_QOS: String(qos),
       BAMBU_NATIVE_COMMAND_FLAG: String(flag),
     },
-    30_000
+    30_000,
+    undefined,
+    execution
   );
   if (result.resultCode !== 0) {
     const detail = [
@@ -455,7 +557,8 @@ export async function probeBambuNative(host: string, token: string): Promise<Rec
 
 export async function printWithBambuNative(
   options: BambuNativePrintOptions,
-  onUpdate?: BambuNativeUpdateCallback
+  onUpdate?: BambuNativeUpdateCallback,
+  execution?: BambuNativeExecution
 ): Promise<Record<string, unknown>> {
   const result = await runNativeHelper(
     "--print",
@@ -486,7 +589,8 @@ export async function printWithBambuNative(
       BAMBU_NATIVE_TIMELAPSE: boolEnv(options.timelapse, false),
     },
     300_000,
-    onUpdate
+    onUpdate,
+    execution
   );
   if (result.resultCode !== 0) {
     const detail = [
@@ -506,7 +610,8 @@ export async function printWithBambuNative(
 
 export async function uploadWithBambuNative(
   options: BambuNativePrintOptions,
-  onUpdate?: BambuNativeUpdateCallback
+  onUpdate?: BambuNativeUpdateCallback,
+  execution?: BambuNativeExecution
 ): Promise<Record<string, unknown>> {
   const result = await runNativeHelper(
     "--upload",
@@ -537,7 +642,8 @@ export async function uploadWithBambuNative(
       BAMBU_NATIVE_TIMELAPSE: boolEnv(options.timelapse, false),
     },
     300_000,
-    onUpdate
+    onUpdate,
+    execution
   );
   if (result.resultCode !== 0) {
     const detail = [

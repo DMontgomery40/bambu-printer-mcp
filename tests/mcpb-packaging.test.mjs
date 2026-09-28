@@ -37,6 +37,7 @@ test("MCPB archive preserves runtime and licenses without local secrets or pruni
     assert.ok(archive.file(name), `missing release file: ${name}`);
   }
   for (const name of Object.keys(archive.files)) {
+    assert.doesNotMatch(name, /studio-control|launch-bambu|call-bambu|cgevent|LOCAL-X2D|local-x2d/);
     assert.doesNotMatch(name, /^(?:bambu certs\/|bambu-mcp-config\.json|temp\/|native\/(?!bambu-native-print\.cpp$)|\.env|unrelated\.txt|node_modules\/typescript\/)/);
   }
   assert.equal(fs.readFileSync(path.join(fixture, "node_modules/typescript/developer-marker"), "utf8"), "PRIVATE_PACKAGING_SENTINEL");
