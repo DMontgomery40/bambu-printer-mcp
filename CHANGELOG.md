@@ -16,6 +16,7 @@
 - Include only native source and build scripts in npm and desktop distributions; locate the optional compiled helper relative to the installed package and test fresh local, global, and npm-exec installations. Keep proprietary plug-ins and local binaries out of release archives.
 - Resolve include-based installed templates and substitute current filament/hotend macro names in optional syntax regressions; do not assume a particular installed G383 variant.
 - Retain VailElla's prior X2D eMMC/certificate investigation and hardware evidence. This follow-up uses mocked printer regressions and clean-install/build checks; it does not claim a new physical print.
+- Include the printer host in FTPS TLS options so data connections resume the control session. basic-ftp wraps each data socket without a host, so Node can bind its resumable session to `localhost` instead of the printer host and printers requiring TLS session reuse replied `522 SSL connection failed: session reuse required` to every LIST, STOR and RETR. The contributor verifies successful upload, size check, and deletion on physical X2D USB storage; internal eMMC still refuses FTPS writes with `553`. Printing remains a separate check. `list_printer_files` still uses bambu-js's own FTP client and is not covered by this change.
 
 ## [1.1.13] – 2026-09-27
 
