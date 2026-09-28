@@ -3420,7 +3420,7 @@ class BambuPrinterMCPServer {
               heaterModel || undefined,
               args?.material !== undefined ? String(args.material) : undefined,
               Number(args?.nozzle_diameter ?? DEFAULT_NOZZLE_DIAMETER),
-              heaterModel === "x2d" && process.platform === "darwin"
+              (args.temperature === 0 ? nativeControls : heaterModel === "x2d" && process.platform === "darwin")
                 ? (heater, target, assertActive) => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
                     messageJson: buildBambuNativeTemperatureCommand(heater, target).messageJson }, { signal: extra.signal, assertActive })
                 : undefined

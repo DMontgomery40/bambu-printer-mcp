@@ -234,8 +234,8 @@ for (const name of ["print_3mf", "upload_file"]) test(`MCP cancellation terminat
   assert.equal((await s.events()).some(e => e.kind === "sent"), false);
 });
 
-test("heater-off terminates pending native heating before a delayed temperature command", async t => {
-  const s = await server(t, { helperDelay: 3000, ignoreTerm: true });
+for (const model of ["x2d", ""]) test(`heater-off terminates pending native heating with ${model || "elicited model"}`, async t => {
+  const s = await server(t, { model, helperDelay: 3000, ignoreTerm: true });
   const pending = s.client.callTool({ name: "set_temperature", arguments: { component: "bed", temperature: 50 } });
   const call = await until(async () => (await s.events()).find(e => e.command?.print?.temp === 50));
   const off = await s.client.callTool({ name: "set_temperature", arguments: { component: "bed", temperature: 0 } });
@@ -246,9 +246,10 @@ test("heater-off terminates pending native heating before a delayed temperature 
   assert.equal((await s.events()).some(e => e.kind === "sent"), false);
 });
 
-test("an overridden printer serial does not inherit the default X2D control transport", async t => {
+for (const name of ["pause_print", "set_temperature"]) test(`${name} with an overridden serial does not inherit the default X2D transport`, async t => {
   const s = await server(t);
-  const result = await s.client.callTool({ name: "pause_print", arguments: { bambu_serial: "01POTHER" } });
+  const result = await s.client.callTool({ name, arguments: { bambu_serial: "01POTHER",
+    ...(name === "set_temperature" ? { component: "bed", temperature: 0 } : {}) } });
   assert.notEqual(result.isError, true, JSON.stringify(result));
   assert.deepEqual((await s.events()).map(e => e.kind), ["mqtt"]);
 });

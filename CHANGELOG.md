@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- Keep heater-off on the selected printer transport after model elicitation, including an overridden non-X2D serial.
 - Interrupt pending native helpers on MCP cancellation, stop, and heater-off; wait for process exit before releasing snapshots, with bounded SIGKILL escalation when SIGTERM is ignored.
 - Route X2D controls from the selected serial when the print model was elicited, without applying the configured X2D transport to an overridden printer.
 - Restrict public raw native controls to validated AMS metadata and calibration queries/selection; exclude motion, loading, heating, and safety-setting mutations.

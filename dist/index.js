@@ -2809,7 +2809,7 @@ class BambuPrinterMCPServer {
                         const heaterModel = args.temperature === 0
                             ? String(args.bambu_model || DEFAULT_BAMBU_MODEL).trim().toLowerCase()
                             : await this.resolveBambuModel(args.bambu_model);
-                        result = await this.bambu.setTemperature(host, bambuSerial, bambuToken, String(args.component), args.temperature, heaterModel || undefined, args?.material !== undefined ? String(args.material) : undefined, Number(args?.nozzle_diameter ?? DEFAULT_NOZZLE_DIAMETER), heaterModel === "x2d" && process.platform === "darwin"
+                        result = await this.bambu.setTemperature(host, bambuSerial, bambuToken, String(args.component), args.temperature, heaterModel || undefined, args?.material !== undefined ? String(args.material) : undefined, Number(args?.nozzle_diameter ?? DEFAULT_NOZZLE_DIAMETER), (args.temperature === 0 ? nativeControls : heaterModel === "x2d" && process.platform === "darwin")
                             ? (heater, target, assertActive) => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
                                 messageJson: buildBambuNativeTemperatureCommand(heater, target).messageJson }, { signal: extra.signal, assertActive })
                             : undefined);
