@@ -36,6 +36,7 @@ export interface BambuSliceOptions {
     skipObjects?: string;
     loadFilaments?: string;
     loadFilamentIds?: string;
+    filamentColours?: string[];
     bedType?: string;
     enableTimelapse?: boolean;
     allowMixTemp?: boolean;
@@ -63,25 +64,11 @@ export declare class STLManipulator extends EventEmitter {
     private sanitizeProcessForOrca;
     private writeTempJson;
     private resolveBambuLikeSettingsBundle;
-    /**
-     * Optionally rewrite a Bambu-like settings bundle so the paths point at
-     * fully-flattened temp configs instead of the BBL-shipped leaf JSONs.
-     *
-     * BambuStudio's CLI does not resolve the `inherits` chain when loading
-     * profiles via --load-settings / --load-filaments, which causes a
-     * cluster of upstream bugs (see https://github.com/bambulab/BambuStudio/issues/9636
-     * and #9968). Our flattener (src/slicer/profile-flatten.ts) reproduces
-     * what the GUI does at slice time so the CLI accepts the configs.
-     *
-     * Opt-in via `BAMBU_CLI_FLATTEN=true`. When the env var is unset or
-     * not "true"/"1", returns the bundle unchanged so behavior is
-     * backward-compatible. When enabled, only BBL-shipped leaves get
-     * flattened; user-provided custom configs pass through untouched.
-     */
+    /** Resolve BBL dependencies before invoking the CLI; failures stop the slice. */
     private maybeFlattenBundle;
+    /** --load-filaments is positional; a single override must cover every project slot. */
+    private expandProjectFilaments;
     private resolveBambuStudioBedType;
-    /** Read a profile JSON's top-level `name` field, or null if unreadable. */
-    private readLeafName;
     /**
      * Load STL file and return geometry and bounding box
      */

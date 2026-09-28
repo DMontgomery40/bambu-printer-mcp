@@ -1,0 +1,56 @@
+# Defense for manual mcpb pack calls. npm run package:mcpb instead packs an
+# explicit runtime/source/license allowlist in an isolated staging directory.
+
+# Source control / CI
+.git/
+.github/
+.gitignore
+
+# Reference / doc-only material not needed at runtime
+docs/
+site/
+CHANGELOG.md
+AGENTS.md
+CLAUDE.md
+PROGRESS.md
+REMOTE-DEPLOYMENT.md
+SPEC-CHECKLIST.md
+
+# Agent / IDE configs
+.claude/
+.vscode/
+.idea/
+.cursor/
+
+# Keep TypeScript sources and all root/dependency licenses in the distribution.
+tsconfig.json
+*.tsbuildinfo
+
+# Tests
+test/
+tests/
+
+# Env / local secrets
+.env
+.env.local
+.env.example
+bambu certs/
+bambu-mcp-config.json
+*.pem
+*.key
+*.p12
+*.pfx
+temp/
+
+# Caches / build junk
+node_modules/.cache/
+coverage/
+scripts/
+*.log
+npm-debug.log
+
+# OS junk
+.DS_Store
+
+# Packed bundle itself
+*.mcpb

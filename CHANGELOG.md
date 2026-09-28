@@ -2,7 +2,98 @@
 
 ## Unreleased
 
+### Fixed
+- Resolve the model before selecting the X2D native route, including MCP model elicitation, and pass that resolved model through dispatch.
+- Reject raw `ams_mapping2` overrides and missing/empty requested AMS mappings before dispatch; derive native mappings from checked structured tray assignments without silently selecting an external spool.
+- Cover macOS and Linux control routing explicitly, and restrict native helper execution tests to supported hosts.
+- Integrate X2D native prints, uploads, heaters, resume, and error clearing with the current shared file/state/confirmation checks. Preserve existing model routes and reject raw-control bypasses.
+- Include only native source and build scripts in npm and desktop distributions; locate the optional compiled helper relative to the installed package and test fresh local, global, and npm-exec installations. Keep proprietary plug-ins and local binaries out of release archives.
+- Resolve include-based installed templates and substitute current filament/hotend macro names in optional syntax regressions; do not assume a particular installed G383 variant.
+- Retain VailElla's prior X2D eMMC/certificate investigation and hardware evidence. This follow-up uses mocked printer regressions and clean-install/build checks; it does not claim a new physical print.
+
+## [1.1.13] – 2026-09-27
+
+### Added
+- Add shared print safety checks for declared model, nozzle, material, selected plate, and every supported heating command in the final printable file.
+- Require fresh MQTT identity, nozzle configuration, ready state, and error checks before upload and dispatch; compare declared material with available mapped-spool reports.
+- Preserve complete mixed dual-nozzle diameter metadata and accept explicit per-nozzle diameter requirements for pre-sliced direct and bridge jobs.
+- Preserve the selected plate's used filament slots during all-nozzle warmup checks; temperature candidates do not create extra AMS mapping requirements.
+- Apply independent printer/component and material temperature ceilings, reject nonfinite values before connecting, and require declared material for manual nozzle heating. Keep heater-off commands available.
+- Inspect private file snapshots and use unique remote print names. Download and inspect remote G-code before starting a verified copy.
+- Check the currently loaded material for manual heating and G-code-file dispatch, bind resume to an inspected paused job, and let stop/heater-off requests cancel pending operations before dispatch.
+- Reject G-code-file starts and resumes when fresh telemetry explicitly reports an unloaded nozzle; preserve declared-material manual heating for loading filament.
+- Register successful inspected BambuNetwork jobs for the same verified resume path, using unique submitted task identities.
+- Reject ambiguous ZIP entries and bind the dispatched plate and checksum to inspected bytes; bound archive inspection and check every printable plate on upload-only requests, refusing noncanonical plate names and unrecognized G-code entries.
+- Preserve existing remote files with unique upload names and destination collision checks; verify uploaded job model/nozzles against fresh printer reports.
+- Add human print/heating preflight through MCP elicitation, mandatory finished-bed clearance, and confirmed hardware-error clearing with acknowledgment on the next print.
+- Preserve cleared-error acknowledgment across failed print attempts until a checked dispatch succeeds. Release rejected bridge snapshots immediately and retain only files handed to an asynchronous upload.
+- Validate H2D probing, wipe, and tool-change thermal commands and normalize GUI nozzle-variant tables. Apply a 260°C normal PLA ceiling with one narrowly bounded X1E startup-purge sequence; refuse explicit non-FFF jobs and recognized laser-enabling commands.
+- Apply the checks to the optional BambuNetwork print wrapper and restrict raw bridge calls to named read-only probes. Require LAN telemetry even when the bridge submits through a cloud session.
+- Require a single external-spool plate for legacy `.gcode.3mf` dispatch; use a `.3mf` project export when verified AMS mappings or plate selection are needed.
+- Credit Boardy (@boardyai) for raising the nozzle-verification question and David Montgomery for the temperature and hardware-safety reports. Validation uses mocked printer boundaries; physical printer acceptance remains a separate check.
+## [1.1.12] – 2026-09-27
+
+### Documentation
+- Publish a searchable documentation site on GitHub Pages at https://dmontgomery40.github.io/bambu-printer-mcp/. Pages are generated from the README, setup, slicing, and FULU guides, changelog, and contributor credits at build time, so the repository Markdown remains the single source.
+- Keep README deep links working on the site with GitHub-compatible heading anchors. The site build fails on broken links, unknown anchors, or README content that no page publishes; pull requests build it without deploying.
+- Add a large-image social card and per-page link-preview titles, descriptions, and canonical URLs for the site.
+- Replace the outdated example commands with outcome-first requests: adapting a MakerWorld model, printing from a photo, and checking on a print by messaging an always-on agent from anywhere. Clarify which abilities come from the agent and which from this server.
+
+## [1.1.11] – 2026-09-27
+
+### Fixed
+- Require the exact model/nozzle machine preset for FULU and Orca CLI slicing, including aliases and automatic slicing before printing. Reject missing or malformed presets before launching the slicer; process overrides cannot bypass the gate.
+- Resolve FULU/Orca BBL inheritance and include templates, validate model CLI configuration, and preserve custom process settings and complete filament-slot mappings through the same preparation path as BambuStudio.
+- Resolve inherited machine defaults before selecting process and filament profiles, including FULU's P1S family defaults.
+- Preserve configured user directories for custom process/filament dependencies while keeping machine inheritance confined to the selected installation.
+- Discover matching Orca/FULU profile trees beside the active executable and prevent fallback to another installation's bundled presets. Keep Orca extrusion normalization after inheritance resolution.
+- Update agent setup guidance for the shared safety gate. Regression checks cover preparation and side-effect prevention; live FULU/Orca slicing and physical printing remain separate validation.
+
+## [1.1.10] – 2026-09-27
+
+### Documentation
+- Restore prominent thanks to FULU Foundation, Louis Rossmann, and the OrcaSlicer-bambulab community, including the project's commitment to open-source software and cloud-free local printing.
+- Add a dedicated FULU setup guide covering slicer/export and CLI use, Linux/WSL/macOS bridge configuration, cloud authentication, shared paths, probes, and validation limits.
+- Replace manual README onboarding with one copy-and-paste agent setup request; move installation, environment variables, and LAN instructions into a linked setup reference. Treat code mode as optional.
+- Document the existing FULU/Orca CLI missing-machine-preset safety limitation and direct users and setup agents to GUI-exported sliced projects until an equivalent validation gate ships.
+- Make the README's major reference sections collapsible while keeping the FULU acknowledgment and agent setup request visible.
+- Reorganize README navigation and correct stale client configuration, LAN/account requirements, firmware routing, AMS mapping, and bridge capability descriptions.
+
+## [1.1.9] – 2026-09-27
+
+### Added
+- Recognize X2D (`N6`, serial prefix `20P`) for status, camera routing, and slicing with its own installed BambuStudio preset. Direct X2D printing remains deferred pending the native eMMC transport and stops before printer side effects. Contribution and hardware/status/slicing evidence: [#18](https://github.com/DMontgomery40/bambu-printer-mcp/pull/18), by Sebastian (@sebas1986).
+
+### Fixed
+- Give every CLI filament slot its own colour to address the multi-filament access violation reproduced by the contributor on Windows BambuStudio 02.08.02.60. Preserve explicit colours, input-project colours, and custom profile settings.
+- Place an unset prime tower within the area shared by all nozzles, while retaining saved project positions and explicit process overrides.
+- Apply required colour and tower overlays to standalone custom profiles without replacing unrelated settings.
+- Correct the desktop-release workflow's Node setup cache option so extension packaging can run automatically.
+
+## [1.1.8] – 2026-09-27
+
+### Changed
+- Consolidate shared agent rules for local and GitHub review, retain public documentation, and keep scratch plans, progress logs, and handoff notes out of Git.
+
+### Added
+- Connect to standard Blender MCP servers with tool discovery, schema-checked calls, timeouts/cancellation, and verified STL import/edit/export. Keep the custom-executable bridge available with explicit verification status.
+- Package a Claude Desktop extension with prompted printer settings, safe staging, and synchronized release versions ([#11](https://github.com/DMontgomery40/bambu-printer-mcp/pull/11)).
+
+### Fixed
+- Validate large Blender STL meshes without boxing coordinate arrays, keeping finite-geometry checks within a bounded JavaScript heap.
+- Preserve the selected bundled process preset identity through generated settings, and remove automatically created temporary roots on shutdown while retaining explicitly configured TEMP_DIR contents.
+- Stop before printer uploads when automatic slicing or required profile preparation fails, preserving the original diagnostic. Validate model CLI configuration before flattening and advertise the required output path for standard Blender MCP edits.
+- Apply the required printer dependency patch to the resolved installed package, including hoisted npm installations, and fail installation if it cannot be applied.
+- Resolve CLI profile dependencies automatically and stop before slicing on incomplete profiles. Preserve custom overrides and filament-slot order, replace every declared 3MF slot for a single-profile override, discover platform-specific profile trees, and isolate concurrent config files.
+- Point installation examples at `bambu-printer-mcp` and report the installed npm version in the MCP handshake.
+- Create a private temporary directory per server instance, so desktop-extension startup does not depend on a writable working directory and concurrent printers cannot overwrite each other's default outputs.
+- Resolve Bambu profile include templates so CLI slicing retains machine-specific G-code ([#16](https://github.com/DMontgomery40/bambu-printer-mcp/pull/16), reported in [#12](https://github.com/DMontgomery40/bambu-printer-mcp/issues/12)).
+- Use the P2S project-file payload with its cache upload path while retaining legacy P1/X1 routes ([#15](https://github.com/DMontgomery40/bambu-printer-mcp/pull/15)).
+- Start full-size A1 pre-sliced projects from the SD root via `project_file`, preserving other models' routes and all project filament mapping positions ([#14](https://github.com/DMontgomery40/bambu-printer-mcp/pull/14)).
+- Keep H2C/H2D/H2S status connections alive when delayed OTA version messages arrive; recognize H2 serial prefixes, preserve unknown model identities, and accept unexpected status transitions without terminating the MQTT listener ([#7](https://github.com/DMontgomery40/bambu-printer-mcp/issues/7)).
+
 ### Security
+- Refresh compatible transitive dependencies to resolve the nine npm audit findings in the previous lockfile; retain the pinned printer dependency patch.
 - Per-call `slicer_path`, `ffmpeg_path`, and `bridge_command` executable selectors are now rejected by default. Trusted server-side environment configuration remains available, including `FFMPEG_PATH` for RTSP camera snapshots; set `MCP_ALLOW_EXECUTABLE_ARG=1` only when intentional per-call overrides are required. `MCP_ALLOW_BRIDGE_COMMAND_ARG` remains a compatibility alias for `bridge_command` only.
 
 ### Added
@@ -47,7 +138,7 @@
 - **delete_printer_file** — destructive FTPS DELETE with `confirm:true` gate, allowlist on `cache/`, `timelapse/`, `logs/`, and explicit rejection of `..` segments.
 - **camera_snapshot** — capture a single JPEG from the printer's chamber camera. Two transports wired in:
   - **TCP-on-6000** (per OpenBambuAPI `video.md`) for **A1, A1 mini, P1S, P1P**.
-  - **RTSPS via ffmpeg** (`rtsps://bblp:<token>@<host>:322/streaming/live/1`) for **X1, X1 Carbon, X1E, P2S** and **H2, H2S, H2D, H2C, H2D Pro**. Verified live against Parker (H2S), Kingpin (H2D), and an X1C — all return real chamber JPEGs in ~1.5s. The H2 series wasn't documented upstream; root cause and fix recorded in `PROGRESS.md` ("H2 camera RESOLVED via RTSP").
+  - **RTSPS via ffmpeg** (`rtsps://bblp:<token>@<host>:322/streaming/live/1`) for **X1, X1 Carbon, X1E, P2S** and **H2, H2S, H2D, H2C, H2D Pro**. Verified live against Parker (H2S), Kingpin (H2D), and an X1C — all return real chamber JPEGs in ~1.5s. The H2 series was not documented upstream; local investigation established the RTSP path.
   - Response includes a `transport` field so callers can tell which path produced the frame.
   - `experimental` flag from interim work is now a no-op (kept on the schema for compatibility).
   - Requires `ffmpeg` in `PATH` for the RTSP path; `ffmpeg_path` argument allows override.
@@ -61,7 +152,12 @@
 
 Initial public release with core print, upload, slice, and status tooling.
 
-[1.1.3]: https://github.com/rowbotik/bambu-printer-mcp/compare/v1.1.2...v1.1.3
-[1.1.1]: https://github.com/rowbotik/bambu-printer-mcp/compare/v1.1.0...v1.1.1
-[1.1.0]: https://github.com/rowbotik/bambu-printer-mcp/compare/v1.0.5...v1.1.0
-[1.0.5]: https://github.com/rowbotik/bambu-printer-mcp/releases/tag/v1.0.5
+[1.1.3]: https://github.com/DMontgomery40/bambu-printer-mcp/commit/d9742202bd931bf8ca39a348713efa6ef05f784c
+[1.1.1]: https://github.com/DMontgomery40/bambu-printer-mcp/tree/v1.1.1
+[1.1.0]: https://github.com/DMontgomery40/bambu-printer-mcp/commit/29b8ec4565ec4dd0858e14441b4fe1cd1d4d45a0
+[1.0.5]: https://github.com/DMontgomery40/bambu-printer-mcp/tree/v1.0.5
+
+[1.1.9]: https://github.com/DMontgomery40/bambu-printer-mcp/releases/tag/v1.1.9
+[1.1.8]: https://github.com/DMontgomery40/bambu-printer-mcp/releases/tag/v1.1.8
+[1.1.10]: https://github.com/DMontgomery40/bambu-printer-mcp/releases/tag/v1.1.10
+[1.1.12]: https://github.com/DMontgomery40/bambu-printer-mcp/releases/tag/v1.1.12

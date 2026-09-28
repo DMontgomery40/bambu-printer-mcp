@@ -3,6 +3,7 @@ export type BambuNativePrintOptions = {
     serial: string;
     token: string;
     filePath: string;
+    remoteName?: string;
     projectName: string;
     presetName: string;
     plateIndex: number;
@@ -41,6 +42,7 @@ export type BambuNativeTemperatureCommand = {
     temperature: number;
     messageJson: string;
 };
+export declare function assertBambuNativeAvailable(): void;
 export declare function buildBambuNativeFanCommand(fan: string | number, speed: number, sequenceId?: string): BambuNativeFanCommand;
 export declare function buildBambuNativeTemperatureCommand(component: string, temperature: number, sequenceId?: string): BambuNativeTemperatureCommand;
 export declare function validateBambuNativeControlMessage(messageJson: string): {

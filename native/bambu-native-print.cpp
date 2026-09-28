@@ -648,6 +648,7 @@ void runOperation(NativeApi &api, NativeOperation operation) {
     params.project_name = projectName;
     params.preset_name = envOr("BAMBU_NATIVE_PRESET_NAME", projectName + "_plate_1");
     params.filename = file;
+    params.dst_file = envOr("BAMBU_NATIVE_DST_FILE");
     params.config_filename = envOr("BAMBU_NATIVE_CONFIG_FILE", file);
     params.plate_index = intEnv("BAMBU_NATIVE_PLATE_INDEX", 1);
     params.nozzle_mapping = envOr("BAMBU_NATIVE_NOZZLE_MAPPING");

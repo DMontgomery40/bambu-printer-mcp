@@ -10,11 +10,13 @@
  *
  * This module:
  *   1. Indexes every BBL profile JSON by its `name` field.
- *   2. Recursively walks `inherits`, deep-merging parent into child.
+ *   2. Recursively walks `inherits`, deep-merging parent into child, and
+ *      applies each level's `include` templates (G-code templates for
+ *      machines, per-variant defaults for filaments) the way the GUI does.
  *   3. Derives `nozzle_volume_type` from `default_nozzle_volume_type[0]`
  *      (the GUI does this implicitly; the CLI doesn't).
- *   4. Merges CLI-specific machine_limits from `BBL/cli_config.json` so the
- *      printer doesn't run unsafe accelerations / jerks.
+ *   4. Validates the model in `BBL/cli_config.json` and merges its CLI-specific
+ *      machine_limits where supplied for safe accelerations / jerks.
  *   5. Writes the flattened JSON to a temp file the caller passes to
  *      BambuStudio CLI.
  *
@@ -32,6 +34,9 @@ export interface FlattenedProfiles {
         machineLeafName: string;
         processLeafName: string;
         filamentLeafNames: string[];
+        /** False only for an explicit standalone custom machine. */
+        cliConfigValidated: boolean;
+        /** Some validated official model configs intentionally have no limits. */
         cliOverlayApplied: boolean;
     };
 }
@@ -44,6 +49,8 @@ export interface FlattenOptions {
     filamentLeaves: string[];
     /** Absolute path to `.../Resources/profiles`. */
     profilesRoot: string;
+    /** Configured BBL directories for custom process/filament dependencies only. */
+    userProfileRoots?: string[];
     /** Where to write flattened temp files. */
     tempDir: string;
     /** Vendor subdir under profilesRoot. Currently only "BBL" supported. */
@@ -59,7 +66,29 @@ export interface FlattenOptions {
     nozzleVolumeType?: "Standard" | "High Flow";
     /** BambuStudio display name, e.g. "Textured PEI Plate" or "Cool Plate". */
     bedType?: string;
+    /** Actual input configs, including user overrides on top of BBL parents. */
+    sourceProfiles?: {
+        machine?: Record<string, unknown>;
+        process?: Record<string, unknown>;
+        filaments?: (Record<string, unknown> | undefined)[];
+    };
+    /**
+     * Positional `#RRGGBB` colour per filament slot (e.g. from the input 3MF
+     * project or the caller). Missing entries keep the profile's own colour or
+     * fall back to DEFAULT_FILAMENT_COLOUR.
+     */
+    filamentColours?: (string | undefined)[];
+    /** Saved per-plate positions, used only when the process sets no position. */
+    projectTowerPosition?: {
+        wipe_tower_x?: unknown;
+        wipe_tower_y?: unknown;
+    };
 }
+/** Resolve bundled machine defaults before choosing process and filament leaves. */
+export declare function resolveBblMachineProfile(profilesRoot: string, machineLeaf: string): Promise<Record<string, unknown>>;
+/** Best-effort extruder count for fallback nozzle_volume_type sizing. */
+/** BambuStudio's built-in filament_colour default. */
+export declare const DEFAULT_FILAMENT_COLOUR = "#00AE42";
 /**
  * Flatten the leaf profiles, post-process for CLI, and write to temp files.
  *
@@ -68,8 +97,8 @@ export interface FlattenOptions {
 export declare function flattenForCli(opts: FlattenOptions): Promise<FlattenedProfiles>;
 /**
  * Given the SLICER_PATH (path to BambuStudio executable), walk up to the
- * Resources/profiles directory. Falls back to common platform paths.
+ * profile directory for that installation (macOS, Windows, or Linux prefix).
  *
  * Override via BAMBU_PROFILES_ROOT env.
  */
-export declare function detectProfilesRoot(slicerPath?: string): string;
+export declare function detectProfilesRoot(slicerPath?: string, slicerType?: string): string;

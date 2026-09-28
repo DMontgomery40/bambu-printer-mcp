@@ -12,13 +12,16 @@ function firstExistingExecutable(candidates) {
         }
     });
 }
+export function assertBambuNativeAvailable() {
+    if (process.platform !== "darwin")
+        throw new Error("Bambu native X2D transport requires macOS and the installed Bambu Studio networking plug-in.");
+    resolveNativeHelper();
+}
 function resolveNativeHelper() {
     const configured = process.env.BAMBU_NATIVE_HELPER?.trim();
     const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const candidates = [
         configured,
-        path.resolve(process.cwd(), "native/bambu-native-print"),
-        path.resolve(process.cwd(), "../native/bambu-native-print"),
         path.resolve(packageRoot, "native/bambu-native-print"),
     ].filter((value) => Boolean(value));
     const helper = firstExistingExecutable(candidates);
@@ -34,6 +37,7 @@ function tail(value, maxLength = 4000) {
     return value.length > maxLength ? value.slice(-maxLength) : value;
 }
 function runNativeHelper(mode, env, timeoutMs, onUpdate) {
+    assertBambuNativeAvailable();
     const helper = resolveNativeHelper();
     return new Promise((resolve, reject) => {
         const child = spawn(helper, [mode], {
@@ -359,6 +363,9 @@ export async function printWithBambuNative(options, onUpdate) {
         BAMBU_NATIVE_SERIAL: options.serial,
         BAMBU_NATIVE_ACCESS_CODE: options.token,
         BAMBU_NATIVE_FILE: options.filePath,
+        BAMBU_NATIVE_CONFIG_FILE: options.filePath,
+        BAMBU_NATIVE_TASK_NAME: options.projectName,
+        BAMBU_NATIVE_DST_FILE: options.remoteName || path.basename(options.filePath),
         BAMBU_NATIVE_PROJECT_NAME: options.projectName,
         BAMBU_NATIVE_PRESET_NAME: options.presetName,
         BAMBU_NATIVE_PLATE_INDEX: String(options.plateIndex + 1),
@@ -398,6 +405,9 @@ export async function uploadWithBambuNative(options, onUpdate) {
         BAMBU_NATIVE_SERIAL: options.serial,
         BAMBU_NATIVE_ACCESS_CODE: options.token,
         BAMBU_NATIVE_FILE: options.filePath,
+        BAMBU_NATIVE_CONFIG_FILE: options.filePath,
+        BAMBU_NATIVE_TASK_NAME: options.projectName,
+        BAMBU_NATIVE_DST_FILE: options.remoteName || path.basename(options.filePath),
         BAMBU_NATIVE_PROJECT_NAME: options.projectName,
         BAMBU_NATIVE_PRESET_NAME: options.presetName,
         BAMBU_NATIVE_PLATE_INDEX: String(options.plateIndex + 1),

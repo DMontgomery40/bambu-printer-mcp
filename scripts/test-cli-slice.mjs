@@ -74,7 +74,7 @@ const MODEL_DEFAULTS = {
   x2d: {
     machineLeaf: "Bambu Lab X2D 0.4 nozzle",
     processLeaf: "0.20mm Standard @BBL X2D",
-    filamentLeaf: "Bambu PLA Basic @BBL X2D 0.4 nozzle",
+    filamentLeaf: "Bambu PLA Basic @BBL X2D",
   },
   x1c: {
     machineLeaf: "Bambu Lab X1 Carbon 0.4 nozzle",

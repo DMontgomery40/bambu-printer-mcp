@@ -1,0 +1,65 @@
+name: Release mcpb
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  package:
+    name: package mcpb
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Assert manifest version matches tag
+        run: |
+          MANIFEST_VER=$(node -p "require('./manifest.json').version")
+          PACKAGE_VER=$(node -p "require('./package.json').version")
+          TAG_VER="${{ github.ref_name }}"
+          if [ "v${MANIFEST_VER}" != "${TAG_VER}" ]; then
+            echo "::error::Version mismatch: manifest.json=${MANIFEST_VER} vs tag=${TAG_VER}"; exit 1
+          fi
+          if [ "${MANIFEST_VER}" != "${PACKAGE_VER}" ]; then
+            echo "::error::Version mismatch: manifest.json=${MANIFEST_VER} vs package.json=${PACKAGE_VER}"; exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build and pack extension
+        run: npm run package:mcpb
+
+      - name: Test extension packaging
+        run: node --test tests/mcpb-packaging.test.mjs
+
+      - name: Verify packed bundle is a valid archive
+        run: unzip -t bambu-printer-mcp.mcpb > /dev/null
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: bambu-printer-mcpb
+          path: bambu-printer-mcp.mcpb
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" --generate-notes bambu-printer-mcp.mcpb \
+            || { echo "Release already exists — replacing asset"; gh release upload "$TAG" bambu-printer-mcp.mcpb --clobber; }

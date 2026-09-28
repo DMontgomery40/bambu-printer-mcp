@@ -1,0 +1,92 @@
+{
+    "manifest_version": "0.2",
+    "name": "bambu-printer-mcp",
+    "display_name": "Bambu Printer MCP",
+    "version": "1.1.13",
+    "description": "Drive Bambu Lab 3D printers from Claude -- upload and slice models, start and monitor prints, and manage AMS filament, over MQTT and FTPS on your local network.",
+    "author": {
+        "name": "David Montgomery"
+    },
+    "license": "GPL-2.0",
+    "homepage": "https://github.com/DMontgomery40/bambu-printer-mcp",
+    "documentation": "https://github.com/DMontgomery40/bambu-printer-mcp#readme",
+    "support": "https://github.com/DMontgomery40/bambu-printer-mcp/issues",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/DMontgomery40/bambu-printer-mcp"
+    },
+    "keywords": [
+        "mcp",
+        "3d-printer",
+        "bambu",
+        "bambu-lab",
+        "bambu-studio",
+        "stl",
+        "3mf"
+    ],
+    "server": {
+        "type": "node",
+        "entry_point": "dist/index.js",
+        "mcp_config": {
+            "command": "node",
+            "args": [
+                "${__dirname}/dist/index.js"
+            ],
+            "env": {
+                "MCP_TRANSPORT": "stdio",
+                "PRINTER_HOST": "${user_config.printer_host}",
+                "BAMBU_SERIAL": "${user_config.bambu_serial}",
+                "BAMBU_TOKEN": "${user_config.bambu_token}",
+                "BAMBU_MODEL": "${user_config.bambu_model}",
+                "SLICER_PATH": "${user_config.slicer_path}",
+                "BLENDER_MCP_COMMAND": "${user_config.blender_mcp_command}",
+                "BLENDER_MCP_ARGS": "${user_config.blender_mcp_args}"
+            }
+        }
+    },
+    "user_config": {
+        "printer_host": {
+            "type": "string",
+            "title": "Printer IP address",
+            "description": "LAN IP address of your Bambu Lab printer.",
+            "required": true
+        },
+        "bambu_serial": {
+            "type": "string",
+            "title": "Printer serial number",
+            "description": "Serial number shown on the printer's touchscreen or in Bambu Studio device settings.",
+            "required": true
+        },
+        "bambu_token": {
+            "type": "string",
+            "title": "LAN access code",
+            "description": "Access Code shown on the printer's network settings screen.",
+            "required": true,
+            "sensitive": true
+        },
+        "bambu_model": {
+            "type": "string",
+            "title": "Printer model",
+            "description": "Required for safe G-code generation. One of: p1s, p1p, p2s, x1c, x1e, a1, a1mini, h2d, h2s, h2c, x2d. X2D supports status and slicing; direct printing is not yet supported.",
+            "required": true
+        },
+        "blender_mcp_command": {
+            "type": "string",
+            "title": "Blender MCP executable (optional)",
+            "description": "Executable for your Blender MCP server, for example the full path to uvx. Leave empty to use printer tools without Blender.",
+            "required": false
+        },
+        "blender_mcp_args": {
+            "type": "string",
+            "title": "Blender MCP arguments (optional)",
+            "description": "JSON array of arguments for the executable, for example [\"blender-mcp\"]. Enable the matching MCP addon inside Blender before editing.",
+            "required": false
+        },
+        "slicer_path": {
+            "type": "string",
+            "title": "Slicer executable path (optional)",
+            "description": "Full path to the Bambu Studio (or compatible) slicer executable, if not in the default location.",
+            "required": false
+        }
+    }
+}
