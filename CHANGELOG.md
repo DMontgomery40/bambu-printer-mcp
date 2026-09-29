@@ -2,8 +2,19 @@
 
 ## Unreleased
 
+## [1.1.16] – 2026-09-28
+
+### Documentation
+- Restore the published 1.1.14 and 1.1.15 release boundaries on the source changelog and generated GitHub Pages site instead of leaving shipped changes under `Unreleased`.
+
+## [1.1.15] – 2026-09-28
+
 ### Fixed
 - Keep printer file listings read-only and use the shared FTPS TLS-session options. Propagate connection and directory-listing failures instead of reporting empty or partial success; treat optional directories as absent only after a successful root listing ([#26](https://github.com/DMontgomery40/bambu-printer-mcp/pull/26), by Vail (@VailElla)).
+
+## [1.1.14] – 2026-09-28
+
+### Fixed
 - Revalidate positive heating, resume, and confirmed hardware-error clearing immediately before native command dispatch; keep stop and heater-off available without preflight.
 - Reject fractional AMS unit/slot addresses rather than truncating them to another physical address.
 - Require fresh shared printer-state authorization after native connection setup and again before certificate-retry print dispatch.
