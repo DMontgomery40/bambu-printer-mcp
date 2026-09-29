@@ -12,6 +12,9 @@ import { BambuImplementation } from "../dist/printers/bambu.js";
 import { BambuNetworkBridge } from "../dist/bambu-network-bridge.js";
 import { withPrintSnapshot } from "../dist/safety/artifact.js";
 
+// Mocked printers never report a started job; tests that cover it opt back in.
+process.env.BAMBU_DISPATCH_CHECK_MS = "0";
+
 const root = fileURLToPath(new URL("..", import.meta.url));
 const host = "127.0.0.1";
 const serial = "01PTESTSAFETY";

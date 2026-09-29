@@ -38,6 +38,7 @@ export interface BambuSliceOptions {
     loadFilamentIds?: string;
     filamentColours?: string[];
     bedType?: string;
+    nozzleType?: string;
     enableTimelapse?: boolean;
     allowMixTemp?: boolean;
     scale?: number;

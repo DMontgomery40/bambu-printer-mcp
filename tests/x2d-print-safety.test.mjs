@@ -10,6 +10,9 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { BambuImplementation } from "../dist/printers/bambu.js";
 
+// Mocked printers never report a started job; tests that cover it opt back in.
+process.env.BAMBU_DISPATCH_CHECK_MS = "0";
+
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const unsupportedX2D = /X2D direct printing is not supported.*native eMMC/i;
 

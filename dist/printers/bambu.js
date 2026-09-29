@@ -36,6 +36,21 @@ function loadClientCreds() {
 }
 const CLIENT_CREDS = loadClientCreds();
 const COMMAND_SETTLE_MS = 300;
+/** HMS 0500-0500-0001-0007: firmware 01.08.05+ rejected an unsigned MQTT command. */
+const COMMAND_VERIFICATION_HMS = { attr: 0x05000500, code: 0x00010007 };
+const COMMAND_REJECTED_MESSAGE = "The printer rejected the print command (HMS 0500-0500-0001-0007, \"MQTT command verification failed\"). " +
+    "Bambu firmware 01.08.05 and later only accept third-party LAN control with LAN Only Mode and Developer Mode " +
+    "enabled (Settings > WLAN on the printer). The checked file is on the printer's storage, but nothing is printing. " +
+    "The rejection stays on the printer as a fatal HMS entry that blocks later prints: after enabling those modes, " +
+    "clear it with clear_hms_errors or dismiss it on the printer's screen, then print again.";
+const DISPATCH_CANCELLED_MESSAGE = "A stop or heater-off request arrived after the print command was sent, so this call does not report the print as started. " +
+    "Check get_printer_status.";
+/** How long to watch fresh reports after a print command (BAMBU_DISPATCH_CHECK_MS, 0 disables). */
+function dispatchCheckMs() {
+    const raw = process.env.BAMBU_DISPATCH_CHECK_MS?.trim();
+    const value = raw ? Number(raw) : 15000;
+    return Number.isInteger(value) && value >= 0 && value <= 60000 ? value : 15000;
+}
 const MODEL_ID_TO_NAME = {
     O1C: "H2C",
     O1C2: "H2C",
@@ -685,9 +700,23 @@ export class BambuImplementation {
         const printer = await this.getPrinter(host, serial, token);
         assertActive();
         if (legacyContainer) {
-            await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath }));
+            const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
+            try {
+                await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath }));
+            }
+            catch (error) {
+                watcher.dispose();
+                throw error;
+            }
             this.recordCheckedJob(host, serial, remoteProjectPath, requirements);
-            return { status: "success", message: `Uploaded and started gcode.3mf print: ${options.projectName}`, remoteProjectPath };
+            const dispatch = await watcher.settled();
+            return {
+                status: "success", dispatch, remoteProjectPath,
+                message: dispatch === "started"
+                    ? `The printer accepted and started the checked gcode.3mf print: ${options.projectName}`
+                    : `Uploaded the checked gcode.3mf and sent the print command for ${options.projectName}; the printer has not reported starting yet. ` +
+                        "Check get_printer_status before assuming it is printing.",
+            };
         }
         const b = (v) => (v ? 1 : 0);
         let projectFileCmd;
@@ -747,12 +776,24 @@ export class BambuImplementation {
                 },
             };
         }
-        await printer.publish(projectFileCmd);
+        const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
+        try {
+            await printer.publish(projectFileCmd);
+        }
+        catch (error) {
+            watcher.dispose();
+            throw error;
+        }
         this.recordCheckedJob(host, serial, remoteProjectPath, requirements);
         await new Promise((resolve) => setTimeout(resolve, 300));
+        const dispatch = await watcher.settled();
         return {
             status: "success",
-            message: `Uploaded and started 3MF print: ${options.projectName}`,
+            dispatch,
+            message: dispatch === "started"
+                ? `The printer accepted and started the checked 3MF print: ${options.projectName}`
+                : `Uploaded the checked 3MF and sent the print command for ${options.projectName}; the printer has not reported starting yet. ` +
+                    "Check get_printer_status before assuming it is printing.",
             remoteProjectPath,
             plateFile: projectMetadata.plateFileName,
             platePath: projectMetadata.plateInternalPath,
@@ -1190,9 +1231,105 @@ export class BambuImplementation {
         this.assertBedClearance(dispatchStatus, bedClearance);
         const printer = await this.getPrinter(host, serial, token);
         assertActive();
-        await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remotePath }));
+        const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
+        try {
+            await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remotePath }));
+        }
+        catch (error) {
+            watcher.dispose();
+            throw error;
+        }
         this.recordCheckedJob(host, serial, remotePath, requirements);
-        return { status: "success", uploaded: true, printRequested: true, remotePath, message: `Checked and started ${remotePath}.` };
+        const dispatch = await watcher.settled();
+        return {
+            status: "success", uploaded: true, printRequested: true, dispatch, remotePath,
+            message: dispatch === "started"
+                ? `The printer accepted and started ${remotePath}.`
+                : `Sent the print command for ${remotePath}; the printer has not reported starting yet. Check get_printer_status before assuming it is printing.`,
+        };
+    }
+    /**
+     * A published print command is not proof the printer took it. Listen to the
+     * reports the printer pushes anyway (no extra pushall polling on weak P1
+     * boards): a new command-verification HMS means the firmware refused the
+     * command; PREPARE/SLICING/RUNNING means it started. Attach before publishing.
+     */
+    watchDispatch(printer, host, serial, token, before, assertActive) {
+        const windowMs = dispatchCheckMs();
+        if (windowMs === 0)
+            return { settled: async () => { assertActive(); return "unconfirmed"; }, dispose: () => { } };
+        const key = (entry) => `${Number(entry?.attr)}:${Number(entry?.code)}:${entry?.timestamp ?? ""}`;
+        const known = new Set((Array.isArray(before?.raw?.hms) ? before.raw.hms : []).map(key));
+        const judge = (report) => {
+            const hms = Array.isArray(report?.hms) ? report.hms : [];
+            if (hms.some((entry) => Number(entry?.attr) === COMMAND_VERIFICATION_HMS.attr &&
+                Number(entry?.code) === COMMAND_VERIFICATION_HMS.code && !known.has(key(entry))))
+                return "rejected";
+            if (["PREPARE", "SLICING", "RUNNING"].includes(String(report?.gcode_state ?? "").toUpperCase()))
+                return "started";
+            return undefined;
+        };
+        let resolveOutcome;
+        const outcome = new Promise((resolve) => { resolveOutcome = resolve; });
+        const onRaw = (topic, payload) => {
+            if (topic !== `device/${serial}/report`)
+                return;
+            let parsed;
+            try {
+                parsed = JSON.parse(payload.toString());
+            }
+            catch {
+                return;
+            }
+            const verdict = judge(parsed?.print);
+            if (verdict)
+                resolveOutcome(verdict);
+        };
+        const cancelled = () => { try {
+            assertActive();
+            return false;
+        }
+        catch {
+            return true;
+        } };
+        printer?.on?.("rawMessage", onRaw);
+        const timer = setTimeout(() => resolveOutcome(undefined), windowMs);
+        // A stop during the window must not end as "accepted and started".
+        const cancelCheck = setInterval(() => { if (cancelled())
+            resolveOutcome("cancelled"); }, 250);
+        const dispose = () => {
+            clearTimeout(timer);
+            clearInterval(cancelCheck);
+            printer?.off?.("rawMessage", onRaw);
+            resolveOutcome(undefined);
+        };
+        return {
+            dispose,
+            settled: async () => {
+                let verdict;
+                try {
+                    verdict = await outcome;
+                }
+                finally {
+                    dispose();
+                }
+                // Nothing pushed during the window: take one full report, not a polling loop.
+                if (verdict === undefined && !cancelled()) {
+                    try {
+                        verdict = judge((await this.getSafetyStatus(host, serial, token))?.raw);
+                    }
+                    catch { /* stays unconfirmed */ }
+                }
+                if (verdict === "rejected") {
+                    // Nothing started, so there is no checked job to resume or clear later.
+                    this.checkedJobs.delete(`${host}\n${serial}`);
+                    throw new Error(COMMAND_REJECTED_MESSAGE);
+                }
+                if (verdict === "cancelled" || cancelled())
+                    throw new Error(DISPATCH_CANCELLED_MESSAGE);
+                return verdict ?? "unconfirmed";
+            },
+        };
     }
     async startJob(host, serial, token, filename, bambuModel) {
         assertDirectPrintSupported(bambuModel, serial);
