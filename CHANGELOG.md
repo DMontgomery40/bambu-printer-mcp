@@ -3,6 +3,7 @@
 ## Unreleased
 
 ### Fixed
+- Keep printer file listings read-only and use the shared FTPS TLS-session options. Propagate connection and directory-listing failures instead of reporting empty or partial success; treat optional directories as absent only after a successful root listing ([#26](https://github.com/DMontgomery40/bambu-printer-mcp/pull/26), by Vail (@VailElla)).
 - Revalidate positive heating, resume, and confirmed hardware-error clearing immediately before native command dispatch; keep stop and heater-off available without preflight.
 - Reject fractional AMS unit/slot addresses rather than truncating them to another physical address.
 - Require fresh shared printer-state authorization after native connection setup and again before certificate-retry print dispatch.

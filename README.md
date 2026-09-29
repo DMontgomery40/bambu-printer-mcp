@@ -603,6 +603,8 @@ High-signal fields:
 
 List files stored on the printer's SD card. Scans the `cache/`, `timelapse/`, and `logs/` directories and returns both a flat list and a directory-grouped breakdown.
 
+This is a read-only query: it never creates directories. Optional directories absent from a successful root listing return empty lists. Authentication, TLS, permission, and transfer failures are reported as errors rather than empty or partial results.
+
 ```json
 {
   "host": "192.168.1.100",

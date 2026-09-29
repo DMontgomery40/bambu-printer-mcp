@@ -5,6 +5,7 @@ This file is the repository's shared source of truth for local agents and GitHub
 ## Release and review
 
 - Every update to main requires an npm patch version bump and publication, including code, documentation, and configuration. Run `npm version patch` once for the release, and include its package.json, package-lock.json, and manifest.json changes in the same integration to main.
+- Before opening or updating a PR, run Matt Pocock's `code-review` skill against the main merge base. Resolve substantive standards and spec findings locally; keep its issue-tracker note as ignored agent scratch rather than adding another required public template.
 - Use a PR to main. Include `@codex review` in change commit messages and request `@codex review` on the PR. After each update, wait at least five minutes and for review plus CI to complete on the current head. Inspect inline findings as well as summary comments; fix actionable findings and repeat. A stale review or passing local test does not authorize ignoring current CI failures.
 - Prioritize substantive defects and regressions in supported workflows. Document and defer obscure edge cases, speculative hardening, and cosmetic objections instead of extending a sound release into an endless review loop.
 - Preserve original authorship when integrating contributor PRs. Credit code, issue reports, hardware evidence, and useful superseded proposals in CONTRIBUTORS.md. Clearly distinguish merged changes, superseded proposals, and deferred work.
