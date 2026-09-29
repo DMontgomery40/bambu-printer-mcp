@@ -25,6 +25,9 @@ import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3M
 import { BambuImplementation } from "../dist/printers/bambu.js";
 import { STLManipulator } from "../dist/stl/stl-manipulator.js";
 
+// Mocked printers never report a started job; tests that cover it opt back in.
+process.env.BAMBU_DISPATCH_CHECK_MS = "0";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -1835,6 +1838,54 @@ test("template machine settings never replace the selected machine preset", asyn
       assert.equal(key in processSettings, false, `${name}: template ${key} must not reach the CLI`);
     }
   }
+});
+
+test("slice_stl writes the installed nozzle type into the machine preset so printing can match the printer", async (t) => {
+  const fakeSlicer = await createFakeBambuSlicer();
+  fs.writeFileSync(path.join(fakeSlicer.profilesRoot, "BBL", "machine", "Bambu Lab P1S 0.4 nozzle.json"), JSON.stringify({
+    name: "Bambu Lab P1S 0.4 nozzle", nozzle_diameter: ["0.4"], nozzle_type: ["stainless_steel"],
+    default_print_profile: "Behavior process", default_filament_profile: ["Behavior filament"], machine_start_gcode: "fixture start",
+  }));
+  const connect = async (extraEnv = {}) => {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [SERVER_ENTRY],
+      env: {
+        ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "p1s", BAMBU_SERIAL: "", BAMBU_TOKEN: "",
+        BAMBU_SLICER_PROFILE: "", BAMBU_TEMPLATE_3MF_PATH: "", BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot,
+        BAMBU_SLICER_PROFILE_DIRS: "", BAMBU_NOZZLE_TYPE: "", MCP_ALLOW_EXECUTABLE_ARG: "1", ...extraEnv,
+      },
+      stderr: "pipe",
+    });
+    const client = createClient();
+    t.after(async () => { await closeTransport(transport); });
+    await client.connect(transport);
+    return (extra) => client.callTool({ name: "slice_stl", arguments: {
+      stl_path: SAMPLE_STL, bambu_model: "p1s", slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false, ...extra,
+    } });
+  };
+  const machine = () => {
+    const slicerArgs = JSON.parse(fs.readFileSync(fakeSlicer.argsOutPath, "utf8"));
+    return JSON.parse(fs.readFileSync(slicerArgs[slicerArgs.indexOf("--load-settings") + 1].split(";")[0], "utf8"));
+  };
+  const slice = await connect();
+  let result = await slice({ nozzle_type: "hardened_steel" });
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.deepEqual(machine().nozzle_type, ["hardened_steel"]);
+  // Without a choice the preset's stock nozzle is kept.
+  result = await slice({});
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.deepEqual(machine().nozzle_type, ["stainless_steel"]);
+  // Invalid values stop before the slicer runs.
+  fs.rmSync(fakeSlicer.argsOutPath);
+  result = await slice({ nozzle_type: "diamond" });
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result.content), /Invalid nozzle type/);
+  assert.equal(fs.existsSync(fakeSlicer.argsOutPath), false, "the slicer must not run");
+  // BAMBU_NOZZLE_TYPE supplies the default.
+  result = await (await connect({ BAMBU_NOZZLE_TYPE: "hardened-steel" }))({});
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.deepEqual(machine().nozzle_type, ["hardened_steel"]);
 });
 
 test("template_name resolves by source type for slicer profiles versus 3MF sources", async (t) => {

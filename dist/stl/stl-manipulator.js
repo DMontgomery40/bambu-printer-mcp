@@ -1282,6 +1282,19 @@ export class STLManipulator extends EventEmitter {
                         const rawBundle = await this.resolveBambuLikeSettingsBundle(outputBase, slicerType, slicerProfile, printerPreset, bambuOptions, profilesRoot);
                         // Resolve every BBL dependency before launching the slicer.
                         const settingsBundle = await this.maybeFlattenBundle(await this.expandProjectFilaments(stlFilePath, rawBundle), bambuOptions, profilesRoot);
+                        // The machine preset assumes the stock hotend; record the installed one so
+                        // the sliced job's nozzle_type matches what the printer reports.
+                        if (bambuOptions?.nozzleType && settingsBundle.settingsArg) {
+                            const [machinePath, ...rest] = settingsBundle.settingsArg.split(';');
+                            const machine = this.readJsonFile(machinePath);
+                            const current = machine.nozzle_type;
+                            machine.nozzle_type = Array.isArray(current) && current.length > 0
+                                ? current.map(() => bambuOptions.nozzleType)
+                                : [bambuOptions.nozzleType];
+                            settingsBundle.settingsArg = [
+                                this.writeTempJson(outputBase, `machine_${bambuOptions.nozzleType}`, machine), ...rest,
+                            ].join(';');
+                        }
                         // Inherited process G-code is now present; apply Orca's existing
                         // absolute-extrusion normalization after resolving those ancestors.
                         // The machine owns the extrusion mode and layer G-code once process

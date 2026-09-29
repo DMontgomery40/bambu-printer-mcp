@@ -6,6 +6,9 @@ import path from "node:path";
 import JSZip from "jszip";
 import { BambuImplementation } from "../dist/printers/bambu.js";
 
+// Mocked printers never report a started job; tests that cover it opt back in.
+process.env.BAMBU_DISPATCH_CHECK_MS = "0";
+
 async function capture(t, model, serial, { sparse = false, useAMS = true, suffix = ".gcode.3mf" } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-route-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));

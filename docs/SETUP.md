@@ -105,6 +105,8 @@ BLENDER_MCP_TIMEOUT_MS=120000
 | `BAMBU_MODEL` | | **Slicing and printing** | Printer model: `p1s`, `p1p`, `p2s`, `x1c`, `x1e`, `a1`, `a1mini`, `h2d`, `h2s`, `h2c`, `x2d`. **Required** for model-specific routing and preset selection; it does not itself validate a pre-sliced file or prove a successful physical print. X2D supports status and slicing; `print_3mf` can use the optional checked native eMMC helper on macOS. Linux/Windows native printing and legacy X2D FTPS/remote-file starts remain unsupported. Alias: `BAMBU_PRINTER_MODEL`. If omitted and the MCP client supports elicitation, the server will ask you interactively. Use `h2c` for H2C and `x2d` for X2D; do not use `h2d` as a fallback. |
 | `BED_TYPE` | `textured_plate` | No | Bed plate type: `textured_plate`, `cool_plate`, `engineering_plate`, `hot_plate`, `supertack_plate` |
 | `NOZZLE_DIAMETER` | `0.4` | No | Nozzle diameter in mm. Used to select the correct model/nozzle machine preset. |
+| `BAMBU_NOZZLE_TYPE` | model preset's stock nozzle | No | Installed nozzle for slicing: `stainless_steel`, `hardened_steel`, `tungsten_carbide`, or `brass`. Set it if you replaced the stock nozzle; printing requires the job's nozzle type to match the printer's report. |
+| `BAMBU_DISPATCH_CHECK_MS` | `15000` | No | How long to watch the printer's reports after an MQTT print command to confirm it started or was refused (0 to 60000; 0 skips the check). |
 | `SLICER_TYPE` | `bambustudio` | No | `bambustudio`, `orcaslicer-bambulab` (FULU), `orcaslicer`, `prusaslicer`, `cura`, or `slic3r` |
 | `SLICER_PATH` | Platform default for the selected slicer | No | Full path to the slicer executable. `BAMBU_STUDIO_PATH` supplies the BambuStudio default only |
 | `SLICER_PROFILE` | | No | Process profile/config file; `BAMBU_SLICER_PROFILE` takes precedence. Does not replace the required machine preset for BambuStudio, Orca, or FULU |
@@ -277,6 +279,10 @@ The access token is the **Access Code** shown on the printer's network settings 
 2. Connect to your printer.
 3. Navigate to Settings > Network.
 4. The Access Code is shown here.
+
+**"The printer rejected the print command (HMS 0500-0500-0001-0007)":** Bambu firmware 01.08.05 and later only accept third-party LAN control with LAN Only Mode and Developer Mode on (Settings > WLAN on the printer). LAN Only Mode turns off cloud and Bambu Handy remote access while it is on. Otherwise start the uploaded file from Bambu Studio or the printer's screen.
+
+**"Printer nozzle 0 type is unknown or does not match the job":** the file was sliced for a different nozzle material than the printer reports (a stock P1S preset assumes stainless steel). Slice again with `nozzle_type` or set `BAMBU_NOZZLE_TYPE`.
 
 **Troubleshooting:** If a LAN or Developer Mode setting is missing, check the instructions for your exact model and firmware. Do not assume that a firmware upgrade is necessary or that all generations expose the same menu. The direct connection uses the printer's LAN access code, not a Bambu account password.
 

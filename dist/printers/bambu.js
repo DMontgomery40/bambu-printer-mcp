@@ -36,6 +36,17 @@ function loadClientCreds() {
 }
 const CLIENT_CREDS = loadClientCreds();
 const COMMAND_SETTLE_MS = 300;
+/** HMS 0500-0500-0001-0007: firmware 01.08.05+ rejected an unsigned MQTT command. */
+const COMMAND_VERIFICATION_HMS = { attr: 0x05000500, code: 0x00010007 };
+const COMMAND_REJECTED_MESSAGE = "The printer rejected the print command (HMS 0500-0500-0001-0007, \"MQTT command verification failed\"). " +
+    "Bambu firmware 01.08.05 and later only accept third-party LAN control with LAN Only Mode and Developer Mode " +
+    "enabled (Settings > WLAN on the printer). The checked file is on the printer's storage, but nothing is printing.";
+/** How long to watch fresh reports after a print command (BAMBU_DISPATCH_CHECK_MS, 0 disables). */
+function dispatchCheckMs() {
+    const raw = process.env.BAMBU_DISPATCH_CHECK_MS?.trim();
+    const value = raw ? Number(raw) : 15000;
+    return Number.isInteger(value) && value >= 0 && value <= 60000 ? value : 15000;
+}
 const MODEL_ID_TO_NAME = {
     O1C: "H2C",
     O1C2: "H2C",
@@ -687,7 +698,14 @@ export class BambuImplementation {
         if (legacyContainer) {
             await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath }));
             this.recordCheckedJob(host, serial, remoteProjectPath, requirements);
-            return { status: "success", message: `Uploaded and started gcode.3mf print: ${options.projectName}`, remoteProjectPath };
+            const dispatch = await this.verifyDispatch(host, serial, token, dispatchStatus);
+            return {
+                status: "success", dispatch, remoteProjectPath,
+                message: dispatch === "started"
+                    ? `The printer accepted and started the checked gcode.3mf print: ${options.projectName}`
+                    : `Uploaded the checked gcode.3mf and sent the print command for ${options.projectName}; the printer has not reported starting yet. ` +
+                        "Check get_printer_status before assuming it is printing.",
+            };
         }
         const b = (v) => (v ? 1 : 0);
         let projectFileCmd;
@@ -750,9 +768,14 @@ export class BambuImplementation {
         await printer.publish(projectFileCmd);
         this.recordCheckedJob(host, serial, remoteProjectPath, requirements);
         await new Promise((resolve) => setTimeout(resolve, 300));
+        const dispatch = await this.verifyDispatch(host, serial, token, dispatchStatus);
         return {
             status: "success",
-            message: `Uploaded and started 3MF print: ${options.projectName}`,
+            dispatch,
+            message: dispatch === "started"
+                ? `The printer accepted and started the checked 3MF print: ${options.projectName}`
+                : `Uploaded the checked 3MF and sent the print command for ${options.projectName}; the printer has not reported starting yet. ` +
+                    "Check get_printer_status before assuming it is printing.",
             remoteProjectPath,
             plateFile: projectMetadata.plateFileName,
             platePath: projectMetadata.plateInternalPath,
@@ -1192,7 +1215,47 @@ export class BambuImplementation {
         assertActive();
         await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remotePath }));
         this.recordCheckedJob(host, serial, remotePath, requirements);
-        return { status: "success", uploaded: true, printRequested: true, remotePath, message: `Checked and started ${remotePath}.` };
+        const dispatch = await this.verifyDispatch(host, serial, token, dispatchStatus);
+        return {
+            status: "success", uploaded: true, printRequested: true, dispatch, remotePath,
+            message: dispatch === "started"
+                ? `The printer accepted and started ${remotePath}.`
+                : `Sent the print command for ${remotePath}; the printer has not reported starting yet. Check get_printer_status before assuming it is printing.`,
+        };
+    }
+    /**
+     * A published print command is not proof the printer took it. Watch fresh
+     * reports: a new command-verification HMS means the firmware refused it; a
+     * transition to PREPARE/SLICING/RUNNING means it started.
+     */
+    async verifyDispatch(host, serial, token, before) {
+        const windowMs = dispatchCheckMs();
+        if (windowMs === 0)
+            return "unconfirmed";
+        const key = (entry) => `${Number(entry?.attr)}:${Number(entry?.code)}:${entry?.timestamp ?? ""}`;
+        const known = new Set((Array.isArray(before?.raw?.hms) ? before.raw.hms : []).map(key));
+        const deadline = Date.now() + windowMs;
+        while (Date.now() < deadline) {
+            await sleep(Math.min(1500, Math.max(0, deadline - Date.now())));
+            let status;
+            try {
+                status = await this.getSafetyStatus(host, serial, token);
+            }
+            catch {
+                continue;
+            }
+            const raw = status?.raw ?? {};
+            const hms = Array.isArray(raw.hms) ? raw.hms : [];
+            if (hms.some((entry) => Number(entry?.attr) === COMMAND_VERIFICATION_HMS.attr &&
+                Number(entry?.code) === COMMAND_VERIFICATION_HMS.code && !known.has(key(entry)))) {
+                // Nothing started, so there is no checked job to resume or clear later.
+                this.checkedJobs.delete(`${host}\n${serial}`);
+                throw new Error(COMMAND_REJECTED_MESSAGE);
+            }
+            if (["PREPARE", "SLICING", "RUNNING"].includes(String(raw.gcode_state ?? "").toUpperCase()))
+                return "started";
+        }
+        return "unconfirmed";
     }
     async startJob(host, serial, token, filename, bambuModel) {
         assertDirectPrintSupported(bambuModel, serial);

@@ -477,6 +477,16 @@ test('installed stock BambuStudio presets keep every default process and filamen
   assert.deepEqual(errors.mock.calls.map(call => String(call.arguments[0])).filter(line => line.includes('machine setting(s)')), []);
 });
 
+test('the installed nozzle type replaces every nozzle entry of the machine preset', async t => {
+  const f = await fixture(t);
+  await f.write('machine', { name: 'SAFETY base', nozzle_diameter: ['0.4', '0.4'], machine_start_gcode: 'GENERIC', nozzle_type: ['stainless_steel', 'stainless_steel'] });
+  await f.slice({ nozzleType: 'tungsten_carbide' });
+  const args = await f.args();
+  const machine = JSON.parse(await fs.readFile(args[args.indexOf('--load-settings') + 1].split(';')[0], 'utf8'));
+  assert.deepEqual(machine.nozzle_type, ['tungsten_carbide', 'tungsten_carbide']);
+  assert.equal(machine.machine_start_gcode, 'M620 S0A ; correct machine');
+});
+
 test('an unavailable active profile tree cannot silently slice with printer defaults', async t => {
   const f = await fixture(t);
   const executable = path.join(f.root, 'no-profiles', 'bambu-studio');
