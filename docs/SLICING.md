@@ -6,7 +6,7 @@
 
 Printing includes a mandatory preflight of the final selected G-code and fresh MQTT reports. The requested model, file model, printer identity, and reported nozzle diameters must agree. Missing or contradictory safety information stops the operation. Positive heating commands must fit independent hardware and material ceilings, including later commands and waiting-temperature targets. These ceilings allow supported purge routines; they are not recommended print temperatures.
 
-Print starts and positive manual heating ask for human confirmation through MCP elicitation. The print prompt shows the verified model, nozzle diameters, declared materials, temperature peaks, and file hash. Confirm the physical spool labels and a clear build plate. `BAMBU_REQUIRE_CONFIRMATION=0` opts a deliberately headless setup out of ordinary prompts; a printer reporting `FINISH` still requires confirmation that the previous part and debris are removed. Clearing hardware errors always requires human confirmation, returns the reported codes, and makes the next print prompt ask that those causes are resolved. Clients without elicitation support cannot bypass those physical checks. Stop and heater-off remain available without confirmation.
+Print starts and positive manual heating ask for human confirmation through MCP elicitation. The print prompt shows the verified model, nozzle diameters, declared materials, temperature peaks, and file hash. Confirm the physical spool labels and a clear build plate. `BAMBU_REQUIRE_CONFIRMATION=0` opts a deliberately headless setup out of ordinary prompts; a printer reporting `FINISH` still requires confirmation that the previous part and debris are removed. Clearing hardware errors always requires human confirmation, returns the reported codes, and makes the next print prompt ask that those causes are resolved. Clients without elicitation support cannot bypass those physical checks. A prompt waits ten minutes for an answer by default (`BAMBU_CONFIRMATION_TIMEOUT_MS`); an unanswered prompt is reported as a timeout and nothing is sent to the printer. Stop and heater-off remain available without confirmation.
 
 PLA uses a 260°C normal/manual policy ceiling. The inspector permits one bounded, exact X1E startup purge sequence up to 290°C, then requires normal targets before deposition. This is command-form validation, not a simulation of firmware timing. Explicit laser/cutting job metadata and recognized laser-enabling commands are refused; this server supports FFF printing.
 
@@ -65,6 +65,10 @@ custom BBL-derived profiles retain their settings on top of resolved parents.
 For BambuStudio, FULU, and Orca CLI tools, `slicer_profile` supplies process settings; the
 selected model's bundled machine preset must still be available. It is not a
 replacement machine configuration or a way to bypass model validation.
+Machine settings carried by a template's `project_settings`, a custom process
+file, or a custom filament file (for example another printer's start G-code,
+`printer_model`, or nozzle values) are dropped and logged before the CLI runs;
+the selected machine preset keeps them.
 Pre-sliced 3MF printing does not require running this CLI profile preparation.
 
 Profile discovery follows the active executable: macOS app bundles, Windows
@@ -128,7 +132,13 @@ Before BambuStudio, FULU, or Orca CLI slicing, the MCP:
 4. Derives nozzle settings from the selected machine profile and nozzle configuration. Use the exact model preset; a successful slice for another model does not validate the target printer.
 5. Auto-extends `compatible_printers` to include the chosen machine
    when the user picked a non-default printer/process combo.
-6. Writes flattened temp configs and passes those paths to
+6. Removes every key the resolved machine preset defines, other than profile
+   metadata such as `name`, `inherits`, and `compatible_printers`, from the
+   process and filament configs, because the CLI applies every key in every
+   loaded file. For OrcaSlicer, the absolute-extrusion normalization
+   (`use_relative_e_distances = 0`, no per-layer `G92 E0`) is applied to the
+   machine config, which owns those keys.
+7. Writes flattened temp configs and passes those paths to
    `--load-settings` / `--load-filaments`.
 
 For project 3MF input, a single filament override is repeated across all

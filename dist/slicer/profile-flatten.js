@@ -41,6 +41,7 @@ import crypto from "node:crypto";
  */
 async function buildNameIndex(profilesRoot, vendor, userProfileRoots = []) {
     const index = new Map();
+    index.malformed = [];
     const subdirs = ["machine", "process", "filament"];
     const directories = [
         ...subdirs.map(sub => path.join(profilesRoot, vendor, sub)),
@@ -72,11 +73,15 @@ async function buildNameIndex(profilesRoot, vendor, userProfileRoots = []) {
                 data = JSON.parse(raw);
             }
             catch {
-                // Malformed profile -- skip, don't poison the index.
+                // Malformed profile -- skip, don't poison the index. A reference to
+                // it still fails, and the error names the skipped file.
+                index.malformed.push(filePath);
                 continue;
             }
-            if (!data || typeof data !== 'object' || Array.isArray(data))
+            if (!data || typeof data !== 'object' || Array.isArray(data)) {
+                index.malformed.push(filePath);
                 continue;
+            }
             const name = data["name"];
             if (typeof name !== "string" || name.length === 0)
                 continue;
@@ -106,7 +111,7 @@ function flattenByName(leafName, index, visiting = new Set()) {
     }
     const entry = index.get(leafName);
     if (!entry) {
-        throw new Error(`Profile "${leafName}" not found in index. The profile tree is incomplete or the name is misspelled.`);
+        throw new Error(`Profile "${leafName}" not found in index. The profile tree is incomplete or the name is misspelled.${describeMalformed(index)}`);
     }
     visiting.add(leafName);
     try {
@@ -115,6 +120,13 @@ function flattenByName(leafName, index, visiting = new Set()) {
     finally {
         visiting.delete(leafName);
     }
+}
+function describeMalformed(index) {
+    const malformed = index.malformed ?? [];
+    if (malformed.length === 0)
+        return "";
+    const shown = malformed.slice(0, 5).map((file) => path.basename(file)).join(", ");
+    return ` Skipped ${malformed.length} unreadable or malformed profile file(s): ${shown}${malformed.length > 5 ? ", ..." : ""}.`;
 }
 function flattenData(data, index, visiting = new Set()) {
     const parent = data["inherits"];
@@ -157,7 +169,7 @@ function applyIncludes(target, profile, index, visiting) {
         const entry = index.get(name);
         if (!entry) {
             throw new Error(`Profile "${String(profile["name"])}" includes "${name}", which is not in the index. ` +
-                `Refusing to fall back to inherited defaults (wrong G-code for this printer).`);
+                `Refusing to fall back to inherited defaults (wrong G-code for this printer).${describeMalformed(index)}`);
         }
         for (const [key, value] of Object.entries(flattenByName(name, index, visiting))) {
             if (!INCLUDE_METADATA_KEYS.has(key))

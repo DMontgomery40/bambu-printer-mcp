@@ -62,10 +62,20 @@ export declare class STLManipulator extends EventEmitter {
     private readJsonFile;
     private stripAbsoluteExtruderResets;
     private sanitizeProcessForOrca;
+    /** Orca slices with absolute E distances; per-layer `G92 E0` resets would break them. */
+    private useAbsoluteExtrusionForOrca;
     private writeTempJson;
     private resolveBambuLikeSettingsBundle;
     /** Resolve BBL dependencies before invoking the CLI; failures stop the slice. */
     private maybeFlattenBundle;
+    /**
+     * The CLI applies every key in every --load-settings/--load-filaments file,
+     * so machine settings carried by a process or filament file (for example a
+     * template 3MF's project_settings from another printer) would replace the
+     * selected preset's start G-code, model, and bed geometry. The machine
+     * preset owns those keys; drop them from the other profiles.
+     */
+    private isolateMachineSettings;
     /** --load-filaments is positional; a single override must cover every project slot. */
     private expandProjectFilaments;
     private resolveBambuStudioBedType;

@@ -186,6 +186,12 @@ interface BambuSettingsBundle {
   processSource?: { filePath: string; profile: Record<string, unknown> };
 }
 
+/** Keys every profile kind carries; they describe the file, not machine hardware. */
+const PROFILE_METADATA_KEYS = new Set([
+  'name', 'type', 'from', 'inherits', 'instantiation', 'setting_id', 'version', 'is_custom_defined',
+  'compatible_printers', 'compatible_printers_condition', 'compatible_prints', 'compatible_prints_condition',
+]);
+
 export class STLManipulator extends EventEmitter {
   private tempDir: string;
   private activeOperations: Map<string, boolean> = new Map();
@@ -304,16 +310,22 @@ export class STLManipulator extends EventEmitter {
       sanitized.prime_tower_brim_width = String(sanitized.prime_tower_brim_width);
     }
 
-    sanitized.use_relative_e_distances = '0';
-    sanitized.before_layer_change_gcode = this.stripAbsoluteExtruderResets(
-      sanitized.before_layer_change_gcode
+    return this.useAbsoluteExtrusionForOrca(sanitized);
+  }
+
+  /** Orca slices with absolute E distances; per-layer `G92 E0` resets would break them. */
+  private useAbsoluteExtrusionForOrca(config: any): any {
+    const normalized = { ...config };
+    normalized.use_relative_e_distances = '0';
+    normalized.before_layer_change_gcode = this.stripAbsoluteExtruderResets(
+      normalized.before_layer_change_gcode
     );
-    sanitized.layer_gcode = this.stripAbsoluteExtruderResets(sanitized.layer_gcode);
-    sanitized.layer_change_gcode = this.stripAbsoluteExtruderResets(
-      sanitized.layer_change_gcode
+    normalized.layer_gcode = this.stripAbsoluteExtruderResets(normalized.layer_gcode);
+    normalized.layer_change_gcode = this.stripAbsoluteExtruderResets(
+      normalized.layer_change_gcode
     );
 
-    return sanitized;
+    return normalized;
   }
 
   private writeTempJson(outputBase: string, suffix: string, value: any): string {
@@ -581,6 +593,36 @@ export class STLManipulator extends EventEmitter {
       filamentPaths: filaments.map((profile, i) =>
         needsResolution(bundle.filamentPaths[i], profile) ? flat.filamentPaths[i]
           : withCliFields(bundle.filamentPaths[i], profile, flat.filamentPaths[i], ['filament_colour'])),
+    };
+  }
+
+  /**
+   * The CLI applies every key in every --load-settings/--load-filaments file,
+   * so machine settings carried by a process or filament file (for example a
+   * template 3MF's project_settings from another printer) would replace the
+   * selected preset's start G-code, model, and bed geometry. The machine
+   * preset owns those keys; drop them from the other profiles.
+   */
+  private isolateMachineSettings(bundle: BambuSettingsBundle): BambuSettingsBundle {
+    const [machinePath, processPath] = bundle.settingsArg?.split(';') ?? [];
+    if (!machinePath || !processPath) return bundle;
+    const machineKeys = Object.keys(this.readJsonFile(machinePath)).filter(key => !PROFILE_METADATA_KEYS.has(key));
+    const isolate = (filePath: string, label: string): string => {
+      const profile = this.readJsonFile(filePath);
+      const foreign = machineKeys.filter(key => Object.prototype.hasOwnProperty.call(profile, key));
+      if (foreign.length === 0) return filePath;
+      const isolated = { ...profile };
+      for (const key of foreign) delete isolated[key];
+      console.error(
+        `Ignoring ${foreign.length} machine setting(s) in ${label} profile ${filePath} ` +
+        `(the selected machine preset owns them): ${foreign.slice(0, 8).join(', ')}${foreign.length > 8 ? ', ...' : ''}`
+      );
+      return this.writeTempJson(path.basename(filePath, '.json'), `${label}_without_machine`, isolated);
+    };
+    return {
+      ...bundle,
+      settingsArg: [machinePath, isolate(processPath, 'process')].join(';'),
+      filamentPaths: bundle.filamentPaths.map(filePath => isolate(filePath, 'filament')),
     };
   }
 
@@ -1621,20 +1663,25 @@ export class STLManipulator extends EventEmitter {
               await this.expandProjectFilaments(stlFilePath, rawBundle), bambuOptions, profilesRoot);
             // Inherited process G-code is now present; apply Orca's existing
             // absolute-extrusion normalization after resolving those ancestors.
+            // The machine owns the extrusion mode and layer G-code once process
+            // files lose machine keys, so normalize it there as well.
             if (slicerType === 'orcaslicer' && settingsBundle.settingsArg) {
               const [machinePath, processPath] = settingsBundle.settingsArg.split(';');
-              settingsBundle.settingsArg = [machinePath, this.writeTempJson(
-                outputBase, 'process_orca_resolved',
-                this.sanitizeProcessForOrca(this.readJsonFile(processPath), printerPreset)
-              )].join(';');
+              settingsBundle.settingsArg = [
+                this.writeTempJson(outputBase, 'machine_orca_resolved',
+                  this.useAbsoluteExtrusionForOrca(this.readJsonFile(machinePath))),
+                this.writeTempJson(outputBase, 'process_orca_resolved',
+                  this.sanitizeProcessForOrca(this.readJsonFile(processPath), printerPreset)),
+              ].join(';');
             }
+            const cliBundle = this.isolateMachineSettings(settingsBundle);
             args = [
               '--slice', String(bambuOptions?.slicePlate ?? 0),
               '--outputdir', outputDir,
               '--export-3mf', path.basename(bambuOutputPath),
             ];
-            if (settingsBundle.settingsArg) {
-              args.push('--load-settings', settingsBundle.settingsArg);
+            if (cliBundle.settingsArg) {
+              args.push('--load-settings', cliBundle.settingsArg);
             }
             // Always allow newer-version 3MF files (the CLI rejects them by default)
             args.push('--allow-newer-file');
@@ -1655,8 +1702,8 @@ export class STLManipulator extends EventEmitter {
             if (bambuOptions?.rotateY !== undefined) args.push('--rotate-y', String(bambuOptions.rotateY));
             if (bambuOptions?.cloneObjects) args.push('--clone-objects', bambuOptions.cloneObjects);
             if (bambuOptions?.skipObjects) args.push('--skip-objects', bambuOptions.skipObjects);
-            if (settingsBundle.filamentPaths.length > 0) {
-              args.push('--load-filaments', settingsBundle.filamentPaths.join(';'));
+            if (cliBundle.filamentPaths.length > 0) {
+              args.push('--load-filaments', cliBundle.filamentPaths.join(';'));
               args.push('--load-defaultfila');
             }
             if (bambuOptions?.loadFilamentIds) args.push('--load-filament-ids', bambuOptions.loadFilamentIds);

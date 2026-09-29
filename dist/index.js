@@ -497,6 +497,30 @@ function parseBooleanEnv(rawValue, fallback) {
         return false;
     return fallback;
 }
+// Someone confirming a hardware action may have to walk to the printer, so the
+// SDK's 60-second request default is too short for human confirmation.
+const DEFAULT_CONFIRMATION_TIMEOUT_MS = 600000;
+const MIN_CONFIRMATION_TIMEOUT_MS = 1000;
+const MAX_CONFIRMATION_TIMEOUT_MS = 3600000;
+/** Out-of-range values fall back to the default; Node clamps huge timer delays to 1 ms. */
+function parseConfirmationTimeout(value) {
+    const parsed = Number(value?.trim() || NaN);
+    return Number.isInteger(parsed) && parsed >= MIN_CONFIRMATION_TIMEOUT_MS && parsed <= MAX_CONFIRMATION_TIMEOUT_MS
+        ? parsed
+        : DEFAULT_CONFIRMATION_TIMEOUT_MS;
+}
+function describeDuration(ms) {
+    return ms >= 60000 ? `${Math.round(ms / 6000) / 10} minute(s)` : `${Math.round(ms / 100) / 10} second(s)`;
+}
+function isElicitationTimeout(error) {
+    return error?.code === ErrorCode.RequestTimeout;
+}
+/** Only a missing method or capability means the client cannot show the prompt. */
+function isElicitationUnsupported(error) {
+    const message = String(error?.message ?? error);
+    return error?.code === ErrorCode.MethodNotFound || error?.code === ErrorCode.InvalidRequest ||
+        /does not support (form |url )?elicitation/i.test(message);
+}
 function parsePort(value, fallback) {
     if (!value)
         return fallback;
@@ -822,6 +846,7 @@ class BambuPrinterMCPServer {
     constructor() {
         this.blender = new BlenderMcpBridge();
         this.shuttingDown = false;
+        this.confirmationTimeoutMs = parseConfirmationTimeout(process.env.BAMBU_CONFIRMATION_TIMEOUT_MS);
         this.runtimeConfig = readRuntimeConfig();
         this.server = new Server({
             name: "bambu-printer-mcp",
@@ -842,11 +867,17 @@ class BambuPrinterMCPServer {
                         properties: { confirmed: { type: "boolean", title: "I checked the printer and confirm this operation", default: false } },
                         required: ["confirmed"],
                     },
-                });
+                }, { timeout: this.confirmationTimeoutMs });
                 return response.action === "accept" && response.content?.confirmed === true;
             }
-            catch {
-                throw new Error("Human hardware confirmation requires an MCP client with elicitation support. For deliberately headless operation, BAMBU_REQUIRE_CONFIRMATION=0 disables ordinary print/heat prompts; finished-bed clearance and hardware-error confirmation still require elicitation.");
+            catch (error) {
+                if (isElicitationTimeout(error)) {
+                    throw new Error(`No hardware confirmation within ${describeDuration(this.confirmationTimeoutMs)}; nothing was sent to the printer. Retry when someone can check the printer, or raise BAMBU_CONFIRMATION_TIMEOUT_MS.`);
+                }
+                if (isElicitationUnsupported(error)) {
+                    throw new Error("Human hardware confirmation requires an MCP client with elicitation support. For deliberately headless operation, BAMBU_REQUIRE_CONFIRMATION=0 disables ordinary print/heat prompts; finished-bed clearance and hardware-error confirmation still require elicitation.");
+                }
+                throw new Error(`Human hardware confirmation failed: ${error?.message ?? error}. Nothing was sent to the printer.`);
             }
         });
         this.bambuNetwork = new BambuNetworkBridge();
@@ -902,17 +933,19 @@ class BambuPrinterMCPServer {
                     },
                     required: ["bambu_model"],
                 },
-            });
+            }, { timeout: this.confirmationTimeoutMs });
             if (result.action === "accept" && result.content?.bambu_model) {
                 return validateBambuModel(String(result.content.bambu_model));
             }
             throw new Error("Printer model selection was cancelled. Cannot proceed without knowing the printer model.");
         }
         catch (elicitError) {
+            if (isElicitationTimeout(elicitError)) {
+                throw new Error(`No printer model was selected within ${describeDuration(this.confirmationTimeoutMs)}; nothing was sent to the printer. ` +
+                    "Set BAMBU_MODEL or pass bambu_model in the tool call.");
+            }
             // Elicitation not supported by this client — fall back to a clear error
-            const msg = elicitError?.message || String(elicitError);
-            if (elicitError?.code === -32601 || elicitError?.code === -32600 ||
-                msg.includes("does not support") || msg.includes("elicitation")) {
+            if (isElicitationUnsupported(elicitError)) {
                 throw new Error("bambu_model is required but your MCP client does not support elicitation. " +
                     `Set the BAMBU_MODEL environment variable or pass bambu_model in the tool call. ` +
                     `Valid models: ${VALID_BAMBU_MODELS.join(", ")}`);
