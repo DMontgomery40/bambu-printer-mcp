@@ -1257,19 +1257,32 @@ export class BambuImplementation {
   }
 
   async getFiles(host: string, serial: string, token: string) {
-    const printer = new BambuPrinter(host, serial, token);
+    const client = new FTPClient(15_000);
     const directories = ["cache", "timelapse", "logs"];
     const filesByDirectory: Record<string, string[]> = {};
 
-    await printer.manipulateFiles(async (context) => {
+    try {
+      await client.access({
+        host,
+        port: 990,
+        user: "bblp",
+        password: token,
+        secure: "implicit",
+        secureOptions: ftpsSecureOptions(host),
+      });
+      await this.waitForTlsSession(client);
+      // Discover absent optional directories without creating them or treating
+      // ambiguous FTP 550 responses (including permission errors) as emptiness.
+      const root = await client.list("/");
       for (const directory of directories) {
-        try {
-          filesByDirectory[directory] = await context.readDir(directory);
-        } catch {
-          filesByDirectory[directory] = [];
-        }
+        const present = root.some(entry => entry.name === directory && (entry.isDirectory || entry.isSymbolicLink));
+        filesByDirectory[directory] = present
+          ? (await client.list(`/${directory}`)).map(entry => entry.name)
+          : [];
       }
-    });
+    } finally {
+      client.close();
+    }
 
     const files = Object.entries(filesByDirectory).flatMap(([directory, names]) =>
       names.map((name) => `${directory}/${name}`)
