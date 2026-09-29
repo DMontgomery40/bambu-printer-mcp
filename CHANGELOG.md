@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+### Fixed
+- Revalidate positive heating, resume, and confirmed hardware-error clearing immediately before native command dispatch; keep stop and heater-off available without preflight.
+- Reject fractional AMS unit/slot addresses rather than truncating them to another physical address.
+- Require fresh shared printer-state authorization after native connection setup and again before certificate-retry print dispatch.
+- Select raw native metadata controls by the requested printer instead of the global default model.
+- Preserve unknown observed printer identities in status instead of substituting the configured model.
+- Validate and forward native upload plate, bed, project, and preset metadata; explicitly reject unsupported print options instead of silently ignoring them.
+- Keep heater-off on the selected printer transport after model elicitation, including an overridden non-X2D serial.
+- Interrupt pending native helpers on MCP cancellation, stop, and heater-off; wait for process exit before releasing snapshots, with bounded SIGKILL escalation when SIGTERM is ignored.
+- Route X2D controls from the selected serial when the print model was elicited, without applying the configured X2D transport to an overridden printer.
+- Preserve unit-local filament metadata tray IDs and absolute calibration tray IDs across multiple AMS units and AMS-HT; reject contradictory unit/slot mappings.
+- Restrict public raw native controls to validated AMS metadata and calibration queries/selection; exclude motion, loading, heating, and safety-setting mutations.
+- Add a macOS native build/test CI job while preserving the existing Linux test check.
+- Remove machine-specific launchers and unused GUI automation from the upstream change and release archives.
+- Resolve the model before selecting the X2D native route, including MCP model elicitation, and pass that resolved model through dispatch.
+- Reject raw `ams_mapping2` overrides and missing/empty requested AMS mappings before dispatch; derive native mappings from checked structured tray assignments without silently selecting an external spool.
+- Cover macOS and Linux control routing explicitly, and restrict native helper execution tests to supported hosts.
+- Integrate X2D native prints, uploads, heaters, resume, and error clearing with the current shared file/state/confirmation checks. Preserve existing model routes and reject raw-control bypasses.
+- Include only native source and build scripts in npm and desktop distributions; locate the optional compiled helper relative to the installed package and test fresh local, global, and npm-exec installations. Keep proprietary plug-ins and local binaries out of release archives.
+- Resolve include-based installed templates and substitute current filament/hotend macro names in optional syntax regressions; do not assume a particular installed G383 variant.
+- Retain VailElla's prior X2D eMMC/certificate investigation and hardware evidence. This follow-up uses mocked printer regressions and clean-install/build checks; it does not claim a new physical print.
+- Include the printer host in FTPS TLS options so data connections resume the control session. basic-ftp wraps each data socket without a host, so Node can bind its resumable session to `localhost` instead of the printer host and printers requiring TLS session reuse replied `522 SSL connection failed: session reuse required` to every LIST, STOR and RETR. The contributor verifies successful upload, size check, and deletion on physical X2D USB storage; internal eMMC still refuses FTPS writes with `553`. Printing remains a separate check. `list_printer_files` still uses bambu-js's own FTP client and is not covered by this change.
+
 ## [1.1.13] – 2026-09-27
 
 ### Added
@@ -86,6 +109,9 @@
 ### Security
 - Refresh compatible transitive dependencies to resolve the nine npm audit findings in the previous lockfile; retain the pinned printer dependency patch.
 - Per-call `slicer_path`, `ffmpeg_path`, and `bridge_command` executable selectors are now rejected by default. Trusted server-side environment configuration remains available, including `FFMPEG_PATH` for RTSP camera snapshots; set `MCP_ALLOW_EXECUTABLE_ARG=1` only when intentional per-call overrides are required. `MCP_ALLOW_BRIDGE_COMMAND_ARG` remains a compatibility alias for `bridge_command` only.
+
+### Added
+- **X2D model support** — `BAMBU_MODEL=x2d` is accepted by validation, elicitation, tool schemas, BambuStudio preset mapping, filament profile resolution, RTSP camera routing, and the dual-nozzle H2-family `project_file`/`ams_mapping2` print path. The X2D model ID `N6` is recognized when reported by the printer.
 
 ## [1.1.3] – 2026-05-31
 

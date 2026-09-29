@@ -44,6 +44,20 @@ function assertPatchedParser(packageRoot) {
   assert.equal(result.status, 0, result.stderr || result.error?.message);
 }
 
+function assertNativePackage(packageRoot, cwd) {
+  assert.ok(fs.existsSync(path.join(packageRoot, "native/bambu-native-print.cpp")));
+  assert.ok(fs.existsSync(path.join(packageRoot, "scripts/build-bambu-native.zsh")));
+  assert.equal(fs.existsSync(path.join(packageRoot, "native/bambu-native-print")), false, "a developer's binary must not ship");
+  if (process.platform !== "darwin") return;
+  execFileSync("/bin/zsh", [path.join(packageRoot, "scripts/build-bambu-native.zsh")], { cwd, timeout: 60000, stdio: "pipe" });
+  // Resolve from the installed module while launched outside the package; no printer connections.
+  execFileSync(process.execPath, ["--input-type=module", "-e", `
+    const { pathToFileURL } = await import('node:url');
+    const { assertBambuNativeAvailable } = await import(pathToFileURL(process.argv[1] + '/dist/bambu-native.js'));
+    assertBambuNativeAvailable();
+  `, packageRoot], { cwd, timeout: 20000, stdio: "pipe", env: { ...process.env, BAMBU_NATIVE_HELPER: "" } });
+}
+
 function assertIdempotent(packageRoot, cwd) {
   const require = createRequire(path.join(packageRoot, "package.json"));
   const dependency = path.dirname(require.resolve("bambu-node/package.json"));
@@ -52,6 +66,7 @@ function assertIdempotent(packageRoot, cwd) {
   execFileSync(process.execPath, [path.join(packageRoot, "scripts/install-patches.mjs")], { cwd, stdio: "pipe" });
   targets.forEach((name, index) => assert.deepEqual(fs.readFileSync(name), before[index], "re-running postinstall must not change an already patched dependency"));
   assertPatchedParser(packageRoot);
+  assertNativePackage(packageRoot, cwd);
   return { dependency, targets };
 }
 
@@ -59,6 +74,9 @@ test("published tarball patches the resolved dependency in local, global, and np
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-npm-install-"));
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
   const packed = JSON.parse(npm(["pack", "--ignore-scripts", "--json", "--pack-destination", fixture], ROOT));
+  for (const file of packed[0].files) {
+    assert.doesNotMatch(file.path, /studio-control|launch-bambu|call-bambu|cgevent|LOCAL-X2D|local-x2d/, "machine-local adapters must not ship");
+  }
   const tarball = path.join(fixture, packed[0].filename);
   const local = path.join(fixture, "local");
   const global = path.join(fixture, "global");

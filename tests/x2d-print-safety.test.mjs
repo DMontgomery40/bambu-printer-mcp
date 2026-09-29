@@ -100,7 +100,6 @@ test("X2D MCP print requests stop before slicing, status, uploads, and connectio
   await client.connect(transport);
 
   const requests = [
-    ["print_3mf", { three_mf_path: file, auto_match_ams: true }],
     ["print_collar_charm", { source_path: file }],
     ["start_print", { filename: "cube.gcode" }],
     ["start_print_job", { filename: "cube.gcode" }],

@@ -49,7 +49,7 @@ an existing slicer before suggesting an install. For FULU/Orca CLI auto-slicing,
 require MCP 1.1.11+ and its matching installed profile tree (see guide).
 A slicer is not needed here to print a pre-sliced file. Configure the optional FULU
 BambuNetwork bridge only if I choose it, and explain its runtime/auth needs.
-X2D supports status and slicing here, but direct printing is not supported.
+X2D supports status and slicing; native printing requires macOS and a locally built helper.
 
 If this harness does not already provide code mode or an equivalent, suggest
 a compatible code-mode integration as an optional addition. It is not required;
@@ -122,7 +122,7 @@ If your agent is always on, such as OpenClaw or Hermes Agent running on a comput
 
 ## What's new in bambu-printer-mcp
 
-See the [changelog](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/CHANGELOG.md) for versioned changes. Recent releases add reliable npm and desktop-extension installs, standard Blender MCP integration, corrected P2S/A1 routing, and safer multi-filament CLI slicing. X2D status and slicing are available; **direct X2D printing remains unsupported** pending its native eMMC transport.
+See the [changelog](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/CHANGELOG.md) for versioned changes. Recent releases add reliable npm and desktop-extension installs, standard Blender MCP integration, corrected P2S/A1 routing, and safer multi-filament CLI slicing. X2D status and slicing are available, with optional native printing on macOS through the installed Bambu Studio networking plug-in.
 
 </details>
 
@@ -196,7 +196,7 @@ The optional FULU **BambuNetwork bridge** exposes `bambu_network_bridge_status`,
 - Capture a JPEG snapshot from the chamber camera. Supports A1, A1 mini, P1S, P1P (TCP-on-6000), and X1, X1C, X1E, P2S, H2, H2S, H2D, H2C, H2D Pro, X2D (RTSP via ffmpeg). Requires ffmpeg in PATH for the RTSP path.
 - Upload and print pre-sliced `.3mf` projects with checked plate selection and calibration flags. Legacy `.gcode.3mf` routes require a single external-spool-only plate; see the [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md).
 - Slice through BambuStudio CLI with automatic BBL inheritance/include resolution, per-slot filament colours, and fallback prime-tower placement for multi-nozzle printers. Missing dependencies stop the slice; custom settings and saved project tower positions are preserved. Multi-colour slicing is verified by the contributor on BambuStudio 02.08.02.60 for Windows; older CLI versions have separate limitations. See [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md).
-- Recognize X2D status and slice with its own installed BambuStudio preset (`BAMBU_MODEL=x2d`). **Direct X2D printing is not supported yet**: the internal eMMC transport is pending. These print requests stop before slicing, uploading, or issuing printer commands. Print exported projects through a supported slicer instead.
+- Recognize X2D status and slice with its own installed BambuStudio preset (`BAMBU_MODEL=x2d`). On macOS, `print_3mf` selects the native eMMC route after resolving the model, including an elicited model. Install the optional helper as described below; Linux/Windows native print requests fail before slicing or contacting the printer. Legacy FTPS and remote G-code starts remain unsupported for X2D.
 - Parse AMS mapping from the 3MF's embedded slicer metadata (`Metadata/plate_<n>.json` + gcode filament header) and send it correctly formatted per the OpenBambuAPI spec, with correct H2S/H2D/H2C `ams_mapping2` parallel array format
 - **Auto-match AMS slots by RFID** (`auto_match_ams` flag on `print_3mf`). Resolves required `tray_info_idx` from the sliced 3MF against live AMS inventory. Handles same-SKU different-color filaments by matching on `(tray_info_idx, tray_color)` and tracking already-claimed slots. Dry-run with `resolve_3mf_ams_slots` before printing.
 - Cancel, pause, and resume in-progress print jobs via MQTT
@@ -882,7 +882,7 @@ The primary tool for starting a Bambu print. **Recommended input: a pre-sliced `
 2. If no G-code is found, attempts to auto-slice via the configured slicer. Profile preparation or slicing failures stop the operation before upload. See the slicing guide for tested CLI versions and combinations.
 3. Parses the sliced 3MF to extract the correct plate file and compute its MD5 hash.
 4. Reads slicer metadata and any explicit AMS selection to build the filament mapping.
-5. Uploads via `basic-ftp` to the model-specific location: SD root for H2/full-size A1, `cache/` for P1/X1/A1 mini/P2S. X2D direct printing stops before upload.
+5. Uploads via `basic-ftp` to the model-specific location: SD root for H2/full-size A1, `cache/` for P1/X1/A1 mini/P2S. X2D `print_3mf` instead uses its checked native eMMC route on macOS.
 6. Sends the correct MQTT print command for the target printer family. For H2S/H2D/H2C that means `project_file` with project-length `ams_mapping`, parallel `ams_mapping2`, and H2-compatible calibration flags.
 
 ```json
@@ -919,6 +919,20 @@ Inspect the configured FULU bridge without starting it using `{}`. Use `{"connec
 #### bambu_network_call
 
 Call an allowed read-only probe such as `{"method": "net.is_user_login", "payload": {}}`. The default injects the initialized agent; use `with_agent: false` for `bridge.handshake`. Raw printer mutations and unknown methods are refused; use the dedicated checked print or printer tools.
+
+#### X2D native transport (macOS)
+
+Install Bambu Studio and its networking plug-in, plus the Apple command-line developer tools (`clang++`). The plug-in is loaded at runtime and is not redistributed. In the installed `bambu-printer-mcp` package directory, run `npm run build:native`. For a global install, locate that directory with `npm root -g`; for an extracted desktop extension, run the same command in the extension directory. Rebuild after updating the package. Linux and Windows can still use status and slicing, but this native helper supports macOS only.
+
+The npm package and desktop bundle include `native/bambu-native-print.cpp` and `scripts/build-bambu-native.zsh`, never a developer's compiled binary. The server finds the built helper relative to its installed package, regardless of the launch directory. A trusted server setting `BAMBU_NATIVE_HELPER` can select an alternate executable.
+
+For X2D, `print_3mf` defaults to `connection_mode: "bambu_native"`; legacy `lan_mqtt_ftps` requests are redirected to it. Supply `ams_slots`, a complete project-level `ams_mapping`, or `auto_match_ams: true`. An external-spool job requires explicit `use_ams: false`. Raw `ams_mapping2` and nozzle/extra-option overrides are rejected before dispatch; the server derives both AMS representations from the checked structured mapping. Model/nozzle/material inspection, fresh printer-state checks, and human preflight apply before the helper receives a private snapshot. The native helper requests fresh shared printer-state authorization immediately before each print submission, including a certificate retry, and before checked heating, resume, or error-clearing commands; custom helpers must support this handshake. Stop and heater-off remain available without preflight. Native upload-only requests use the same all-plate inspection as FTPS uploads. They accept `project_name`, `preset_name`, `bed_type`, and an existing `plate_index`; AMS, nozzle, and calibration print options are rejected. Use `print_3mf` for checked print settings.
+
+The helper waits for connection/certificate exchange and retries only the initial `-4030` send once. Previous hardware testing reached `RUNNING` on X2D; this revision is validated with mocked transport regressions and clean installs, not a new physical print. `bambu_connect` is an optional macOS handoff for user review in Bambu Connect and does not start a print. Native task, heater, and error controls retain the common safety checks; raw controls cannot bypass them. Request cancellation, stop, and heater-off interrupt pending native helpers; the server waits for process exit before releasing a checked file. A command already sent to the printer cannot be recalled by cancelling the request, so verify printer state before retrying.
+
+#### x2d_native_control
+
+This optional X2D metadata tool accepts `ams_filament_setting` and `extrusion_cali_sel`, plus the read-only queries `extrusion_cali_get`, `extrusion_cali_get_result`, and `flowrate_get_result`. It validates command fields, numeric metadata, and AMS unit/slot selection. Motion, filament loading, heating, safety-setting changes, and task control are not exposed through raw JSON; use the dedicated checked tools where available. A metadata declaration does not verify the physical spool contents.
 
 #### print_3mf_bambu_network
 

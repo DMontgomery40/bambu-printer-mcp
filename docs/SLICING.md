@@ -27,7 +27,7 @@ These preflight changes have automated regression coverage with intercepted prin
 | Single-colour BambuStudio CLI slicing | MCP slices via CLI with automatic BBL profile resolution | ✅ Works (verified H2S, H2D, X1C, P1S on 02.06.01.55). H2C requires Bambu Studio 2.4.0+ and `BAMBU_MODEL=h2c`. |
 | FULU/Orca CLI preparation (1.1.11+) | Same exact-machine gate and BBL dependency resolution | Regression-tested preparation and failure handling; live slicer/version validation remains separate. |
 | Multi-color BambuStudio CLI slicing | MCP prepares every filament slot's colour and a fallback tower position | Contributor-verified on Windows BambuStudio 02.08.02.60, including four-colour X2D slicing. See version limits below. |
-| X2D status and slicing | `BAMBU_MODEL=x2d` with an installed X2D preset | Available. Direct X2D printing is deferred pending the native eMMC transport. |
+| X2D status and slicing | `BAMBU_MODEL=x2d` with an installed X2D preset | Available. Native printing additionally requires macOS and the optional helper; legacy FTPS remains unsupported. |
 | Pre-sliced `.gcode.3mf` → printer | MCP `print_3mf` | ✅ Works (verified live on Kingpin H2D) |
 | Other slicing combinations | Pre-slice in the GUI, then use `print_3mf` for a supported printer | Inspect the preview and use the printer's supported transport. |
 
@@ -98,11 +98,13 @@ on an exported multi-colour project. These were filed in
 The colour fix does not establish that every older-version or multi-material
 failure is resolved. Use a GUI-sliced project when a CLI combination fails.
 
-X2D has its own preset, status identification, and slicing support. Direct
-X2D printing is deliberately rejected before slicing or upload because its
-internal eMMC needs a native transport that has not shipped. Print through a
-supported slicer; do not choose H2D as a substitute model. Existing H2S/H2D
-print routes remain unchanged.
+X2D has its own preset, status identification, and slicing support. On macOS,
+`print_3mf` uses the optional native helper and installed Bambu Studio networking
+plug-in for the internal eMMC transport, after the shared print safety checks.
+See [native setup](../README.md#x2d-native-transport-macos). Other operating
+systems reject native print requests before slicing or connecting. Legacy
+FTPS/remote-file starts remain unsupported; do not choose H2D as a substitute
+model. Existing H2S/H2D print routes remain unchanged.
 
 ## Why Path A is still recommended
 
@@ -188,7 +190,7 @@ For the default direct LAN path, the MCP selects the upload location and command
 | Full-size A1 | SD root `/<file>` | `project_file`, `file:///sdcard/<file>` |
 | P2S | `/cache/<file>` | `project_file`, `ftp:///cache/<file>` |
 | H2S / H2D / H2C | SD root `/<file>` | `project_file`, `ftp:///<file>` |
-| X2D | None | Rejects before slice, connection, or upload; native eMMC transport pending |
+| X2D | Native eMMC on macOS | `print_3mf` uses a locally built helper and installed plug-in; legacy FTPS/remote-file starts are rejected |
 
 The filename suffix is significant for the legacy route: the code recognizes `.gcode.3mf` for `gcode_file`, while other `.3mf` names use project-file handling. Keep the slicer's sliced-file export name when using the legacy path. Do not rename unsliced content to force routing.
 

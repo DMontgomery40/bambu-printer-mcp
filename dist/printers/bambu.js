@@ -51,11 +51,11 @@ const MODEL_ID_TO_NAME = {
     "BL-P002": "X1",
     C13: "X1E",
 };
-const H2_MODEL_NAMES = new Set(["h2", "h2c", "h2d", "h2dpro", "h2d pro", "h2s"]);
+const H2_MODEL_NAMES = new Set(["h2", "h2c", "h2d", "h2dpro", "h2d pro", "h2s", "x2d"]);
 export function assertDirectPrintSupported(model, serial) {
     if (model?.trim().toLowerCase() === "x2d" || serial?.trim().toUpperCase().startsWith("20P")) {
-        throw new Error("X2D direct printing is not supported pending native eMMC transport support. " +
-            "X2D status and slicing remain available; use a supported slicer to print.");
+        throw new Error("X2D direct printing is not supported through legacy MQTT/FTPS. Use the macOS native eMMC route via print_3mf. " +
+            "X2D status and slicing remain available on all supported platforms.");
     }
 }
 function isH2ModelName(model) {
@@ -196,9 +196,18 @@ class TolerantBambuClient extends BambuClient {
         return [undefined];
     }
 }
-/** Build FTPS secureOptions that include the client cert+key when available. */
-function ftpsSecureOptions() {
-    const opts = { rejectUnauthorized: false };
+/**
+ * Build FTPS secureOptions that include the client cert+key when available.
+ *
+ * `host` must be included: basic-ftp opens each data connection by wrapping
+ * a plain socket with tls.connect(tlsOptions), and without a host Node can bind
+ * the resumable session to "localhost" instead of the printer host. Printers
+ * that require TLS session reuse (vsftpd require_ssl_reuse, e.g. X2D) refuse
+ * to resume the session and reply "522 SSL connection failed: session reuse
+ * required", failing every LIST, STOR and RETR.
+ */
+function ftpsSecureOptions(host) {
+    const opts = { rejectUnauthorized: false, host };
     if (CLIENT_CREDS) {
         opts.cert = CLIENT_CREDS.cert;
         opts.key = CLIENT_CREDS.key;
@@ -751,12 +760,15 @@ export class BambuImplementation {
             amsMapping,
         };
     }
-    async cancelJob(host, serial, token) {
+    async cancelJob(host, serial, token, dispatch) {
         cancelPendingPrinterOperations(host, serial);
         this.checkedJobs.delete(`${host}\n${serial}`);
-        const printer = await this.getPrinter(host, serial, token);
+        const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
         try {
-            await invokeWithoutAck(printer, new UpdateStateCommand({ state: "stop" }));
+            if (dispatch)
+                return await dispatch();
+            else
+                await invokeWithoutAck(printer, new UpdateStateCommand({ state: "stop" }));
             this.checkedJobs.delete(`${host}\n${serial}`);
             return { status: "success", message: "Cancel command sent successfully." };
         }
@@ -764,36 +776,47 @@ export class BambuImplementation {
             throw new Error(`Failed to cancel print: ${error.message}`);
         }
     }
-    async pauseJob(host, serial, token) {
-        const printer = await this.getPrinter(host, serial, token);
+    async pauseJob(host, serial, token, dispatch) {
+        const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
         try {
-            await invokeWithoutAck(printer, new UpdateStateCommand({ state: "pause" }));
+            if (dispatch)
+                return await dispatch();
+            else
+                await invokeWithoutAck(printer, new UpdateStateCommand({ state: "pause" }));
             return { status: "success", message: "Pause command sent successfully." };
         }
         catch (error) {
             throw new Error(`Failed to pause print: ${error.message}`);
         }
     }
-    async resumeJob(host, serial, token) {
+    async resumeJob(host, serial, token, dispatch) {
         return withPrinterOperation(host, serial, async (assertActive) => {
             const checked = this.checkedJobs.get(`${host}\n${serial}`);
             if (!checked)
                 throw new Error("Resume requires a job inspected and started by this server instance. Verify other jobs on the printer before resuming them there.");
-            const status = await this.getSafetyStatus(host, serial, token);
-            validatePrinterState(status, { ...checked.requirements, requireIdle: false });
-            if (status.raw.gcode_state !== "PAUSE")
-                throw new Error("Resume requires a freshly reported paused job.");
-            const stem = (value) => path.posix.basename(value).replace(/(?:\.gcode)?\.3mf$|\.gcode$/i, "");
-            const names = [status.raw.gcode_file, status.raw.subtask_name].filter(value => typeof value === "string");
-            if (!names.some(value => stem(value) === stem(checked.remotePath)))
-                throw new Error("Paused job identity does not match this server's inspected artifact.");
-            const printer = await this.getPrinter(host, serial, token);
+            const beforeDispatch = async () => {
+                assertActive();
+                const status = await this.getSafetyStatus(host, serial, token);
+                validatePrinterState(status, { ...checked.requirements, requireIdle: false });
+                if (status.raw.gcode_state !== "PAUSE")
+                    throw new Error("Resume requires a freshly reported paused job.");
+                const stem = (value) => path.posix.basename(value).replace(/(?:\.gcode)?\.3mf$|\.gcode$/i, "");
+                const names = [status.raw.gcode_file, status.raw.subtask_name].filter(value => typeof value === "string");
+                if (!names.some(value => stem(value) === stem(checked.remotePath)))
+                    throw new Error("Paused job identity does not match this server's inspected artifact.");
+                assertActive();
+            };
+            await beforeDispatch();
+            const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
             assertActive();
-            await invokeWithoutAck(printer, new UpdateStateCommand({ state: "resume" }));
+            if (dispatch)
+                await dispatch(assertActive, beforeDispatch);
+            else
+                await invokeWithoutAck(printer, new UpdateStateCommand({ state: "resume" }));
             return { status: "success", message: "Resume command sent successfully." };
         });
     }
-    async clearHmsErrors(host, serial, token) {
+    async clearHmsErrors(host, serial, token, dispatch) {
         return withPrinterOperation(host, serial, async (assertActive) => {
             const codesFor = (status) => {
                 if (!Array.isArray(status.raw?.hms) || status.raw?.print_error === undefined)
@@ -802,12 +825,20 @@ export class BambuImplementation {
             };
             const codes = codesFor(await this.getSafetyStatus(host, serial, token));
             await this.confirmHardwareAction(`Clear reported hardware errors on ${serial}: ${codes.join(", ")}? Inspect the printer and resolve the physical cause first. Confirm only after removing obstructions and correcting the fault.`, true);
-            const current = codesFor(await this.getSafetyStatus(host, serial, token));
-            if (JSON.stringify(current) !== JSON.stringify(codes))
-                throw new Error("Hardware errors changed during confirmation. Inspect the new report before retrying.");
-            const printer = await this.getPrinter(host, serial, token);
+            const beforeDispatch = async () => {
+                assertActive();
+                const current = codesFor(await this.getSafetyStatus(host, serial, token));
+                if (JSON.stringify(current) !== JSON.stringify(codes))
+                    throw new Error("Hardware errors changed before clearing. Inspect the new report before retrying.");
+                assertActive();
+            };
+            await beforeDispatch();
+            const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
             assertActive();
-            await printer.publish({ print: { command: "clean_print_error", sequence_id: "0" } });
+            if (dispatch)
+                await dispatch(assertActive, beforeDispatch);
+            else
+                await printer.publish({ print: { command: "clean_print_error", sequence_id: "0" } });
             this.clearedErrors.set(serial, codes);
             await sleep(COMMAND_SETTLE_MS);
             return { status: "success", message: "Confirmed HMS clear command sent. The next print requires acknowledgment of these cleared codes.", cleared_codes: codes };
@@ -862,15 +893,15 @@ export class BambuImplementation {
         };
     }
     async rereadAmsRfid(host, serial, token, amsId, slotId) {
-        const printer = await this.getPrinter(host, serial, token);
-        const normalizedAmsId = Math.trunc(amsId);
-        const normalizedSlotId = Math.trunc(slotId);
+        const normalizedAmsId = amsId;
+        const normalizedSlotId = slotId;
         if (!Number.isInteger(normalizedAmsId) || normalizedAmsId < 0 || normalizedAmsId > 3) {
             throw new Error("ams_id must be an integer from 0 to 3.");
         }
         if (!Number.isInteger(normalizedSlotId) || normalizedSlotId < 0 || normalizedSlotId > 3) {
             throw new Error("slot_id must be an integer from 0 to 3.");
         }
+        const printer = await this.getPrinter(host, serial, token);
         await printer.publish({
             print: {
                 command: "ams_get_rfid",
@@ -887,7 +918,7 @@ export class BambuImplementation {
             slot_id: normalizedSlotId,
         };
     }
-    async setTemperature(host, serial, token, component, temperature, bambuModel, material, nozzleDiameter = 0.4) {
+    async setTemperature(host, serial, token, component, temperature, bambuModel, material, nozzleDiameter = 0.4, dispatch) {
         const normalizedComponent = component.toLowerCase();
         const heater = normalizedComponent === "bed" ? "bed" :
             ["extruder", "nozzle", "tool", "tool0"].includes(normalizedComponent) ? "nozzle" : undefined;
@@ -906,20 +937,28 @@ export class BambuImplementation {
         const targetTemperature = temperature === 0 ? 0 : validateTemperature(heater, temperature, model, material ? [material] : undefined);
         const gcode = `${heater === "bed" ? "M140" : "M104"}${heater === "nozzle" && targetTemperature > 0 ? " T0" : ""} S${targetTemperature}`;
         const send = async (assertActive) => {
+            let beforeDispatch;
             if (targetTemperature > 0) {
                 const status = await this.getSafetyStatus(host, serial, token);
-                validatePrinterState(status, heater === "nozzle"
-                    ? manualHeatingRequirements(status, model, nozzleDiameter, material)
+                const validateHeatingStatus = (current) => validatePrinterState(current, heater === "nozzle"
+                    ? manualHeatingRequirements(current, model, nozzleDiameter, material)
                     : { model: model, nozzleDiameters: [] });
+                validateHeatingStatus(status);
                 await this.confirmHardwareAction(`Heat ${heater} on ${model.toUpperCase()} (${serial}) to ${targetTemperature}°C?${material ? ` Declared material: ${material}. Confirm the physical spool label.` : ""}`);
-                const confirmedStatus = await this.getSafetyStatus(host, serial, token);
-                validatePrinterState(confirmedStatus, heater === "nozzle"
-                    ? manualHeatingRequirements(confirmedStatus, model, nozzleDiameter, material)
-                    : { model: model, nozzleDiameters: [] });
+                beforeDispatch = async () => {
+                    assertActive();
+                    const confirmedStatus = await this.getSafetyStatus(host, serial, token);
+                    validateHeatingStatus(confirmedStatus);
+                    assertActive();
+                };
+                await beforeDispatch();
             }
-            const printer = await this.getPrinter(host, serial, token);
+            const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
             assertActive();
-            await invokeWithoutAck(printer, new GCodeLineCommand({ gcodes: [gcode] }));
+            if (dispatch)
+                await dispatch(heater, targetTemperature, assertActive, beforeDispatch);
+            else
+                await invokeWithoutAck(printer, new GCodeLineCommand({ gcodes: [gcode] }));
             return { status: "success", message: `Temperature command sent for ${normalizedComponent}.`, command: gcode };
         };
         if (targetTemperature === 0) {
@@ -976,16 +1015,16 @@ export class BambuImplementation {
         };
     }
     async setAmsDrying(host, serial, token, action, amsId) {
-        const printer = await this.getPrinter(host, serial, token);
         const normalizedAction = action.trim().toLowerCase();
         if (normalizedAction !== "start" && normalizedAction !== "stop") {
             throw new Error("AMS drying action must be one of: start, stop.");
         }
-        const normalizedAmsId = Math.trunc(amsId);
+        const normalizedAmsId = amsId;
         if (!Number.isInteger(normalizedAmsId) || normalizedAmsId < 0 || normalizedAmsId > 3) {
             throw new Error("ams_id must be an integer from 0 to 3.");
         }
         const param = normalizedAction === "start" ? "start_drying" : "stop_drying";
+        const printer = await this.getPrinter(host, serial, token);
         await printer.publish({
             print: {
                 command: "ams_control",
@@ -1060,7 +1099,7 @@ export class BambuImplementation {
             exists,
         };
     }
-    async uploadFile(host, serial, token, filePath, filename, print, bambuModel) {
+    async uploadFile(host, serial, token, filePath, filename, print, bambuModel, upload) {
         const remotePath = normalizedRemotePath(filename);
         if (!print) {
             const sourceExtension = path.extname(filePath).toLowerCase();
@@ -1104,7 +1143,10 @@ export class BambuImplementation {
                 }
                 assertActive();
                 const destination = path.posix.join(path.posix.dirname(remotePath), uniquePrintName(remotePath));
-                await this.ftpUpload(host, token, snapshot, `/${destination}`);
+                if (upload)
+                    await upload(snapshot, destination, assertActive);
+                else
+                    await this.ftpUpload(host, token, snapshot, `/${destination}`);
                 return { status: "success", uploaded: true, remotePath: destination, printRequested: false, inspected: printable };
             }));
         }
@@ -1164,7 +1206,7 @@ export class BambuImplementation {
     async ftpDownload(host, token, remotePath, localPath) {
         const client = new FTPClient(15000);
         try {
-            await client.access({ host, port: 990, user: "bblp", password: token, secure: "implicit", secureOptions: ftpsSecureOptions() });
+            await client.access({ host, port: 990, user: "bblp", password: token, secure: "implicit", secureOptions: ftpsSecureOptions(host) });
             await this.waitForTlsSession(client);
             const size = await client.size(`/${remotePath}`);
             if (!Number.isFinite(size) || size <= 0 || size > 512 * 1024 * 1024)
@@ -1197,8 +1239,8 @@ export class BambuImplementation {
      *     [16..16+payloadSize] JPEG (FF D8 ... FF D9)
      *
      * Verified models per upstream docs: A1, A1 mini, P1S, P1P. X1/X1C/X1E
-     * and P2S use RTSP on port 322 instead. H2/H2S/H2D/H2C
-     * are not documented; we fail fast rather than guess at the protocol.
+     * and P2S use RTSP on port 322 instead. H2/H2S/H2D/H2C/X2D
+     * use the same RTSP path.
      *
      * Read-only; no confirm gate. Default 8s timeout for cold-start latency.
      */
@@ -1257,18 +1299,21 @@ export class BambuImplementation {
     }
     /**
      * Pull a single JPEG frame from the printer's RTSP/RTSPS stream using
-     * ffmpeg. Used for X1, P2S, and H2 series.
+     * ffmpeg. Used for X1, P2S, H2-family printers, and X2D.
      *
      * URL pattern verified against HA bambulab's models.py example:
      *   rtsps://bblp:<access_code>@<host>:322/streaming/live/1
      *
      * ffmpeg invocation:
-     *   ffmpeg -rtsp_transport tcp -i <url> -frames:v 1 -f image2 -c:v mjpeg -y <out>
+     *   ffmpeg -tls_verify 0 -rtsp_transport tcp -i <url> -frames:v 1 -f image2 -c:v mjpeg -y <out>
      *
-     * -rtsp_transport tcp avoids UDP NAT/firewall issues. -frames:v 1
-     * makes ffmpeg exit as soon as one frame lands. -y overwrites the temp
-     * file. The Bambu printer presents a self-signed cert; ffmpeg's TLS
-     * layer accepts that by default (no host verification).
+     * -tls_verify 0 accepts the printer's self-signed certificate. This is
+     * consistent with the existing local-device TLS/FTPS paths, which do not
+     * have a public CA chain or hostname that ffmpeg can validate. The
+     * connection is still encrypted and remains scoped to the configured
+     * printer host. -rtsp_transport tcp avoids UDP NAT/firewall issues.
+     * -frames:v 1 makes ffmpeg exit as soon as one frame lands. -y overwrites
+     * the temp file.
      */
     async fetchRtspCameraFrame(host, token, timeoutMs, ffmpegPath) {
         const fsSync = await import("node:fs");
@@ -1283,6 +1328,7 @@ export class BambuImplementation {
         // have to detect ffmpeg version. -rtsp_transport tcp avoids UDP NAT
         // headaches; -frames:v 1 makes ffmpeg exit on first frame.
         const args = [
+            "-tls_verify", "0",
             "-rtsp_transport", "tcp",
             "-i", url,
             "-frames:v", "1",
@@ -1466,7 +1512,7 @@ export class BambuImplementation {
                 user: "bblp",
                 password: token,
                 secure: "implicit",
-                secureOptions: ftpsSecureOptions(),
+                secureOptions: ftpsSecureOptions(host),
             });
             await this.waitForTlsSession(client);
             const absoluteRemote = remotePath.startsWith("/") ? remotePath : `/${remotePath}`;
@@ -1491,7 +1537,7 @@ export class BambuImplementation {
                 user: "bblp",
                 password: token,
                 secure: "implicit",
-                secureOptions: ftpsSecureOptions(),
+                secureOptions: ftpsSecureOptions(host),
             });
             // With TLS 1.3 the session ticket arrives asynchronously; basic-ftp calls
             // getSession() when opening the data channel and gets undefined if the

@@ -58,6 +58,9 @@ export function packageMcpb({ root = ROOT, outputPath = path.join(root, "bambu-p
     }
     fs.mkdirSync(path.join(staging, "scripts"));
     copyReleaseInput(path.join(root, "scripts/install-patches.mjs"), path.join(staging, "scripts/install-patches.mjs"));
+    fs.mkdirSync(path.join(staging, "native"));
+    copyReleaseInput(path.join(root, "native/bambu-native-print.cpp"), path.join(staging, "native/bambu-native-print.cpp"));
+    copyReleaseInput(path.join(root, "scripts/build-bambu-native.zsh"), path.join(staging, "scripts/build-bambu-native.zsh"));
     for (const name of ["CONTRIBUTORS", "CONTRIBUTORS.md"]) {
       if (fs.existsSync(path.join(root, name))) copyReleaseInput(path.join(root, name), path.join(staging, name));
     }

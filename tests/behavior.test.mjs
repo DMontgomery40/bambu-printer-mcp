@@ -14,6 +14,13 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import JSZip from "jszip";
 import { hasAmsMappingInput, normalizeAmsMappingObject } from "../dist/ams-mapping.js";
+import { buildBambuConnectImportUrl } from "../dist/bambu-connect.js";
+import {
+  buildBambuNativeFanCommand,
+  buildBambuNativeTemperatureCommand,
+  uploadWithBambuNative,
+  validateBambuNativeControlMessage,
+} from "../dist/bambu-native.js";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF } from "../dist/3mf_parser.js";
 import { BambuImplementation } from "../dist/printers/bambu.js";
 import { STLManipulator } from "../dist/stl/stl-manipulator.js";
@@ -154,6 +161,7 @@ function assertCommonToolPresence(listToolsResult) {
   assert.ok(names.includes("set_print_speed"));
   assert.ok(names.includes("set_airduct_mode"));
   assert.ok(names.includes("reread_ams_rfid"));
+  assert.ok(names.includes("x2d_native_control"));
   assert.ok(names.includes("skip_objects"));
   assert.ok(names.includes("get_stl_info"));
   assert.ok(names.includes("blender_mcp_edit_model"));
@@ -161,11 +169,301 @@ function assertCommonToolPresence(listToolsResult) {
   assert.ok(names.includes("print_3mf_bambu_network"), "print_3mf_bambu_network tool must be registered");
   assert.ok(names.includes("bambu_network_bridge_status"), "bambu_network_bridge_status tool must be registered");
   assert.ok(names.includes("bambu_network_call"), "bambu_network_call tool must be registered");
+  assert.ok(names.includes("bambu_connect_import_file"), "bambu_connect_import_file tool must be registered");
   assert.ok(names.includes("upload_gcode"), "upload_gcode tool must be registered");
   assert.ok(names.includes("start_print"), "start_print compatibility alias must be registered");
   assert.ok(names.includes("start_print_job"), "start_print_job tool must be registered");
   assert.ok(names.includes("slice_stl"), "slice_stl tool must be registered");
 }
+
+test("Bambu Connect handoff builds the official encoded import URL without opening the app", () => {
+  const filePath = path.join(os.tmpdir(), `bambu-connect-url-${Date.now()}.gcode.3mf`);
+  fs.writeFileSync(filePath, "fixture");
+
+  try {
+    const importUrl = buildBambuConnectImportUrl({
+      filePath,
+      name: "X2D 云端测试",
+      version: "1.0.0",
+    });
+    const parsed = new URL(importUrl);
+    assert.equal(parsed.protocol, "bambu-connect:");
+    assert.equal(parsed.hostname, "import-file");
+    assert.equal(parsed.searchParams.get("path"), path.resolve(filePath));
+    assert.equal(parsed.searchParams.get("name"), "X2D 云端测试");
+    assert.equal(parsed.searchParams.get("version"), "1.0.0");
+  } finally {
+    fs.rmSync(filePath, { force: true });
+  }
+});
+
+test("X2D native control accepts Studio device commands but rejects unrelated device JSON", () => {
+  const pause = validateBambuNativeControlMessage(
+    JSON.stringify({ print: { command: "pause", sequence_id: "1", param: "" } })
+  );
+  assert.equal(pause.command, "pause");
+
+  const load = validateBambuNativeControlMessage(
+    JSON.stringify({ print: { command: "ams_change_filament", sequence_id: "2", ams_id: 0, slot_id: 1, target: 1 } })
+  );
+  assert.equal(load.command, "ams_change_filament");
+
+  const calibrate = validateBambuNativeControlMessage(
+    JSON.stringify({ print: { command: "gcode_line", sequence_id: "3", param: "M620 C0 \n" } })
+  );
+  assert.equal(calibrate.command, "gcode_line");
+
+  const fanCommand = buildBambuNativeFanCommand("right_auxiliary", 0, "fan-test");
+  const fan = validateBambuNativeControlMessage(fanCommand.messageJson);
+  assert.equal(fan.command, "set_fan");
+  assert.deepEqual(JSON.parse(fan.messageJson), {
+    print: { command: "set_fan", sequence_id: "fan-test", fan_index: 10, speed: 0 },
+  });
+
+  const temperatureCommand = buildBambuNativeTemperatureCommand("bed", 55.4, "temp-test");
+  assert.deepEqual(JSON.parse(temperatureCommand.messageJson), {
+    print: { command: "set_bed_temp", sequence_id: "temp-test", temp: 55 },
+  });
+
+  for (const message of [
+    { print: { command: "ams_filament_setting", sequence_id: "4", ams_id: 0, slot_id: 1, tray_id: 1, tray_info_idx: "GFA00", setting_id: "GFSA00", tray_color: "FFFFFFFF", nozzle_temp_min: 190, nozzle_temp_max: 240, tray_type: "PLA" } },
+    { print: { command: "extrusion_cali_get", sequence_id: "5", filament_id: "GFA00", nozzle_diameter: "0.4" } },
+    { print: { command: "extrusion_cali_sel", sequence_id: "6", tray_id: 1, ams_id: 0, slot_id: 1, cali_idx: -1, filament_id: "GFA00", nozzle_diameter: "0.4" } },
+    { print: { command: "gcode_file", sequence_id: "6b", param: "/usr/etc/print/auto_cali_for_user.gcode" } },
+    { print: { command: "set_ctt", sequence_id: "6c", temp: 40 } },
+    { system: { command: "ledctrl", sequence_id: "7", led_node: "chamber_light", led_mode: "off" } },
+    { camera: { command: "ipcam_resolution_set", sequence_id: "8", resolution: "1080p" } },
+    { xcam: { command: "xcam_control_set", sequence_id: "9", module_name: "fod_check", control: true } },
+  ]) {
+    assert.doesNotThrow(() => validateBambuNativeControlMessage(JSON.stringify(message)));
+  }
+
+  assert.throws(
+    () => validateBambuNativeControlMessage(JSON.stringify({ print: { command: "set_bed_temp", temp: 120 } })),
+    /sequence_id/i
+  );
+  assert.throws(
+    () => validateBambuNativeControlMessage(JSON.stringify({ print: { command: "gcode_line", param: "M104 S300" } })),
+    /limited to AMS/i
+  );
+  assert.throws(
+    () => validateBambuNativeControlMessage(JSON.stringify({ print: { command: "gcode_file", param: "/tmp/arbitrary.gcode" } })),
+    /built-in user calibration/i
+  );
+  assert.throws(
+    () => validateBambuNativeControlMessage(JSON.stringify({ system: { command: "reboot" } })),
+    /not allowed/i
+  );
+  assert.throws(
+    () => validateBambuNativeControlMessage(JSON.stringify({ upgrade: { command: "start" } })),
+    /not allowed/i
+  );
+  assert.throws(
+    () => validateBambuNativeControlMessage(JSON.stringify({ print: { command: "set_fan", sequence_id: "1", fan_index: 0, speed: 0 } })),
+    /fan_index/i
+  );
+  assert.throws(
+    () => validateBambuNativeControlMessage(JSON.stringify({ print: { command: "set_fan", sequence_id: "1", fan_index: 1, speed: 11 } })),
+    /10% steps/i
+  );
+  assert.throws(
+    () => validateBambuNativeControlMessage(JSON.stringify({ print: { command: "set_fan", sequence_id: "1", fan_index: 1, speed: 0, gcode: "M104 S300" } })),
+    /unsupported fields/i
+  );
+});
+
+test("X2D public task and AMS tools dispatch through the native helper, including AMS-HT id 128", { skip: process.platform !== "darwin" }, async (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-native-control-"));
+  const helperPath = path.join(tempDir, "fake-native-helper.mjs");
+  fs.writeFileSync(
+    helperPath,
+    [
+      "#!/usr/bin/env node",
+      "console.log(JSON.stringify({ mode: process.argv[2], message: JSON.parse(process.env.BAMBU_NATIVE_COMMAND_JSON) }));",
+      "",
+    ].join("\n")
+  );
+  fs.chmodSync(helperPath, 0o755);
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["--import", `data:text/javascript,${encodeURIComponent(`import { BambuImplementation } from ${JSON.stringify(new URL("../dist/printers/bambu.js", import.meta.url).href)}; BambuImplementation.prototype.getStatus = async () => ({connected:true,status:"IDLE"});`)}`, SERVER_ENTRY],
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+      PRINTER_HOST: "127.0.0.1",
+      BAMBU_SERIAL: "TEST_SERIAL",
+      BAMBU_TOKEN: "TEST_TOKEN",
+      BAMBU_MODEL: "x2d",
+      BAMBU_NATIVE_HELPER: helperPath,
+    },
+    stderr: "pipe",
+  });
+  const client = createClient();
+  t.after(async () => {
+    await closeTransport(transport);
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+  await client.connect(transport);
+
+  const pause = parseJsonResult(await client.callTool({ name: "pause_print", arguments: {} }));
+  assert.equal(pause.route, "bambu:///local");
+  assert.equal(JSON.parse(pause.updates[0]).message.print.command, "pause");
+
+  const fanOff = parseJsonResult(
+    await client.callTool({ name: "set_fan_speed", arguments: { fan: "part", speed: 0, confirm_during_print: true } })
+  );
+  const fanMessage = JSON.parse(fanOff.updates[0]).message.print;
+  assert.equal(fanOff.route, "bambu:///local");
+  assert.equal(fanOff.fan, "part");
+  assert.equal(fanOff.fan_index, 1);
+  assert.equal(fanOff.speed, 0);
+  assert.equal(fanMessage.command, "set_fan");
+  assert.equal(fanMessage.fan_index, 1);
+  assert.equal(fanMessage.speed, 0);
+
+  const amsSetting = {
+    print: {
+      command: "ams_filament_setting",
+      sequence_id: "ams-setting-test",
+      ams_id: 0,
+      slot_id: 1,
+      tray_id: 1,
+      tray_info_idx: "GFA00",
+      setting_id: "GFSA00",
+      tray_color: "FFFFFFFF",
+      nozzle_temp_min: 190,
+      nozzle_temp_max: 240,
+      tray_type: "PLA",
+    },
+  };
+  const amsSettingResult = parseJsonResult(
+    await client.callTool({ name: "x2d_native_control", arguments: { message_json: JSON.stringify(amsSetting) } })
+  );
+  assert.equal(amsSettingResult.route, "bambu:///local");
+  assert.deepEqual(JSON.parse(amsSettingResult.updates[0]).message, amsSetting);
+
+  const paSelection = {
+    print: {
+      command: "extrusion_cali_sel",
+      sequence_id: "pa-selection-test",
+      tray_id: 1,
+      ams_id: 0,
+      slot_id: 1,
+      cali_idx: -1,
+      filament_id: "GFA00",
+      nozzle_diameter: "0.4",
+    },
+  };
+  const paSelectionResult = parseJsonResult(
+    await client.callTool({ name: "x2d_native_control", arguments: { message_json: JSON.stringify(paSelection) } })
+  );
+  assert.equal(paSelectionResult.route, "bambu:///local");
+  assert.deepEqual(JSON.parse(paSelectionResult.updates[0]).message, paSelection);
+
+  const drying = parseJsonResult(
+    await client.callTool({ name: "set_ams_drying", arguments: { action: "stop", ams_id: 128 } })
+  );
+  const dryingMessage = JSON.parse(drying.updates[0]).message.print;
+  assert.equal(dryingMessage.command, "ams_control");
+  assert.equal(dryingMessage.ams_id, 128);
+  assert.equal(dryingMessage.param, "stop_drying");
+
+  const rfid = parseJsonResult(
+    await client.callTool({ name: "reread_ams_rfid", arguments: { ams_id: 128, slot_id: 0 } })
+  );
+  const rfidMessage = JSON.parse(rfid.updates[0]).message.print;
+  assert.equal(rfidMessage.command, "ams_get_rfid");
+  assert.equal(rfidMessage.ams_id, 128);
+  assert.equal(rfidMessage.slot_id, 0);
+});
+
+test("native upload forwards helper progress before returning the final result", { skip: process.platform !== "darwin" }, async (t) => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-native-progress-"));
+  const helperPath = path.join(tempDir, "fake-native-helper.mjs");
+  fs.writeFileSync(
+    helperPath,
+    [
+      "#!/usr/bin/env node",
+      "console.log('native_update status=1 code=12 msg=12%');",
+      "console.log('native_update status=1 code=68 msg=68%');",
+      "console.log('native_upload result=0');",
+      "",
+    ].join("\n")
+  );
+  fs.chmodSync(helperPath, 0o755);
+
+  const previousHelper = process.env.BAMBU_NATIVE_HELPER;
+  process.env.BAMBU_NATIVE_HELPER = helperPath;
+  t.after(() => {
+    if (previousHelper === undefined) delete process.env.BAMBU_NATIVE_HELPER;
+    else process.env.BAMBU_NATIVE_HELPER = previousHelper;
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const progress = [];
+  const result = await uploadWithBambuNative(
+    {
+      host: "127.0.0.1",
+      serial: "TEST_SERIAL",
+      token: "TEST_TOKEN",
+      filePath: "/tmp/test.3mf",
+      projectName: "test.3mf",
+      presetName: "test_plate_1",
+      plateIndex: 0,
+      bedType: "textured_plate",
+      useAMS: false,
+    },
+    (line) => progress.push(line)
+  );
+
+  assert.equal(result.status, "success");
+  assert.deepEqual(progress, [
+    "native_update status=1 code=12 msg=12%",
+    "native_update status=1 code=68 msg=68%",
+    "native_upload result=0",
+  ]);
+
+  const uploadPath = path.join(tempDir, "test.txt");
+  fs.writeFileSync(uploadPath, "upload fixture");
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+      PRINTER_HOST: "127.0.0.1",
+      BAMBU_SERIAL: "TEST_SERIAL",
+      BAMBU_TOKEN: "TEST_TOKEN",
+      BAMBU_MODEL: "x2d",
+      BAMBU_NATIVE_HELPER: helperPath,
+    },
+    stderr: "pipe",
+  });
+  const client = createClient();
+  t.after(async () => closeTransport(transport));
+  await client.connect(transport);
+
+  const notifications = [];
+  const uploadResult = parseJsonResult(await client.callTool(
+    {
+      name: "upload_file",
+      arguments: {
+        file_path: uploadPath,
+        filename: "test.txt",
+        bambu_model: "x2d",
+        connection_mode: "bambu_native",
+      },
+    },
+    undefined,
+    { onprogress: (update) => notifications.push(update.message) }
+  ));
+  assert.equal(uploadResult.status, "success");
+  assert.deepEqual(notifications, [
+    "native_update status=1 code=12 msg=12%",
+    "native_update status=1 code=68 msg=68%",
+  ]);
+});
 
 function assertBambuStudioSlicerSupport(listToolsResult) {
   const sliceTool = listToolsResult.tools.find((t) => t.name === "slice_stl");
@@ -387,6 +685,46 @@ test("printer model safety: schema requires bambu_model, rejects missing/invalid
       !validModelError.includes("bambu_model"),
       `Error with valid model ${bambuModel} should not be about model, got: ${validModelError}`
     );
+  }
+});
+
+test("printer status maps the Bambu Studio N6 model id to X2D", async () => {
+  const bambu = new BambuImplementation();
+  bambu.printerStore = {
+    waitForInitialReport: async () => ({ gcode_state: "IDLE", model_id: "N6" }),
+  };
+  bambu.getPrinter = async () => ({
+    data: { gcode_state: "IDLE", model_id: "N6" },
+    publish: async () => {},
+  });
+
+  const status = await bambu.getStatus("127.0.0.1", "TEST_SERIAL", "TEST_TOKEN");
+  assert.equal(status.model, "X2D");
+});
+
+test("printer status preserves unknown reported identity despite a configured model", async () => {
+  const previousModels = [process.env.BAMBU_PRINTER_MODEL, process.env.BAMBU_MODEL];
+
+  try {
+    for (const configuredKey of ["BAMBU_PRINTER_MODEL", "BAMBU_MODEL"]) {
+      process.env.BAMBU_PRINTER_MODEL = "";
+      process.env.BAMBU_MODEL = "";
+      process.env[configuredKey] = "x2d";
+      for (const modelId of ["", "UNRECOGNIZED_MODEL"]) {
+        const data = { gcode_state: "IDLE", model_id: modelId };
+        const bambu = new BambuImplementation();
+        bambu.printerStore = { waitForInitialReport: async () => data };
+        bambu.getPrinter = async () => ({ data, publish: async () => {} });
+
+        const status = await bambu.getStatus("127.0.0.1", "TEST_SERIAL", "TEST_TOKEN");
+        assert.equal(status.model, "Unknown", `${configuredKey} must not replace reported model_id ${JSON.stringify(modelId)}`);
+      }
+    }
+  } finally {
+    ["BAMBU_PRINTER_MODEL", "BAMBU_MODEL"].forEach((key, index) => {
+      if (previousModels[index] === undefined) delete process.env[key];
+      else process.env[key] = previousModels[index];
+    });
   }
 });
 
@@ -995,12 +1333,12 @@ test("camera_snapshot routes H2 series through RTSP (verified live on Parker H2S
   bambu.fetchRtspCameraFrame = async () => { rtspCalls++; return fakeJpeg; };
   bambu.fetchTcpCameraFrame = async () => { tcpCalls++; return fakeJpeg; };
 
-  for (const model of ["h2", "h2s", "h2d", "h2c", "h2dpro"]) {
+  for (const model of ["h2", "h2s", "h2d", "h2c", "h2dpro", "x2d"]) {
     const out = await bambu.cameraSnapshot("127.0.0.1", "S", "T", { bambuModel: model });
     assert.equal(out.status, "success", `${model} should succeed via RTSP`);
     assert.equal(out.transport, "rtsps-322", `${model} transport should be rtsps-322`);
   }
-  assert.equal(rtspCalls, 5, "RTSP path should run once per H2 variant");
+  assert.equal(rtspCalls, 6, "RTSP path should run once per H2/X2D variant");
   assert.equal(tcpCalls, 0, "TCP-on-6000 path should not run for H2");
 });
 
@@ -1754,10 +2092,12 @@ test("empty slicer_path preserves env fallback without executable opt-in", async
 test("camera_snapshot uses trusted FFMPEG_PATH without opening per-call selectors", async (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "trusted-ffmpeg-path-"));
   const fakeFfmpeg = path.join(tempDir, "fake-ffmpeg.mjs");
+  const argsPath = path.join(tempDir, "ffmpeg-args.json");
   fs.writeFileSync(
     fakeFfmpeg,
     `#!/usr/bin/env node
 import fs from "node:fs";
+fs.writeFileSync(${JSON.stringify(argsPath)}, JSON.stringify(process.argv.slice(2)));
 fs.writeFileSync(process.argv.at(-1), Buffer.from([0xff, 0xd8, 0x00, 0x11, 0xff, 0xd9]));
 `,
     { mode: 0o755 }
@@ -1791,6 +2131,10 @@ fs.writeFileSync(process.argv.at(-1), Buffer.from([0xff, 0xd8, 0x00, 0x11, 0xff,
   });
   assert.equal(result.isError, undefined);
   assert.equal(parseJsonResult(result).transport, "rtsps-322");
+  const ffmpegArgs = JSON.parse(fs.readFileSync(argsPath, "utf8"));
+  const tlsVerifyIndex = ffmpegArgs.indexOf("-tls_verify");
+  assert.notEqual(tlsVerifyIndex, -1, "RTSP should explicitly handle the printer's self-signed TLS certificate");
+  assert.equal(ffmpegArgs[tlsVerifyIndex + 1], "0");
 });
 
 test("stdio transport: initialize, list tools, call success + structured failure", async (t) => {

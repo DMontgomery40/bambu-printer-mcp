@@ -1,6 +1,6 @@
 {
   "name": "bambu-printer-mcp",
-  "version": "1.1.13",
+  "version": "1.1.14",
   "description": "MCP server for Bambu Lab 3D printers with STL manipulation, slicing, and print management",
   "main": "dist/index.js",
   "repository": {
@@ -16,7 +16,8 @@
     "test": "npm run build && node --test tests/*.test.mjs tests/**/*.test.mjs",
     "package:mcpb": "npm run build && node scripts/package-mcpb.mjs",
     "version": "node scripts/sync-manifest-version.mjs",
-    "postinstall": "node scripts/install-patches.mjs"
+    "postinstall": "node scripts/install-patches.mjs",
+    "build:native": "scripts/build-bambu-native.zsh"
   },
   "bin": {
     "bambu-printer-mcp": "dist/index.js"
@@ -28,7 +29,10 @@
     "scripts/install-patches.mjs",
     "README.md",
     "CONTRIBUTORS.md",
-    "LICENSE"
+    "LICENSE",
+    "native/*.cpp",
+    "native/*.h",
+    "scripts/build-bambu-native.zsh"
   ],
   "keywords": [
     "mcp",

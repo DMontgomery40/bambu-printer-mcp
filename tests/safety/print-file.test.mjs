@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import JSZip from 'jszip';
+import { resolveBblMachineProfile } from '../../dist/slicer/profile-flatten.js';
 const load = async () => {
   const module = await import('../../dist/safety/print-file.js').catch(() => ({}));
   assert.equal(typeof module.inspectPrintFile, 'function', 'print artifact inspection must exist'); return module;
@@ -86,7 +87,8 @@ test('official installed startup and end routines retain parsed static vendor sy
   const base='/Applications/BambuStudio.app/Contents/Resources/profiles/BBL/machine/';
   for(const model of ['P1S','H2D','X1E']) {
     let profile;try {profile=JSON.parse(await fs.readFile(path.join(base,`Bambu Lab ${model} 0.4 nozzle.json`),'utf8'));}catch {t.skip('installed BambuStudio profiles unavailable');return;}
-    const replace=expression=> /(?:extruder|filament_id|first.*filaments)/.test(expression)&&!/(?:temp|speed|diameter)/.test(expression)?'0':/chamber_temperature/.test(expression)?'40':/bed_temperature/.test(expression)?'60':/nozzle_diameter/.test(expression)?'0.4':/nozzle_temperature_range_high/.test(expression)?'260':/temp/.test(expression)?'220':'1';
+    profile=await resolveBblMachineProfile(path.resolve(base,'../..'),`Bambu Lab ${model} 0.4 nozzle`);
+    const replace=expression=> /(?:extruder|filament_id|first.*filaments|hotend|nozzle_id)/.test(expression)&&!/(?:temp|speed|diameter)/.test(expression)?'0':/chamber_temperature/.test(expression)?'40':/bed_temperature/.test(expression)?'60':/nozzle_diameter/.test(expression)?'0.4':/nozzle_temperature_range_high/.test(expression)?'260':/temp/.test(expression)?'220':'1';
     const routine=[profile.machine_start_gcode,profile.machine_end_gcode].filter(Boolean).join('\n').replace(/^[ \t]*\{[\s\S]*?\}[^\n]*$/gm,'').replace(/\{[^{}]*\}/g,replace).replace(/\[[^\[\]]*\]/g,replace);
     await inspect(t,header(model,'PLA',model==='H2D'?'0.4;0.4':'0.4')+routine,{model:model.toLowerCase()});
   }
@@ -248,7 +250,7 @@ function expandH2dFamilyLine(line) {
   const value=expression=>/chamber_temperature/.test(expression)?'40':/bed_temperature/.test(expression)?'60':/nozzle_diameter/.test(expression)?'0.4':
     /(?:temperature|temp)/.test(expression)?'220':/filament_type/.test(expression)?'PLA':
     /(?:volumetric|feedrate)/.test(expression)?'100':
-    /(?:initial_no_support_extruder|current_extruder|next_extruder|first_non_support_filaments|first_filaments)/.test(expression)?'0':'10';
+    /(?:initial_no_support_extruder|current_extruder|next_extruder|first_non_support_filaments|first_filaments|filament_id|hotend|nozzle_id)/.test(expression)?'0':'10';
   return line.replace(/\{[^{}]*\}/g,value).replace(/\[[^\[\]]*\]/g,value).split(';')[0].trim();
 }
 async function inspectH2dFamilyInventory(t,profile) {
@@ -280,7 +282,10 @@ test('every M620 G383 and G150 form in installed H2D templates is parsed and its
   if(!names.length) {t.skip('installed BambuStudio H2D profiles unavailable');return;}
   const commands=new Set();
   for(const name of names) for(const command of await inspectH2dFamilyInventory(t,JSON.parse(await fs.readFile(path.join(base,name),'utf8')))) commands.add(command);
-  assert.ok(commands.has('G383.4'));assert.ok(commands.has('M620.10'));assert.ok(commands.has('G150'));
+  assert.ok(commands.has('G383'));assert.ok(commands.has('M620.10'));assert.ok(commands.has('G150'));
+  // G383.4 exists in some releases but is absent from newer installed templates.
+  await inspect(t,header('H2D','PLA','0.4;0.4')+'G383.4\n',{model:'h2d'});
+  await assert.rejects(inspect(t,header('H2D','PLA','0.4;0.4')+'G383.4 T400\n',{model:'h2d'}),/unsupported/i);
 });
 
 test('checked-in H2D SYNC T is a nonnegative duration rather than a heater target',async t=>{

@@ -461,7 +461,7 @@ const MODEL_LABELS = {
 // Keep these notes in step with docs/SETUP.md and docs/SLICING.md whenever
 // model support changes.
 const MODEL_NOTES = {
-  x2d: 'Status and slicing only. Direct printing is not supported yet.',
+  x2d: 'Status and slicing; optional native printing on macOS with a locally built helper.',
 };
 
 function buildModels() {

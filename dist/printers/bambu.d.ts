@@ -46,14 +46,14 @@ export declare class BambuImplementation {
     getStatus(host: string, serial: string, token: string): Promise<any>;
     print3mf(host: string, serial: string, token: string, options: BambuPrintOptionsInternal): Promise<any>;
     private print3mfPrepared;
-    cancelJob(host: string, serial: string, token: string): Promise<any>;
-    pauseJob(host: string, serial: string, token: string): Promise<any>;
-    resumeJob(host: string, serial: string, token: string): Promise<any>;
-    clearHmsErrors(host: string, serial: string, token: string): Promise<any>;
+    cancelJob(host: string, serial: string, token: string, dispatch?: () => Promise<any>): Promise<any>;
+    pauseJob(host: string, serial: string, token: string, dispatch?: () => Promise<any>): Promise<any>;
+    resumeJob(host: string, serial: string, token: string, dispatch?: (assertActive: () => void, beforeDispatch: () => Promise<void>) => Promise<any>): Promise<any>;
+    clearHmsErrors(host: string, serial: string, token: string, dispatch?: (assertActive: () => void, beforeDispatch: () => Promise<void>) => Promise<any>): Promise<any>;
     setPrintSpeed(host: string, serial: string, token: string, speedMode: string | number): Promise<any>;
     setAirductMode(host: string, serial: string, token: string, mode: string): Promise<any>;
     rereadAmsRfid(host: string, serial: string, token: string, amsId: number, slotId: number): Promise<any>;
-    setTemperature(host: string, serial: string, token: string, component: string, temperature: unknown, bambuModel?: string, material?: string, nozzleDiameter?: number): Promise<{
+    setTemperature(host: string, serial: string, token: string, component: string, temperature: unknown, bambuModel?: string, material?: string, nozzleDiameter?: number, dispatch?: (heater: "bed" | "nozzle", target: number, assertActive: () => void, beforeDispatch?: () => Promise<void>) => Promise<any>): Promise<{
         status: string;
         message: string;
         command: string;
@@ -84,7 +84,7 @@ export declare class BambuImplementation {
         name: string;
         exists: boolean;
     }>;
-    uploadFile(host: string, serial: string, token: string, filePath: string, filename: string, print: boolean, bambuModel?: string): Promise<{
+    uploadFile(host: string, serial: string, token: string, filePath: string, filename: string, print: boolean, bambuModel?: string, upload?: (snapshot: string, destination: string, assertActive: () => void) => Promise<void>): Promise<{
         status: string;
         uploaded: boolean;
         remotePath: string;
@@ -128,8 +128,8 @@ export declare class BambuImplementation {
      *     [16..16+payloadSize] JPEG (FF D8 ... FF D9)
      *
      * Verified models per upstream docs: A1, A1 mini, P1S, P1P. X1/X1C/X1E
-     * and P2S use RTSP on port 322 instead. H2/H2S/H2D/H2C
-     * are not documented; we fail fast rather than guess at the protocol.
+     * and P2S use RTSP on port 322 instead. H2/H2S/H2D/H2C/X2D
+     * use the same RTSP path.
      *
      * Read-only; no confirm gate. Default 8s timeout for cold-start latency.
      */
@@ -163,18 +163,21 @@ export declare class BambuImplementation {
     }>;
     /**
      * Pull a single JPEG frame from the printer's RTSP/RTSPS stream using
-     * ffmpeg. Used for X1, P2S, and H2 series.
+     * ffmpeg. Used for X1, P2S, H2-family printers, and X2D.
      *
      * URL pattern verified against HA bambulab's models.py example:
      *   rtsps://bblp:<access_code>@<host>:322/streaming/live/1
      *
      * ffmpeg invocation:
-     *   ffmpeg -rtsp_transport tcp -i <url> -frames:v 1 -f image2 -c:v mjpeg -y <out>
+     *   ffmpeg -tls_verify 0 -rtsp_transport tcp -i <url> -frames:v 1 -f image2 -c:v mjpeg -y <out>
      *
-     * -rtsp_transport tcp avoids UDP NAT/firewall issues. -frames:v 1
-     * makes ffmpeg exit as soon as one frame lands. -y overwrites the temp
-     * file. The Bambu printer presents a self-signed cert; ffmpeg's TLS
-     * layer accepts that by default (no host verification).
+     * -tls_verify 0 accepts the printer's self-signed certificate. This is
+     * consistent with the existing local-device TLS/FTPS paths, which do not
+     * have a public CA chain or hostname that ffmpeg can validate. The
+     * connection is still encrypted and remains scoped to the configured
+     * printer host. -rtsp_transport tcp avoids UDP NAT/firewall issues.
+     * -frames:v 1 makes ffmpeg exit as soon as one frame lands. -y overwrites
+     * the temp file.
      */
     private fetchRtspCameraFrame;
     /**

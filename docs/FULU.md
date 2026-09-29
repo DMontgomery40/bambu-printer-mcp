@@ -43,7 +43,7 @@ BAMBU_MODEL=p1s
 
 For an external spool, follow the [no-AMS guidance](../README.md#printing-without-ams). H2 jobs with declared filaments still need the positional mapping described in [`print_3mf`](../README.md#print_3mf). Inspect printer status and HMS errors after submission; command acceptance and actual printing are different checks.
 
-**X2D:** status and slicing with its own preset are supported. Direct X2D printing is rejected before slicing, connection, or upload because the native eMMC transport has not shipped. Neither a successful FULU slice nor bridge initialization changes that limit; do not substitute `h2d`.
+**X2D:** status and slicing with its own preset are supported. On macOS, `print_3mf` can use the optional native eMMC helper and installed compatible networking plug-in, with shared model/file/state/preflight checks. Linux/Windows native printing and legacy FTPS/remote-file starts remain unsupported. A successful FULU slice or bridge initialization alone does not demonstrate physical printing; do not substitute `h2d`. See the [slicing and transport guide](./SLICING.md).
 
 <a id="optional-fulu-cli-slicing"></a>
 
@@ -212,7 +212,7 @@ Non-zero numeric bridge results are errors. A successful submission does not pro
 | Agent ready, cloud print rejected | Verify login, region, and device ID; `agentReady` is not an authenticated-session guarantee. |
 | Non-zero result or `send msg failed` | Inspect the redacted runtime error and printer diagnostics; do not blindly repeat a possible print submission. |
 | FULU/Orca CLI slicing requested | Use 1.1.11+ with the matching installed profile tree and exact model/nozzle; see the CLI checks above. Use GUI export if preparation or slicing fails. |
-| X2D direct-print rejection | Expected limitation. Use its own slicing preset and a supported slicer transport; do not relabel it as H2D. |
+| X2D native transport unavailable | Native printing requires macOS, the optional built helper, and a compatible installed networking plug-in. Legacy FTPS/remote-file starts remain unsupported; keep the X2D model and preset. |
 
 The repository's automated tests exercise mocked bridge framing, initialization, method/parameter handling, and failure responses. They do not certify live FULU printing on Linux, Windows, or macOS. Earlier macOS experiments reached a handshake but encountered print-start failures; they are not current physical-print validation. No physical print is performed as part of this documentation sweep.
 
