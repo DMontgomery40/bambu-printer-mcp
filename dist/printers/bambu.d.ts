@@ -100,11 +100,12 @@ export declare class BambuImplementation {
     }>;
     private printRawPrepared;
     /**
-     * A published print command is not proof the printer took it. Watch fresh
-     * reports: a new command-verification HMS means the firmware refused it; a
-     * transition to PREPARE/SLICING/RUNNING means it started.
+     * A published print command is not proof the printer took it. Listen to the
+     * reports the printer pushes anyway (no extra pushall polling on weak P1
+     * boards): a new command-verification HMS means the firmware refused the
+     * command; PREPARE/SLICING/RUNNING means it started. Attach before publishing.
      */
-    private verifyDispatch;
+    private watchDispatch;
     startJob(host: string, serial: string, token: string, filename: string, bambuModel?: string): Promise<{
         status: string;
         uploaded: boolean;

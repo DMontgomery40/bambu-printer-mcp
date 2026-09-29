@@ -50,7 +50,12 @@ const COMMAND_VERIFICATION_HMS = { attr: 0x05000500, code: 0x00010007 };
 const COMMAND_REJECTED_MESSAGE =
   "The printer rejected the print command (HMS 0500-0500-0001-0007, \"MQTT command verification failed\"). " +
   "Bambu firmware 01.08.05 and later only accept third-party LAN control with LAN Only Mode and Developer Mode " +
-  "enabled (Settings > WLAN on the printer). The checked file is on the printer's storage, but nothing is printing.";
+  "enabled (Settings > WLAN on the printer). The checked file is on the printer's storage, but nothing is printing. " +
+  "The rejection stays on the printer as a fatal HMS entry that blocks later prints: after enabling those modes, " +
+  "clear it with clear_hms_errors or dismiss it on the printer's screen, then print again.";
+const DISPATCH_CANCELLED_MESSAGE =
+  "A stop or heater-off request arrived after the print command was sent, so this call does not report the print as started. " +
+  "Check get_printer_status.";
 
 /** How long to watch fresh reports after a print command (BAMBU_DISPATCH_CHECK_MS, 0 disables). */
 function dispatchCheckMs(): number {
@@ -826,9 +831,10 @@ export class BambuImplementation {
     const printer = await this.getPrinter(host, serial, token);
     assertActive();
     if (legacyContainer) {
-      await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath }));
+      const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
+      try { await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath })); } catch (error) { watcher.dispose(); throw error; }
       this.recordCheckedJob(host, serial, remoteProjectPath, requirements);
-      const dispatch = await this.verifyDispatch(host, serial, token, dispatchStatus);
+      const dispatch = await watcher.settled();
       return {
         status: "success", dispatch, remoteProjectPath,
         message: dispatch === "started"
@@ -896,10 +902,11 @@ export class BambuImplementation {
       };
     }
 
-    await printer.publish(projectFileCmd);
+    const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
+    try { await printer.publish(projectFileCmd); } catch (error) { watcher.dispose(); throw error; }
     this.recordCheckedJob(host, serial, remoteProjectPath, requirements);
     await new Promise((resolve) => setTimeout(resolve, 300));
-    const dispatch = await this.verifyDispatch(host, serial, token, dispatchStatus);
+    const dispatch = await watcher.settled();
 
     return {
       status: "success",
@@ -1417,9 +1424,10 @@ export class BambuImplementation {
     this.assertBedClearance(dispatchStatus, bedClearance);
     const printer = await this.getPrinter(host, serial, token);
     assertActive();
-    await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remotePath }));
+    const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
+    try { await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remotePath })); } catch (error) { watcher.dispose(); throw error; }
     this.recordCheckedJob(host, serial, remotePath, requirements);
-    const dispatch = await this.verifyDispatch(host, serial, token, dispatchStatus);
+    const dispatch = await watcher.settled();
     return {
       status: "success", uploaded: true, printRequested: true, dispatch, remotePath,
       message: dispatch === "started"
@@ -1429,31 +1437,63 @@ export class BambuImplementation {
   }
 
   /**
-   * A published print command is not proof the printer took it. Watch fresh
-   * reports: a new command-verification HMS means the firmware refused it; a
-   * transition to PREPARE/SLICING/RUNNING means it started.
+   * A published print command is not proof the printer took it. Listen to the
+   * reports the printer pushes anyway (no extra pushall polling on weak P1
+   * boards): a new command-verification HMS means the firmware refused the
+   * command; PREPARE/SLICING/RUNNING means it started. Attach before publishing.
    */
-  private async verifyDispatch(host: string, serial: string, token: string, before: any): Promise<"started" | "unconfirmed"> {
+  private watchDispatch(printer: any, host: string, serial: string, token: string, before: any, assertActive: () => void):
+    { settled: () => Promise<"started" | "unconfirmed">; dispose: () => void } {
     const windowMs = dispatchCheckMs();
-    if (windowMs === 0) return "unconfirmed";
+    if (windowMs === 0) return { settled: async () => { assertActive(); return "unconfirmed"; }, dispose: () => {} };
     const key = (entry: any) => `${Number(entry?.attr)}:${Number(entry?.code)}:${entry?.timestamp ?? ""}`;
     const known = new Set((Array.isArray(before?.raw?.hms) ? before.raw.hms : []).map(key));
-    const deadline = Date.now() + windowMs;
-    while (Date.now() < deadline) {
-      await sleep(Math.min(1_500, Math.max(0, deadline - Date.now())));
-      let status: any;
-      try { status = await this.getSafetyStatus(host, serial, token); } catch { continue; }
-      const raw = status?.raw ?? {};
-      const hms = Array.isArray(raw.hms) ? raw.hms : [];
+    const judge = (report: any): "started" | "rejected" | undefined => {
+      const hms = Array.isArray(report?.hms) ? report.hms : [];
       if (hms.some((entry: any) => Number(entry?.attr) === COMMAND_VERIFICATION_HMS.attr &&
-          Number(entry?.code) === COMMAND_VERIFICATION_HMS.code && !known.has(key(entry)))) {
-        // Nothing started, so there is no checked job to resume or clear later.
-        this.checkedJobs.delete(`${host}\n${serial}`);
-        throw new Error(COMMAND_REJECTED_MESSAGE);
-      }
-      if (["PREPARE", "SLICING", "RUNNING"].includes(String(raw.gcode_state ?? "").toUpperCase())) return "started";
-    }
-    return "unconfirmed";
+          Number(entry?.code) === COMMAND_VERIFICATION_HMS.code && !known.has(key(entry)))) return "rejected";
+      if (["PREPARE", "SLICING", "RUNNING"].includes(String(report?.gcode_state ?? "").toUpperCase())) return "started";
+      return undefined;
+    };
+    type Verdict = "started" | "rejected" | "cancelled" | undefined;
+    let resolveOutcome!: (value: Verdict) => void;
+    const outcome = new Promise<Verdict>((resolve) => { resolveOutcome = resolve; });
+    const onRaw = (topic: string, payload: Buffer) => {
+      if (topic !== `device/${serial}/report`) return;
+      let parsed: any;
+      try { parsed = JSON.parse(payload.toString()); } catch { return; }
+      const verdict = judge(parsed?.print);
+      if (verdict) resolveOutcome(verdict);
+    };
+    const cancelled = () => { try { assertActive(); return false; } catch { return true; } };
+    printer?.on?.("rawMessage", onRaw);
+    const timer = setTimeout(() => resolveOutcome(undefined), windowMs);
+    // A stop during the window must not end as "accepted and started".
+    const cancelCheck = setInterval(() => { if (cancelled()) resolveOutcome("cancelled"); }, 250);
+    const dispose = () => {
+      clearTimeout(timer);
+      clearInterval(cancelCheck);
+      printer?.off?.("rawMessage", onRaw);
+      resolveOutcome(undefined);
+    };
+    return {
+      dispose,
+      settled: async () => {
+        let verdict: Verdict;
+        try { verdict = await outcome; } finally { dispose(); }
+        // Nothing pushed during the window: take one full report, not a polling loop.
+        if (verdict === undefined && !cancelled()) {
+          try { verdict = judge((await this.getSafetyStatus(host, serial, token))?.raw); } catch { /* stays unconfirmed */ }
+        }
+        if (verdict === "rejected") {
+          // Nothing started, so there is no checked job to resume or clear later.
+          this.checkedJobs.delete(`${host}\n${serial}`);
+          throw new Error(COMMAND_REJECTED_MESSAGE);
+        }
+        if (verdict === "cancelled" || cancelled()) throw new Error(DISPATCH_CANCELLED_MESSAGE);
+        return verdict ?? "unconfirmed";
+      },
+    };
   }
 
   async startJob(host: string, serial: string, token: string, filename: string, bambuModel?: string) {

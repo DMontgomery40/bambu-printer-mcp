@@ -16,7 +16,7 @@ process.env.BAMBU_DISPATCH_CHECK_MS = "0";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const failure = "Required Bambu machine profile is missing nozzle_volume_type; select a matching machine and filament profile.";
 
-async function start(t, { sliceSucceeds = false, realSlice = false, slicerType = 'bambustudio', elicitDelayMs = 0, elicitation = true, afterPublish, env = {} } = {}) {
+async function start(t, { sliceSucceeds = false, realSlice = false, slicerType = 'bambustudio', elicitDelayMs = 0, elicitation = true, afterPublish, pushAfterPublish = false, env = {} } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-auto-slice-"));
   const log = path.join(directory, "calls.jsonl");
   const elicitLog = path.join(directory, "elicitations.jsonl");
@@ -44,6 +44,7 @@ async function start(t, { sliceSucceeds = false, realSlice = false, slicerType =
   fs.writeFileSync(preload, `
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { STLManipulator } from ${JSON.stringify(pathToFileURL(path.join(root, "dist/stl/stl-manipulator.js")).href)};
 import { BambuImplementation } from ${JSON.stringify(pathToFileURL(path.join(root, "dist/printers/bambu.js")).href)};
 import { Server } from ${JSON.stringify(pathToFileURL(path.join(root, "node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js")).href)};
@@ -61,7 +62,14 @@ BambuImplementation.prototype.ftpUpload = async function (_host, _token, file, r
 let published = false;
 BambuImplementation.prototype.getPrinter = async function () {
   log({ action: 'connection' });
-  return { publish: async (payload) => { published = true; log({ action: 'publish', payload }); } };
+  const printer = new EventEmitter();
+  printer.publish = async (payload) => {
+    published = true;
+    log({ action: 'publish', payload });
+    // A real printer pushes its next report on its own; the watcher must not poll for it.
+    ${pushAfterPublish ? `setTimeout(() => printer.emit('rawMessage', 'device/TEST_SERIAL/report', Buffer.from(JSON.stringify({ print: ${JSON.stringify(afterPublish ?? {})} }))), 100);` : ""}
+  };
+  return printer;
 };
 BambuImplementation.prototype.getStatus = async function () { log({ action: 'status' }); throw new Error('Unexpected printer status read'); };
 BambuImplementation.prototype.getSafetyStatus = async function () {
@@ -99,6 +107,7 @@ BambuImplementation.prototype.getSafetyStatus = async function () {
     events: () => fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse) : [],
     elicitations: () => fs.existsSync(elicitLog) ? fs.readFileSync(elicitLog, "utf8").trim().split("\n").map(JSON.parse) : [],
     print: (file, extra = {}) => client.callTool({ name: "print_3mf", arguments: { three_mf_path: file, bambu_model: "p1s", slicer_type: slicerType, slicer_profile: profile, bed_type: "textured_plate", use_ams: false, ...extra } }),
+    cancel: () => client.callTool({ name: "cancel_print", arguments: {} }),
     slice: (file) => client.callTool({ name: "slice_stl", arguments: { stl_path: file, bambu_model: "p1s", slicer_profile: profile, use_printer_filaments: false, bed_type: "textured_plate" } }),
     sliceWithoutModel: (file) => client.callTool({ name: "slice_stl", arguments: { stl_path: file, slicer_profile: profile, use_printer_filaments: false, bed_type: "textured_plate" } }),
   };
@@ -225,16 +234,20 @@ test("print_3mf reports what the printer did after the command, including firmwa
     // An auto-sliced .gcode.3mf starts with gcode_file; a sliced .3mf project starts with project_file.
     ["gcode_file", (server) => server.makeProject("unsliced.3mf")],
     ["project_file", (server) => server.makeProject("direct.3mf", { sliced: true })],
-  ]) {
-    await t.test(`${route}: ${name}`, async (t) => {
-      const server = await start(t, { sliceSucceeds: true, afterPublish, env: { BAMBU_DISPATCH_CHECK_MS: "2000" } });
+  ]) for (const pushAfterPublish of expectation === "unconfirmed" ? [false] : [true, false]) {
+    await t.test(`${route}: ${name} (${pushAfterPublish ? "pushed report" : "one report after the window"})`, async (t) => {
+      const server = await start(t, { sliceSucceeds: true, afterPublish, pushAfterPublish, env: { BAMBU_DISPATCH_CHECK_MS: "2000" } });
       const result = await server.print(await project(server));
-      const published = server.events().filter((event) => event.action === "publish");
+      const events = server.events();
+      const published = events.filter((event) => event.action === "publish");
       assert.equal(published.length, 1);
       assert.equal(published[0].payload.print.command, route);
+      const reportsAfter = events.slice(events.findIndex((event) => event.action === "publish")).filter((event) => event.action === "safety-status");
+      assert.equal(reportsAfter.length, pushAfterPublish ? 0 : 1, "no pushall polling after the command");
       if (expectation instanceof RegExp) {
         assert.equal(result.isError, true);
         assert.match(result.structuredContent.message, expectation);
+        assert.match(result.structuredContent.message, /clear_hms_errors/);
         assert.equal(result.structuredContent.retryable, false);
         assert.match(result.structuredContent.suggestion, /Retrying unchanged repeats this refusal/);
       } else {
@@ -246,6 +259,20 @@ test("print_3mf reports what the printer did after the command, including firmwa
       }
     });
   }
+});
+
+test("a stop during the dispatch check is not reported as a started print", async (t) => {
+  const server = await start(t, { sliceSucceeds: true, afterPublish: {}, env: { BAMBU_DISPATCH_CHECK_MS: "10000" } });
+  const printing = server.print(await server.makeProject("direct.3mf", { sliced: true }));
+  while (!server.events().some((event) => event.action === "publish")) await new Promise((resolve) => setTimeout(resolve, 50));
+  const stopped = await server.cancel();
+  assert.equal(stopped.isError, undefined, stopped.content?.[0]?.text);
+  const started = Date.now();
+  const result = await printing;
+  assert.ok(Date.now() - started < 5000, "the stop ends the watch early");
+  assert.equal(result.isError, true);
+  assert.match(result.structuredContent.message, /stop or heater-off request arrived after the print command was sent/);
+  assert.doesNotMatch(JSON.stringify(result.content), /accepted and started/);
 });
 
 for (const extension of ["3mf", "gcode.3mf"]) {
