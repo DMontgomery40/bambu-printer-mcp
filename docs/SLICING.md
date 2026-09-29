@@ -65,6 +65,10 @@ custom BBL-derived profiles retain their settings on top of resolved parents.
 For BambuStudio, FULU, and Orca CLI tools, `slicer_profile` supplies process settings; the
 selected model's bundled machine preset must still be available. It is not a
 replacement machine configuration or a way to bypass model validation.
+Machine settings carried by a template's `project_settings`, a custom process
+file, or a custom filament file (for example another printer's start G-code,
+`printer_model`, or nozzle values) are dropped and logged before the CLI runs;
+the selected machine preset keeps them.
 Pre-sliced 3MF printing does not require running this CLI profile preparation.
 
 Profile discovery follows the active executable: macOS app bundles, Windows
@@ -128,7 +132,11 @@ Before BambuStudio, FULU, or Orca CLI slicing, the MCP:
 4. Derives nozzle settings from the selected machine profile and nozzle configuration. Use the exact model preset; a successful slice for another model does not validate the target printer.
 5. Auto-extends `compatible_printers` to include the chosen machine
    when the user picked a non-default printer/process combo.
-6. Writes flattened temp configs and passes those paths to
+6. Removes every key the resolved machine preset defines, other than profile
+   metadata such as `name`, `inherits`, and `compatible_printers`, from the
+   process and filament configs, because the CLI applies every key in every
+   loaded file. OrcaSlicer keeps its `use_relative_e_distances` override.
+7. Writes flattened temp configs and passes those paths to
    `--load-settings` / `--load-filaments`.
 
 For project 3MF input, a single filament override is repeated across all
