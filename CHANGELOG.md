@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [1.1.19] – 2026-09-29
+
+### Documentation
+- Make the local `code-review` skill run before each PR the review gate, instead of requesting Codex reviews, and forbid AI or agent attribution in commits, PRs, comments, and release notes.
+
 ## [1.1.18] – 2026-09-29
 
 ### Fixed
