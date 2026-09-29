@@ -13,7 +13,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const failure = "Required Bambu machine profile is missing nozzle_volume_type; select a matching machine and filament profile.";
 
-async function start(t, { sliceSucceeds = false, realSlice = false, slicerType = 'bambustudio', elicitDelayMs = 0, env = {} } = {}) {
+async function start(t, { sliceSucceeds = false, realSlice = false, slicerType = 'bambustudio', elicitDelayMs = 0, elicitation = true, env = {} } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-auto-slice-"));
   const log = path.join(directory, "calls.jsonl");
   const elicitLog = path.join(directory, "elicitations.jsonl");
@@ -81,8 +81,8 @@ BambuImplementation.prototype.getSafetyStatus = async function () {
     },
     stderr: "pipe",
   });
-  const client = new Client({ name: "auto-slice-tests", version: "1" }, { capabilities: { elicitation: { form: {} } } });
-  client.setRequestHandler(ElicitRequestSchema, async () => {
+  const client = new Client({ name: "auto-slice-tests", version: "1" }, { capabilities: elicitation ? { elicitation: { form: {} } } : {} });
+  if (elicitation) client.setRequestHandler(ElicitRequestSchema, async () => {
     // A person may take a while to walk to the printer before answering.
     await new Promise((resolve) => setTimeout(resolve, elicitDelayMs));
     return { action: "accept", content: { confirmed: true } };
@@ -174,6 +174,22 @@ test("an unanswered printer-model prompt is reported as a timeout", async (t) =>
   assert.match(message, /No printer model was selected within 0\.3 second\(s\); nothing was sent to the printer/);
   assert.doesNotMatch(message, /does not support elicitation/);
   assert.deepEqual(server.events(), [], "no slice, connection, or dispatch without a model");
+});
+
+test("a client without elicitation is still told it cannot confirm, not that it timed out", async (t) => {
+  const server = await start(t, { sliceSucceeds: true, elicitation: false, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: "300" } });
+  const printed = JSON.stringify((await server.print(await server.makeProject("unsliced.3mf"))).content);
+  assert.match(printed, /requires an MCP client with elicitation support/);
+  assert.doesNotMatch(printed, /No hardware confirmation within/);
+  assert.deepEqual(server.events().filter((event) => ["upload", "publish"].includes(event.action)), [], "an unconfirmed print must not dispatch");
+});
+
+test("a client without elicitation is told to configure the printer model", async (t) => {
+  const server = await start(t, { elicitation: false, env: { BAMBU_MODEL: "" } });
+  const result = await server.sliceWithoutModel(await server.makeProject("unsliced.3mf"));
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result.content), /does not support elicitation.*BAMBU_MODEL/);
+  assert.deepEqual(server.events(), []);
 });
 
 for (const extension of ["3mf", "gcode.3mf"]) {
