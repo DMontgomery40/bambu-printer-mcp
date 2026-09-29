@@ -216,6 +216,14 @@ test('uniform P2S nozzle materials still require valid selected variant metadata
   const project=p2sGuiProject();project.printer_extruder_variant=['Direct Drive Standard','Direct Drive High Flow'];
   await assert.rejects(inspect(t,'',{model:'p2s'},p2sEntries(project,p2sGuiHeader+'G1 X100 Y100\n')),/variant|metadata/i);
 });
+test('P2S plate headers cannot substitute full project extruder tables for selections',async t=>{
+  for(const header of [
+    p2sGuiHeader.replace('printer_extruder_id = 1','printer_extruder_id = 1;1;1'),
+    p2sGuiHeader.replace('"Direct Drive Standard"','"Direct Drive Standard";"Direct Drive High Flow";"Direct Drive E3D High Flow"')
+  ]) {
+    await assert.rejects(inspect(t,'',{model:'p2s'},p2sEntries(p2sGuiProject(),header+'G1 X100 Y100\n')),/extruder|variant|metadata/i,header);
+  }
+});
 test('H2D selected extruder ids and variants in the plate header must match the project tables',async t=>{
   const {project,plate}=await h2dGuiData();
   project.nozzle_type=['stainless_steel','hardened_steel','hardened_steel','stainless_steel','hardened_steel'];

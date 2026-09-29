@@ -154,11 +154,12 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
     if(plateIndex!==0) return fail('raw G-code has only plate index 0');source=bytes.toString('utf8');
   } else return fail('unsupported printable artifact; use a sliced .3mf or textual .gcode file');
   if(/[\x00-\x08\x0b\x0c\x0e-\x1f\ufffd]/.test(source)) return fail('binary or malformed G-code is not supported');
-  const lines=source.split(/\r\n|\n|\r/);const metadata:Metadata[]=[project];
+  const lines=source.split(/\r\n|\n|\r/);const headers:Metadata[]=[];
   for(const line of lines) {
     const match=line.match(/^\s*;\s*([a-z_][a-z0-9_]*(?:\s+used\s+\[(?:g|mm)\])?)\s*(?:=|:)\s*(.*?)\s*$/i);
-    if(match) metadata.push({[match[1].toLowerCase()]:match[2]});
+    if(match) headers.push({[match[1].toLowerCase()]:match[2]});
   }
+  const metadata:Metadata[]=[project,...headers];
   validateFffJob([...metadata,plate]);
   const declaredModel=consistent(metadataValues(metadata,['printer_model']),normalizeModel,'printer model');
   if(declaredModel!==model) return fail(`file model ${declaredModel} contradicts requested model ${model}`);
@@ -181,13 +182,12 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
   // Bambu Studio writes printer_extruder_id/printer_extruder_variant to
   // project_settings.config as the full per-variant table, but to the plate
   // G-code header as the per-physical-extruder selection it sliced with (for
-  // example ["1","1","1"] vs "1" on a single-nozzle P2S). Only table-shaped
-  // values may describe rows; the selected form, when present, must match.
+  // example ["1","1","1"] vs "1" on a single-nozzle P2S). Preserve the source:
+  // a plate header can never substitute a full table for its selected values.
   const variantTable=<T>(key:string,rows:number,convert:(value:unknown)=>T[]|undefined):{table:T[];selected?:T[]}=>{
-    const field=key.replace(/_/g,' ');const values=metadataValues(metadata,[key]);
-    const selectedValues=values.filter(value=>list(value).length!==rows);
-    if(selectedValues.some(value=>list(value).length!==nozzleDiameters.length)) return fail(`unknown or malformed ${field} metadata`);
-    const table=consistent(values.filter(value=>list(value).length===rows),convert,field);
+    const field=key.replace(/_/g,' ');const tableValues=metadataValues([project],[key]);const selectedValues=metadataValues(headers,[key]);
+    if(tableValues.some(value=>list(value).length!==rows) || selectedValues.some(value=>list(value).length!==nozzleDiameters.length)) return fail(`unknown or malformed ${field} metadata`);
+    const table=consistent(tableValues,convert,field);
     return {table,selected:selectedValues.length?consistent(selectedValues,convert,`selected ${field}`):undefined};
   };
   const nozzleMetadata=(keys:string[],variantRows=false):string[]|undefined=>{
