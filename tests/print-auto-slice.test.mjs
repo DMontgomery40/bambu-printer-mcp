@@ -148,6 +148,16 @@ test("human print confirmation waits ten minutes by default instead of the SDK's
   assert.equal(server.events().filter((event) => event.action === "publish").length, 1);
 });
 
+for (const invalid of ["3000000000", "999", "3600001", "10.5", "soon"]) {
+  test(`an out-of-range confirmation timeout (${invalid}) falls back to ten minutes`, async (t) => {
+    // Node clamps timer delays above 2^31-1 ms to 1 ms, which would time out every prompt at once.
+    const server = await start(t, { sliceSucceeds: true, elicitDelayMs: 200, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: invalid } });
+    const result = await server.print(await server.makeProject("unsliced.3mf"));
+    assert.equal(result.isError, undefined, result.content?.[0]?.text);
+    assert.deepEqual([...new Set(server.elicitations().map((call) => call.timeout))], [600000]);
+  });
+}
+
 test("a late confirmation answered within the configured timeout still prints", async (t) => {
   const server = await start(t, { sliceSucceeds: true, elicitDelayMs: 1000, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: "5000" } });
   const result = await server.print(await server.makeProject("unsliced.3mf"));
@@ -157,27 +167,27 @@ test("a late confirmation answered within the configured timeout still prints", 
 });
 
 test("an unanswered confirmation is reported as a timeout, not as missing elicitation support", async (t) => {
-  const server = await start(t, { sliceSucceeds: true, elicitDelayMs: 1500, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: "300" } });
+  const server = await start(t, { sliceSucceeds: true, elicitDelayMs: 2500, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: "1000" } });
   const result = await server.print(await server.makeProject("unsliced.3mf"));
   assert.equal(result.isError, true);
   const message = JSON.stringify(result.content);
-  assert.match(message, /No hardware confirmation within 0\.3 second\(s\); nothing was sent to the printer/);
+  assert.match(message, /No hardware confirmation within 1 second\(s\); nothing was sent to the printer/);
   assert.doesNotMatch(message, /does not support|requires an MCP client with elicitation|BAMBU_REQUIRE_CONFIRMATION=0/);
   assert.deepEqual(server.events().filter((event) => ["upload", "publish"].includes(event.action)), [], "a timed-out confirmation must not dispatch");
 });
 
 test("an unanswered printer-model prompt is reported as a timeout", async (t) => {
-  const server = await start(t, { elicitDelayMs: 1500, env: { BAMBU_MODEL: "", BAMBU_CONFIRMATION_TIMEOUT_MS: "300" } });
+  const server = await start(t, { elicitDelayMs: 2500, env: { BAMBU_MODEL: "", BAMBU_CONFIRMATION_TIMEOUT_MS: "1000" } });
   const result = await server.sliceWithoutModel(await server.makeProject("unsliced.3mf"));
   assert.equal(result.isError, true);
   const message = JSON.stringify(result.content);
-  assert.match(message, /No printer model was selected within 0\.3 second\(s\); nothing was sent to the printer/);
+  assert.match(message, /No printer model was selected within 1 second\(s\); nothing was sent to the printer/);
   assert.doesNotMatch(message, /does not support elicitation/);
   assert.deepEqual(server.events(), [], "no slice, connection, or dispatch without a model");
 });
 
 test("a client without elicitation is still told it cannot confirm, not that it timed out", async (t) => {
-  const server = await start(t, { sliceSucceeds: true, elicitation: false, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: "300" } });
+  const server = await start(t, { sliceSucceeds: true, elicitation: false, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: "1000" } });
   const printed = JSON.stringify((await server.print(await server.makeProject("unsliced.3mf"))).content);
   assert.match(printed, /requires an MCP client with elicitation support/);
   assert.doesNotMatch(printed, /No hardware confirmation within/);

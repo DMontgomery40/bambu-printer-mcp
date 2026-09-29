@@ -500,14 +500,14 @@ function parseBooleanEnv(rawValue, fallback) {
 // Someone confirming a hardware action may have to walk to the printer, so the
 // SDK's 60-second request default is too short for human confirmation.
 const DEFAULT_CONFIRMATION_TIMEOUT_MS = 600000;
+const MIN_CONFIRMATION_TIMEOUT_MS = 1000;
+const MAX_CONFIRMATION_TIMEOUT_MS = 3600000;
+/** Out-of-range values fall back to the default; Node clamps huge timer delays to 1 ms. */
 function parseConfirmationTimeout(value) {
-    if (!value?.trim())
-        return DEFAULT_CONFIRMATION_TIMEOUT_MS;
-    const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-        throw new Error(`Invalid BAMBU_CONFIRMATION_TIMEOUT_MS value: ${value}`);
-    }
-    return parsed;
+    const parsed = Number(value?.trim() || NaN);
+    return Number.isInteger(parsed) && parsed >= MIN_CONFIRMATION_TIMEOUT_MS && parsed <= MAX_CONFIRMATION_TIMEOUT_MS
+        ? parsed
+        : DEFAULT_CONFIRMATION_TIMEOUT_MS;
 }
 function describeDuration(ms) {
     return ms >= 60000 ? `${Math.round(ms / 6000) / 10} minute(s)` : `${Math.round(ms / 100) / 10} second(s)`;
