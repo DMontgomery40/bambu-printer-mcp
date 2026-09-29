@@ -683,11 +683,24 @@ void runOperation(NativeApi &api, NativeOperation operation) {
                    std::to_string(code) + " msg=" + message);
     };
     const BBL::WasCancelledFn cancel = []() { return false; };
+    const auto startAuthorizedPrint = [&](int attempt) {
+        // Connection/certificate setup and retries can outlive the original
+        // preflight. The parent owns the shared safety parser and must approve
+        // fresh state at this exact dispatch boundary, on every attempt.
+        outputLine("native_dispatch_request=" + std::to_string(attempt));
+        std::string authorization;
+        if (!std::getline(std::cin, authorization) ||
+            authorization != "native_dispatch_authorized=" + std::to_string(attempt)) {
+            destroyAgent();
+            throw std::runtime_error("native print dispatch authorization was missing or rejected");
+        }
+        return api.startLocalPrint(agent, params, update, cancel);
+    };
     if (uploadOnly) {
         const std::function<bool(int, std::string)> wait = [](int, std::string) { return false; };
         result = api.startSendGcodeToSdcard(agent, params, update, cancel, wait);
     } else {
-        result = api.startLocalPrint(agent, params, update, cancel);
+        result = startAuthorizedPrint(1);
         if (result == -4030) {
             // The first encrypted publish can be the plug-in's certificate
             // bootstrap. Keep the agent alive long enough for the printer's
@@ -699,7 +712,7 @@ void runOperation(NativeApi &api, NativeOperation operation) {
             const int retryUpdate = api.updateCert(agent);
             outputLine("native_update_cert result=" + std::to_string(retryUpdate) + " stage=retry");
             std::this_thread::sleep_for(std::chrono::seconds(3));
-            result = api.startLocalPrint(agent, params, update, cancel);
+            result = startAuthorizedPrint(2);
         }
     }
     outputLine(std::string(uploadOnly ? "native_upload" : "native_print") + " result=" + std::to_string(result));
@@ -713,11 +726,11 @@ int main(int argc, char **argv) {
     try {
         const bool probe = argc == 2 && std::strcmp(argv[1], "--probe") == 0;
         const bool mqttProbe = argc == 2 && std::strcmp(argv[1], "--probe-mqtt") == 0;
-        const bool print = argc == 2 && std::strcmp(argv[1], "--print") == 0;
+        const bool print = argc == 2 && std::strcmp(argv[1], "--print-authorized") == 0;
         const bool upload = argc == 2 && std::strcmp(argv[1], "--upload") == 0;
         const bool command = argc == 2 && std::strcmp(argv[1], "--command") == 0;
         if (!probe && !mqttProbe && !print && !upload && !command) {
-            std::cerr << "usage: bambu-native-print --probe|--probe-mqtt|--print|--upload|--command" << std::endl;
+            std::cerr << "usage: bambu-native-print --probe|--probe-mqtt|--print-authorized|--upload|--command" << std::endl;
             return 2;
         }
         NativeApi api = loadApi();

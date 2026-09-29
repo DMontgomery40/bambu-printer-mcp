@@ -47,6 +47,8 @@ export type BambuNativeExecution = {
   signal?: AbortSignal;
   /** Recheck the shared stop/heater-off generation while the helper runs. */
   assertActive?: () => void;
+  /** Read and validate fresh printer state immediately before each print attempt. */
+  beforeDispatch?: () => Promise<void>;
 };
 
 export type BambuNativeFanCommand = {
@@ -126,7 +128,7 @@ async function interruptNativeOperations(serial: string): Promise<void> {
 }
 
 function runNativeHelper(
-  mode: "--probe" | "--print" | "--upload" | "--command",
+  mode: "--probe" | "--print-authorized" | "--upload" | "--command",
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
   onUpdate?: BambuNativeUpdateCallback,
@@ -134,12 +136,15 @@ function runNativeHelper(
 ): Promise<NativeHelperResult> {
   execution.signal?.throwIfAborted();
   execution.assertActive?.();
+  if (mode === "--print-authorized" && typeof execution.beforeDispatch !== "function") {
+    throw new Error("Native printing requires a beforeDispatch fresh-state check.");
+  }
   assertBambuNativeAvailable();
   const helper = resolveNativeHelper();
   return new Promise((resolve, reject) => {
     const child = spawn(helper, [mode], {
       env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
     });
     let markClosed!: () => void;
     const closed = new Promise<void>(resolve => { markClosed = resolve; });
@@ -148,6 +153,9 @@ function runNativeHelper(
     let stderr = "";
     let settled = false;
     let failure: Error | undefined;
+    let dispatchAttempt = 0;
+    let authorizedAttempts = 0;
+    let authorizing = false;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     const stop = (error: Error) => {
       if (settled || failure) return;
@@ -183,6 +191,30 @@ function runNativeHelper(
     execution.signal?.addEventListener("abort", onAbort, { once: true });
     if (execution.signal?.aborted) onAbort();
 
+    const authorizeDispatch = async (line: string) => {
+      if (failure || settled) return;
+      const match = /^native_dispatch_request=([1-9]\d*)$/.exec(line);
+      const attempt = match ? Number(match[1]) : NaN;
+      if (mode !== "--print-authorized" || authorizing || !Number.isSafeInteger(attempt) || attempt !== dispatchAttempt + 1) {
+        stop(new Error("Invalid native print dispatch authorization request."));
+        return;
+      }
+      dispatchAttempt = attempt;
+      authorizing = true;
+      try {
+        await execution.beforeDispatch!();
+        if (failure || settled) return;
+        execution.signal?.throwIfAborted();
+        execution.assertActive?.();
+        child.stdin.write(`native_dispatch_authorized=${attempt}\n`);
+        authorizedAttempts++;
+      } catch (error) {
+        stop(error instanceof Error ? error : new Error(String(error)));
+      } finally {
+        authorizing = false;
+      }
+    };
+    child.stdin.on("error", (error) => stop(error));
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
       const lines = stdout.split(/\r?\n/);
@@ -190,6 +222,10 @@ function runNativeHelper(
       for (const line of lines) {
         const trimmed = line.trim();
         if (trimmed) {
+          if (trimmed.startsWith("native_dispatch_request=")) {
+            void authorizeDispatch(trimmed);
+            continue;
+          }
           updates.push(trimmed);
           onUpdate?.(trimmed);
         }
@@ -207,6 +243,10 @@ function runNativeHelper(
       settled = true;
       cleanup();
       if (failure) { reject(failure); return; }
+      if (mode === "--print-authorized" && code === 0 && (authorizing || authorizedAttempts === 0)) {
+        reject(new Error("Native print helper exited without completed dispatch authorization."));
+        return;
+      }
       const trailing = stdout.trim();
       if (trailing) {
         updates.push(trailing);
@@ -565,11 +605,15 @@ export async function probeBambuNative(host: string, token: string): Promise<Rec
 
 export async function printWithBambuNative(
   options: BambuNativePrintOptions,
-  onUpdate?: BambuNativeUpdateCallback,
-  execution?: BambuNativeExecution
+  onUpdate: BambuNativeUpdateCallback | undefined,
+  execution: BambuNativeExecution & { beforeDispatch: () => Promise<void> }
 ): Promise<Record<string, unknown>> {
+  if (typeof execution?.beforeDispatch !== "function") {
+    throw new Error("Native printing requires a beforeDispatch fresh-state check.");
+  }
   const result = await runNativeHelper(
-    "--print",
+    // Older compiled helpers reject this mode before connecting or printing.
+    "--print-authorized",
     {
       ...process.env,
       BAMBU_NATIVE_CONFIRM: "1",

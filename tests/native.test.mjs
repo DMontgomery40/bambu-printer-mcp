@@ -14,7 +14,7 @@ const printerModule = new URL("../dist/printers/bambu.js", import.meta.url).href
 
 // Exercise platform dispatch on every CI OS. Only the OS selector and transport
 // boundaries are mocked; file inspection, AMS validation and preflight are real.
-async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false } = {}) {
+async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-native-test-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const eventsFile = path.join(dir, "events.jsonl");
@@ -23,6 +23,7 @@ async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", g
   await fs.writeFile(eventsFile, "");
   await fs.writeFile(helper, `#!/usr/bin/env node
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { createInterface } from 'node:readline';
 const e = process.env;
 if (${ignoreTerm}) process.on('SIGTERM', () => {});
 const event = { kind: 'helper', pid: process.pid, mode: process.argv[2], file: e.BAMBU_NATIVE_FILE,
@@ -33,12 +34,20 @@ const event = { kind: 'helper', pid: process.pid, mode: process.argv[2], file: e
   mapping: e.BAMBU_NATIVE_AMS_MAPPING, mapping2: e.BAMBU_NATIVE_AMS_MAPPING2,
   command: JSON.parse(e.BAMBU_NATIVE_COMMAND_JSON || '{}') };
 event.olderAlive = readFileSync(${JSON.stringify(eventsFile)}, 'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse)
-  .filter(old => old.mode === '--print' || old.command?.print?.temp > 0)
+  .filter(old => old.mode === '--print-authorized' || old.command?.print?.temp > 0)
   .filter(old => { try { process.kill(old.pid, 0); return true; } catch { return false; } }).map(old => old.pid);
 appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify(event) + '\\n');
-if (${helperDelay} && (['--print', '--upload'].includes(process.argv[2]) || event.command.print?.temp > 0)) {
+if (${helperDelay} && (['--print-authorized', '--upload'].includes(process.argv[2]) || event.command.print?.temp > 0)) {
   await new Promise(resolve => setTimeout(resolve, ${helperDelay}));
   appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({kind:'sent'}) + '\\n');
+}
+if (process.argv[2] === '--print-authorized') {
+  const input = createInterface({input:process.stdin});
+  const authorization = new Promise(resolve => input.once('line', resolve));
+  console.log('native_dispatch_request=1');
+  if (await authorization !== 'native_dispatch_authorized=1') process.exit(21);
+  input.close();
+  appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({kind:'dispatched'}) + '\\n');
 }
 console.log('native_print result=0');
 `, { mode: 0o755 });
@@ -48,7 +57,7 @@ console.log('native_print result=0');
   zip.file("Metadata/plate_1.json", JSON.stringify({ filament_ids: [0] }));
   await fs.writeFile(file, await zip.generateAsync({ type: "nodebuffer" }));
   const preload = `
-    import { appendFileSync } from 'node:fs';
+    import { appendFileSync, readFileSync } from 'node:fs';
     import { BambuImplementation } from ${JSON.stringify(printerModule)};
     Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} });
     const record = kind => appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({kind})+'\\n');
@@ -57,8 +66,9 @@ console.log('native_print result=0');
     BambuImplementation.prototype.disconnectAll = async () => { record('disconnect'); };
     BambuImplementation.prototype.getSafetyStatus = async (_host, serial) => {
       record('status');
-      return { connected:true, serial, model:'x2d', status:${JSON.stringify(state)},
-        raw: {model:'x2d',gcode_state:${JSON.stringify(state)},print_error:0,hms:[],nozzle_diameter:['0.4','0.4'],
+      const observedState = ${JSON.stringify(dispatchState)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchState)} : ${JSON.stringify(state)};
+      return { connected:true, serial, model:'x2d', status:observedState,
+        raw: {model:'x2d',gcode_state:observedState,print_error:0,hms:[],nozzle_diameter:['0.4','0.4'],
           ams: { ams:[{id:'0',tray:[{id:'0',tray_type:'PLA'}]}, {id:'128',tray:[{id:'0',tray_type:'PLA'}]}] } },
         observation:{source:'mqtt',requestedAt:Date.now()-1,receivedAt:Date.now(),identitySource:'report'} };
     };
@@ -99,7 +109,7 @@ for (const connection_mode of [undefined, "lan_mqtt_ftps", "bambu_native"]) {
     assert.equal(events.filter(e => e.kind === "helper").length, 1);
     assert.equal(events.some(e => ["ftp", "mqtt"].includes(e.kind)), false);
     const call = events.find(e => e.kind === "helper");
-    assert.equal(call.mode, "--print");
+    assert.equal(call.mode, "--print-authorized");
     assert.notEqual(call.file, s.file);
     assert.equal(call.config, call.file);
     assert.equal(call.exists, true);
@@ -212,6 +222,30 @@ test("native upload rejects unsupported print options and invalid metadata befor
   assert.equal(schema.ams_mapping2, undefined);
 });
 
+test("native print rechecks live readiness after helper connection before dispatch", async t => {
+  const s = await server(t, { dispatchState: "RUNNING" });
+  const result = await s.print({ use_ams: false });
+  assert.equal(result.isError, true, JSON.stringify(result));
+  assert.match(result.content[0].text, /ready|running|idle/i);
+  const events = await s.events();
+  assert.equal(events.some(e => e.kind === "helper"), true);
+  assert.equal(events.some(e => e.kind === "dispatched"), false);
+});
+
+test("raw native metadata uses the requested serial rather than the configured model", async t => {
+  const message_json = JSON.stringify({ print: { command: "extrusion_cali_get", sequence_id: "1" } });
+  const configured = await server(t);
+  const other = await configured.client.callTool({ name: "x2d_native_control", arguments: {
+    message_json, bambu_serial: "01POTHER", host: "127.0.0.2",
+  } });
+  assert.equal(other.isError, true);
+  assert.deepEqual(await configured.events(), []);
+  const unconfigured = await server(t, { model: "" });
+  const x2d = await unconfigured.client.callTool({ name: "x2d_native_control", arguments: { message_json } });
+  assert.notEqual(x2d.isError, true, JSON.stringify(x2d));
+  assert.equal((await unconfigured.events()).filter(e => e.kind === "helper").length, 1);
+});
+
 test("raw native controls cannot bypass checked heating, resume or error clearing", async t => {
   const s = await server(t);
   for (const command of ["set_nozzle_temp", "set_bed_temp", "resume", "clean_print_error", "gcode_file", "xyz_ctrl", "ams_change_filament", "select_extruder", "set_ctt", "idle_ignore", "ignore"]) {
@@ -245,7 +279,7 @@ for (const name of ["cancel_print", "set_temperature"]) {
   test(`${name} terminates a pending native print before its snapshot is released`, async t => {
     const s = await server(t, { model: "", helperDelay: 3000, ignoreTerm: true });
     const pending = s.print({ use_ams: false });
-    const call = await until(async () => (await s.events()).find(e => e.mode === "--print"));
+    const call = await until(async () => (await s.events()).find(e => e.mode === "--print-authorized"));
     await fs.access(call.file);
     const result = await s.client.callTool({ name, arguments: name === "set_temperature"
       ? { component: "bed", temperature: 0, bambu_model: "x2d" } : {} });
@@ -268,7 +302,7 @@ for (const name of ["print_3mf", "upload_file"]) test(`MCP cancellation terminat
   const pending = (name === "print_3mf" ? s.print({ use_ams: false }, { signal: controller.signal }) :
     s.client.callTool({ name, arguments: { file_path: s.file, filename: "cube.3mf", connection_mode: "bambu_native" } }, undefined, { signal: controller.signal }))
     .catch(error => error);
-  const call = await until(async () => (await s.events()).find(e => ["--print", "--upload"].includes(e.mode)));
+  const call = await until(async () => (await s.events()).find(e => ["--print-authorized", "--upload"].includes(e.mode)));
   controller.abort();
   assert.ok(await pending instanceof Error);
   await until(() => exited(call.pid));
@@ -299,7 +333,7 @@ for (const name of ["pause_print", "set_temperature"]) test(`${name} with an ove
 test("server shutdown cannot leave a SIGTERM-resistant native print helper running", async t => {
   const s = await server(t, { helperDelay: 3000, ignoreTerm: true });
   const pending = s.print({ use_ams: false }).catch(error => error);
-  const call = await until(async () => (await s.events()).find(e => e.mode === "--print"));
+  const call = await until(async () => (await s.events()).find(e => e.mode === "--print-authorized"));
   await s.client.close();
   await pending;
   await until(() => exited(call.pid));

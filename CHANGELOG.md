@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Fixed
+- Require fresh shared printer-state authorization after native connection setup and again before certificate-retry print dispatch.
+- Select raw native metadata controls by the requested printer instead of the global default model.
 - Preserve unknown observed printer identities in status instead of substituting the configured model.
 - Validate and forward native upload plate, bed, project, and preset metadata; explicitly reject unsupported print options instead of silently ignoring them.
 - Keep heater-off on the selected printer transport after model elicitation, including an overridden non-X2D serial.

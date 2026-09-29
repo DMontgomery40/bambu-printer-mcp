@@ -1172,7 +1172,13 @@ class BambuPrinterMCPServer {
                     vibrationCalibration: params.task_vibration_cali,
                     layerInspect: params.task_layer_inspect,
                     timelapse: params.task_record_timelapse,
-                }, native.onUpdate, { signal: native.signal, assertActive });
+                }, native.onUpdate, { signal: native.signal, assertActive, beforeDispatch: async () => {
+                        assertActive();
+                        const dispatchStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
+                        validatePrinterState(dispatchStatus, requirements);
+                        this.bambu.assertBedClearance(dispatchStatus, bedClearance);
+                        assertActive();
+                    } });
                 assertActive();
                 this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements);
                 return { ...nativeResult, autoSliced, projectName, plateIndex, useAMS, amsMapping: mapping };
@@ -2705,8 +2711,8 @@ class BambuPrinterMCPServer {
                         if (!args?.message_json) {
                             throw new Error("Missing required parameter: message_json");
                         }
-                        if (DEFAULT_BAMBU_MODEL !== "x2d") {
-                            throw new Error("x2d_native_control is restricted to the X2D printer.");
+                        if (!nativeControls) {
+                            throw new Error("x2d_native_control is restricted to a selected X2D printer on macOS.");
                         }
                         const messageJson = validateBambuNativeMetadata(String(args.message_json));
                         result = await sendNativeCommand({

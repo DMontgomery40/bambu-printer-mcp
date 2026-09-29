@@ -33,6 +33,8 @@ export type BambuNativeExecution = {
     signal?: AbortSignal;
     /** Recheck the shared stop/heater-off generation while the helper runs. */
     assertActive?: () => void;
+    /** Read and validate fresh printer state immediately before each print attempt. */
+    beforeDispatch?: () => Promise<void>;
 };
 export type BambuNativeFanCommand = {
     fan: "part" | "auxiliary" | "right_auxiliary" | "chamber";
@@ -58,5 +60,7 @@ export declare function validateBambuNativeControlMessage(messageJson: string): 
 export declare function validateBambuNativeMetadata(messageJson: string): string;
 export declare function sendCommandWithBambuNative(options: BambuNativeControlOptions, execution?: BambuNativeExecution): Promise<Record<string, unknown>>;
 export declare function probeBambuNative(host: string, token: string): Promise<Record<string, unknown>>;
-export declare function printWithBambuNative(options: BambuNativePrintOptions, onUpdate?: BambuNativeUpdateCallback, execution?: BambuNativeExecution): Promise<Record<string, unknown>>;
+export declare function printWithBambuNative(options: BambuNativePrintOptions, onUpdate: BambuNativeUpdateCallback | undefined, execution: BambuNativeExecution & {
+    beforeDispatch: () => Promise<void>;
+}): Promise<Record<string, unknown>>;
 export declare function uploadWithBambuNative(options: BambuNativePrintOptions, onUpdate?: BambuNativeUpdateCallback, execution?: BambuNativeExecution): Promise<Record<string, unknown>>;
