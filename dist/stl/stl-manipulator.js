@@ -100,6 +100,13 @@ function configuredBambuProfileDirs() {
     ];
     return roots.flatMap((root) => appNames.map((appName) => path.join(root, appName, 'system', 'BBL')));
 }
+/** Keys every profile kind carries; they describe the file, not machine hardware. */
+const PROFILE_METADATA_KEYS = new Set([
+    'name', 'type', 'from', 'inherits', 'instantiation', 'setting_id', 'version', 'is_custom_defined',
+    'compatible_printers', 'compatible_printers_condition', 'compatible_prints', 'compatible_prints_condition',
+]);
+/** Machine keys that sanitizeProcessForOrca intentionally sets in the process profile. */
+const ORCA_PROCESS_OVERRIDE_KEYS = new Set(['use_relative_e_distances']);
 export class STLManipulator extends EventEmitter {
     constructor(tempDir = path.join(process.cwd(), 'temp')) {
         super();
@@ -424,6 +431,39 @@ export class STLManipulator extends EventEmitter {
             ].join(';'),
             filamentPaths: filaments.map((profile, i) => needsResolution(bundle.filamentPaths[i], profile) ? flat.filamentPaths[i]
                 : withCliFields(bundle.filamentPaths[i], profile, flat.filamentPaths[i], ['filament_colour'])),
+        };
+    }
+    /**
+     * The CLI applies every key in every --load-settings/--load-filaments file,
+     * so machine settings carried by a process or filament file (for example a
+     * template 3MF's project_settings from another printer) would replace the
+     * selected preset's start G-code, model, and bed geometry. The machine
+     * preset owns those keys; drop them from the other profiles.
+     */
+    isolateMachineSettings(bundle, slicerType) {
+        const [machinePath, processPath] = bundle.settingsArg?.split(';') ?? [];
+        if (!machinePath || !processPath)
+            return bundle;
+        // Orca's absolute-extrusion normalization deliberately overrides this machine key.
+        const retained = slicerType === 'orcaslicer' ? ORCA_PROCESS_OVERRIDE_KEYS : new Set();
+        const machineKeys = Object.keys(this.readJsonFile(machinePath))
+            .filter(key => !PROFILE_METADATA_KEYS.has(key) && !retained.has(key));
+        const isolate = (filePath, label) => {
+            const profile = this.readJsonFile(filePath);
+            const foreign = machineKeys.filter(key => Object.prototype.hasOwnProperty.call(profile, key));
+            if (foreign.length === 0)
+                return filePath;
+            const isolated = { ...profile };
+            for (const key of foreign)
+                delete isolated[key];
+            console.error(`Ignoring ${foreign.length} machine setting(s) in ${label} profile ${filePath} ` +
+                `(the selected machine preset owns them): ${foreign.slice(0, 8).join(', ')}${foreign.length > 8 ? ', ...' : ''}`);
+            return this.writeTempJson(path.basename(filePath, '.json'), `${label}_without_machine`, isolated);
+        };
+        return {
+            ...bundle,
+            settingsArg: [machinePath, isolate(processPath, 'process')].join(';'),
+            filamentPaths: bundle.filamentPaths.map(filePath => isolate(filePath, 'filament')),
         };
     }
     /** --load-filaments is positional; a single override must cover every project slot. */
@@ -1248,13 +1288,14 @@ export class STLManipulator extends EventEmitter {
                             const [machinePath, processPath] = settingsBundle.settingsArg.split(';');
                             settingsBundle.settingsArg = [machinePath, this.writeTempJson(outputBase, 'process_orca_resolved', this.sanitizeProcessForOrca(this.readJsonFile(processPath), printerPreset))].join(';');
                         }
+                        const cliBundle = this.isolateMachineSettings(settingsBundle, slicerType);
                         args = [
                             '--slice', String(bambuOptions?.slicePlate ?? 0),
                             '--outputdir', outputDir,
                             '--export-3mf', path.basename(bambuOutputPath),
                         ];
-                        if (settingsBundle.settingsArg) {
-                            args.push('--load-settings', settingsBundle.settingsArg);
+                        if (cliBundle.settingsArg) {
+                            args.push('--load-settings', cliBundle.settingsArg);
                         }
                         // Always allow newer-version 3MF files (the CLI rejects them by default)
                         args.push('--allow-newer-file');
@@ -1289,8 +1330,8 @@ export class STLManipulator extends EventEmitter {
                             args.push('--clone-objects', bambuOptions.cloneObjects);
                         if (bambuOptions?.skipObjects)
                             args.push('--skip-objects', bambuOptions.skipObjects);
-                        if (settingsBundle.filamentPaths.length > 0) {
-                            args.push('--load-filaments', settingsBundle.filamentPaths.join(';'));
+                        if (cliBundle.filamentPaths.length > 0) {
+                            args.push('--load-filaments', cliBundle.filamentPaths.join(';'));
                             args.push('--load-defaultfila');
                         }
                         if (bambuOptions?.loadFilamentIds)

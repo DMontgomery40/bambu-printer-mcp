@@ -101,6 +101,33 @@ for (const slicerType of ['bambustudio', 'orcaslicer', 'orcaslicer-bambulab']) {
     assert.deepEqual(JSON.parse(await fs.readFile((await f.loaded())[0], 'utf8')).nozzle_temperature, ['220']);
   });
 
+  test(`${slicerType} keeps machine settings out of custom process and filament profiles`, async t => {
+    const f = await fixture(t, slicerType);
+    await f.write('machine', { name: 'SAFETY base', nozzle_diameter: ['0.4'], machine_start_gcode: 'GENERIC', printer_model: 'Bambu Lab SAFETY' });
+    // Profiles exported from another printer carry that printer's machine settings.
+    const foreign = { printer_model: 'Bambu Lab X1 Carbon', nozzle_diameter: ['0.6'], machine_start_gcode: '; FOREIGN START' };
+    const custom = path.join(f.root, 'custom.json');
+    const customFilament = path.join(f.root, 'custom-filament.json');
+    await fs.writeFile(custom, JSON.stringify({ name: 'Custom', from: 'User', wall_loops: '5', ...foreign }));
+    await fs.writeFile(customFilament, JSON.stringify({ name: 'Custom PETG', from: 'User', filament_type: ['PETG'], nozzle_temperature: ['250'], ...foreign }));
+    const originals = [await fs.readFile(custom, 'utf8'), await fs.readFile(customFilament, 'utf8')];
+    await f.slice({ loadFilaments: customFilament }, custom);
+    const args = await f.args();
+    const [machineFile, processFile] = args[args.indexOf('--load-settings') + 1].split(';');
+    const machine = JSON.parse(await fs.readFile(machineFile, 'utf8'));
+    assert.equal(machine.machine_start_gcode, 'M620 S0A ; correct machine');
+    assert.equal(machine.printer_model, 'Bambu Lab SAFETY');
+    const config = JSON.parse(await fs.readFile(processFile, 'utf8'));
+    const filament = JSON.parse(await fs.readFile((await f.loaded())[0], 'utf8'));
+    assert.equal(config.wall_loops, '5', 'process settings are kept');
+    assert.deepEqual([filament.name, filament.filament_type, filament.nozzle_temperature], ['Custom PETG', ['PETG'], ['250']], 'filament settings are kept');
+    for (const key of Object.keys(foreign)) {
+      assert.equal(key in config, false, `${key} must not reach the CLI through the process profile`);
+      assert.equal(key in filament, false, `${key} must not reach the CLI through a filament profile`);
+    }
+    assert.deepEqual([await fs.readFile(custom, 'utf8'), await fs.readFile(customFilament, 'utf8')], originals, "the caller's files are not modified");
+  });
+
   test(`${slicerType} preserves custom dependencies from configured user profile directories`, async t => {
     const f = await fixture(t, slicerType);
     const user = path.join(f.root, 'user-BBL');
@@ -392,6 +419,50 @@ for (const [layout, binary, profiles, slicerType = 'bambustudio'] of [
     assert.equal(JSON.parse(await fs.readFile(machineFile, 'utf8')).machine_start_gcode, 'M620 S0A ; correct machine');
   });
 }
+
+test('Orca keeps its absolute-extrusion process override when the machine defines relative extrusion', async t => {
+  const f = await fixture(t, 'orcaslicer');
+  await f.write('machine', { name: 'SAFETY base', nozzle_diameter: ['0.4'], machine_start_gcode: 'GENERIC', use_relative_e_distances: '1' });
+  await f.slice();
+  const args = await f.args();
+  const [machineFile, processFile] = args[args.indexOf('--load-settings') + 1].split(';');
+  assert.equal(JSON.parse(await fs.readFile(machineFile, 'utf8')).use_relative_e_distances, '1');
+  assert.equal(JSON.parse(await fs.readFile(processFile, 'utf8')).use_relative_e_distances, '0');
+});
+
+for (const [kind, file, reference] of [['process', 'SAFETY process base', 'inherits'], ['machine', 'SAFETY start', 'include']]) {
+  test(`a missing ${reference} reference names malformed profile files skipped from the tree`, async t => {
+    const f = await fixture(t);
+    await fs.writeFile(path.join(f.profiles, 'BBL', kind, `${file}.json`), '{not json');
+    await assert.rejects(f.slice(), new RegExp(`${file}.*malformed profile file\\(s\\): ${file}\\.json`));
+    await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+  });
+}
+
+test('installed stock BambuStudio presets keep every default process and filament setting', async t => {
+  const installed = '/Applications/BambuStudio.app/Contents/Resources/profiles';
+  const machineDir = path.join(installed, 'BBL', 'machine');
+  const exists = await fs.access(machineDir).then(() => true, () => false);
+  if (!exists) return t.skip('BambuStudio profile tree is not installed');
+  const f = await fixture(t);
+  process.env.BAMBU_PROFILES_ROOT = installed;
+  process.env.BAMBU_SLICER_PROFILE_DIRS = '';
+  const presets = [];
+  for (const file of (await fs.readdir(machineDir)).filter(name => /^Bambu Lab .* nozzle\.json$/.test(name))) {
+    const preset = JSON.parse(await fs.readFile(path.join(machineDir, file), 'utf8'));
+    if (preset.instantiation === 'true') presets.push(preset.name);
+  }
+  assert.ok(presets.length > 0, 'the installed tree lists stock machine presets');
+  const errors = t.mock.method(console, 'error', () => {});
+  const manipulator = new STLManipulator(path.join(f.root, 'stock'));
+  for (const preset of presets) {
+    await manipulator.sliceSTL(f.stl, 'bambustudio', f.executable, undefined, undefined, preset);
+    const args = await f.args();
+    const loaded = [...args[args.indexOf('--load-settings') + 1].split(';'), ...args[args.indexOf('--load-filaments') + 1].split(';')];
+    assert.deepEqual(loaded.filter(file => file.includes('_without_machine')), [], `${preset} stock profiles must not lose settings`);
+  }
+  assert.deepEqual(errors.mock.calls.map(call => String(call.arguments[0])).filter(line => line.includes('machine setting(s)')), []);
+});
 
 test('an unavailable active profile tree cannot silently slice with printer defaults', async t => {
   const f = await fixture(t);

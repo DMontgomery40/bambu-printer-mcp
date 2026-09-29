@@ -95,7 +95,8 @@ interface IndexedProfile {
   data: Record<string, unknown>;
 }
 
-type NameIndex = Map<string, IndexedProfile>;
+/** Name index plus unreadable JSON files, reported when a name is missing. */
+type NameIndex = Map<string, IndexedProfile> & { malformed?: string[] };
 
 /* -------------------------------------------------------------------------- */
 /* Indexing                                                                    */
@@ -116,6 +117,7 @@ async function buildNameIndex(
   userProfileRoots: string[] = []
 ): Promise<NameIndex> {
   const index: NameIndex = new Map();
+  index.malformed = [];
   const subdirs: ProfileKind[] = ["machine", "process", "filament"];
 
   const directories = [
@@ -144,10 +146,15 @@ async function buildNameIndex(
       try {
         data = JSON.parse(raw) as Record<string, unknown>;
       } catch {
-        // Malformed profile -- skip, don't poison the index.
+        // Malformed profile -- skip, don't poison the index. A reference to
+        // it still fails, and the error names the skipped file.
+        index.malformed!.push(filePath);
         continue;
       }
-      if (!data || typeof data !== 'object' || Array.isArray(data)) continue;
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        index.malformed!.push(filePath);
+        continue;
+      }
       const name = data["name"];
       if (typeof name !== "string" || name.length === 0) continue;
       // First-write wins. BBL doesn't have name collisions in practice;
@@ -183,7 +190,7 @@ function flattenByName(
   }
   const entry = index.get(leafName);
   if (!entry) {
-    throw new Error(`Profile "${leafName}" not found in index. The profile tree is incomplete or the name is misspelled.`);
+    throw new Error(`Profile "${leafName}" not found in index. The profile tree is incomplete or the name is misspelled.${describeMalformed(index)}`);
   }
   visiting.add(leafName);
   try {
@@ -191,6 +198,13 @@ function flattenByName(
   } finally {
     visiting.delete(leafName);
   }
+}
+
+function describeMalformed(index: NameIndex): string {
+  const malformed = index.malformed ?? [];
+  if (malformed.length === 0) return "";
+  const shown = malformed.slice(0, 5).map((file) => path.basename(file)).join(", ");
+  return ` Skipped ${malformed.length} unreadable or malformed profile file(s): ${shown}${malformed.length > 5 ? ", ..." : ""}.`;
 }
 
 function flattenData(
@@ -249,7 +263,7 @@ function applyIncludes(
     if (!entry) {
       throw new Error(
         `Profile "${String(profile["name"])}" includes "${name}", which is not in the index. ` +
-          `Refusing to fall back to inherited defaults (wrong G-code for this printer).`
+          `Refusing to fall back to inherited defaults (wrong G-code for this printer).${describeMalformed(index)}`
       );
     }
     for (const [key, value] of Object.entries(flattenByName(name, index, visiting))) {

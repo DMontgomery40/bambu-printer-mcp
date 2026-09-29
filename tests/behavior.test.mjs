@@ -1769,6 +1769,74 @@ test("slice_with_template prefers named template settings over BAMBU_SLICER_PROF
   assert.ok(!settingsValue.includes(defaultProfilePath), "server-level BAMBU_SLICER_PROFILE must not override a named template");
 });
 
+test("template machine settings never replace the selected machine preset", async (t) => {
+  const fakeSlicer = await createFakeBambuSlicer();
+  fs.writeFileSync(path.join(fakeSlicer.profilesRoot, "BBL", "machine", "Bambu Lab P1S 0.4 nozzle.json"), JSON.stringify({
+    name: "Bambu Lab P1S 0.4 nozzle", printer_model: "Bambu Lab P1S", nozzle_diameter: ["0.4"],
+    default_print_profile: "Behavior process", default_filament_profile: ["Behavior filament"], machine_start_gcode: "fixture start",
+  }));
+  // A project sliced for another printer stores that printer's machine settings in project_settings.
+  const zip = new JSZip();
+  zip.file("Metadata/project_settings.config", JSON.stringify({
+    printer_model: "Bambu Lab X1 Carbon", printer_settings_id: "Bambu Lab X1 Carbon 0.4 nozzle",
+    machine_start_gcode: "; TEMPLATE_MACHINE_MARKER", nozzle_diameter: ["0.6"], layer_height: "0.16",
+  }));
+  const templateDir = path.join(fakeSlicer.tempDir, "templates");
+  fs.mkdirSync(templateDir, { recursive: true });
+  const templatePath = path.join(templateDir, "x1c-project.3mf");
+  fs.writeFileSync(templatePath, await zip.generateAsync({ type: "nodebuffer" }));
+
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+      BAMBU_MODEL: "p1s",
+      BAMBU_SERIAL: "",
+      BAMBU_TOKEN: "",
+      BAMBU_SLICER_PROFILE: "",
+      BAMBU_TEMPLATE_3MF_PATH: "",
+      BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot,
+      BAMBU_SLICER_PROFILE_DIRS: "",
+      MCP_ALLOW_EXECUTABLE_ARG: "1",
+    },
+    stderr: "pipe",
+  });
+
+  const client = createClient();
+  t.after(async () => { await closeTransport(transport); });
+
+  await client.connect(transport);
+  for (const [name, template] of [
+    ["slice_stl", { template_3mf_path: templatePath }],
+    ["slice_with_template", { template_name: "x1c-project", template_dir: templateDir }],
+  ]) {
+    const result = await client.callTool({
+      name,
+      arguments: {
+        stl_path: SAMPLE_STL,
+        ...template,
+        bambu_model: "p1s",
+        slicer_path: fakeSlicer.fakeSlicerPath,
+        use_printer_filaments: false,
+      },
+    });
+
+    assert.equal(result.isError, undefined, `${name}: ${JSON.stringify(result.content)}`);
+    const slicerArgs = JSON.parse(fs.readFileSync(fakeSlicer.argsOutPath, "utf8"));
+    const [machinePath, processPath] = slicerArgs[slicerArgs.indexOf("--load-settings") + 1].split(";");
+    const machine = JSON.parse(fs.readFileSync(machinePath, "utf8"));
+    assert.equal(machine.machine_start_gcode, "fixture start");
+    assert.equal(machine.printer_model, "Bambu Lab P1S");
+    const processSettings = JSON.parse(fs.readFileSync(processPath, "utf8"));
+    assert.equal(processSettings.layer_height, "0.16", `${name} keeps template process settings`);
+    for (const key of ["machine_start_gcode", "printer_model", "nozzle_diameter"]) {
+      assert.equal(key in processSettings, false, `${name}: template ${key} must not reach the CLI`);
+    }
+  }
+});
+
 test("template_name resolves by source type for slicer profiles versus 3MF sources", async (t) => {
   const fakeSlicer = await createFakeBambuSlicer();
   const templateDir = path.join(fakeSlicer.tempDir, "templates");
