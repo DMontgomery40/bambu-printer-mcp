@@ -189,6 +189,8 @@ test('P2S GUI variant tables accept the selected single-extruder header values',
   const project=p2sGuiProject();project.nozzle_type=['stainless_steel','hardened_steel','hardened_steel'];
   const gcode=p2sGuiHeader.replace('hardened_steel','stainless_steel')+'G1 X100 Y100\n';
   assert.deepEqual((await inspect(t,'',{model:'p2s'},p2sEntries(project,gcode))).nozzleTypes,['stainless_steel']);
+  const uniform=p2sGuiProject();delete uniform.printer_extruder_variant;delete uniform.extruder_type;
+  assert.deepEqual((await inspect(t,'',{model:'p2s'},p2sEntries(uniform,p2sGuiHeader.replace(/; printer_extruder_variant[^\n]*\n/,'')+'G1 X100 Y100\n'))).nozzleTypes,['hardened_steel']);
 });
 test('P2S selected extruder ids and variants cannot contradict the project tables',async t=>{
   const cases=[
@@ -205,6 +207,14 @@ test('P2S selected extruder ids and variants cannot contradict the project table
     await assert.rejects(inspect(t,'',{model:'p2s'},p2sEntries(project,header+'G1 X100 Y100\n')),/extruder|variant|nozzle type|contradict|metadata/i,header);
   const project=p2sGuiProject();delete project.printer_extruder_id;
   await assert.rejects(inspect(t,'',{model:'p2s'},p2sEntries(project,p2sGuiHeader.replace(/; printer_extruder_id[^\n]*\n/,'')+'G1 X100 Y100\n')),/extruder/i);
+});
+test('uniform P2S nozzle materials still require valid selected variant metadata',async t=>{
+  for(const variant of ['Direct Drive High Flow','Direct Drive Standard;Direct Drive High Flow','bogus']) {
+    const gcode=p2sGuiHeader.replace('"Direct Drive Standard"',`"${variant}"`)+'G1 X100 Y100\n';
+    await assert.rejects(inspect(t,'',{model:'p2s'},p2sEntries(p2sGuiProject(),gcode)),/extruder|variant|nozzle type|metadata/i,variant);
+  }
+  const project=p2sGuiProject();project.printer_extruder_variant=['Direct Drive Standard','Direct Drive High Flow'];
+  await assert.rejects(inspect(t,'',{model:'p2s'},p2sEntries(project,p2sGuiHeader+'G1 X100 Y100\n')),/variant|metadata/i);
 });
 test('H2D selected extruder ids and variants in the plate header must match the project tables',async t=>{
   const {project,plate}=await h2dGuiData();

@@ -205,17 +205,22 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
       });
       // The selected form names each physical extruder once, in order.
       if(selectedIds && selectedIds.some((id,index)=>id!==index+1)) return undefined;
+      const variants=metadataValues(metadata,['printer_extruder_variant']).length
+        ? variantTable('printer_extruder_variant',entries.length,normalizedEntries):undefined;
+      const extruders=variants ? consistent(metadataValues(metadata,['extruder_type']),normalizedEntries,'extruder type'):undefined;
       const resolved:string[]=[];
       for(let index=0;index<nozzleDiameters.length;index++) {
         const rows=ids.flatMap((id,row)=>id===index+1?[row]:[]);
         if(!rows.length) return undefined;
-        if(rows.every(row=>entries[row]===entries[rows[0]])) {resolved.push(entries[rows[0]]);continue;}
-        const {table:variants,selected:selectedVariants}=variantTable('printer_extruder_variant',entries.length,normalizedEntries);
-        const extruders=consistent(metadataValues(metadata,['extruder_type']),normalizedEntries,'extruder type');
-        if(extruders.length!==nozzleDiameters.length || !nozzleFlows) return undefined;
+        if(!variants) {
+          if(!rows.every(row=>entries[row]===entries[rows[0]])) return undefined;
+          resolved.push(entries[rows[0]]);continue;
+        }
+        // Validate declared variants even when all rows use the same material.
+        if(!extruders || extruders.length!==nozzleDiameters.length || !nozzleFlows) return undefined;
         const variant=`${extruders[index]}_${nozzleFlows[index]}`;
-        if(selectedVariants && selectedVariants[index]!==variant) return undefined;
-        const selected=rows.filter(row=>variants[row]===variant);
+        if(variants.selected && variants.selected[index]!==variant) return undefined;
+        const selected=rows.filter(row=>variants.table[row]===variant);
         if(selected.length!==1) return undefined;
         resolved.push(entries[selected[0]]);
       }
