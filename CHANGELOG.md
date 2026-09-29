@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## [1.1.20] – 2026-09-29
+
+### Documentation
+- Run the local code review before PR pushes to catch problems before GitHub Actions runs; retain GitHub Codex review and current-head CI as subsequent release gates.
+
+### Fixed
+- Accept P2S jobs sliced in Bambu Studio 02.08. The project settings store `printer_extruder_id` and `printer_extruder_variant` as per-variant tables (`["1","1","1"]` beside three `nozzle_type` rows), while the plate G-code header records the selected single-extruder values (`printer_extruder_id = 1`), so every such job failed with "unknown or malformed printer extruder id metadata". Table rows come only from the project settings; header values must have one entry per physical extruder, name each extruder in order, and match the selected variant, and contradictory ids, variants, or nozzle types still reject. Validate supplied variants even when every row uses the same nozzle material ([#33](https://github.com/DMontgomery40/bambu-printer-mcp/pull/33), by Izzy Mansurov (@sapoepsilon)).
+- Accept `M145 P0`/`M145 P1` (airduct cooling/heating mode, no heater target) on the P2S, whose official start and end G-code emit it as the H2-series and X2D templates do. Other `M145` forms and models without a switchable airduct still reject. Verified offline against four real Bambu Studio 02.08.02.61 P2S 0.6 mm jobs (PLA and PETG) and mutated copies with an over-limit nozzle or chamber target, a parameterized `M145`, and contradictory extruder ids or nozzle types; no physical print was run for this change.
+
 ## [1.1.19] – 2026-09-29
 
 ### Documentation

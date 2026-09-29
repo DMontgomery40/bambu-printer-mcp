@@ -6,6 +6,7 @@ Thank you to everyone who builds, tests, reports problems, and shares real print
 
 | Contributor | Contribution |
 | --- | --- |
+| [Izzy Mansurov (sapoepsilon)](https://github.com/sapoepsilon) | Fixes Bambu Studio 02.08 P2S extruder-variant metadata and airduct-command inspection in [#33](https://github.com/DMontgomery40/bambu-printer-mcp/pull/33). Supplies regression tests and offline inspection evidence from four real P2S 0.6 mm PLA/PETG jobs and unsafe mutated copies; this contribution does not claim a physical print. |
 | [Boardy (@boardyai)](https://x.com/boardyai) | Raises the nozzle-verification question that informs the added printer safety checks. |
 | Fable red-team review, shared by David Montgomery | Supplies archive-ambiguity reproductions and hardware-safety review findings used for plate binding, upload checks, temperature policy, and human preflight. Network/security suggestions remain outside this hardware-safety release. |
 | [Sebastian (sebas1986)](https://github.com/sebas1986) | Isolates the multi-filament CLI crash with real BambuStudio bisection, contributes per-slot colours and multi-nozzle prime-tower placement, and verifies X2D identification, status, and slicing in [#18](https://github.com/DMontgomery40/bambu-printer-mcp/pull/18). Also isolates FTPS session-host identity and supplies physical X2D USB upload/size/deletion evidence in [#24](https://github.com/DMontgomery40/bambu-printer-mcp/pull/24); that test does not establish MQTT print dispatch. |

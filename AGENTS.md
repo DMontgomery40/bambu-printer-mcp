@@ -1,17 +1,18 @@
 # bambu-printer-mcp
 
-This file is the repository's shared source of truth for local agents and scheduled maintenance. Read it before changing or reviewing code. CLAUDE.md and .claude/agents.md defer to these rules.
+This file is the repository's shared source of truth for local agents, GitHub Codex review, and scheduled maintenance. Read it before changing or reviewing code. CLAUDE.md and .claude/agents.md defer to these rules.
 
 ## Release and review
 
 - Every update to main requires an npm patch version bump and publication, including code, documentation, and configuration. Run `npm version patch` once for the release, and include its package.json, package-lock.json, and manifest.json changes in the same integration to main.
 - Before opening or updating a PR, run Matt Pocock's `code-review` skill against the main merge base. Resolve substantive standards and spec findings locally; keep its issue-tracker note as ignored agent scratch rather than adding another required public template.
-- Use a PR to main and wait for CI on the current head; the local `code-review` gate above is the review step, so GitHub CI only sees reviewed work. Codex review is not part of this process: don't put `@codex review` in commit messages or PR comments unless the maintainer asks for it. A passing local test does not authorize ignoring current CI failures.
+- Run the local `code-review` gate before pushing PR updates so problems are caught before spending on GitHub Actions. Use a PR to main, include `@codex review` in change commit messages, and request `@codex review` on the PR. After each update, wait at least five minutes and for Codex review plus CI to complete on the current head. Inspect inline findings as well as summary comments, fix actionable findings, and repeat. Local review supplements GitHub review and CI; it does not disable or replace either. A stale review or passing local test does not authorize ignoring current CI failures.
 - Prioritize substantive defects and regressions in supported workflows. Document and defer obscure edge cases, speculative hardening, and cosmetic objections instead of extending a sound release into an endless review loop.
 - Never add AI or agent attribution anywhere in Git or GitHub: no `Co-Authored-By` trailers for Claude, Codex, or other assistants, no "Generated with" footers, and no agent session links in commits, PR titles or bodies, review replies, issue comments, or release notes.
 - Preserve original authorship when integrating contributor PRs. Credit code, issue reports, hardware evidence, and useful superseded proposals in CONTRIBUTORS.md. Clearly distinguish merged changes, superseded proposals, and deferred work.
 - The main-branch Publish Package workflow runs the checks and `npm publish` using trusted publishing. Verify that workflow and the exact npm version before claiming publication; do not publish an unmerged release ahead of review.
 - Create a `v<version>` tag on the final merged release commit and a GitHub Release. The tag workflow builds and uploads the `.mcpb` extension. Verify npm, package/manifest versions, the release asset, and fresh installed startup before declaring the release complete. Never move a published tag.
+- After merging and verifying the release, switch back to main and delete the merged temporary integration branch locally and from origin.
 - Changes to src/, scripts/, or printer behavior need a present-tense CHANGELOG.md entry under `## Unreleased`. Use the accumulated entries in GitHub release notes, with contributor credit and validation limits. Supply multiline notes via a body file.
 
 ## Build and test
