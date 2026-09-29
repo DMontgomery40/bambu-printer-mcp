@@ -13,9 +13,10 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const failure = "Required Bambu machine profile is missing nozzle_volume_type; select a matching machine and filament profile.";
 
-async function start(t, { sliceSucceeds = false, realSlice = false, slicerType = 'bambustudio' } = {}) {
+async function start(t, { sliceSucceeds = false, realSlice = false, slicerType = 'bambustudio', elicitDelayMs = 0, env = {} } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-auto-slice-"));
   const log = path.join(directory, "calls.jsonl");
+  const elicitLog = path.join(directory, "elicitations.jsonl");
   const profile = path.join(directory, "process.json");
   fs.writeFileSync(profile, "{}");
   const profilesRoot = path.join(directory, 'profiles');
@@ -42,7 +43,13 @@ import fs from 'node:fs';
 import { createHash } from 'node:crypto';
 import { STLManipulator } from ${JSON.stringify(pathToFileURL(path.join(root, "dist/stl/stl-manipulator.js")).href)};
 import { BambuImplementation } from ${JSON.stringify(pathToFileURL(path.join(root, "dist/printers/bambu.js")).href)};
+import { Server } from ${JSON.stringify(pathToFileURL(path.join(root, "node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js")).href)};
 const log = (event) => fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(event) + '\\n');
+const elicitInput = Server.prototype.elicitInput;
+Server.prototype.elicitInput = function (params, options) {
+  fs.appendFileSync(${JSON.stringify(elicitLog)}, JSON.stringify({ timeout: options?.timeout }) + '\\n');
+  return elicitInput.call(this, params, options);
+};
 ${realSlice ? '' : `STLManipulator.prototype.sliceSTL = async function (file) {
   log({ action: 'slice', file });
   ${sliceSucceeds ? `return ${JSON.stringify(slicedOutput)};` : `throw new Error(${JSON.stringify(failure)});`}
@@ -70,19 +77,26 @@ BambuImplementation.prototype.getSafetyStatus = async function () {
       BAMBU_CLIENT_CERT: "/nonexistent", BAMBU_CLIENT_KEY: "/nonexistent",
       BAMBU_TEMPLATE_3MF: "", BAMBU_TEMPLATE_3MF_PATH: "", BAMBU_SLICER_PROFILE: "", BAMBU_SLICER_TYPE: "bambustudio",
       SLICER_TYPE: slicerType, SLICER_PATH: executable, BAMBU_PROFILES_ROOT: profilesRoot, BAMBU_SLICER_PROFILE_DIRS: "",
+      BAMBU_CONFIRMATION_TIMEOUT_MS: "", ...env,
     },
     stderr: "pipe",
   });
   const client = new Client({ name: "auto-slice-tests", version: "1" }, { capabilities: { elicitation: { form: {} } } });
-  client.setRequestHandler(ElicitRequestSchema, async () => ({ action: "accept", content: { confirmed: true } }));
+  client.setRequestHandler(ElicitRequestSchema, async () => {
+    // A person may take a while to walk to the printer before answering.
+    await new Promise((resolve) => setTimeout(resolve, elicitDelayMs));
+    return { action: "accept", content: { confirmed: true } };
+  });
   t.after(async () => { await client.close(); fs.rmSync(directory, { recursive: true, force: true }); });
   await client.connect(transport);
   return {
     makeProject,
     slicedOutput,
     events: () => fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").map(JSON.parse) : [],
+    elicitations: () => fs.existsSync(elicitLog) ? fs.readFileSync(elicitLog, "utf8").trim().split("\n").map(JSON.parse) : [],
     print: (file) => client.callTool({ name: "print_3mf", arguments: { three_mf_path: file, bambu_model: "p1s", slicer_type: slicerType, slicer_profile: profile, bed_type: "textured_plate", use_ams: false } }),
     slice: (file) => client.callTool({ name: "slice_stl", arguments: { stl_path: file, bambu_model: "p1s", slicer_profile: profile, use_printer_filaments: false, bed_type: "textured_plate" } }),
+    sliceWithoutModel: (file) => client.callTool({ name: "slice_stl", arguments: { stl_path: file, slicer_profile: profile, use_printer_filaments: false, bed_type: "textured_plate" } }),
   };
 }
 
@@ -123,6 +137,43 @@ test("print_3mf uploads only the generated file after successful auto-slicing", 
   assert.notEqual(upload.file, server.slicedOutput, "dispatch must upload a private checked copy");
   assert.equal(upload.sha256, createHash("sha256").update(fs.readFileSync(server.slicedOutput)).digest("hex"), "only generated, inspected bytes may be uploaded");
   assert.equal(events.filter((event) => event.action === "publish").length, 1);
+});
+
+test("human print confirmation waits ten minutes by default instead of the SDK's 60 seconds", async (t) => {
+  const server = await start(t, { sliceSucceeds: true, elicitDelayMs: 500 });
+  const result = await server.print(await server.makeProject("unsliced.3mf"));
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  assert.ok(server.elicitations().length > 0, "the print must ask for human confirmation");
+  assert.deepEqual([...new Set(server.elicitations().map((call) => call.timeout))], [600000]);
+  assert.equal(server.events().filter((event) => event.action === "publish").length, 1);
+});
+
+test("a late confirmation answered within the configured timeout still prints", async (t) => {
+  const server = await start(t, { sliceSucceeds: true, elicitDelayMs: 1000, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: "5000" } });
+  const result = await server.print(await server.makeProject("unsliced.3mf"));
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  assert.deepEqual([...new Set(server.elicitations().map((call) => call.timeout))], [5000]);
+  assert.equal(server.events().filter((event) => event.action === "publish").length, 1);
+});
+
+test("an unanswered confirmation is reported as a timeout, not as missing elicitation support", async (t) => {
+  const server = await start(t, { sliceSucceeds: true, elicitDelayMs: 1500, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: "300" } });
+  const result = await server.print(await server.makeProject("unsliced.3mf"));
+  assert.equal(result.isError, true);
+  const message = JSON.stringify(result.content);
+  assert.match(message, /No hardware confirmation within 0\.3 second\(s\); nothing was sent to the printer/);
+  assert.doesNotMatch(message, /does not support|requires an MCP client with elicitation|BAMBU_REQUIRE_CONFIRMATION=0/);
+  assert.deepEqual(server.events().filter((event) => ["upload", "publish"].includes(event.action)), [], "a timed-out confirmation must not dispatch");
+});
+
+test("an unanswered printer-model prompt is reported as a timeout", async (t) => {
+  const server = await start(t, { elicitDelayMs: 1500, env: { BAMBU_MODEL: "", BAMBU_CONFIRMATION_TIMEOUT_MS: "300" } });
+  const result = await server.sliceWithoutModel(await server.makeProject("unsliced.3mf"));
+  assert.equal(result.isError, true);
+  const message = JSON.stringify(result.content);
+  assert.match(message, /No printer model was selected within 0\.3 second\(s\); nothing was sent to the printer/);
+  assert.doesNotMatch(message, /does not support elicitation/);
+  assert.deepEqual(server.events(), [], "no slice, connection, or dispatch without a model");
 });
 
 for (const extension of ["3mf", "gcode.3mf"]) {
