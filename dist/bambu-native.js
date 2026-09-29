@@ -59,8 +59,9 @@ async function interruptNativeOperations(serial) {
 function runNativeHelper(mode, env, timeoutMs, onUpdate, execution = {}) {
     execution.signal?.throwIfAborted();
     execution.assertActive?.();
-    if (mode === "--print-authorized" && typeof execution.beforeDispatch !== "function") {
-        throw new Error("Native printing requires a beforeDispatch fresh-state check.");
+    const needsAuthorization = mode === "--print-authorized" || mode === "--command-authorized";
+    if (needsAuthorization && typeof execution.beforeDispatch !== "function") {
+        throw new Error("Native dispatch requires a beforeDispatch fresh-state check.");
     }
     assertBambuNativeAvailable();
     const helper = resolveNativeHelper();
@@ -112,7 +113,7 @@ function runNativeHelper(mode, env, timeoutMs, onUpdate, execution = {}) {
         };
         activeHelpers.set(child, {
             serial: env.BAMBU_NATIVE_SERIAL || "",
-            emergency: mode === "--command" && isEmergencyCommand(env.BAMBU_NATIVE_COMMAND_JSON || "{}"),
+            emergency: (mode === "--command" || mode === "--command-authorized") && isEmergencyCommand(env.BAMBU_NATIVE_COMMAND_JSON || "{}"),
             closed,
             interrupt: () => stop(interrupted("Native operation cancelled by stop or heater-off.")),
         });
@@ -124,8 +125,8 @@ function runNativeHelper(mode, env, timeoutMs, onUpdate, execution = {}) {
                 return;
             const match = /^native_dispatch_request=([1-9]\d*)$/.exec(line);
             const attempt = match ? Number(match[1]) : NaN;
-            if (mode !== "--print-authorized" || authorizing || !Number.isSafeInteger(attempt) || attempt !== dispatchAttempt + 1) {
-                stop(new Error("Invalid native print dispatch authorization request."));
+            if (!needsAuthorization || authorizing || !Number.isSafeInteger(attempt) || attempt !== dispatchAttempt + 1) {
+                stop(new Error("Invalid native dispatch authorization request."));
                 return;
             }
             dispatchAttempt = attempt;
@@ -179,8 +180,8 @@ function runNativeHelper(mode, env, timeoutMs, onUpdate, execution = {}) {
                 reject(failure);
                 return;
             }
-            if (mode === "--print-authorized" && code === 0 && (authorizing || authorizedAttempts === 0)) {
-                reject(new Error("Native print helper exited without completed dispatch authorization."));
+            if (needsAuthorization && code === 0 && (authorizing || authorizedAttempts === 0)) {
+                reject(new Error("Native helper exited without completed dispatch authorization."));
                 return;
             }
             const trailing = stdout.trim();
@@ -466,6 +467,13 @@ export function validateBambuNativeMetadata(messageJson) {
 export async function sendCommandWithBambuNative(options, execution) {
     const validated = validateBambuNativeControlMessage(options.messageJson);
     execution?.signal?.throwIfAborted();
+    const print = JSON.parse(validated.messageJson).print;
+    const requiresFreshState = print?.command === "resume" || print?.command === "clean_print_error" ||
+        (print?.command === "set_bed_temp" && Number(print.temp) > 0) ||
+        (print?.command === "set_nozzle_temp" && Number(print.target_temp) > 0);
+    if (requiresFreshState && typeof execution?.beforeDispatch !== "function") {
+        throw new Error(`Native ${validated.command} requires a beforeDispatch fresh-state check.`);
+    }
     if (isEmergencyCommand(validated.messageJson))
         await interruptNativeOperations(options.serial);
     const qos = options.qos === undefined ? 0 : Math.trunc(options.qos);
@@ -473,7 +481,7 @@ export async function sendCommandWithBambuNative(options, execution) {
     if (!Number.isFinite(qos) || !Number.isFinite(flag) || qos < 0 || qos > 1 || flag < 0 || flag > 1) {
         throw new Error("X2D native control qos and flag must be 0 or 1.");
     }
-    const result = await runNativeHelper("--command", {
+    const result = await runNativeHelper(execution?.beforeDispatch ? "--command-authorized" : "--command", {
         ...process.env,
         BAMBU_NATIVE_COMMAND_CONFIRM: "1",
         BAMBU_NATIVE_HOST: options.host,

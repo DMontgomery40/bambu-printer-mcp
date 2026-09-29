@@ -2703,8 +2703,8 @@ class BambuPrinterMCPServer {
                         break;
                     case "resume_print":
                         result = await this.bambu.resumeJob(host, bambuSerial, bambuToken, nativeControls
-                            ? (assertActive) => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
-                                messageJson: JSON.stringify({ print: { command: "resume", param: "", sequence_id: String(Date.now()) } }), qos: 1 }, { signal: extra.signal, assertActive })
+                            ? (assertActive, beforeDispatch) => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
+                                messageJson: JSON.stringify({ print: { command: "resume", param: "", sequence_id: String(Date.now()) } }), qos: 1 }, { signal: extra.signal, assertActive, beforeDispatch })
                             : undefined);
                         break;
                     case "x2d_native_control": {
@@ -2727,8 +2727,8 @@ class BambuPrinterMCPServer {
                     }
                     case "clear_hms_errors":
                         result = await this.bambu.clearHmsErrors(host, bambuSerial, bambuToken, nativeControls
-                            ? (assertActive) => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
-                                messageJson: JSON.stringify({ print: { command: "clean_print_error", param: "", sequence_id: String(Date.now()) } }), qos: 1 }, { signal: extra.signal, assertActive })
+                            ? (assertActive, beforeDispatch) => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
+                                messageJson: JSON.stringify({ print: { command: "clean_print_error", param: "", sequence_id: String(Date.now()) } }), qos: 1 }, { signal: extra.signal, assertActive, beforeDispatch })
                             : undefined);
                         break;
                     case "set_print_speed":
@@ -2790,13 +2790,13 @@ class BambuPrinterMCPServer {
                             throw new Error("Missing required parameters: ams_id and slot_id");
                         }
                         if (nativeControls) {
-                            const amsId = Math.trunc(Number(args.ams_id));
-                            const slotId = Math.trunc(Number(args.slot_id));
+                            const amsId = Number(args.ams_id);
+                            const slotId = Number(args.slot_id);
                             if ((!Number.isInteger(amsId) || (amsId < 0 || amsId > 3)) && amsId !== 128) {
                                 throw new Error("X2D ams_id must be 0 to 3, or 128 for AMS-HT.");
                             }
-                            if (!Number.isInteger(slotId) || slotId < 0 || slotId > 3) {
-                                throw new Error("slot_id must be an integer from 0 to 3.");
+                            if (!Number.isInteger(slotId) || slotId < 0 || slotId > 3 || (amsId === 128 && slotId !== 0)) {
+                                throw new Error("slot_id must be an integer from 0 to 3; AMS-HT supports only slot 0.");
                             }
                             result = await sendNativeCommand({
                                 host,
@@ -2827,8 +2827,8 @@ class BambuPrinterMCPServer {
                             ? String(args.bambu_model || DEFAULT_BAMBU_MODEL).trim().toLowerCase()
                             : await this.resolveBambuModel(args.bambu_model);
                         result = await this.bambu.setTemperature(host, bambuSerial, bambuToken, String(args.component), args.temperature, heaterModel || undefined, args?.material !== undefined ? String(args.material) : undefined, Number(args?.nozzle_diameter ?? DEFAULT_NOZZLE_DIAMETER), (args.temperature === 0 ? nativeControls : heaterModel === "x2d" && process.platform === "darwin")
-                            ? (heater, target, assertActive) => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
-                                messageJson: buildBambuNativeTemperatureCommand(heater, target).messageJson }, { signal: extra.signal, assertActive })
+                            ? (heater, target, assertActive, beforeDispatch) => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
+                                messageJson: buildBambuNativeTemperatureCommand(heater, target).messageJson }, { signal: extra.signal, assertActive, beforeDispatch })
                             : undefined);
                         break;
                     }
@@ -2924,7 +2924,7 @@ class BambuPrinterMCPServer {
                         }
                         if (nativeControls) {
                             const action = String(args.action).trim().toLowerCase();
-                            const amsId = Math.trunc(Number(args.ams_id));
+                            const amsId = Number(args.ams_id);
                             if (action !== "start" && action !== "stop") {
                                 throw new Error("AMS drying action must be one of: start, stop.");
                             }

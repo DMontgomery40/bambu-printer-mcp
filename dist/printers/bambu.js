@@ -794,18 +794,23 @@ export class BambuImplementation {
             const checked = this.checkedJobs.get(`${host}\n${serial}`);
             if (!checked)
                 throw new Error("Resume requires a job inspected and started by this server instance. Verify other jobs on the printer before resuming them there.");
-            const status = await this.getSafetyStatus(host, serial, token);
-            validatePrinterState(status, { ...checked.requirements, requireIdle: false });
-            if (status.raw.gcode_state !== "PAUSE")
-                throw new Error("Resume requires a freshly reported paused job.");
-            const stem = (value) => path.posix.basename(value).replace(/(?:\.gcode)?\.3mf$|\.gcode$/i, "");
-            const names = [status.raw.gcode_file, status.raw.subtask_name].filter(value => typeof value === "string");
-            if (!names.some(value => stem(value) === stem(checked.remotePath)))
-                throw new Error("Paused job identity does not match this server's inspected artifact.");
+            const beforeDispatch = async () => {
+                assertActive();
+                const status = await this.getSafetyStatus(host, serial, token);
+                validatePrinterState(status, { ...checked.requirements, requireIdle: false });
+                if (status.raw.gcode_state !== "PAUSE")
+                    throw new Error("Resume requires a freshly reported paused job.");
+                const stem = (value) => path.posix.basename(value).replace(/(?:\.gcode)?\.3mf$|\.gcode$/i, "");
+                const names = [status.raw.gcode_file, status.raw.subtask_name].filter(value => typeof value === "string");
+                if (!names.some(value => stem(value) === stem(checked.remotePath)))
+                    throw new Error("Paused job identity does not match this server's inspected artifact.");
+                assertActive();
+            };
+            await beforeDispatch();
             const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
             assertActive();
             if (dispatch)
-                await dispatch(assertActive);
+                await dispatch(assertActive, beforeDispatch);
             else
                 await invokeWithoutAck(printer, new UpdateStateCommand({ state: "resume" }));
             return { status: "success", message: "Resume command sent successfully." };
@@ -820,13 +825,18 @@ export class BambuImplementation {
             };
             const codes = codesFor(await this.getSafetyStatus(host, serial, token));
             await this.confirmHardwareAction(`Clear reported hardware errors on ${serial}: ${codes.join(", ")}? Inspect the printer and resolve the physical cause first. Confirm only after removing obstructions and correcting the fault.`, true);
-            const current = codesFor(await this.getSafetyStatus(host, serial, token));
-            if (JSON.stringify(current) !== JSON.stringify(codes))
-                throw new Error("Hardware errors changed during confirmation. Inspect the new report before retrying.");
+            const beforeDispatch = async () => {
+                assertActive();
+                const current = codesFor(await this.getSafetyStatus(host, serial, token));
+                if (JSON.stringify(current) !== JSON.stringify(codes))
+                    throw new Error("Hardware errors changed before clearing. Inspect the new report before retrying.");
+                assertActive();
+            };
+            await beforeDispatch();
             const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
             assertActive();
             if (dispatch)
-                await dispatch(assertActive);
+                await dispatch(assertActive, beforeDispatch);
             else
                 await printer.publish({ print: { command: "clean_print_error", sequence_id: "0" } });
             this.clearedErrors.set(serial, codes);
@@ -883,15 +893,15 @@ export class BambuImplementation {
         };
     }
     async rereadAmsRfid(host, serial, token, amsId, slotId) {
-        const printer = await this.getPrinter(host, serial, token);
-        const normalizedAmsId = Math.trunc(amsId);
-        const normalizedSlotId = Math.trunc(slotId);
+        const normalizedAmsId = amsId;
+        const normalizedSlotId = slotId;
         if (!Number.isInteger(normalizedAmsId) || normalizedAmsId < 0 || normalizedAmsId > 3) {
             throw new Error("ams_id must be an integer from 0 to 3.");
         }
         if (!Number.isInteger(normalizedSlotId) || normalizedSlotId < 0 || normalizedSlotId > 3) {
             throw new Error("slot_id must be an integer from 0 to 3.");
         }
+        const printer = await this.getPrinter(host, serial, token);
         await printer.publish({
             print: {
                 command: "ams_get_rfid",
@@ -927,21 +937,26 @@ export class BambuImplementation {
         const targetTemperature = temperature === 0 ? 0 : validateTemperature(heater, temperature, model, material ? [material] : undefined);
         const gcode = `${heater === "bed" ? "M140" : "M104"}${heater === "nozzle" && targetTemperature > 0 ? " T0" : ""} S${targetTemperature}`;
         const send = async (assertActive) => {
+            let beforeDispatch;
             if (targetTemperature > 0) {
                 const status = await this.getSafetyStatus(host, serial, token);
-                validatePrinterState(status, heater === "nozzle"
-                    ? manualHeatingRequirements(status, model, nozzleDiameter, material)
+                const validateHeatingStatus = (current) => validatePrinterState(current, heater === "nozzle"
+                    ? manualHeatingRequirements(current, model, nozzleDiameter, material)
                     : { model: model, nozzleDiameters: [] });
+                validateHeatingStatus(status);
                 await this.confirmHardwareAction(`Heat ${heater} on ${model.toUpperCase()} (${serial}) to ${targetTemperature}°C?${material ? ` Declared material: ${material}. Confirm the physical spool label.` : ""}`);
-                const confirmedStatus = await this.getSafetyStatus(host, serial, token);
-                validatePrinterState(confirmedStatus, heater === "nozzle"
-                    ? manualHeatingRequirements(confirmedStatus, model, nozzleDiameter, material)
-                    : { model: model, nozzleDiameters: [] });
+                beforeDispatch = async () => {
+                    assertActive();
+                    const confirmedStatus = await this.getSafetyStatus(host, serial, token);
+                    validateHeatingStatus(confirmedStatus);
+                    assertActive();
+                };
+                await beforeDispatch();
             }
             const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
             assertActive();
             if (dispatch)
-                await dispatch(heater, targetTemperature, assertActive);
+                await dispatch(heater, targetTemperature, assertActive, beforeDispatch);
             else
                 await invokeWithoutAck(printer, new GCodeLineCommand({ gcodes: [gcode] }));
             return { status: "success", message: `Temperature command sent for ${normalizedComponent}.`, command: gcode };
@@ -1000,16 +1015,16 @@ export class BambuImplementation {
         };
     }
     async setAmsDrying(host, serial, token, action, amsId) {
-        const printer = await this.getPrinter(host, serial, token);
         const normalizedAction = action.trim().toLowerCase();
         if (normalizedAction !== "start" && normalizedAction !== "stop") {
             throw new Error("AMS drying action must be one of: start, stop.");
         }
-        const normalizedAmsId = Math.trunc(amsId);
+        const normalizedAmsId = amsId;
         if (!Number.isInteger(normalizedAmsId) || normalizedAmsId < 0 || normalizedAmsId > 3) {
             throw new Error("ams_id must be an integer from 0 to 3.");
         }
         const param = normalizedAction === "start" ? "start_drying" : "stop_drying";
+        const printer = await this.getPrinter(host, serial, token);
         await printer.publish({
             print: {
                 command: "ams_control",

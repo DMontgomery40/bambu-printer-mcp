@@ -33,7 +33,7 @@ export type BambuNativeExecution = {
     signal?: AbortSignal;
     /** Recheck the shared stop/heater-off generation while the helper runs. */
     assertActive?: () => void;
-    /** Read and validate fresh printer state immediately before each print attempt. */
+    /** Read and validate fresh printer state immediately before each guarded dispatch. */
     beforeDispatch?: () => Promise<void>;
 };
 export type BambuNativeFanCommand = {

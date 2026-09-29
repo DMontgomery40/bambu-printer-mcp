@@ -442,11 +442,13 @@ enum class NativeOperation {
     Print,
     Upload,
     Command,
+    AuthorizedCommand,
 };
 
 void runOperation(NativeApi &api, NativeOperation operation) {
     const bool uploadOnly = operation == NativeOperation::Upload;
-    const bool commandOnly = operation == NativeOperation::Command;
+    const bool commandOnly = operation == NativeOperation::Command || operation == NativeOperation::AuthorizedCommand;
+    const bool needsAuthorization = operation == NativeOperation::Print || operation == NativeOperation::AuthorizedCommand;
     const char *confirmation = commandOnly ? "BAMBU_NATIVE_COMMAND_CONFIRM" :
                                uploadOnly ? "BAMBU_NATIVE_UPLOAD_CONFIRM" : "BAMBU_NATIVE_CONFIRM";
     if (envOr(confirmation) != "1") {
@@ -483,6 +485,20 @@ void runOperation(NativeApi &api, NativeOperation operation) {
     void *agent = api.createAgent(configDir);
     if (!agent) throw std::runtime_error("bambu_network_create_agent returned null");
     const auto destroyAgent = [&]() { api.destroyAgent(agent); };
+
+    const auto authorizeDispatch = [&](int attempt) {
+        if (!needsAuthorization) return;
+        // Connection/certificate setup and retries can outlive the original
+        // preflight. The parent owns the shared safety parser and must approve
+        // fresh state at this exact dispatch boundary, on every attempt.
+        outputLine("native_dispatch_request=" + std::to_string(attempt));
+        std::string authorization;
+        if (!std::getline(std::cin, authorization) ||
+            authorization != "native_dispatch_authorized=" + std::to_string(attempt)) {
+            destroyAgent();
+            throw std::runtime_error("native dispatch authorization was missing or rejected");
+        }
+    };
 
     int result = api.setConfigDir(agent, configDir);
     if (result != 0) { destroyAgent(); throw std::runtime_error("set_config_dir failed: " + std::to_string(result)); }
@@ -619,6 +635,7 @@ void runOperation(NativeApi &api, NativeOperation operation) {
         std::this_thread::sleep_for(std::chrono::milliseconds(250));
         const int qos = std::clamp(intEnv("BAMBU_NATIVE_COMMAND_QOS", 0), 0, 1);
         const int flag = std::clamp(intEnv("BAMBU_NATIVE_COMMAND_FLAG", 0), 0, 1);
+        authorizeDispatch(1);
         result = api.sendMessageToPrinter(agent, serial, commandJson, qos, flag);
         if (result == -4030 || result == -4) {
             // A protected control may be the first command that asks the
@@ -631,6 +648,7 @@ void runOperation(NativeApi &api, NativeOperation operation) {
             const int retryUpdate = api.updateCert(agent);
             outputLine("native_update_cert result=" + std::to_string(retryUpdate) + " stage=control_retry");
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
+            authorizeDispatch(2);
             result = api.sendMessageToPrinter(agent, serial, commandJson, qos, flag);
         }
         outputLine("native_command result=" + std::to_string(result));
@@ -684,16 +702,7 @@ void runOperation(NativeApi &api, NativeOperation operation) {
     };
     const BBL::WasCancelledFn cancel = []() { return false; };
     const auto startAuthorizedPrint = [&](int attempt) {
-        // Connection/certificate setup and retries can outlive the original
-        // preflight. The parent owns the shared safety parser and must approve
-        // fresh state at this exact dispatch boundary, on every attempt.
-        outputLine("native_dispatch_request=" + std::to_string(attempt));
-        std::string authorization;
-        if (!std::getline(std::cin, authorization) ||
-            authorization != "native_dispatch_authorized=" + std::to_string(attempt)) {
-            destroyAgent();
-            throw std::runtime_error("native print dispatch authorization was missing or rejected");
-        }
+        authorizeDispatch(attempt);
         return api.startLocalPrint(agent, params, update, cancel);
     };
     if (uploadOnly) {
@@ -729,8 +738,9 @@ int main(int argc, char **argv) {
         const bool print = argc == 2 && std::strcmp(argv[1], "--print-authorized") == 0;
         const bool upload = argc == 2 && std::strcmp(argv[1], "--upload") == 0;
         const bool command = argc == 2 && std::strcmp(argv[1], "--command") == 0;
-        if (!probe && !mqttProbe && !print && !upload && !command) {
-            std::cerr << "usage: bambu-native-print --probe|--probe-mqtt|--print-authorized|--upload|--command" << std::endl;
+        const bool authorizedCommand = argc == 2 && std::strcmp(argv[1], "--command-authorized") == 0;
+        if (!probe && !mqttProbe && !print && !upload && !command && !authorizedCommand) {
+            std::cerr << "usage: bambu-native-print --probe|--probe-mqtt|--print-authorized|--upload|--command|--command-authorized" << std::endl;
             return 2;
         }
         NativeApi api = loadApi();
@@ -739,6 +749,7 @@ int main(int argc, char **argv) {
         if (print) runOperation(api, NativeOperation::Print);
         if (upload) runOperation(api, NativeOperation::Upload);
         if (command) runOperation(api, NativeOperation::Command);
+        if (authorizedCommand) runOperation(api, NativeOperation::AuthorizedCommand);
         return 0;
     } catch (const std::exception &error) {
         std::cerr << "native_error=" << error.what() << std::endl;

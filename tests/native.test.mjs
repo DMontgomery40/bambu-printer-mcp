@@ -14,7 +14,7 @@ const printerModule = new URL("../dist/printers/bambu.js", import.meta.url).href
 
 // Exercise platform dispatch on every CI OS. Only the OS selector and transport
 // boundaries are mocked; file inspection, AMS validation and preflight are real.
-async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState } = {}) {
+async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState, dispatchError } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-native-test-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const eventsFile = path.join(dir, "events.jsonl");
@@ -41,7 +41,7 @@ if (${helperDelay} && (['--print-authorized', '--upload'].includes(process.argv[
   await new Promise(resolve => setTimeout(resolve, ${helperDelay}));
   appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({kind:'sent'}) + '\\n');
 }
-if (process.argv[2] === '--print-authorized') {
+if (['--print-authorized', '--command-authorized'].includes(process.argv[2])) {
   const input = createInterface({input:process.stdin});
   const authorization = new Promise(resolve => input.once('line', resolve));
   console.log('native_dispatch_request=1');
@@ -68,7 +68,7 @@ console.log('native_print result=0');
       record('status');
       const observedState = ${JSON.stringify(dispatchState)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchState)} : ${JSON.stringify(state)};
       return { connected:true, serial, model:'x2d', status:observedState,
-        raw: {model:'x2d',gcode_state:observedState,print_error:0,hms:[],nozzle_diameter:['0.4','0.4'],
+        raw: {model:'x2d',gcode_state:observedState,print_error:${JSON.stringify(dispatchError)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchError)} : 0,hms:[],nozzle_diameter:['0.4','0.4'],
           ams: { ams:[{id:'0',tray:[{id:'0',tray_type:'PLA'}]}, {id:'128',tray:[{id:'0',tray_type:'PLA'}]}] } },
         observation:{source:'mqtt',requestedAt:Date.now()-1,receivedAt:Date.now(),identitySource:'report'} };
     };
@@ -244,6 +244,35 @@ test("raw native metadata uses the requested serial rather than the configured m
   const x2d = await unconfigured.client.callTool({ name: "x2d_native_control", arguments: { message_json } });
   assert.notEqual(x2d.isError, true, JSON.stringify(x2d));
   assert.equal((await unconfigured.events()).filter(e => e.kind === "helper").length, 1);
+});
+
+test("native AMS tools reject fractional addresses before dispatch", async t => {
+  const s = await server(t);
+  for (const [name, args] of [
+    ["reread_ams_rfid", { ams_id: 1.9, slot_id: 0 }],
+    ["reread_ams_rfid", { ams_id: 0, slot_id: 2.8 }],
+    ["reread_ams_rfid", { ams_id: 128, slot_id: 1 }],
+    ["set_ams_drying", { ams_id: 1.9, action: "start" }],
+  ]) {
+    assert.equal((await s.client.callTool({ name, arguments: args })).isError, true, JSON.stringify(args));
+  }
+  assert.deepEqual(await s.events(), []);
+});
+
+test("native heating rechecks readiness after helper connection", async t => {
+  const s = await server(t, { dispatchState: "RUNNING" });
+  const result = await s.client.callTool({ name: "set_temperature", arguments: { component: "bed", temperature: 50 } });
+  assert.equal(result.isError, true, JSON.stringify(result));
+  assert.match(result.content[0].text, /ready|running|idle/i);
+  assert.equal((await s.events()).some(e => e.kind === "dispatched"), false);
+});
+
+test("native error clearing cannot clear newly appeared unconfirmed errors", async t => {
+  const s = await server(t, { dispatchError: 1234 });
+  const result = await s.client.callTool({ name: "clear_hms_errors", arguments: {} });
+  assert.equal(result.isError, true, JSON.stringify(result));
+  assert.match(result.content[0].text, /errors changed/i);
+  assert.equal((await s.events()).some(e => e.kind === "dispatched"), false);
 });
 
 test("raw native controls cannot bypass checked heating, resume or error clearing", async t => {

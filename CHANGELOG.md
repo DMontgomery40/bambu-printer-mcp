@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Fixed
+- Revalidate positive heating, resume, and confirmed hardware-error clearing immediately before native command dispatch; keep stop and heater-off available without preflight.
+- Reject fractional AMS unit/slot addresses rather than truncating them to another physical address.
 - Require fresh shared printer-state authorization after native connection setup and again before certificate-retry print dispatch.
 - Select raw native metadata controls by the requested printer instead of the global default model.
 - Preserve unknown observed printer identities in status instead of substituting the configured model.
