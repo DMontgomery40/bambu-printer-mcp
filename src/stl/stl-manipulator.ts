@@ -192,9 +192,6 @@ const PROFILE_METADATA_KEYS = new Set([
   'compatible_printers', 'compatible_printers_condition', 'compatible_prints', 'compatible_prints_condition',
 ]);
 
-/** Machine keys that sanitizeProcessForOrca intentionally sets in the process profile. */
-const ORCA_PROCESS_OVERRIDE_KEYS = new Set(['use_relative_e_distances']);
-
 export class STLManipulator extends EventEmitter {
   private tempDir: string;
   private activeOperations: Map<string, boolean> = new Map();
@@ -313,16 +310,22 @@ export class STLManipulator extends EventEmitter {
       sanitized.prime_tower_brim_width = String(sanitized.prime_tower_brim_width);
     }
 
-    sanitized.use_relative_e_distances = '0';
-    sanitized.before_layer_change_gcode = this.stripAbsoluteExtruderResets(
-      sanitized.before_layer_change_gcode
+    return this.useAbsoluteExtrusionForOrca(sanitized);
+  }
+
+  /** Orca slices with absolute E distances; per-layer `G92 E0` resets would break them. */
+  private useAbsoluteExtrusionForOrca(config: any): any {
+    const normalized = { ...config };
+    normalized.use_relative_e_distances = '0';
+    normalized.before_layer_change_gcode = this.stripAbsoluteExtruderResets(
+      normalized.before_layer_change_gcode
     );
-    sanitized.layer_gcode = this.stripAbsoluteExtruderResets(sanitized.layer_gcode);
-    sanitized.layer_change_gcode = this.stripAbsoluteExtruderResets(
-      sanitized.layer_change_gcode
+    normalized.layer_gcode = this.stripAbsoluteExtruderResets(normalized.layer_gcode);
+    normalized.layer_change_gcode = this.stripAbsoluteExtruderResets(
+      normalized.layer_change_gcode
     );
 
-    return sanitized;
+    return normalized;
   }
 
   private writeTempJson(outputBase: string, suffix: string, value: any): string {
@@ -600,13 +603,10 @@ export class STLManipulator extends EventEmitter {
    * selected preset's start G-code, model, and bed geometry. The machine
    * preset owns those keys; drop them from the other profiles.
    */
-  private isolateMachineSettings(bundle: BambuSettingsBundle, slicerType: SlicerType): BambuSettingsBundle {
+  private isolateMachineSettings(bundle: BambuSettingsBundle): BambuSettingsBundle {
     const [machinePath, processPath] = bundle.settingsArg?.split(';') ?? [];
     if (!machinePath || !processPath) return bundle;
-    // Orca's absolute-extrusion normalization deliberately overrides this machine key.
-    const retained = slicerType === 'orcaslicer' ? ORCA_PROCESS_OVERRIDE_KEYS : new Set<string>();
-    const machineKeys = Object.keys(this.readJsonFile(machinePath))
-      .filter(key => !PROFILE_METADATA_KEYS.has(key) && !retained.has(key));
+    const machineKeys = Object.keys(this.readJsonFile(machinePath)).filter(key => !PROFILE_METADATA_KEYS.has(key));
     const isolate = (filePath: string, label: string): string => {
       const profile = this.readJsonFile(filePath);
       const foreign = machineKeys.filter(key => Object.prototype.hasOwnProperty.call(profile, key));
@@ -1663,14 +1663,18 @@ export class STLManipulator extends EventEmitter {
               await this.expandProjectFilaments(stlFilePath, rawBundle), bambuOptions, profilesRoot);
             // Inherited process G-code is now present; apply Orca's existing
             // absolute-extrusion normalization after resolving those ancestors.
+            // The machine owns the extrusion mode and layer G-code once process
+            // files lose machine keys, so normalize it there as well.
             if (slicerType === 'orcaslicer' && settingsBundle.settingsArg) {
               const [machinePath, processPath] = settingsBundle.settingsArg.split(';');
-              settingsBundle.settingsArg = [machinePath, this.writeTempJson(
-                outputBase, 'process_orca_resolved',
-                this.sanitizeProcessForOrca(this.readJsonFile(processPath), printerPreset)
-              )].join(';');
+              settingsBundle.settingsArg = [
+                this.writeTempJson(outputBase, 'machine_orca_resolved',
+                  this.useAbsoluteExtrusionForOrca(this.readJsonFile(machinePath))),
+                this.writeTempJson(outputBase, 'process_orca_resolved',
+                  this.sanitizeProcessForOrca(this.readJsonFile(processPath), printerPreset)),
+              ].join(';');
             }
-            const cliBundle = this.isolateMachineSettings(settingsBundle, slicerType);
+            const cliBundle = this.isolateMachineSettings(settingsBundle);
             args = [
               '--slice', String(bambuOptions?.slicePlate ?? 0),
               '--outputdir', outputDir,

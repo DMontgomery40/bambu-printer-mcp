@@ -190,7 +190,9 @@ for (const slicerType of ['bambustudio', 'orcaslicer', 'orcaslicer-bambulab']) {
     assert.equal(processConfig.wall_loops, '7');
     assert.equal(processConfig.layer_height, '0.2');
     if (slicerType === 'orcaslicer') {
-      assert.equal(processConfig.use_relative_e_distances, '0');
+      // The machine owns the extrusion mode; the process cannot re-enable relative E.
+      assert.equal(machine.use_relative_e_distances, '0');
+      assert.equal('use_relative_e_distances' in processConfig, false);
       assert.equal(processConfig.layer_gcode, '; next layer');
     }
     assert.equal((await f.loaded()).length, 3);
@@ -420,14 +422,25 @@ for (const [layout, binary, profiles, slicerType = 'bambustudio'] of [
   });
 }
 
-test('Orca keeps its absolute-extrusion process override when the machine defines relative extrusion', async t => {
+test('Orca applies absolute extrusion to the machine that owns the extrusion mode and layer G-code', async t => {
   const f = await fixture(t, 'orcaslicer');
-  await f.write('machine', { name: 'SAFETY base', nozzle_diameter: ['0.4'], machine_start_gcode: 'GENERIC', use_relative_e_distances: '1' });
-  await f.slice();
-  const args = await f.args();
-  const [machineFile, processFile] = args[args.indexOf('--load-settings') + 1].split(';');
-  assert.equal(JSON.parse(await fs.readFile(machineFile, 'utf8')).use_relative_e_distances, '1');
-  assert.equal(JSON.parse(await fs.readFile(processFile, 'utf8')).use_relative_e_distances, '0');
+  await f.write('machine', { name: 'SAFETY base', nozzle_diameter: ['0.4'], machine_start_gcode: 'GENERIC',
+    use_relative_e_distances: '1', layer_change_gcode: 'G92 E0\n; machine layer' });
+  // A template carrying another printer's layer G-code must not replace the machine's.
+  const custom = path.join(f.root, 'custom.json');
+  await fs.writeFile(custom, JSON.stringify({ name: 'Custom', from: 'User', wall_loops: '5', layer_change_gcode: 'G92 E0\n; FOREIGN layer' }));
+  for (const profile of [undefined, custom]) {
+    await f.slice({}, profile);
+    const args = await f.args();
+    const [machineFile, processFile] = args[args.indexOf('--load-settings') + 1].split(';');
+    const machine = JSON.parse(await fs.readFile(machineFile, 'utf8'));
+    assert.equal(machine.use_relative_e_distances, '0');
+    assert.equal(machine.layer_change_gcode, '; machine layer');
+    assert.equal(machine.machine_start_gcode, 'M620 S0A ; correct machine');
+    const config = JSON.parse(await fs.readFile(processFile, 'utf8'));
+    assert.equal('use_relative_e_distances' in config, false, 'the machine supplies the extrusion mode');
+    assert.equal('layer_change_gcode' in config, false, 'the machine supplies layer G-code');
+  }
 });
 
 for (const [kind, file, reference] of [['process', 'SAFETY process base', 'inherits'], ['machine', 'SAFETY start', 'include']]) {
