@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createPrintEventRuntime, PRINT_EVENTS_TOOL, type PrintEventRuntime } from "./events/runtime.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -1138,6 +1139,7 @@ if (!fs.existsSync(TEMP_DIR)) {
 }
 
 class BambuPrinterMCPServer {
+  private readonly printEvents?: PrintEventRuntime;
   private server: Server;
   private bambu: BambuImplementation;
   private bambuNetwork: BambuNetworkBridge;
@@ -1150,6 +1152,7 @@ class BambuPrinterMCPServer {
 
   constructor() {
     this.runtimeConfig = readRuntimeConfig();
+    this.printEvents = createPrintEventRuntime(DEFAULT_HOST, DEFAULT_BAMBU_SERIAL);
     this.server = new Server(
       {
         name: "bambu-printer-mcp",
@@ -1184,7 +1187,7 @@ class BambuPrinterMCPServer {
         }
         throw new Error(`Human hardware confirmation failed: ${error?.message ?? error}. Nothing was sent to the printer.`);
       }
-    });
+    }, this.printEvents);
     this.bambuNetwork = new BambuNetworkBridge();
     this.stlManipulator = new STLManipulator(TEMP_DIR);
 
@@ -2127,6 +2130,7 @@ class BambuPrinterMCPServer {
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       return {
         tools: [
+          PRINT_EVENTS_TOOL,
           {
             name: "get_printer_status",
             description: "Get the current status of the Bambu Lab printer",
@@ -2551,10 +2555,11 @@ class BambuPrinterMCPServer {
           },
           {
             name: "camera_snapshot",
-            description: "Capture a single JPEG frame from the printer's chamber camera. A1/P1 use TCP-on-6000; X1/P2S/H2/X2D use RTSP via ffmpeg. Returns JPEG as base64; pass save_path to also write the bytes to disk.",
+            description: "Capture a fresh JPEG from the printer's live chamber camera, discarding initial frames; fail clearly if fresh acquisition is unavailable. Explicit preview mode may return the initial frame. A1/P1 use TCP-on-6000; X1/P2S/H2/X2D use RTSP via ffmpeg. Returns JPEG as base64; pass save_path to also write the bytes to disk.",
             inputSchema: {
               type: "object",
               properties: {
+                require_fresh: { type: "boolean", default: true, description: "Require a newly acquired frame after live stream progression (default true); fail if unavailable, never return the cached initial frame. Set false only for an explicitly requested preview, never bed confirmation." },
                 save_path: { type: "string", description: "Optional absolute path to write the JPEG to disk. If omitted, only the base64 payload is returned." },
                 timeout_ms: { type: "number", description: "Max ms to wait for a full frame (default 8000). Camera may take a few seconds on cold start." },
                 bambu_model: { type: "string", description: "Printer model. Used to route to the correct protocol or fail fast on unsupported models. Defaults to BAMBU_MODEL." },
@@ -3133,6 +3138,9 @@ class BambuPrinterMCPServer {
         let result;
 
         switch (name) {
+          case "list_print_events":
+            if (!this.printEvents) throw new Error("Print event recording is disabled");
+            return { content: [{ type: "text", text: JSON.stringify(this.printEvents.list(args)) }] };
           case "get_printer_status":
             result = await this.bambu.getStatus(host, bambuSerial, bambuToken);
             break;
@@ -3267,6 +3275,7 @@ class BambuPrinterMCPServer {
           case "camera_snapshot": {
             const snapshotModel = (args?.bambu_model as string | undefined) ?? process.env.BAMBU_MODEL ?? process.env.BAMBU_PRINTER_MODEL;
             result = await this.bambu.cameraSnapshot(host, bambuSerial, bambuToken, {
+              requireFresh: args?.require_fresh !== false,
               savePath: args?.save_path ? String(args.save_path) : undefined,
               timeoutMs: args?.timeout_ms !== undefined ? Number(args.timeout_ms) : undefined,
               bambuModel: snapshotModel ? String(snapshotModel) : undefined,

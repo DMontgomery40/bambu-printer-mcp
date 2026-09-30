@@ -7,6 +7,11 @@
 
 ## [1.1.21] – 2026-09-30
 
+- Require newly acquired camera stream progression by default for confirmation snapshots. Reject cached initial frames, repeated frames, timeout, or capture failure without a cached-file fallback; retain explicitly requested preview mode. Record acquisition interval/source, with live P1S camera evidence and synthetic timeout/cache regressions.
+
+- Add opt-in passive Bambu print-completion/problem capture with a private durable journal and a read-only `list_print_events` cursor tool. Suppress completion for cancellation, failed jobs, initial FINISH snapshots, and progress alone; retain observed-job state and deduplicate faults across reconnects/restarts.
+- Add an optional, real SDK2 authenticated read-only host and owner-authorized webhook event service, with callback verification, Standard Webhooks signatures, bounded retries, expiration, replay, and secret rotation. Legacy SDK 1.x transports remain compatible; the isolated host supplies MCP 2.0 discovery/events and OAuth metadata, with an operator-supplied token verifier and approved HTTPS deployment still required. Validate synthetic MQTT transitions, replay/restart, real SDK2 requests and independently verified signed callbacks. Observe one authorized 0.19 g P1S PLA test print with exactly one completion in each development server and accept each real observation through its SDK2 host with a local signed callback receiver; no live ChatGPT delivery is claimed.
+
 ### Fixed
 - Accept fresh X2D identity reports when `model` identifies the printer but `model_id` contains an unrelated cloud print-job identifier. Unrecognized `model_id` values are no longer treated as printer declarations; the gate still requires another recognized observed model or returned serial, rejects recognized model conflicts and unknown values in actual model fields, and never falls back to configured identity. Reported with X2D firmware 01.02.00.00 status evidence in [#36](https://github.com/DMontgomery40/bambu-printer-mcp/issues/36) by JaviOFC. Covered by mocked safety regressions; no physical print was run.
 

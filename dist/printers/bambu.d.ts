@@ -1,3 +1,4 @@
+import type { PrintEventRuntime } from "../events/runtime.js";
 import { inspectPrintFile } from "../safety/print-file.js";
 import { type PrinterStateRequirements } from "../safety/printer-state.js";
 export declare function assertDirectPrintSupported(model: string | undefined, serial?: string): void;
@@ -28,10 +29,11 @@ interface BambuPrintOptionsInternal {
 }
 export declare class BambuImplementation {
     private readonly confirm?;
+    private readonly printEvents?;
     private printerStore;
     private checkedJobs;
     private clearedErrors;
-    constructor(confirm?: ((message: string) => Promise<boolean>) | undefined);
+    constructor(confirm?: ((message: string) => Promise<boolean>) | undefined, printEvents?: PrintEventRuntime | undefined);
     confirmHardwareAction(message: string, physicalCheck?: boolean): Promise<void>;
     private finishedJobIdentity;
     confirmPrintPreflight(serial: string, status: any, inspection: Awaited<ReturnType<typeof inspectPrintFile>>): Promise<string | undefined>;
@@ -144,6 +146,8 @@ export declare class BambuImplementation {
      */
     cameraSnapshot(host: string, _serial: string, token: string, options?: {
         savePath?: string;
+        /** Default true: confirmation requires live stream progression, never a cached first frame. */
+        requireFresh?: boolean;
         timeoutMs?: number;
         bambuModel?: string;
         /**
@@ -169,6 +173,9 @@ export declare class BambuImplementation {
         height?: number;
         note?: string;
         transport?: "tcp-6000" | "rtsps-322";
+        acquisitionStartedAt?: string;
+        acquiredAt?: string;
+        freshness?: string;
     }>;
     /**
      * Pull a single JPEG frame from the printer's RTSP/RTSPS stream using

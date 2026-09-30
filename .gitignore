@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 npm-debug.log
 *.tsbuildinfo
 .env
@@ -46,3 +46,5 @@ native/*.dSYM/
 !/docs/SLICING.md
 !/docs/FULU.md
 !/docs/SETUP.md
+
+!docs/PRINT_EVENTS.md

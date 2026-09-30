@@ -1300,3 +1300,5 @@ Thank you to **[FULU Foundation](https://www.fulu.org/), [Louis Rossmann](https:
 Some printer command surfaces and workflow priorities were informed by [Bambuddy](https://github.com/maziggy/bambuddy), an AGPL-3.0 Bambu Lab printer management project. This project does not vendor Bambuddy code.
 
 </details>
+
+Optional passive print history and the remaining ChatGPT push integration requirements are described in [Print events](docs/PRINT_EVENTS.md).

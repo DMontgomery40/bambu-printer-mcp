@@ -32,7 +32,14 @@
     "LICENSE",
     "native/*.cpp",
     "native/*.h",
-    "scripts/build-bambu-native.zsh"
+    "scripts/build-bambu-native.zsh",
+    "events-host/package.json",
+    "events-host/package-lock.json",
+    "events-host/host.mjs",
+    "events-host/relay.mjs",
+    "events-host/run.mjs",
+    "docs/PRINT_EVENTS.md",
+    "events-host/worker.mjs"
   ],
   "keywords": [
     "mcp",
