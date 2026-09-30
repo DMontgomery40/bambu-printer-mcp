@@ -38,6 +38,14 @@ test('accepts observed model aliases and a manually declared external material',
   assert.doesNotThrow(() => check(fresh({model_id:undefined,model:'Bambu Lab A1 mini'}), req({model:'a1mini'})));
   assert.doesNotThrow(() => check(fresh({model_id:undefined,model:'H2D Pro'}), req({model:'h2dpro',nozzleDiameters:[]})));
 });
+test('ignores a print-job id in model_id when model or returned serial identifies X2D', () => {
+  const requirements = req({model:'x2d',nozzleDiameters:[],verifyMaterials:false});
+  assert.doesNotThrow(() => check(fresh({model_id:'USb5974ce12ab89d',model:'X2D'}), requirements));
+  assert.doesNotThrow(() => check(fresh({model_id:'USb5974ce12ab89d',modules:[{name:'ota',sn:'20PTEST'}]}, {serial:'20PTEST'}), requirements));
+  assert.throws(() => check(fresh({model_id:'N6',model:'P1S'}), requirements), /contradictory/i);
+  assert.throws(() => check(fresh({model_id:undefined,model:'P1S',modules:[{name:'ota',sn:'20PTEST'}]}, {serial:'20PTEST'}), requirements), /contradictory/i);
+  assert.throws(() => check(fresh({model_id:'USb5974ce12ab89d',model:'X2D',printer_type:'unknown'}), requirements), /unknown model identity/i);
+});
 test('rejects missing, stale, future and synthetic telemetry provenance', () => {
   for(const observation of [undefined,{source:'configured',requestedAt:Date.now(),receivedAt:Date.now()}, {source:'mqtt',requestedAt:1,receivedAt:2}, {source:'mqtt',requestedAt:Date.now()+5000,receivedAt:Date.now()+5000}, {source:'mqtt',requestedAt:Date.now(),receivedAt:Date.now()-1}]) {
     assert.throws(() => check(fresh({}, {observation})), /fresh|observ|mqtt|stale/i);

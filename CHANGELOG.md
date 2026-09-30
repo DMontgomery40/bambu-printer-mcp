@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- Accept fresh X2D identity reports when `model` identifies the printer but `model_id` contains an unrelated cloud print-job identifier. Unrecognized `model_id` values are no longer treated as printer declarations; the gate still requires another recognized observed model or returned serial, rejects recognized model conflicts and unknown values in actual model fields, and never falls back to configured identity. Reported with X2D firmware 01.02.00.00 status evidence in [#36](https://github.com/DMontgomery40/bambu-printer-mcp/issues/36) by JaviOFC. Covered by mocked safety regressions; no physical print was run.
+
 ## [1.1.20] – 2026-09-29
 
 ### Documentation

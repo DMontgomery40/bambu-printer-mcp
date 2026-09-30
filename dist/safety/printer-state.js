@@ -13,11 +13,17 @@ function object(value) {
     return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function observedIdentity(raw, configuredSerial) {
-    const declarations = [raw.model_id, raw.model, raw.printer_type, raw.device?.devModel, raw.device?.dev_model]
+    const recognizedModelFromModelId = typeof raw.model_id === "string" && raw.model_id.trim()
+        ? normalizeModel(MODEL_IDS[raw.model_id.trim().toUpperCase()] ?? raw.model_id)
+        : undefined;
+    const declarations = [raw.model, raw.printer_type, raw.device?.devModel, raw.device?.dev_model]
         .filter(value => typeof value === "string" && value.trim());
     const models = declarations.map(value => normalizeModel(MODEL_IDS[value.trim().toUpperCase()] ?? value));
     if (models.some(model => !model))
         throw new Error("Printer reported an unknown model identity; cannot verify this printer.");
+    if (recognizedModelFromModelId)
+        models.unshift(recognizedModelFromModelId);
+    const hasReportedModel = models.length > 0;
     const serials = [raw.serial, raw.serial_number, raw.sn, raw.device?.sn,
         ...(Array.isArray(raw.modules) ? raw.modules.filter((module) => module?.name === "ota").map((module) => module.sn) : [])]
         .filter(value => typeof value === "string" && value.trim()).map(value => value.trim());
@@ -32,7 +38,7 @@ function observedIdentity(raw, configuredSerial) {
     if (new Set(models).size > 1)
         throw new Error("Printer returned contradictory model identity information.");
     const model = models[0];
-    return { model, observedSerial: serials[0], identitySource: declarations.length ? "report" : "module-serial" };
+    return { model, observedSerial: serials[0], identitySource: hasReportedModel ? "report" : "module-serial" };
 }
 /** Only raw reports received after this request are evidence. Never read printer.data here. */
 export function readFreshPrinterStatus(printer, serial, timeoutMs = 5000) {
