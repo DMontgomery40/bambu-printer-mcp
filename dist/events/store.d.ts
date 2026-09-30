@@ -3,12 +3,14 @@ export interface PrintEvent {
     name: "print.completed" | "print.problem";
     timestamp: string;
     data: {
-        printer: "default";
+        printer: string;
         jobId: string;
+        test?: boolean;
         reason?: "print_error" | "hms" | "failed";
         codes?: string[];
     };
     cursor: string;
+    printerCursor?: string;
 }
 export interface ObservationState {
     fingerprint?: string;
@@ -22,6 +24,7 @@ export interface ObservationState {
 export interface Subscription {
     id: string;
     owner: string;
+    printer?: string;
     name: PrintEvent["name"];
     url: string;
     secret: string;
@@ -36,9 +39,14 @@ export interface Subscription {
 }
 interface Data {
     version: 1;
+    journalId?: string;
+    printerSequences?: Record<string, number>;
     sequence: number;
     history: PrintEvent[];
     sourceCursor?: string;
+    sourceCursors?: Record<string, string>;
+    sourceJournalIds?: Record<string, string>;
+    observations?: Record<string, ObservationState>;
     observation: ObservationState;
     subscriptions: Subscription[];
 }
@@ -50,7 +58,9 @@ export declare class EventStore {
     private readonly lock;
     private closed;
     constructor(filename: string, limit?: number);
+    observation(printer?: string): ObservationState;
     save(): void;
+    printerHead(printer: string): number;
     append(event: Omit<PrintEvent, "cursor">): PrintEvent;
     close(): void;
 }

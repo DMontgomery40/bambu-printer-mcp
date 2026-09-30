@@ -32,14 +32,16 @@ export declare class PrintEventRuntime {
     readonly store: EventStore;
     private readonly host;
     private readonly serial;
+    readonly printer: string;
     readonly detector: PrintEventDetector;
     private failed;
-    constructor(store: EventStore, host: string, serial: string);
+    constructor(store: EventStore, host: string, serial: string, printer?: string);
     private safely;
     readonly attach: ObservePrinter;
     cancel(host: string, serial: string, persist?: boolean): void;
     persist(): void;
     list(args: any): {
+        journalId: string | undefined;
         events: import("./store.js").PrintEvent[];
         cursor: string;
         truncated: boolean;

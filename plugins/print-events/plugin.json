@@ -1,0 +1,31 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "bambu-printer-events",
+  "version": "0.0.0",
+  "description": "Subscribe to completion and problem events from authorized Bambu printers in an operator-configured farm.",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Bambu Printer Notifications",
+        "shortDescription": "Print alerts for your farm",
+        "developerName": "David Montgomery",
+        "category": "Productivity",
+        "capabilities": [
+          "Read"
+        ],
+        "websiteURL": "https://github.com/DMontgomery40/bambu-printer-mcp",
+        "defaultPrompt": [
+          "Notify me when my printer finishes a print or reports a problem."
+        ],
+        "longDescription": "Receive completion and problem notifications from printers your account is allowed to monitor. Requires an operator-configured authenticated MCP2 endpoint and a client with native MCP Events support. Legacy stdio clients do not gain durable notifications. Backend limitations apply; user-visible notification acceptance is not complete on this development branch.",
+        "supportURL": "https://github.com/DMontgomery40/bambu-printer-mcp/issues"
+      }
+    }
+  },
+  "author": {
+    "name": "David Montgomery",
+    "url": "https://github.com/DMontgomery40"
+  },
+  "repository": "https://github.com/DMontgomery40/bambu-printer-mcp",
+  "license": "GPL-2.0"
+}

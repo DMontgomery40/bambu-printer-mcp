@@ -7,10 +7,11 @@ export const PRINT_EVENTS_TOOL = { name: "list_print_events", description: "Read
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } };
 /** Opt-in passive capture from existing connections only. Never creates a printer connection. */
 export class PrintEventRuntime {
-    constructor(store, host, serial) {
+    constructor(store, host, serial, printer = "default") {
         this.store = store;
         this.host = host;
         this.serial = serial;
+        this.printer = printer;
         this.failed = false;
         this.attach = (printer, host, serial) => {
             if (host !== this.host || serial !== this.serial)
@@ -31,7 +32,7 @@ export class PrintEventRuntime {
             printer.on("client:disconnect", () => this.detector.disconnected());
             printer.on("client:error", () => this.detector.disconnected());
         };
-        this.detector = new PrintEventDetector(store);
+        this.detector = new PrintEventDetector(store, printer);
     }
     safely(operation) {
         if (this.failed)
@@ -61,9 +62,10 @@ export function createPrintEventRuntime(host, serial) {
     if (!filename)
         return undefined;
     try {
-        if (!isAbsolute(filename) || !serial.trim())
+        const printer = process.env.MCP_PRINT_EVENT_PRINTER_ID ?? "default";
+        if (!/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(printer) || !isAbsolute(filename) || !serial.trim())
             throw new Error("Invalid event configuration");
-        const runtime = new PrintEventRuntime(new EventStore(filename), host, serial);
+        const runtime = new PrintEventRuntime(new EventStore(filename), host, serial, printer);
         process.once("exit", () => runtime.close());
         return runtime;
     }
