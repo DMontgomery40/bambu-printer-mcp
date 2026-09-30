@@ -11,7 +11,19 @@ const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
 manifest.version = packageJson.version;
 fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 4)}\n`);
 
-// npm's version commit must contain the manifest alongside package and lockfile.
+const releaseFiles = ["manifest.json"];
+const changelogPath = path.join(root, "CHANGELOG.md");
+if (process.env.npm_lifecycle_event === "version" && fs.existsSync(changelogPath)) {
+  const changelog = fs.readFileSync(changelogPath, "utf8");
+  const date = new Date().toISOString().slice(0, 10);
+  const releasedChangelog = changelog.replace(/^## Unreleased[\t ]*$/m, `## [${packageJson.version}] – ${date}`);
+  if (releasedChangelog !== changelog) {
+    fs.writeFileSync(changelogPath, releasedChangelog);
+    releaseFiles.push("CHANGELOG.md");
+  }
+}
+
+// npm's version commit must contain the manifest and release notes alongside package and lockfile.
 // --no-git-tag-version keeps this hook free of index changes, too.
 if (process.env.npm_lifecycle_event === "version" && process.env.npm_config_git_tag_version !== "false") {
   let gitRoot;
@@ -21,6 +33,6 @@ if (process.env.npm_lifecycle_event === "version" && process.env.npm_config_git_
     // npm version also works outside a Git checkout.
   }
   if (gitRoot && fs.realpathSync(gitRoot) === fs.realpathSync(root)) {
-    execFileSync("git", ["add", "--", "manifest.json"], { cwd: root, stdio: "inherit" });
+    execFileSync("git", ["add", "--", ...releaseFiles], { cwd: root, stdio: "inherit" });
   }
 }
