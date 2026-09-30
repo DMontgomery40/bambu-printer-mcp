@@ -6,6 +6,7 @@ Thank you to everyone who builds, tests, reports problems, and shares real print
 
 | Contributor | Contribution |
 | --- | --- |
+| [JaviOFC](https://github.com/JaviOFC) | Reports the X2D identity rejection in [#36](https://github.com/DMontgomery40/bambu-printer-mcp/issues/36) and supplies current firmware, connection-mode, status-field, serial-prefix, and cloud-job evidence showing that `model_id` can contain a print-job identifier while `model` correctly identifies the printer. |
 | [Izzy Mansurov (sapoepsilon)](https://github.com/sapoepsilon) | Fixes Bambu Studio 02.08 P2S extruder-variant metadata and airduct-command inspection in [#33](https://github.com/DMontgomery40/bambu-printer-mcp/pull/33). Supplies regression tests and offline inspection evidence from four real P2S 0.6 mm PLA/PETG jobs and unsafe mutated copies; this contribution does not claim a physical print. |
 | [Boardy (@boardyai)](https://x.com/boardyai) | Raises the nozzle-verification question that informs the added printer safety checks. |
 | Fable red-team review, shared by David Montgomery | Supplies archive-ambiguity reproductions and hardware-safety review findings used for plate binding, upload checks, temperature policy, and human preflight. Network/security suggestions remain outside this hardware-safety release. |
