@@ -13,7 +13,8 @@ This file is the repository's shared source of truth for local agents, GitHub Co
 - The main-branch Publish Package workflow runs the checks and `npm publish` using trusted publishing. Verify that workflow and the exact npm version before claiming publication; do not publish an unmerged release ahead of review.
 - Create a `v<version>` tag on the final merged release commit and a GitHub Release. The tag workflow builds and uploads the `.mcpb` extension. Verify npm, package/manifest versions, the release asset, and fresh installed startup before declaring the release complete. Never move a published tag.
 - After merging and verifying the release, switch back to main and delete the merged temporary integration branch locally and from origin.
-- Changes to src/, scripts/, or printer behavior need a present-tense CHANGELOG.md entry under `## Unreleased`. Use the accumulated entries in GitHub release notes, with contributor credit and validation limits. Supply multiline notes via a body file.
+- Changes to src/, scripts/, or printer behavior need a present-tense CHANGELOG.md entry under `## Unreleased` while preparing the release. Run `npm version patch` only after accumulating the release notes: its version hook promotes that heading to the new version and date. If review adds notes after the bump, place them in that release's section. Released changes must never remain under `Unreleased` on main. Use that version's entries in GitHub release notes, with contributor credit and validation limits. Supply multiline notes via a body file.
+- Verify the Pages deployment on the merged release commit and read the live `/project/changelog` page before declaring a release complete. Confirm the latest version/date and changes appear under their released version, not `Unreleased`; a passing site build alone is insufficient.
 
 ## Build and test
 
