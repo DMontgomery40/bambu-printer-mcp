@@ -199,3 +199,25 @@ test('legacy nozzle reports use Bambu standard-flow default and flag3 high-flow 
   assert.throws(() => check(fresh({flag3:1024}),req({nozzleFlows:['Standard']})),/flow/i);
   assert.throws(() => check(fresh({flag3:2048}),req({nozzleFlows:['Standard']})),/flow|nozzle/i);
 });
+
+for (const [prefix, model, reportedModel] of [['039', 'a1', 'A1'], ['030', 'a1mini', 'A1M']]) {
+  test(`${model} fresh OTA identity uses the correct serial prefix and rejects the other model`, async () => {
+    const serial = `${prefix}TEST`;
+    const printer = new EventEmitter();
+    printer.publish = async payload => {
+      const message = payload.pushing
+        ? {print:{command:'push_status',gcode_state:'IDLE',print_error:0,hms:[],nozzle_diameter:'0.4',nozzle_type:'hardened_steel'}}
+        : {info:{command:'get_version',module:[{name:'ota',sn:serial}]}};
+      printer.emit('rawMessage',`device/${serial}/report`,Buffer.from(JSON.stringify(message)));
+    };
+    const status = await safety.readFreshPrinterStatus(printer,serial,50);
+    assert.equal(status.model,model);
+    assert.equal(status.observation.identitySource,'module-serial');
+    const requirements = req({model});
+    assert.doesNotThrow(() => check(status,requirements));
+    assert.doesNotThrow(() => check({...status,raw:{...status.raw,model:reportedModel}},requirements));
+    assert.throws(() => check(status,req({model:model === 'a1' ? 'a1mini' : 'a1'})),/model/i);
+    assert.throws(() => check({...status,raw:{...status.raw,model:model === 'a1' ? 'A1M' : 'A1'}},requirements),/contradictory/i);
+    assert.throws(() => check({...status,raw:{...status.raw,modules:[]}},requirements),/identity|model/i);
+  });
+}

@@ -6,6 +6,7 @@ Thank you to everyone who builds, tests, reports problems, and shares real print
 
 | Contributor | Contribution |
 | --- | --- |
+| [Steavie (steavie)](https://github.com/steavie) | Reports the reversed A1/A1 mini serial prefixes in [#39](https://github.com/DMontgomery40/bambu-printer-mcp/issues/39), with A1 status and configuration evidence that identifies the status and fresh-identity regression. |
 | [JaviOFC](https://github.com/JaviOFC) | Reports the X2D identity rejection in [#36](https://github.com/DMontgomery40/bambu-printer-mcp/issues/36) and supplies current firmware, connection-mode, status-field, serial-prefix, and cloud-job evidence showing that `model_id` can contain a print-job identifier while `model` correctly identifies the printer. |
 | [Izzy Mansurov (sapoepsilon)](https://github.com/sapoepsilon) | Fixes Bambu Studio 02.08 P2S extruder-variant metadata and airduct-command inspection in [#33](https://github.com/DMontgomery40/bambu-printer-mcp/pull/33). Supplies regression tests and offline inspection evidence from four real P2S 0.6 mm PLA/PETG jobs and unsafe mutated copies; this contribution does not claim a physical print. |
 | [Boardy (@boardyai)](https://x.com/boardyai) | Raises the nozzle-verification question that informs the added printer safety checks. |

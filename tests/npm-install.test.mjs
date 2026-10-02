@@ -25,7 +25,7 @@ function assertPatchedParser(packageRoot) {
     const require = createRequire(process.argv[1] + "/package.json");
     try {
       const { BambuClient, PrinterModel, GCodeFileCommand } = await import(pathToFileURL(require.resolve("bambu-node")));
-      for (const [prefix, model] of [["239", "H2C"], ["094", "H2D"], ["093", "H2S"], ["31B", "H2DPRO"], ["22E", "P2S"]]) {
+      for (const [prefix, model] of [["239", "H2C"], ["094", "H2D"], ["093", "H2S"], ["31B", "H2DPRO"], ["22E", "P2S"], ["039", "A1"], ["030", "A1M"]]) {
         assert.equal(PrinterModel[model], model);
         const printer = new BambuClient({ host: "127.0.0.1", serialNumber: prefix + "TEST", accessToken: "test" });
         await printer.onMessage(JSON.stringify({ info: { command: "get_version", module: [{ name: "ota", sn: prefix + "TEST" }] } }), "test/report");

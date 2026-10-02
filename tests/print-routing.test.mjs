@@ -43,7 +43,7 @@ async function capture(t, model, serial, { sparse = false, useAMS = true, suffix
 }
 
 test("full-size A1 uploads to SD root and uses project_file", async (t) => {
-  const { uploadedPath, remote, cmd } = await capture(t, "a1", "030TEST");
+  const { uploadedPath, remote, cmd } = await capture(t, "a1", "039TEST");
   assert.equal(path.posix.dirname(uploadedPath), "/");
   assert.equal(cmd.command, "project_file");
   assert.equal(cmd.url, `file:///sdcard/${remote}`);
@@ -51,11 +51,11 @@ test("full-size A1 uploads to SD root and uses project_file", async (t) => {
 });
 
 test("A1 keeps an AMS selection beyond the fifth project filament", async (t) => {
-  const { cmd } = await capture(t, "a1", "030TEST", { sparse: true });
+  const { cmd } = await capture(t, "a1", "039TEST", { sparse: true });
   assert.deepEqual(cmd.ams_mapping, [-1, -1, -1, -1, -1, 1]);
 });
 
-for (const [model, serial] of [["p1s", "01PTEST"], ["p1p", "01STEST"], ["x1c", "00MTEST"], ["x1e", "03WTEST"], ["a1mini", "039TEST"]]) {
+for (const [model, serial] of [["p1s", "01PTEST"], ["p1p", "01STEST"], ["x1c", "00MTEST"], ["x1e", "03WTEST"], ["a1mini", "030TEST"]]) {
   test(`${model} retains the legacy cache/gcode_file route`, async (t) => {
     const { uploadedPath, remote, cmd } = await capture(t, model, serial, { useAMS: false });
     assert.equal(path.posix.dirname(uploadedPath), "/cache");
@@ -64,7 +64,7 @@ for (const [model, serial] of [["p1s", "01PTEST"], ["p1p", "01STEST"], ["x1c", "
   });
 }
 
-for (const [model, serial] of [["p1s", "01PTEST"], ["a1mini", "039TEST"]]) {
+for (const [model, serial] of [["p1s", "01PTEST"], ["a1mini", "030TEST"]]) {
   test(`${model} normal 3MF retains project_file AMS mapping`, async (t) => {
     const { uploadedPath, remote, cmd } = await capture(t, model, serial, { suffix: ".3mf" });
     assert.equal(path.posix.dirname(uploadedPath), "/cache");
@@ -94,7 +94,7 @@ for (const [model, serial] of [["h2s", "093TEST"], ["h2d", "094TEST"], ["h2c", "
   });
 }
 
-for (const [model, serial] of [["p1s", "01PTEST"], ["a1", "030TEST"], ["a1mini", "039TEST"], ["h2s", "093TEST"], ["h2d", "094TEST"], ["h2c", "TESTH2C"]]) {
+for (const [model, serial] of [["p1s", "01PTEST"], ["a1", "039TEST"], ["a1mini", "030TEST"], ["h2s", "093TEST"], ["h2d", "094TEST"], ["h2c", "TESTH2C"]]) {
   test(`${model} preserves external-spool dispatch with a declared material`, async (t) => {
     const { cmd } = await capture(t, model, serial, { useAMS: false });
     assert.ok(["project_file", "gcode_file"].includes(cmd.command));
