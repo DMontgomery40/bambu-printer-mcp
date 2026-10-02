@@ -38,6 +38,7 @@ This file is the repository's shared source of truth for local agents, GitHub Co
 ## Printer and slicer safety
 
 - All print routes must inspect the exact dispatched file snapshot and selected plate, enforce independent model/component and declared-material temperature ceilings, and require fresh observed MQTT identity, nozzle configuration, ready state, and actionable-error checks. Configured serial inference and cached display status are not live safety evidence.
+- A1 serial prefix `039` identifies the full-size A1; `030` identifies A1 mini. Keep status, fresh returned-serial identity, and the bundled parser aligned. Configured model/serial values must never replace fresh observed safety evidence or suppress model conflicts.
 - Keep complete physical filament mappings and compare available reported materials. Manual non-RFID material declarations remain supported; do not claim they prove physical spool contents or installed nozzle hardware.
 - Remote starts must inspect the actual remote artifact and dispatch an immutable checked copy. Raw bridge methods and option overrides must not bypass the shared gate. Heater-off and stop/cancel controls remain available.
 

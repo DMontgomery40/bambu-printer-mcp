@@ -11,7 +11,7 @@ async function report(printer, payload) {
   await printer.onMessage(JSON.stringify(payload), `device/${printer.config.serialNumber}/report`);
 }
 
-for (const [prefix, model] of [["093", "H2S"], ["094", "H2D"], ["239", "H2C"], ["31B", "H2DPRO"], ["22E", "P2S"], ["01P", "P1S"]]) {
+for (const [prefix, model] of [["093", "H2S"], ["094", "H2D"], ["239", "H2C"], ["31B", "H2DPRO"], ["22E", "P2S"], ["01P", "P1S"], ["039", "A1"], ["030", "A1M"]]) {
   test(`OTA model detection accepts ${model} (${prefix})`, async () => {
     const printer = client(`${prefix}TEST`);
     await report(printer, { info: { command: "get_version", module: [{ name: "ota", sn: `${prefix}TEST` }] } });

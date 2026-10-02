@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.1.23] – 2026-10-02
+
+### Fixed
+- Identify full-size A1 printers from serial prefix `039` and A1 mini printers from `030` in status, fresh MQTT safety checks, and the bundled parser. Correct routing fixtures and cover both models in fresh-install regressions; configured models still cannot override contradictory observed identity. Reported by [Steavie (@steavie)](https://github.com/steavie) in [#39](https://github.com/DMontgomery40/bambu-printer-mcp/issues/39). Verified with mocked reports and package installs; no physical print was run.
+
 ## [1.1.22] – 2026-09-30
 
 ### Fixed

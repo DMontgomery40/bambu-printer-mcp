@@ -136,9 +136,9 @@ class TolerantBambuClient extends BambuClient {
             return "P1S";
         if (sn.startsWith("22E"))
             return "P2S";
-        if (sn.startsWith("030"))
-            return "A1";
         if (sn.startsWith("039"))
+            return "A1";
+        if (sn.startsWith("030"))
             return "A1M";
         return undefined;
     }
@@ -563,7 +563,7 @@ export class BambuImplementation {
             isH2ModelName(options.bambuModel);
         const isP2S = serial.startsWith("22E") || isP2SModelName(options.bambuModel);
         const isA1 = String(options.bambuModel ?? "").trim().toLowerCase() === "a1" ||
-            (!options.bambuModel && serial.startsWith("030"));
+            (!options.bambuModel && serial.startsWith("039"));
         const usesH2ProjectFile = isH2 || isP2S;
         const remoteProjectPath = isH2 || isA1 ? remoteFileName : `cache/${remoteFileName}`;
         const remoteUploadPath = `/${remoteProjectPath}`;
