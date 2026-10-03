@@ -85,12 +85,12 @@ test('switching to a low-temperature material cannot inherit an unsafe high-temp
 });
 test('official installed startup and end routines retain parsed static vendor syntax',async t=>{
   const base='/Applications/BambuStudio.app/Contents/Resources/profiles/BBL/machine/';
-  for(const model of ['P1S','H2D','X1E']) {
+  for(const model of ['P1S','H2D','X1E','A1','A1 mini']) {
     let profile;try {profile=JSON.parse(await fs.readFile(path.join(base,`Bambu Lab ${model} 0.4 nozzle.json`),'utf8'));}catch {t.skip('installed BambuStudio profiles unavailable');return;}
     profile=await resolveBblMachineProfile(path.resolve(base,'../..'),`Bambu Lab ${model} 0.4 nozzle`);
     const replace=expression=> /(?:extruder|filament_id|first.*filaments|hotend|nozzle_id)/.test(expression)&&!/(?:temp|speed|diameter)/.test(expression)?'0':/chamber_temperature/.test(expression)?'40':/bed_temperature/.test(expression)?'60':/nozzle_diameter/.test(expression)?'0.4':/nozzle_temperature_range_high/.test(expression)?'260':/temp/.test(expression)?'220':'1';
     const routine=[profile.machine_start_gcode,profile.machine_end_gcode].filter(Boolean).join('\n').replace(/^[ \t]*\{[\s\S]*?\}[^\n]*$/gm,'').replace(/\{[^{}]*\}/g,replace).replace(/\[[^\[\]]*\]/g,replace);
-    await inspect(t,header(model,'PLA',model==='H2D'?'0.4;0.4':'0.4')+routine,{model:model.toLowerCase()});
+    await inspect(t,header(model,'PLA',model==='H2D'?'0.4;0.4':'0.4')+routine,{model:model.toLowerCase().replace(' ','')});
   }
 });
 test('zero-padded heater commands and concatenated commands cannot bypass inspection',async t=>{
@@ -234,6 +234,16 @@ test('H2D selected extruder ids and variants in the plate header must match the 
     entries['Metadata/plate_1.gcode']=gcode+'G1 X100 Y100\n';
     await assert.rejects(inspect(t,'',{model:'h2d'},entries),/extruder|variant|nozzle type|metadata/i,gcode);
   }
+});
+test('A1 and A1 mini M109 H wait limits are accepted while S stays the checked target',async t=>{
+  // Official Bambu Studio 02.08 start G-code: A1 emits M109 S25 H140 and M109 S220 H300; A1 mini emits M109 S100 H170.
+  const a1=await inspect(t,header('A1')+'M109 S25 H140\nM109 S220 H300\nG1 X10 Y10 E1\n',{model:'a1'});
+  assert.equal(a1.maxNozzleTemperature,220);
+  assert.equal((await inspect(t,header('A1 mini')+'M109 S100 H170\n',{model:'a1mini'})).maxNozzleTemperature,100);
+  for(const command of ['M109 S25 H301','M109 S25 H-1','M109 S25 H','M109 S400 H140','M109 R400 H140','M104 S220 H140','M190 S60 H140','M109 H140'])
+    await assert.rejects(inspect(t,header('A1')+command+'\n',{model:'a1'}),/temperature|unsupported|parameter|limit|target/i,command);
+  for(const model of ['P1S','X1C','H2D'])
+    await assert.rejects(inspect(t,header(model,'PLA',model==='H2D'?'0.4;0.4':'0.4')+'M109 S25 H140\n',{model:model.toLowerCase()}),/temperature parameter H/,model);
 });
 test('P2S airduct mode switches are accepted and other M145 forms still reject',async t=>{
   const p2s=header('P2S','PLA','0.6');
