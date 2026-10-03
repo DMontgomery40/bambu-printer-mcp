@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Accept the `M109 S<target> H<limit>` waits in the official A1 and A1 mini start G-code (`M109 S25 H140`, `M109 S220 H300`, and on the A1 mini `M109 S100 H170`), which rejected every job sliced with the stock A1 profiles in Bambu Studio 02.08 with "unsupported M109 temperature parameter H". `H` is not treated as a heater target: `S`/`R` remain the checked targets, and `H` is accepted only on `M109` for these models and only from 0 to 300. Other models, other heater commands, and out-of-range values still reject. The installed-profile startup check now covers the A1 and A1 mini. Verified offline against the Bambu Studio 02.08.02.61 A1 and A1 mini machine profiles and a real A1 0.4 mm PLA job; that job was printed through Bambu Studio, not through this change.
+
 ## [1.1.23] – 2026-10-02
 
 ### Fixed

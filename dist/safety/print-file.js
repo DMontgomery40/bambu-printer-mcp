@@ -405,9 +405,15 @@ export async function inspectPrintFile(filePath, options) {
             }
             if (['M104', 'M109', 'M140', 'M190', 'M141', 'M191'].includes(code)) {
                 const args = parameters(argumentsText, 'A');
+                // Official A1 and A1 mini start G-code waits with M109 S<target> H<limit>
+                // (S25 H140, S100 H170, S220 H300). H is not a heater target: S stays the
+                // checked target, so H is accepted only within those vendor bounds.
+                const vendorWait = code === 'M109' && ['a1', 'a1mini'].includes(model);
                 for (const key of args.keys())
-                    if (!'SRTA'.includes(key))
+                    if (!'SRTA'.includes(key) && !(key === 'H' && vendorWait))
                         fail(`unsupported ${code} temperature parameter ${key}`);
+                if (args.has('H') && (!Number.isFinite(args.get('H')) || args.get('H') < 0 || args.get('H') > 300))
+                    fail(`unsupported ${code} wait parameter H`);
                 if (!args.has('S') && !args.has('R'))
                     fail(`missing ${code} temperature target`);
                 const component = ['M104', 'M109'].includes(code) ? 'nozzle' : ['M140', 'M190'].includes(code) ? 'bed' : 'chamber';
