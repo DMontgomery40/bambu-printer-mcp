@@ -430,7 +430,10 @@ export async function inspectPrintFile(filePath, options) {
                         heat(component, args.get(key), position, args.has('T') || args.has('A'), commonFlush);
             }
             else if (code === 'M620' || code === 'M621') {
-                const args = parameters(argumentsText, 'MA');
+                const args = parameters(argumentsText, model === 'x2d' ? 'MAB' : 'MA');
+                // X2D templates use B as a bare material-switch flag, never a target.
+                if (args.has('B') && (model !== 'x2d' || !Number.isNaN(args.get('B'))))
+                    fail('unsupported material-switch B flag');
                 if (args.has('S')) {
                     const position = args.get('S');
                     if ([254, 255, 65279, 65535].includes(position)) {
@@ -453,6 +456,14 @@ export async function inspectPrintFile(filePath, options) {
                         }
                     }
                 }
+            }
+            else if (code === 'M620.22') {
+                // Official X2D runout auto-purge enables the declared project filament.
+                // It supplies no heater target; all explicit heat still uses the shared gate.
+                const args = parameters(argumentsText);
+                if (model !== 'x2d' || args.size !== 2 || !args.has('I') || args.get('P') !== 1)
+                    fail('unsupported M620.22 runout purge parameters');
+                requirePosition(args.get('I'));
             }
             else if (code === 'M620.1' || code === 'M620.10') {
                 const args = parameters(argumentsText, 'E');

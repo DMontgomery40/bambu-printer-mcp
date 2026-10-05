@@ -1185,6 +1185,9 @@ class BambuPrinterMCPServer {
             required: ["confirmed"],
           },
         }, { timeout: this.confirmationTimeoutMs });
+        if (response.action === "accept" && response.content?.confirmed !== true) {
+          throw new Error("Hardware confirmation checkbox was not checked. Check it only after inspecting the printer, or cancel. No command was sent.");
+        }
         return response.action === "accept" && response.content?.confirmed === true;
       } catch (error: any) {
         if (isElicitationTimeout(error)) {
@@ -1374,7 +1377,7 @@ class BambuPrinterMCPServer {
       );
     }
 
-    console.log(`3MF has no gcode - auto-slicing with ${slicerType} for ${printModel}`);
+    console.error(`3MF has no gcode - auto-slicing with ${slicerType} for ${printModel}`);
     const autoSliceOptions: BambuSliceOptions = {
       uptodate: true,
       ensureOnBed: true,
@@ -1389,7 +1392,7 @@ class BambuPrinterMCPServer {
       printPreset,
       autoSliceOptions
     );
-    console.log("Auto-sliced to: " + threeMFPath);
+    console.error("Auto-sliced to: " + threeMFPath);
     return { threeMFPath, autoSliced: true };
   }
 
@@ -3967,7 +3970,7 @@ class BambuPrinterMCPServer {
                   'BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF for SuperTack or choose textured_plate, cool_plate, engineering_plate, or hot_plate.'
                 );
               }
-              console.log(`3MF has no gcode — auto-slicing with ${slicerType} for ${printModel}`);
+              console.error(`3MF has no gcode — auto-slicing with ${slicerType} for ${printModel}`);
               const autoSliceOptions: BambuSliceOptions = {
                 uptodate: true,
                 ensureOnBed: true,
@@ -3998,7 +4001,7 @@ class BambuPrinterMCPServer {
                 printPreset,
                 autoSliceOptions
               );
-              console.log("Auto-sliced to: " + threeMFPath);
+              console.error("Auto-sliced to: " + threeMFPath);
             }
 
             const parsed3MFData = await parse3MF(threeMFPath);

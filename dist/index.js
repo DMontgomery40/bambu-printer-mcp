@@ -894,6 +894,9 @@ class BambuPrinterMCPServer {
                         required: ["confirmed"],
                     },
                 }, { timeout: this.confirmationTimeoutMs });
+                if (response.action === "accept" && response.content?.confirmed !== true) {
+                    throw new Error("Hardware confirmation checkbox was not checked. Check it only after inspecting the printer, or cancel. No command was sent.");
+                }
                 return response.action === "accept" && response.content?.confirmed === true;
             }
             catch (error) {
@@ -1029,7 +1032,7 @@ class BambuPrinterMCPServer {
         if (bedType === "supertack_plate") {
             throw new Error('BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF for SuperTack or choose textured_plate, cool_plate, engineering_plate, or hot_plate.');
         }
-        console.log(`3MF has no gcode - auto-slicing with ${slicerType} for ${printModel}`);
+        console.error(`3MF has no gcode - auto-slicing with ${slicerType} for ${printModel}`);
         const autoSliceOptions = {
             uptodate: true,
             ensureOnBed: true,
@@ -1039,7 +1042,7 @@ class BambuPrinterMCPServer {
             nozzleType: resolveNozzleType(args?.nozzle_type),
         };
         threeMFPath = await this.stlManipulator.sliceSTL(threeMFPath, slicerType, slicerPath, slicerProfile || undefined, undefined, printPreset, autoSliceOptions);
-        console.log("Auto-sliced to: " + threeMFPath);
+        console.error("Auto-sliced to: " + threeMFPath);
         return { threeMFPath, autoSliced: true };
     }
     async resolveAmsPrintSettings(threeMFPath, args, host, bambuSerial, bambuToken, printModel, printNozzle) {
@@ -3283,7 +3286,7 @@ class BambuPrinterMCPServer {
                             if (printBedType === "supertack_plate") {
                                 throw new Error('BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF for SuperTack or choose textured_plate, cool_plate, engineering_plate, or hot_plate.');
                             }
-                            console.log(`3MF has no gcode — auto-slicing with ${slicerType} for ${printModel}`);
+                            console.error(`3MF has no gcode — auto-slicing with ${slicerType} for ${printModel}`);
                             const autoSliceOptions = {
                                 uptodate: true,
                                 ensureOnBed: true,
@@ -3305,7 +3308,7 @@ class BambuPrinterMCPServer {
                             }
                             threeMFPath = await this.stlManipulator.sliceSTL(threeMFPath, slicerType, slicerPath, activeSlicerProfile, undefined, // progressCallback
                             printPreset, autoSliceOptions);
-                            console.log("Auto-sliced to: " + threeMFPath);
+                            console.error("Auto-sliced to: " + threeMFPath);
                         }
                         const parsed3MFData = await parse3MF(threeMFPath);
                         const isH2Print = H2_BAMBU_MODELS.has(printModel);

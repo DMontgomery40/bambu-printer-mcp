@@ -191,7 +191,7 @@ The optional FULU **BambuNetwork bridge** exposes `bambu_network_bridge_status`,
 ## Features
 
 - Get detailed printer status: temperatures (nozzle, bed, chamber), print progress, current layer, time remaining, and live AMS slot data
-- Query live AMS inventory with resolved Bambu/Orca filament profile paths via `get_printer_filaments`. Includes per-tray display names, match confidence (`high`/`medium`/`low`/`none`), resolution tier (`exact-model-nozzle`/`model`/`generic`/`unresolved`), and a summary with recommended auto-slice filament. Retries automatically when AMS data hasn't arrived yet (common on first MQTT push from idle printers).
+- Query live AMS inventory with resolved Bambu/Orca filament profile paths via `get_printer_filaments`. Profile suggestions use the selected slicer installation on Windows, macOS and Linux, including an explicit `BAMBU_PROFILES_ROOT`; unavailable profiles leave live inventory readable. Includes per-tray display names, match confidence (`high`/`medium`/`low`/`none`), resolution tier (`exact-model-nozzle`/`model`/`generic`/`unresolved`), and a summary with recommended auto-slice filament. Retries automatically when AMS data hasn't arrived yet (common on first MQTT push from idle printers).
 - List, upload, and delete files on the printer's SD card via FTPS
 - Capture a JPEG snapshot from the chamber camera. Supports A1, A1 mini, P1S, P1P (TCP-on-6000), and X1, X1C, X1E, P2S, H2, H2S, H2D, H2C, H2D Pro, X2D (RTSP via ffmpeg). Requires ffmpeg in PATH for the RTSP path.
 - Upload and print pre-sliced `.3mf` projects with checked plate selection and calibration flags. Legacy `.gcode.3mf` routes require a single external-spool-only plate; see the [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md).
@@ -567,6 +567,8 @@ Retrieve current printer state including temperatures, print progress, layer cou
   "bambu_token": "your_access_token"
 }
 ```
+
+Chamber status decodes the current temperature from newer firmware's packed CTC reports, including P2S, while retaining legacy chamber/frame fields.
 
 Returns a structured object with fields including `status` (gcode_state string), `temperatures.nozzle`, `temperatures.bed`, `temperatures.chamber`, `print.progress`, `print.currentLayer`, `print.totalLayers`, `print.timeRemaining`, and `ams` (raw AMS data from the printer).
 

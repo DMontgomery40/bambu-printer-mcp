@@ -90,7 +90,7 @@ async function parseBambuConfig(zip) {
         if (file) {
             configFile = file;
             configContent = await file.async('string');
-            console.log(`Found Bambu config file: ${configFile.name}`);
+            console.error(`Found Bambu config file: ${configFile.name}`);
             break; // Use the first one found (project usually has the most)
         }
     }
@@ -99,7 +99,7 @@ async function parseBambuConfig(zip) {
             // Attempt to parse as JSON
             const jsonData = JSON.parse(configContent);
             const parsedConfig = parseBambuJSONConfig(jsonData);
-            console.log('Bambu config parsed successfully as JSON.');
+            console.error('Bambu config parsed successfully as JSON.');
             return parsedConfig;
         }
         catch (jsonError) {
@@ -107,7 +107,7 @@ async function parseBambuConfig(zip) {
             // Fallback: Try parsing as INI if JSON fails (though unlikely based on sample)
             try {
                 const parsedConfig = parseFallbackINIConfig(configContent); // Keep a simple INI parser as fallback
-                console.log('Bambu config parsed successfully as INI (fallback).');
+                console.error('Bambu config parsed successfully as INI (fallback).');
                 return parsedConfig;
             }
             catch (iniError) {
@@ -117,7 +117,7 @@ async function parseBambuConfig(zip) {
         }
     }
     else {
-        console.log('No Bambu-specific config file found in Metadata directory.');
+        console.error('No Bambu-specific config file found in Metadata directory.');
         return {};
     }
 }
@@ -186,7 +186,7 @@ async function parse3DModelConfig(zip) {
                 });
             });
         }
-        console.log('3dmodel.model parsed successfully.');
+        console.error('3dmodel.model parsed successfully.');
         return { metadata, objects, build: { items: buildItems } };
     }
     catch (error) {
@@ -195,13 +195,13 @@ async function parse3DModelConfig(zip) {
     }
 }
 export async function parse3MF(filePath) {
-    console.log(`Parsing 3MF file: ${filePath}`);
+    console.error(`Parsing 3MF file: ${filePath}`);
     try {
         const data = await fs.readFile(filePath);
         const zip = await JSZip.loadAsync(data);
         // List files for debugging
         // const fileList = Object.keys(zip.files);
-        // console.log('Files in 3MF:', fileList);
+        // console.error('Files in 3MF:', fileList);
         const { metadata, objects, build } = await parse3DModelConfig(zip);
         const bambuConfig = await parseBambuConfig(zip);
         // Combine data into the final structure
@@ -211,7 +211,7 @@ export async function parse3MF(filePath) {
             build,
             slicerConfig: bambuConfig
         };
-        console.log('3MF parsing completed.');
+        console.error('3MF parsing completed.');
         return combinedData;
     }
     catch (error) {

@@ -1,6 +1,6 @@
 {
   "name": "bambu-printer-mcp",
-  "version": "1.1.24",
+  "version": "1.1.25",
   "description": "MCP server for Bambu Lab 3D printers with STL manipulation, slicing, and print management",
   "main": "dist/index.js",
   "repository": {
@@ -46,13 +46,13 @@
   "author": "David Montgomery",
   "license": "GPL-2.0",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "bambu-js": "^2.2.2",
     "bambu-node": "3.22.21",
-    "basic-ftp": "^5.0.5",
+    "basic-ftp": "^6.2.2",
     "dotenv": "^16.3.1",
-    "jszip": "^3.10.1",
-    "mqtt": "^5.15.1",
+    "jszip": "^3.10.2",
+    "mqtt": "^5.16.0",
     "patch-package": "8.0.1",
     "three": "^0.173.0",
     "xml2js": "^0.6.2"

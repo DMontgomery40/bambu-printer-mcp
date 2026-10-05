@@ -1,10 +1,15 @@
 # Changelog
 
-## Unreleased
+## [1.1.25] – 2026-10-05
 
 ### Fixed
-- Resolve live AMS filament profiles from the configured slicer installation and `BAMBU_PROFILES_ROOT` on Windows, macOS, and Linux, instead of a fixed macOS BambuStudio path. Preserve unresolved inventory when the selected profile tree is unavailable.
+- Accept the official X2D bare `B` material-switch flag and `M620.22 I<filament> P1` runout-purge form. Keep the allowance model-specific, reject numeric `B`, extra purge parameters and undeclared filament positions, and retain independent heater ceilings. Reported by [travismcashan](https://github.com/travismcashan) in [#44](https://github.com/DMontgomery40/bambu-printer-mcp/issues/44); the reporter verifies a physical X2D print with their local workaround, while release tests use isolated file inspection and mocked transports.
+- Explain an accepted hardware-confirmation form with an unchecked box without suggesting a missing MCP capability. Keep the operation blocked, and send 3MF parsing and auto-slicing diagnostics to stderr so stdio remains protocol-only ([#44](https://github.com/DMontgomery40/bambu-printer-mcp/issues/44)).
+- Resolve live AMS filament profiles from the configured slicer installation and `BAMBU_PROFILES_ROOT` on Windows, macOS, and Linux, instead of a fixed macOS BambuStudio path. Contributed by [Aleksei Popovich (@alexpapay)](https://github.com/alexpapay) in [#43](https://github.com/DMontgomery40/bambu-printer-mcp/pull/43). Preserve unresolved inventory when the selected profile tree is unavailable.
 - Read chamber temperature from the packed `device.ctc.info.temp` field reported by P2S and newer firmware, retaining legacy chamber/frame temperature fallbacks. Validate with offline regressions and read-only checks on a Windows P2S with AMS 2 Pro: all four loaded slots resolve and chamber temperature matches the raw report. No print, heater, or motion commands are sent.
+
+### Dependencies
+- Update the MCP SDK, MQTT and ZIP libraries within their compatible release lines. Use basic-ftp 6.2.2 for direct file transfers, including its patched listing parser and default rejection of separate transfer hosts. Keep the tested bambu-node and patch-package versions pinned; this does not claim that the legacy bambu-js and braces transitive audit findings are resolved.
 
 ## [1.1.24] – 2026-10-03
 

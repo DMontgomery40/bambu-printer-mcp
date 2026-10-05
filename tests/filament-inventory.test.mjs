@@ -72,10 +72,10 @@ for (const [name, options] of [
     const { inventory, expectedProfile } = await inventoryFixture(t, options);
     assert.equal(inventory.summary.loaded_slots, 1);
     assert.equal(inventory.summary.resolved_profile_slots, 1);
-    assert.equal(inventory.trays[0].resolved_profile_path, expectedProfile);
+    assert.equal(await fs.realpath(inventory.trays[0].resolved_profile_path), await fs.realpath(expectedProfile));
     assert.equal(inventory.trays[0].profile_resolution, "model");
     assert.equal(inventory.trays[0].tray_color, "FFFFFFFF");
-    assert.equal(inventory.recommended.load_filaments, expectedProfile);
+    assert.equal(inventory.recommended.load_filaments, inventory.trays[0].resolved_profile_path);
   });
 }
 
