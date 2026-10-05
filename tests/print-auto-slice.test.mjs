@@ -16,7 +16,7 @@ process.env.BAMBU_DISPATCH_CHECK_MS = "0";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const failure = "Required Bambu machine profile is missing nozzle_volume_type; select a matching machine and filament profile.";
 
-async function start(t, { sliceSucceeds = false, realSlice = false, slicerType = 'bambustudio', elicitDelayMs = 0, elicitation = true, afterPublish, pushAfterPublish = false, env = {} } = {}) {
+async function start(t, { sliceSucceeds = false, realSlice = false, slicerType = 'bambustudio', elicitDelayMs = 0, elicitation = true, confirmation = true, afterPublish, pushAfterPublish = false, env = {} } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-auto-slice-"));
   const log = path.join(directory, "calls.jsonl");
   const elicitLog = path.join(directory, "elicitations.jsonl");
@@ -97,7 +97,7 @@ BambuImplementation.prototype.getSafetyStatus = async function () {
   if (elicitation) client.setRequestHandler(ElicitRequestSchema, async () => {
     // A person may take a while to walk to the printer before answering.
     await new Promise((resolve) => setTimeout(resolve, elicitDelayMs));
-    return { action: "accept", content: { confirmed: true } };
+    return { action: "accept", content: { confirmed: confirmation } };
   });
   t.after(async () => { await client.close(); fs.rmSync(directory, { recursive: true, force: true }); });
   await client.connect(transport);
@@ -289,3 +289,12 @@ for (const extension of ["3mf", "gcode.3mf"]) {
     assert.equal(events.filter((event) => event.action === "publish").length, 1);
   });
 }
+
+test('an accepted but unchecked hardware form explains missing confirmation and never dispatches', async t => {
+  const server=await start(t,{sliceSucceeds:true,confirmation:false});
+  const result=await server.print(await server.makeProject('unchecked.3mf'));
+  assert.equal(result.isError,true);
+  assert.match(JSON.stringify(result.content),/checkbox|not checked/i);
+  assert.doesNotMatch(JSON.stringify(result.content),/elicitation support|unavailable/i);
+  assert.deepEqual(server.events().filter(event=>['upload','publish'].includes(event.action)),[]);
+});

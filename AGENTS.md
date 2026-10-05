@@ -28,6 +28,7 @@ This file is the repository's shared source of truth for local agents, GitHub Co
 ## Architecture and installation
 
 - Bambu-only fork of mcp-3D-printer-server. Do not add OctoPrint, Klipper, Duet, Repetier, Prusa, or Creality printer integrations.
+- Keep runtime diagnostics on stderr so stdout carries only MCP protocol messages.
 - MCP transports: stdio by default and streamable-http. Printer commands/status use MQTT on port 8883; file operations use FTPS on port 990.
 - Use basic-ftp directly for uploads to avoid the bambu-js double-path bug. Use bambu-node directly for project_file commands and correct AMS mapping.
 - Keep bambu-node pinned to the version covered by patches/. scripts/install-patches.mjs resolves the dependency actually used by the installed server, validates and applies the bundled patch, supports fully patched reruns, and fails installation on incompatible contents. A guessed local node_modules path or a successful patch-package CLI exit is insufficient proof.
@@ -43,6 +44,7 @@ This file is the repository's shared source of truth for local agents, GitHub Co
 - Remote starts must inspect the actual remote artifact and dispatch an immutable checked copy. Raw bridge methods and option overrides must not bypass the shared gate. Heater-off and stop/cancel controls remain available.
 
 - BAMBU_MODEL (or the explicit tool model) is required for every print operation. Elicit it when missing. Never skip validation: G-code for the wrong model can damage hardware.
+- X2D file inspection accepts only its official bare `B` material-switch flag and `M620.22 I<declared filament> P1` runout-purge form. Reject numeric flags, extra purge parameters and undeclared positions; preserve independent heater ceilings.
 - Accept the official A1/A1 mini `M109 H` wait parameter only for those models and only from 0 to 300. Keep `S`/`R` as independently checked heater targets; missing targets, malformed waits, other heater commands, and other models still reject.
 - Preserve model-specific upload/command routes and complete positional AMS mappings. Add regressions for the changed model and unaffected routes, including external-spool use where supported.
 - X2D status and slicing use its own installed preset. Resolve the model before selecting the optional macOS native eMMC transport. Native printing, upload, heating, resume, and error clearing must retain the shared safety checks. Reject unsupported platforms before slicing or connection, and keep legacy FTPS/remote-file starts blocked. Do not infer physical print success from MQTT status, a successful slice, helper exit status, or mocked routing.

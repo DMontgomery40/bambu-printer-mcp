@@ -44,6 +44,7 @@ import { BambuImplementation, assertDirectPrintSupported } from "./printers/bamb
 import { inspectPrintFile } from "./safety/print-file.js";
 import { validatePrinterState } from "./safety/printer-state.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safety/artifact.js";
+import { detectProfilesRoot } from "./slicer/profile-flatten.js";
 
 dotenv.config();
 
@@ -140,8 +141,6 @@ const BAMBU_MODEL_PRESETS: Record<string, (nozzle: string) => string> = {
   x2d: (n) => `Bambu Lab X2D ${n} nozzle`,
 };
 
-const FILAMENT_PROFILE_DIR =
-  "/Applications/BambuStudio.app/Contents/Resources/profiles/BBL/filament";
 const FILAMENT_MODEL_CODES: Record<string, string> = {
   p1s: "P1S",
   p1p: "P1P",
@@ -212,15 +211,27 @@ let filamentProfileIndexCache: FilamentProfileIndex | null = null;
 function buildFilamentProfileIndex(): FilamentProfileIndex {
   const byName = new Map<string, string>();
   const baseNameByFilamentId = new Map<string, string>();
-
-  if (!fs.existsSync(FILAMENT_PROFILE_DIR)) {
+  let filamentProfileDir: string;
+  try {
+    const { slicerType, slicerPath } = resolveSlicerConfig(undefined);
+    filamentProfileDir = path.join(detectProfilesRoot(slicerPath, slicerType), "BBL", "filament");
+  } catch {
+    // Profile suggestions are optional; invalid slicer configuration must not hide AMS inventory.
     return { byName, baseNameByFilamentId };
   }
 
-  for (const entry of fs.readdirSync(FILAMENT_PROFILE_DIR)) {
+  let profileEntries: string[];
+  try {
+    profileEntries = fs.readdirSync(filamentProfileDir);
+  } catch {
+    // Ignore unavailable profile suggestions while keeping live inventory readable.
+    return { byName, baseNameByFilamentId };
+  }
+
+  for (const entry of profileEntries) {
     if (!entry.endsWith(".json")) continue;
 
-    const filePath = path.join(FILAMENT_PROFILE_DIR, entry);
+    const filePath = path.join(filamentProfileDir, entry);
 
     try {
       const raw = fs.readFileSync(filePath, "utf8");
@@ -1174,6 +1185,9 @@ class BambuPrinterMCPServer {
             required: ["confirmed"],
           },
         }, { timeout: this.confirmationTimeoutMs });
+        if (response.action === "accept" && response.content?.confirmed !== true) {
+          throw new Error("Hardware confirmation checkbox was not checked. Check it only after inspecting the printer, or cancel. No command was sent.");
+        }
         return response.action === "accept" && response.content?.confirmed === true;
       } catch (error: any) {
         if (isElicitationTimeout(error)) {
@@ -1363,7 +1377,7 @@ class BambuPrinterMCPServer {
       );
     }
 
-    console.log(`3MF has no gcode - auto-slicing with ${slicerType} for ${printModel}`);
+    console.error(`3MF has no gcode - auto-slicing with ${slicerType} for ${printModel}`);
     const autoSliceOptions: BambuSliceOptions = {
       uptodate: true,
       ensureOnBed: true,
@@ -1378,7 +1392,7 @@ class BambuPrinterMCPServer {
       printPreset,
       autoSliceOptions
     );
-    console.log("Auto-sliced to: " + threeMFPath);
+    console.error("Auto-sliced to: " + threeMFPath);
     return { threeMFPath, autoSliced: true };
   }
 
@@ -3956,7 +3970,7 @@ class BambuPrinterMCPServer {
                   'BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF for SuperTack or choose textured_plate, cool_plate, engineering_plate, or hot_plate.'
                 );
               }
-              console.log(`3MF has no gcode — auto-slicing with ${slicerType} for ${printModel}`);
+              console.error(`3MF has no gcode — auto-slicing with ${slicerType} for ${printModel}`);
               const autoSliceOptions: BambuSliceOptions = {
                 uptodate: true,
                 ensureOnBed: true,
@@ -3987,7 +4001,7 @@ class BambuPrinterMCPServer {
                 printPreset,
                 autoSliceOptions
               );
-              console.log("Auto-sliced to: " + threeMFPath);
+              console.error("Auto-sliced to: " + threeMFPath);
             }
 
             const parsed3MFData = await parse3MF(threeMFPath);

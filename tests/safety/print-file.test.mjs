@@ -85,12 +85,12 @@ test('switching to a low-temperature material cannot inherit an unsafe high-temp
 });
 test('official installed startup and end routines retain parsed static vendor syntax',async t=>{
   const base='/Applications/BambuStudio.app/Contents/Resources/profiles/BBL/machine/';
-  for(const model of ['P1S','H2D','X1E','A1','A1 mini']) {
+  for(const model of ['P1S','H2D','X1E','A1','A1 mini','X2D']) {
     let profile;try {profile=JSON.parse(await fs.readFile(path.join(base,`Bambu Lab ${model} 0.4 nozzle.json`),'utf8'));}catch {t.skip('installed BambuStudio profiles unavailable');return;}
     profile=await resolveBblMachineProfile(path.resolve(base,'../..'),`Bambu Lab ${model} 0.4 nozzle`);
     const replace=expression=> /(?:extruder|filament_id|first.*filaments|hotend|nozzle_id)/.test(expression)&&!/(?:temp|speed|diameter)/.test(expression)?'0':/chamber_temperature/.test(expression)?'40':/bed_temperature/.test(expression)?'60':/nozzle_diameter/.test(expression)?'0.4':/nozzle_temperature_range_high/.test(expression)?'260':/temp/.test(expression)?'220':'1';
     const routine=[profile.machine_start_gcode,profile.machine_end_gcode].filter(Boolean).join('\n').replace(/^[ \t]*\{[\s\S]*?\}[^\n]*$/gm,'').replace(/\{[^{}]*\}/g,replace).replace(/\[[^\[\]]*\]/g,replace);
-    await inspect(t,header(model,'PLA',model==='H2D'?'0.4;0.4':'0.4')+routine,{model:model.toLowerCase().replace(' ','')});
+    await inspect(t,header(model,'PLA',['H2D','X2D'].includes(model)?'0.4;0.4':'0.4')+routine,{model:model.toLowerCase().replace(' ','')});
   }
 });
 test('zero-padded heater commands and concatenated commands cannot bypass inspection',async t=>{
@@ -435,4 +435,17 @@ test('ambiguous heater candidates still enforce every possible material temperat
     await assert.rejects(inspect(t,'',{model:'h2d'},{...entries,'Metadata/plate_1.gcode':unknownSelection+'\n'}),/PLA|material.*limit/i);
   const selected=await inspect(t,'',{model:'h2d'},{...entries,'Metadata/plate_1.gcode':'T1\nM104 S300\n'});
   assert.deepEqual(selected.usedFilamentPositions,[1]);
+});
+
+// Official X2D start/change/end templates use a bare B selector and I<filament> P1 auto-purge.
+test('X2D vendor switches and runout purge retain declared filament and heater checks', async t => {
+  const base=header('X2D','PLA;PETG','0.4;0.4');
+  const routine='M620 S0A H-1 B\nM620.22 I0 P1\nM104 S220\nM621 S0A B\nM620 S1A B H0\nM620.22 I1 P1\nM109 S240\nM621 S1A B\nM620 S65279 B\nM621 S65279 B\nM620 S65535 B\nM621 S65535 B\n';
+  const result=await inspect(t,base+routine,{model:'x2d'});
+  assert.equal(result.maxNozzleTemperature,240);
+  assert.deepEqual(result.usedFilamentPositions,[0,1]);
+  for(const command of ['M620 S0A B1','M621 S0A B1','M620 S2A B','M620.22 I2 P1','M620.22 I0 P2','M620.22 I0','M620.22 I0 P1 T400','M620.22 I0 P1 S400','M620.22 I0 P1\nM104 S400','M620 S0A B\nM620.10 A1 T400'])
+    await assert.rejects(inspect(t,base+command+'\n',{model:'x2d'}),/unsupported|parameter|position|mapping|temperature|limit/i,command);
+  for(const model of ['P1S','A1','H2D']) for(const command of ['M620 S0A B','M620.22 I0 P1'])
+    await assert.rejects(inspect(t,header(model,'PLA',model==='H2D'?'0.4;0.4':'0.4')+command+'\n',{model:model.toLowerCase()}),/parameter|unsupported/i);
 });
