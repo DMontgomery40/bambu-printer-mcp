@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Resolve live AMS filament profiles from the configured slicer installation and `BAMBU_PROFILES_ROOT` on Windows, macOS, and Linux, instead of a fixed macOS BambuStudio path. Preserve unresolved inventory when the selected profile tree is unavailable.
+- Read chamber temperature from the packed `device.ctc.info.temp` field reported by P2S and newer firmware, retaining legacy chamber/frame temperature fallbacks. Validate with offline regressions and read-only checks on a Windows P2S with AMS 2 Pro: all four loaded slots resolve and chamber temperature matches the raw report. No print, heater, or motion commands are sent.
+
 ## [1.1.24] – 2026-10-03
 
 ### Fixed

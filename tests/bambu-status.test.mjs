@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BambuClient } from "bambu-node";
+import { BambuImplementation } from "../dist/printers/bambu.js";
 
 function client(serial = "239TEST") {
   return new BambuClient({ host: "127.0.0.1", serialNumber: serial, accessToken: "test" });
@@ -49,3 +50,24 @@ test("unexpected status transitions update status and accept the next report", a
     assert.equal(printer.data.gcode_state, state);
   }
 });
+
+for (const [name, data, expected] of [
+  ["P2S CTC temperature", { device: { ctc: { info: { temp: 26 } } } }, 26],
+  ["packed CTC current and target temperatures", { device: { ctc: { info: { temp: 3932186 } } } }, 26],
+  ["zero CTC temperature before legacy fields", { device: { ctc: { info: { temp: 0 } } }, chamber_temper: 30 }, 0],
+  ["legacy chamber temperature", { chamber_temper: 32 }, 32],
+  ["legacy frame temperature", { frame_temper: 29 }, 29],
+  ["missing temperature", { device: { ctc: null } }, 0],
+  ["invalid CTC temperature falls back", { device: { ctc: { info: { temp: -1 } } }, chamber_temper: 31 }, 31],
+]) {
+  test(`printer status reads ${name}`, async () => {
+    const reportData = { gcode_state: "IDLE", model: "P2S", ...data };
+    const bambu = new BambuImplementation();
+    bambu.printerStore = { waitForInitialReport: async () => reportData };
+    bambu.getPrinter = async () => ({ data: reportData, publish: async () => {} });
+
+    const status = await bambu.getStatus("127.0.0.1", "TEST_SERIAL", "TEST_TOKEN");
+    assert.equal(status.connected, true);
+    assert.equal(status.temperatures.chamber, expected);
+  });
+}

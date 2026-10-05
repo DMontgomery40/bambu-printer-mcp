@@ -606,10 +606,16 @@ export class BambuImplementation {
       }
 
       const cachedData = await this.printerStore.waitForInitialReport(host, serial, token);
-      const data =
+      const data: Record<string, any> =
         cachedData && Object.keys(cachedData).length > 0
           ? cachedData
           : printer.data;
+      const ctcTemperature = data.device?.ctc?.info?.temp;
+      // CTC packs the current temperature in the low 16 bits and the target in the high 16 bits.
+      const chamberTemperature =
+        typeof ctcTemperature === "number" && Number.isInteger(ctcTemperature) && ctcTemperature >= 0 && ctcTemperature <= 0xffffffff
+          ? ctcTemperature & 0xffff
+          : data.chamber_temper || data.frame_temper || 0;
 
       return {
         status: data.gcode_state || "UNKNOWN",
@@ -623,7 +629,7 @@ export class BambuImplementation {
             actual: data.bed_temper || 0,
             target: data.bed_target_temper || 0,
           },
-          chamber: data.chamber_temper || data.frame_temper || 0,
+          chamber: chamberTemperature,
         },
         print: {
           filename: data.subtask_name || data.gcode_file || "None",

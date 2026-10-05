@@ -20,6 +20,7 @@ import { BambuImplementation, assertDirectPrintSupported } from "./printers/bamb
 import { inspectPrintFile } from "./safety/print-file.js";
 import { validatePrinterState } from "./safety/printer-state.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safety/artifact.js";
+import { detectProfilesRoot } from "./slicer/profile-flatten.js";
 dotenv.config();
 const DEFAULT_HOST = process.env.BAMBU_PRINTER_HOST || process.env.PRINTER_HOST || "localhost";
 const DEFAULT_BAMBU_SERIAL = process.env.BAMBU_PRINTER_SERIAL || process.env.BAMBU_SERIAL || "";
@@ -104,7 +105,6 @@ const BAMBU_MODEL_PRESETS = {
     h2c: (n) => `Bambu Lab H2C ${n} nozzle`,
     x2d: (n) => `Bambu Lab X2D ${n} nozzle`,
 };
-const FILAMENT_PROFILE_DIR = "/Applications/BambuStudio.app/Contents/Resources/profiles/BBL/filament";
 const FILAMENT_MODEL_CODES = {
     p1s: "P1S",
     p1p: "P1P",
@@ -123,13 +123,22 @@ let filamentProfileIndexCache = null;
 function buildFilamentProfileIndex() {
     const byName = new Map();
     const baseNameByFilamentId = new Map();
-    if (!fs.existsSync(FILAMENT_PROFILE_DIR)) {
+    let filamentProfileDir;
+    try {
+        const { slicerType, slicerPath } = resolveSlicerConfig(undefined);
+        filamentProfileDir = path.join(detectProfilesRoot(slicerPath, slicerType), "BBL", "filament");
+    }
+    catch {
+        // Profile suggestions are optional; invalid slicer configuration must not hide AMS inventory.
         return { byName, baseNameByFilamentId };
     }
-    for (const entry of fs.readdirSync(FILAMENT_PROFILE_DIR)) {
+    if (!fs.existsSync(filamentProfileDir)) {
+        return { byName, baseNameByFilamentId };
+    }
+    for (const entry of fs.readdirSync(filamentProfileDir)) {
         if (!entry.endsWith(".json"))
             continue;
-        const filePath = path.join(FILAMENT_PROFILE_DIR, entry);
+        const filePath = path.join(filamentProfileDir, entry);
         try {
             const raw = fs.readFileSync(filePath, "utf8");
             const parsed = JSON.parse(raw);
