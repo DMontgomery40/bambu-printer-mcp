@@ -10,7 +10,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 const serverEntry = fileURLToPath(new URL("../dist/index.js", import.meta.url));
 const printerModule = new URL("../dist/printers/bambu.js", import.meta.url).href;
 
-async function inventoryFixture(t, { binary, profiles, slicerType = "bambustudio", override = false, missing = false }) {
+async function inventoryFixture(t, { binary, profiles, slicerType = "bambustudio", override = false, missing = false, invalidDirectory = false }) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-filament-inventory-"));
   const client = new Client({ name: "filament-inventory-test", version: "1" });
   t.after(async () => {
@@ -27,6 +27,10 @@ async function inventoryFixture(t, { binary, profiles, slicerType = "bambustudio
   await fs.writeFile(path.join(filamentDir, "Generic PLA @base.json"), JSON.stringify({ name: "Generic PLA @base", filament_id: "GFL99" }));
   const expectedProfile = path.join(filamentDir, "Generic PLA @BBL P2S.json");
   await fs.writeFile(expectedProfile, JSON.stringify({ name: "Generic PLA @BBL P2S", inherits: "Generic PLA @base" }));
+  if (invalidDirectory) {
+    await fs.rm(filamentDir, { recursive: true });
+    await fs.writeFile(filamentDir, "not a profile directory");
+  }
   const preload = `
     import { BambuImplementation } from ${JSON.stringify(printerModule)};
     BambuImplementation.prototype.getStatus = async () => ({
@@ -92,4 +96,14 @@ test("filament inventory remains available when slicer configuration is invalid"
   assert.equal(inventory.summary.loaded_slots, 1);
   assert.equal(inventory.summary.resolved_profile_slots, 0);
   assert.equal(inventory.trays[0].resolved_profile_path, null);
+});
+
+test("filament inventory remains available when the profile directory cannot be read", async t => {
+  const { inventory } = await inventoryFixture(t, {
+    binary: "Bambu Studio/bambu-studio.exe", profiles: "Bambu Studio/resources/profiles", invalidDirectory: true,
+  });
+  assert.equal(inventory.summary.loaded_slots, 1);
+  assert.equal(inventory.summary.resolved_profile_slots, 0);
+  assert.equal(inventory.trays[0].resolved_profile_path, null);
+  assert.equal(inventory.recommended, null);
 });

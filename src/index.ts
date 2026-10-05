@@ -220,11 +220,15 @@ function buildFilamentProfileIndex(): FilamentProfileIndex {
     return { byName, baseNameByFilamentId };
   }
 
-  if (!fs.existsSync(filamentProfileDir)) {
+  let profileEntries: string[];
+  try {
+    profileEntries = fs.readdirSync(filamentProfileDir);
+  } catch {
+    // Ignore unavailable profile suggestions while keeping live inventory readable.
     return { byName, baseNameByFilamentId };
   }
 
-  for (const entry of fs.readdirSync(filamentProfileDir)) {
+  for (const entry of profileEntries) {
     if (!entry.endsWith(".json")) continue;
 
     const filePath = path.join(filamentProfileDir, entry);
