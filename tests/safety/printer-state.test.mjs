@@ -221,3 +221,13 @@ for (const [prefix, model, reportedModel] of [['039', 'a1', 'A1'], ['030', 'a1mi
     assert.throws(() => check({...status,raw:{...status.raw,modules:[]}},requirements),/identity|model/i);
   });
 }
+
+test('official H2C and H2D Pro returned serials agree with declared identity and reject conflicts', () => {
+  for(const [prefix,model,modelId,other] of [['31B','h2c','O1C2','O1E'],['239','h2dpro','O1E','O1C2']]) {
+    const serial=prefix+'TEST';
+    const status=fresh({model_id:modelId,modules:[{name:'ota',sn:serial}]},{serial});
+    assert.doesNotThrow(()=>check(status,req({model,serial,nozzleDiameters:[]})));
+    assert.throws(()=>check(fresh({model_id:other,modules:[{name:'ota',sn:serial}]},{serial}),req({model,serial,nozzleDiameters:[]})),/identity|conflict|model/i);
+    assert.throws(()=>check(fresh({model_id:undefined}),req({model,serial,nozzleDiameters:[]})),/identity|model/i);
+  }
+});

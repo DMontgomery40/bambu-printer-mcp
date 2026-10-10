@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.26] – 2026-10-10
+
+### Fixed
+- Correct H2C (`31B`) and H2D Pro (`239`) serial identity in displayed status, fresh print-safety evidence, and the installed bambu-node parser. Preserve model-conflict rejection and never use configured identity as fresh evidence. Thanks to Adam (@adamkaplan) for the report and H2C hardware observations in [#47](https://github.com/DMontgomery40/bambu-printer-mcp/issues/47).
+- Accept the official Bambu Studio 02.08.02.61 H2C startup forms inside one explicitly bounded startup block: bare hotend remapping, checked all-hotend preheat, bed `D` targets, tower/probe setup, and the literal record-data separator. Keep layer-change settings in the config block from closing startup prematurely; actual layer markers and extrusion still close it. Independent heater/material ceilings, declared filament positions, and wrong-model rejection remain enforced. Thanks to Adam (@adamkaplan) for the reproductions in [#48](https://github.com/DMontgomery40/bambu-printer-mcp/issues/48). Covered by the exact pinned vendor template and unsafe mutations; no maintainer physical H2C print was run.
+- Preserve the X2D native print dispatch result after flushing its receipt by ending the one-shot helper before plug-in teardown. If an older/custom helper crashes after authorized dispatch, report uncertainty and require checking printer status/job name before retrying instead of claiming ordinary failure. Thanks to @travismcashan for accepted-job, completed-print, and crash evidence in [#46](https://github.com/DMontgomery40/bambu-printer-mcp/issues/46). Maintainer tests use a compiled stub plug-in with crashing teardown and subprocess regressions; no physical print was run.
+
 ## [1.1.25] – 2026-10-05
 
 ### Fixed

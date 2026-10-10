@@ -37,6 +37,8 @@ export type BambuNativeControlOptions = {
 
 type NativeHelperResult = {
   resultCode: number;
+  signal: NodeJS.Signals | null;
+  authorizedAttempts: number;
   updates: string[];
   stderr: string;
 };
@@ -244,7 +246,7 @@ function runNativeHelper(
       settled = true;
       cleanup();
       if (failure) { reject(failure); return; }
-      if (needsAuthorization && code === 0 && (authorizing || authorizedAttempts === 0)) {
+      if (needsAuthorization && (code === 0 || updates.includes("native_print result=0") || stdout.trim() === "native_print result=0") && (authorizing || authorizedAttempts === 0)) {
         reject(new Error("Native helper exited without completed dispatch authorization."));
         return;
       }
@@ -253,7 +255,7 @@ function runNativeHelper(
         updates.push(trailing);
         onUpdate?.(trailing);
       }
-      resolve({ resultCode: code ?? (signal ? 1 : 0), updates, stderr });
+      resolve({ resultCode: code ?? (signal ? 1 : 0), signal, authorizedAttempts, updates, stderr });
     });
   });
 }
@@ -653,6 +655,10 @@ export async function printWithBambuNative(
     execution
   );
   if (result.resultCode !== 0) {
+    const explicitRejection = result.updates.some(line => /^native_print result=-?[1-9]\d*$/.test(line));
+    if (result.authorizedAttempts > 0 && (result.updates.includes("native_print result=0") || (result.signal && !explicitRejection))) {
+      throw new Error("Bambu native print dispatch is uncertain: the printer may have accepted this job before the helper exited. Check printer status and the job name before retrying; do not automatically resend it.");
+    }
     const detail = [
       ...result.updates,
       ...(result.stderr ? [result.stderr.trim()] : []),

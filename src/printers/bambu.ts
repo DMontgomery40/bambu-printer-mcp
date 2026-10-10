@@ -183,8 +183,8 @@ class TolerantBambuClient extends BambuClient {
     const sn = this.config.serialNumber;
     if (sn.startsWith("093")) return "H2S";
     if (sn.startsWith("094")) return "H2D";
-    if (sn.startsWith("239")) return "H2C";
-    if (sn.startsWith("31B")) return "H2DPRO";
+    if (sn.startsWith("31B")) return "H2C";
+    if (sn.startsWith("239")) return "H2DPRO";
     if (sn.startsWith("20P")) return "X2D";
     if (sn.startsWith("00M")) return "X1C";
     if (sn.startsWith("00W")) return "X1";

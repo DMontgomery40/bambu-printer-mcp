@@ -725,6 +725,11 @@ void runOperation(NativeApi &api, NativeOperation operation) {
         }
     }
     outputLine(std::string(uploadOnly ? "native_upload" : "native_print") + " result=" + std::to_string(result));
+    // A one-shot print helper has finished dispatch. Plug-in worker teardown can
+    // crash after acceptance; let the OS reclaim it without changing that result.
+    // outputLine flushes the receipt before exiting. Upload/control paths retain
+    // their existing cleanup, and no dispatched print is replayed here.
+    if (!uploadOnly) std::_Exit(result == 0 ? 0 : 20);
     destroyAgent();
     if (result != 0) std::exit(20);
 }

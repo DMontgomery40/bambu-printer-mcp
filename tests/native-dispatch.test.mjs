@@ -17,7 +17,7 @@ const hazardousCommands = [
   { command: "clean_print_error", sequence_id: "1" },
 ];
 
-async function helper(t, { attempts = 1, ignoreTerm = false, noRequest = false, legacy = false } = {}) {
+async function helper(t, { attempts = 1, ignoreTerm = false, noRequest = false, legacy = false, crash = false, printResult = 0 } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-native-dispatch-"));
   const events = path.join(directory, "events.jsonl");
   const executable = path.join(directory, "helper.mjs");
@@ -42,8 +42,9 @@ if (['--print-authorized','--command-authorized'].includes(process.argv[2]) && !
     record({kind:'dispatched',attempt});
   }
 }
-console.log('native_print result=0');
-process.exit(0);
+console.log('native_print result='+${printResult});
+if (${crash}) process.kill(process.pid, 'SIGTERM');
+else process.exit(${printResult} === 0 ? 0 : 20);
 `, { mode: 0o755 });
   const platform = Object.getOwnPropertyDescriptor(process, "platform");
   const previous = process.env.BAMBU_NATIVE_HELPER;
@@ -180,7 +181,7 @@ BBL::OnLocalConnectedFn connected;
 int main(int argc, char **argv) {
   NativeApi api;
   api.createAgent = [](std::string) -> void* { return reinterpret_cast<void*>(1); };
-  api.destroyAgent = [](void*) { return 0; };
+  api.destroyAgent = [](void*) { if(boolEnv("STUB_CRASH_TEARDOWN",false)) std::abort(); return 0; };
   api.setConfigDir = [](void*,std::string) { return 0; };
   api.initLog = [](void*) { return 0; };
   api.setCertFile = [](void*,std::string,std::string) { return 0; };
@@ -235,6 +236,14 @@ int main(int argc, char **argv) {
   assert.equal(checks, 2);
   assert.deepEqual(updates.filter(line => line.startsWith("stub_dispatch=")), ["stub_dispatch=1"]);
 
+  const teardownCrash = spawnSync(executable, [], {
+    env: {...process.env, STUB_CRASH_TEARDOWN:'1', BAMBU_NATIVE_HOST:'127.0.0.1',
+      BAMBU_NATIVE_SERIAL:'20PDISPATCH', BAMBU_NATIVE_ACCESS_CODE:'DUMMY', BAMBU_NATIVE_FILE:file},
+    encoding:'utf8', timeout:15000, input:'native_dispatch_authorized=1\nnative_dispatch_authorized=2\n',
+  });
+  assert.equal(teardownCrash.status,0,teardownCrash.stderr);
+  assert.match(teardownCrash.stdout,/native_print result=0/);
+
   const noParent = spawnSync(executable, [], { env: { ...process.env, BAMBU_NATIVE_HOST: "127.0.0.1",
     BAMBU_NATIVE_SERIAL: "20PDISPATCH", BAMBU_NATIVE_ACCESS_CODE: "DUMMY", BAMBU_NATIVE_FILE: file },
     encoding: "utf8", timeout: 15000, input: "" });
@@ -261,4 +270,18 @@ int main(int argc, char **argv) {
   assert.match(noRetryApproval.stderr, /authorization was missing or rejected/);
   assert.match(noRetryApproval.stdout, /stub_control_dispatch=1/);
   assert.doesNotMatch(noRetryApproval.stdout, /stub_control_dispatch=2/);
+});
+
+for (const printResult of [0, null]) test(`native crash after authorized dispatch (${printResult}) warns against duplicate printing`, async t => {
+  const events = await helper(t, { crash: true, printResult });
+  await assert.rejects(printWithBambuNative(options, undefined, {beforeDispatch: async () => {}}), /uncertain.*may.*accepted.*before retrying/i);
+  assert.equal((await events()).filter(e => e.kind === 'dispatched').length, 1);
+});
+test('native crash cannot bypass dispatch authorization even with a success receipt', async t => {
+  await helper(t, {crash:true,noRequest:true});
+  await assert.rejects(printWithBambuNative(options, undefined, {beforeDispatch:async()=>{}}), /authorization/i);
+});
+test('explicit native print rejection remains a failure', async t => {
+  await helper(t, {printResult:-1});
+  await assert.rejects(printWithBambuNative(options, undefined, {beforeDispatch:async()=>{}}), /failed.*20/);
 });
