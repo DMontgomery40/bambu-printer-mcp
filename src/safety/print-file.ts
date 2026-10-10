@@ -381,6 +381,7 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
         // Bambu probing routines carry nozzle temperature in T and optionally
         // the project filament position in L (including the H2D G383.3 form).
         const args=parameters(argumentsText);
+        if(args.has('U')) fail('unsupported G383 temperature parameter U outside H2C startup');
         if(code==='G383.3' && (!args.has('T') || [...args.keys()].some(key=>!'TL'.includes(key)))) fail('unsupported G383.3 temperature parameters');
         const position=args.has('L')?requirePosition(args.get('L')!):active;
         if(args.has('T')) heat('nozzle',args.get('T')!,position);

@@ -458,7 +458,7 @@ test('BambuStudio 02.08 H2C startup commands pass without losing independent tem
   assert.deepEqual(r.usedFilamentPositions,[0]);
 });
 test('H2C startup forms reject other models, late commands, extra parameters and unsafe targets',async t=>{
-  const forms=['M620 N','M104 O-80 A','M140 D55','M190 D55','M620.14 X95.5 Y336','G383.3 U140 L0','G383.7 U140 J0','========== record data =========='];
+  const forms=['M620 N','M104 O-80 A','M140 D55','M190 D55','M620.14 X95.5 Y336','G383.3 U140 L0','G383 O2 U140 L0','G383.7 U140 J0','========== record data =========='];
   for(const command of forms) {
     await assert.rejects(inspect(t,header()+'; EXECUTABLE_BLOCK_START\n'+command+'\n',{model:'p1s'}),/unsupported|syntax|missing/i,command);
     await assert.rejects(inspect(t,h2cHeader()+'; EXECUTABLE_BLOCK_START\nM104 S220\n; MACHINE_START_GCODE_END\n'+command+'\n',{model:'h2c'}),/unsupported|syntax|missing|startup/i,command);
@@ -495,4 +495,8 @@ test('H2C all-hotend preheat checks unused declared materials without adding AMS
   const source=header('H2C','PLA;PETG','0.4;0.4')+'; nozzle_temperature_initial_layer = 220;250\n; EXECUTABLE_BLOCK_START\nM104 O-80 A\nT0\nM104 S220\n; MACHINE_START_GCODE_END\n';
   const r=await inspect(t,source,{model:'h2c'});assert.deepEqual(r.usedFilamentPositions,[0]);
   await assert.rejects(inspect(t,source.replace('220;250','220;340'),{model:'h2c'}),/PETG|temperature|limit/i);
+});
+
+test('unrecognized G383 U targets cannot bypass other models thermal checks',async t=>{
+  for(const model of ['P1S','H2D','X2D']) await assert.rejects(inspect(t,header(model)+'G383 O2 U400 L0\n',{model:model.toLowerCase()}),/unsupported|temperature/i);
 });
