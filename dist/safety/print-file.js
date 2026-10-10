@@ -80,7 +80,7 @@ function parameters(text, flags = '') {
     return result;
 }
 // Layer comments only close a startup exception; they can never enable one.
-const isLayerMarker = (line) => /^\s*;\s*(?:LAYER_CHANGE|CHANGE_LAYER|LAYER\s*:|layer num\/total_layer_count\s*:)/i.test(line);
+const isLayerMarker = (line) => /^\s*;\s*(?:(?:LAYER_CHANGE|CHANGE_LAYER)(?:\s|$)|LAYER\s*:|layer num\/total_layer_count\s*:)/i.test(line);
 function boundedX1ePurge(lines, index) {
     // Official X1E common flush: 50 mm at 200 mm/min, followed immediately by
     // lowering the target. No dwell, XY extrusion, repeated block or open-ended
@@ -331,6 +331,10 @@ export async function inspectPrintFile(filePath, options) {
     let previous;
     let maxNozzleTemperature = 0, maxBedTemperature = 0, maxChamberTemperature = 0, commandCount = 0;
     let depositionStarted = false, commonFlushUsed = false;
+    // Bound the H2C vendor forms to its one explicit executable startup block.
+    const startupStarts = lines.flatMap((line, index) => /^\s*;\s*EXECUTABLE_BLOCK_START\s*$/i.test(line) ? [index] : []);
+    const startupEnds = lines.flatMap((line, index) => /^\s*;\s*MACHINE_START_GCODE_END\s*$/i.test(line) ? [index] : []);
+    const h2cStartup = (index) => model === 'h2c' && !depositionStarted && startupStarts.length === 1 && startupEnds.length === 1 && index > startupStarts[0] && index < startupEnds[0];
     const heat = (component, value, position, allMaterials = false, startupPurge = false) => {
         const affected = allMaterials || position === undefined ? materials.map((_, index) => index) : [requirePosition(position)];
         if (component === 'nozzle' && startupPurge)
@@ -356,10 +360,13 @@ export async function inspectPrintFile(filePath, options) {
     };
     for (let index = 0; index < lines.length; index++) {
         try {
-            if (isLayerMarker(lines[index]))
+            if (isLayerMarker(lines[index]) || /^\s*;\s*MACHINE_START_GCODE_END\s*$/i.test(lines[index]))
                 closeStartupWindow();
             let line = stripComments(lines[index]);
             if (!line || line === '%')
+                continue;
+            // The official H2C template emits this literal separator without a semicolon.
+            if (line === '========== record data ==========' && h2cStartup(index))
                 continue;
             line = line.replace(/^N\d+\s*/i, '').replace(/\*\d+\s*$/, '');
             if (/[{}\[\]#]/.test(line))
@@ -408,6 +415,31 @@ export async function inspectPrintFile(filePath, options) {
                 // Official A1 and A1 mini start G-code waits with M109 S<target> H<limit>
                 // (S25 H140, S100 H170, S220 H300). H is not a heater target: S stays the
                 // checked target, so H is accepted only within those vendor bounds.
+                if (args.has('O')) {
+                    // H2C's exact all-hotend preheat offset is relative to the declared
+                    // first-layer targets. Check every base and derived target, never use
+                    // editable maxima or an unchecked offset as thermal evidence.
+                    if (code !== 'M104' || !h2cStartup(index) || args.size !== 2 || args.get('O') !== -80 || !Number.isNaN(args.get('A')))
+                        fail('unsupported H2C startup offset parameters');
+                    const targets = consistent(metadataValues(metadata, ['nozzle_temperature_initial_layer']), value => {
+                        const values = list(value);
+                        return values.length === materials.length && values.every(v => NUMBER.test(v) && Number.isFinite(Number(v))) ? values.map(Number) : undefined;
+                    }, 'first-layer nozzle temperature');
+                    for (let position = 0; position < targets.length; position++) {
+                        validateTemperature('nozzle', targets[position], model, [materials[position]]);
+                        const preheat = Math.max(0, targets[position] - 80);
+                        validateTemperature('nozzle', preheat, model, [materials[position]]);
+                        nozzleTarget = Math.max(nozzleTarget, preheat);
+                        maxNozzleTemperature = Math.max(maxNozzleTemperature, preheat);
+                    }
+                    continue;
+                }
+                if (args.has('D')) {
+                    if (!['M140', 'M190'].includes(code) || !h2cStartup(index) || args.size !== 1)
+                        fail('unsupported H2C startup bed parameters');
+                    heat('bed', args.get('D'), undefined, true);
+                    continue;
+                }
                 const vendorWait = code === 'M109' && ['a1', 'a1mini'].includes(model);
                 for (const key of args.keys())
                     if (!'SRTA'.includes(key) && !(key === 'H' && vendorWait))
@@ -430,7 +462,9 @@ export async function inspectPrintFile(filePath, options) {
                         heat(component, args.get(key), position, args.has('T') || args.has('A'), commonFlush);
             }
             else if (code === 'M620' || code === 'M621') {
-                const args = parameters(argumentsText, model === 'x2d' ? 'MAB' : 'MA');
+                const args = parameters(argumentsText, model === 'x2d' ? 'MAB' : model === 'h2c' ? 'MAN' : 'MA');
+                if (args.has('N') && (code !== 'M620' || !h2cStartup(index) || args.size !== 1 || !Number.isNaN(args.get('N'))))
+                    fail('unsupported H2C startup hotend-remap flag');
                 // X2D templates use B as a bare material-switch flag, never a target.
                 if (args.has('B') && (model !== 'x2d' || !Number.isNaN(args.get('B'))))
                     fail('unsupported material-switch B flag');
@@ -482,6 +516,21 @@ export async function inspectPrintFile(filePath, options) {
             }
             else if (/^G150\./.test(code) && /T/i.test(argumentsText)) {
                 fail(`unsupported thermal-affecting wipe command ${code}`);
+            }
+            else if (code === 'M620.14') {
+                const args = parameters(argumentsText);
+                // H2C tower coordinates include the rear wipe area outside object bounds.
+                if (!h2cStartup(index) || args.size !== 2 || !['X', 'Y'].every(key => args.has(key) && Number.isFinite(args.get(key)) && args.get(key) >= 0 && args.get(key) <= 350))
+                    fail('unsupported H2C startup tower parameters');
+            }
+            else if (model === 'h2c' && ['G383', 'G383.3', 'G383.7'].includes(code) && /U/i.test(argumentsText)) {
+                const args = parameters(argumentsText);
+                const expected = code === 'G383.7' ? 'UJ' : code === 'G383.3' ? 'UL' : 'OUL';
+                if (!h2cStartup(index) || args.size !== expected.length || [...args.keys()].some(key => !expected.includes(key)) || args.get('U') !== 140 ||
+                    (code === 'G383.7' && args.get('J') !== 0) || (code === 'G383' && args.get('O') !== 2))
+                    fail('unsupported H2C startup probing parameters');
+                const position = args.has('L') ? requirePosition(args.get('L')) : active;
+                heat('nozzle', args.get('U'), position);
             }
             else if (code === 'G383' || code === 'G383.3') {
                 // Bambu probing routines carry nozzle temperature in T and optionally

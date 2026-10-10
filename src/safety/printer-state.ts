@@ -7,7 +7,7 @@ const MODEL_IDS: Record<string, string> = {
   N2S: "A1", A1M: "A1 Mini", C11: "P1P", C12: "P1S", C13: "X1E", "BL-P001": "X1C", "BL-P002": "X1",
 };
 const SERIAL_MODELS: Record<string, string> = {
-  "093": "H2S", "094": "H2D", "239": "H2C", "31B": "H2D Pro", "20P": "X2D",
+  "093": "H2S", "094": "H2D", "31B": "H2C", "239": "H2D Pro", "20P": "X2D",
   "00M": "X1C", "00W": "X1", "03W": "X1E", "01S": "P1P", "01P": "P1S", "22E": "P2S", "039": "A1", "030": "A1 Mini",
 };
 

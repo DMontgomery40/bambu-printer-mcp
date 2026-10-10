@@ -118,9 +118,9 @@ class TolerantBambuClient extends BambuClient {
             return "H2S";
         if (sn.startsWith("094"))
             return "H2D";
-        if (sn.startsWith("239"))
-            return "H2C";
         if (sn.startsWith("31B"))
+            return "H2C";
+        if (sn.startsWith("239"))
             return "H2DPRO";
         if (sn.startsWith("20P"))
             return "X2D";

@@ -449,3 +449,50 @@ test('X2D vendor switches and runout purge retain declared filament and heater c
   for(const model of ['P1S','A1','H2D']) for(const command of ['M620 S0A B','M620.22 I0 P1'])
     await assert.rejects(inspect(t,header(model,'PLA',model==='H2D'?'0.4;0.4':'0.4')+command+'\n',{model:model.toLowerCase()}),/parameter|unsupported/i);
 });
+
+const h2cHeader=()=>header('H2C','PLA','0.4;0.4')+'; nozzle_temperature_initial_layer = 220\n';
+const h2cStartup = 'M620 N\nM104 O-80 A\nM140 D55\nM620.14 X95.5 Y336\nM190 D55\nG383.3 U140 L0\nG383.7 U140 J0\n========== record data ==========\nM104 S220\n';
+test('BambuStudio 02.08 H2C startup commands pass without losing independent temperature checks',async t=>{
+  const r=await inspect(t,h2cHeader()+'; EXECUTABLE_BLOCK_START\n'+h2cStartup+'; MACHINE_START_GCODE_END\nG1 X10 Y10 E1\n',{model:'h2c'});
+  assert.equal(r.maxNozzleTemperature,220);assert.equal(r.maxBedTemperature,55);
+  assert.deepEqual(r.usedFilamentPositions,[0]);
+});
+test('H2C startup forms reject other models, late commands, extra parameters and unsafe targets',async t=>{
+  const forms=['M620 N','M104 O-80 A','M140 D55','M190 D55','M620.14 X95.5 Y336','G383.3 U140 L0','G383.7 U140 J0','========== record data =========='];
+  for(const command of forms) {
+    await assert.rejects(inspect(t,header()+'; EXECUTABLE_BLOCK_START\n'+command+'\n',{model:'p1s'}),/unsupported|syntax|missing/i,command);
+    await assert.rejects(inspect(t,h2cHeader()+'; EXECUTABLE_BLOCK_START\nM104 S220\n; MACHINE_START_GCODE_END\n'+command+'\n',{model:'h2c'}),/unsupported|syntax|missing|startup/i,command);
+  }
+  for(const command of ['M140 D130','M190 D130','M140 D55 S400','M104 O20 A','M104 O-80 A S330','G383.3 U400 L0','G383.3 U140 L8','G383.7 U140 J1','M620 N1','M620.14 X95 Y336 T400','M104 S330'])
+    await assert.rejects(inspect(t,h2cHeader()+'; EXECUTABLE_BLOCK_START\n'+command+'\n; MACHINE_START_GCODE_END\n',{model:'h2c'}),/unsupported|parameter|temperature|limit|material|declared/i,command);
+  await assert.rejects(inspect(t,h2cHeader().replace('= 220','= 400')+'; EXECUTABLE_BLOCK_START\nM104 O-80 A\n; MACHINE_START_GCODE_END\n',{model:'h2c'}),/temperature|limit/i);
+  await assert.rejects(inspect(t,header('H2C','PLA','0.4;0.4')+'; EXECUTABLE_BLOCK_START\nM104 O-80 A\n; MACHINE_START_GCODE_END\n',{model:'h2c'}),/metadata|temperature/i);
+});
+test('config layer_change_gcode does not close startup but a real layer marker does',async t=>{
+  const config='; CONFIG_BLOCK_START\n; layer_change_gcode = ; layer num/total_layer_count: {layer_num+1}/[total_layer_count]\\nM104 S220\n; CONFIG_BLOCK_END\n';
+  await inspect(t,h2cHeader()+config+'; EXECUTABLE_BLOCK_START\n'+h2cStartup+'; MACHINE_START_GCODE_END\n',{model:'h2c'});
+  for(const marker of ['; LAYER_CHANGE','; layer num/total_layer_count: 1/50','G1 X10 Y10 E1'])
+    await assert.rejects(inspect(t,h2cHeader()+'; EXECUTABLE_BLOCK_START\nM104 S220\n'+marker+'\nM104 O-80 A\n',{model:'h2c'}),/unsupported|startup/i);
+});
+
+test('pinned official H2C 02.08 template thermal command inventory is inspected',async t=>{
+  const bytes=await fs.readFile(new URL('../fixtures/h2c-02.08/machine_start_gcode.json',import.meta.url));
+  // BambuStudio v02.08.02.61, resources/profiles/BBL/machine/
+  // Bambu Lab H2C 0.4 nozzle template machine_start_gcode.json (issue #48).
+  assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'),'b473d17fe7af0f2e431f8003782d0ab1f74b7a1e2ce73e265b3d7716e9ec8ce5');
+  const template=JSON.parse(bytes).machine_start_gcode;
+  const commands=template.split('\n').map(l=>l.trim()).filter(l=>/^(?:M104|M109|M140|M190|M620|M621|G383)(?:\.|\s|$)/.test(l) || l==='========== record data ==========');
+  const expand=line=>{
+    // Substitute normal declared PLA fixture values; this is offline template
+    // inspection, not a claim that a slicer or physical printer executed it.
+    for(let pass=0;pass<3;pass++) line=line.replace(/\{[^{}]*\}|\[[^\[\]]*\]/g,expr=>/nozzle_temperature/.test(expr)?'220':/flush_temperatures/.test(expr)?'240':/bed_temperature/.test(expr)?'55':/nozzle_diameter/.test(expr)?'0.4':'0');
+    return line;
+  };
+  const r=await inspect(t,h2cHeader()+'; EXECUTABLE_BLOCK_START\n'+commands.map(expand).join('\n')+'\n; MACHINE_START_GCODE_END\n',{model:'h2c'});
+  assert.equal(r.maxNozzleTemperature,240);assert.equal(r.maxBedTemperature,55);
+});
+test('H2C all-hotend preheat checks unused declared materials without adding AMS positions',async t=>{
+  const source=header('H2C','PLA;PETG','0.4;0.4')+'; nozzle_temperature_initial_layer = 220;250\n; EXECUTABLE_BLOCK_START\nM104 O-80 A\nT0\nM104 S220\n; MACHINE_START_GCODE_END\n';
+  const r=await inspect(t,source,{model:'h2c'});assert.deepEqual(r.usedFilamentPositions,[0]);
+  await assert.rejects(inspect(t,source.replace('220;250','220;340'),{model:'h2c'}),/PETG|temperature|limit/i);
+});
