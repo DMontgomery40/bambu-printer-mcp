@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.1.28] – 2026-10-14
+
+### Fixed
+- Update direct FTPS transfers to basic-ftp 6.2.3: reject malformed passwords without crashing or including the password in errors, and recover after rejected control-character commands. Thanks to [Patrick Juchli](https://github.com/patrickjuchli) for the [upstream fixes](https://github.com/patrickjuchli/basic-ftp/releases/tag/v6.2.3). Verified with isolated localhost FTP fixtures, Bambu transport regressions and installed packages; no physical printer action was run.
+
 ## [1.1.27] – 2026-10-14
 
 ### Added
