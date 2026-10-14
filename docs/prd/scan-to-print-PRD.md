@@ -48,9 +48,171 @@
 
 ---
 
-## 2. Supported Printers & Devices
+## 2. Competitive Positioning & Market Strategy
 
-### 2.1 Bambu Printer Models
+### 2.1 Why Bambu Won't Build This
+
+**Conflict with Bambu's hardware roadmap:**
+- Bambu released the **Bambu Lab X1 Scanner** (~$500) as a premium accessory
+- A phone-based scan-to-print app **cannibalizes scanner sales** (phones are commodities; users already carry them)
+- Bambu's incentives are hardware-first (printers, AMS, scanner); software is the moat
+- Their BambuConnect cloud strategy favors cloud-native workflows (not edge/self-hosted)
+
+**Our advantages:**
+1. **Open-source ecosystem support** → We integrate FULU OrcaSlicer-bambulab, which Bambu won't push (competes with BambuStudio)
+2. **Multi-vendor from day one** → We'll support OctoPrint, Klipper, Prusa, Creality; Bambu is Bambu-only
+3. **Privacy & data ownership** → Free tier runs locally; users never trust cloud by default
+4. **Community-driven development** → Faster iteration on edge cases (e.g., new printer models) than Bambu's official cycle
+
+**Market reality:**
+- 10K+ Bambu printer owners globally (P1S, H2D especially popular)
+- 100K+ other FFF printer owners (RepRap, OctoPrint, Klipper)
+- TAM starts at $2–3M/year (Bambu-only), expands to $10M+ (all printers) by Year 2
+
+---
+
+## 3. Multi-Vendor Architecture (Printer-Agnostic Backend)
+
+### 3.1 Why Design Multi-Vendor from Day One
+
+**Business case:**
+- MVP launches Bambu-only (we own the MCP server)
+- Phase 2 (6–9 months) adds OctoPrint + Klipper → 5–10× user base
+- Phase 3 (12+ months) adds Prusa, Creality → commoditized DIY printing
+- Single abstraction = one design, multiple implementations
+
+**Technical case:**
+- Parent project **[mcp-3D-printer-server](https://github.com/DMontgomery40/mcp-3D-printer-server)** already abstracts printer backends
+- Our Bambu fork (this repo) is a *specialization*, not a fork-for-life
+- Merging back or standing alongside is strategic optionality
+
+### 3.2 Printer Backend Abstraction
+
+**Interface (pseudocode):**
+
+```typescript
+// Abstract printer backend interface
+interface PrinterBackend {
+  // Connection & discovery
+  discoverPrinters(): Promise<Printer[]>;
+  connectPrinter(id: string, credentials: PrinterCredentials): Promise<Connection>;
+  
+  // Status & diagnostics
+  getPrinterStatus(): Promise<PrinterStatus>;
+  getCameraSnapshot(format: 'jpeg'): Promise<Buffer>;
+  getAMSInventory?(): Promise<AMS[] | null>;  // Optional (Bambu, some OctoPrint)
+  
+  // File operations
+  uploadFile(file: Buffer, remotePathHint: string): Promise<RemoteFile>;
+  listFiles(): Promise<RemoteFile[]>;
+  deleteFile(remotePath: string): Promise<void>;
+  
+  // Print control
+  startPrint(remoteFilePath: string, options: PrintOptions): Promise<PrintJob>;
+  pausePrint(jobId: string): Promise<void>;
+  resumePrint(jobId: string): Promise<void>;
+  cancelPrint(jobId: string): Promise<void>;
+  
+  // Printer-specific APIs (optional)
+  skipObjects?(objectIds: number[]): Promise<void>;  // Bambu-only
+  setTemperature?(component: 'nozzle' | 'bed', temp: number): Promise<void>;
+  setAMSSlot?(slot: number): Promise<void>;  // Bambu, some others
+}
+
+// Concrete implementations
+class BambuPrinterBackend implements PrinterBackend { /* ... */ }
+class OctoPrintBackend implements PrinterBackend { /* ... */ }
+class KlipperBackend implements PrinterBackend { /* ... */ }
+class PrusaBackend implements PrinterBackend { /* ... */ }
+```
+
+### 3.3 Backend Implementation Roadmap
+
+| Phase | Backend | Transport | Notes | MCP Server |
+|-------|---------|-----------|-------|-----------|
+| **MVP (now)** | Bambu | MQTT/FTPS + BambuNetwork bridge | LAN + cloud | [bambu-printer-mcp](https://github.com/DMontgomery40/bambu-printer-mcp) (this repo) |
+| **Phase 2 (6–9mo)** | OctoPrint | HTTP (REST API) + camera | LAN via mDNS | mcp-3D-printer-server ([adapter](https://github.com/DMontgomery40/mcp-3D-printer-server/blob/main/adapters/octoprint.ts)) |
+| **Phase 2 (6–9mo)** | Klipper/Moonraker | HTTP (Moonraker REST API) + camera | LAN / Tailscale | mcp-3D-printer-server (adapter) |
+| **Phase 3 (12+mo)** | Prusa | HTTP (Prusa API) + cloud | Cloud-first | mcp-3D-printer-server (adapter) |
+| **Phase 3 (12+mo)** | Creality Cloud | HTTP (Creality REST) | Cloud | mcp-3D-printer-server (adapter) |
+
+### 3.4 Integration with mcp-3D-printer-server
+
+**Current state:**
+- `bambu-printer-mcp`: specialized, Bambu-only, optimized
+- `mcp-3D-printer-server`: generalized, multi-vendor, slower development
+
+**Our strategy:**
+1. **Maintain `bambu-printer-mcp` as our differentiator** (Bambu-first, FULU support, safety focus)
+2. **Extract common abstraction** → `PrinterBackend` interface (publish as npm module)
+3. **Keep mcp-3D-printer-server as fallback** → when `bambu-printer-mcp` doesn't support a feature, proxy to parent project
+
+**Code architecture (app backend):**
+
+```typescript
+// App printer factory
+class PrinterFactory {
+  static async createBackend(model: PrinterModel): Promise<PrinterBackend> {
+    switch (model.type) {
+      case 'bambu':
+        return new BambuPrinterBackend(model.credentials);
+      case 'octoprint':
+        // Use mcp-3D-printer-server's OctoPrint adapter under the hood
+        return new OctoPrintBackend(model.credentials);
+      case 'klipper':
+        return new KlipperBackend(model.credentials);
+      // ... others
+      default:
+        throw new Error(`Unsupported printer: ${model.type}`);
+    }
+  }
+}
+
+// User can register multiple printers, each with a backend
+const myPrinters = [
+  { type: 'bambu', model: 'h2d', ... },
+  { type: 'octoprint', host: 'octoprint.local', ... },
+  { type: 'klipper', host: '192.168.1.50', ... }
+];
+```
+
+### 3.5 Slicing Abstraction
+
+**Challenge:** Each printer ecosystem has a different default slicer.
+- Bambu → BambuStudio (proprietary) or FULU OrcaSlicer
+- OctoPrint → Cura, PrusaSlicer, Superslicer (community choice)
+- Klipper → Cura, Superslicer (community)
+- Prusa → PrusaSlicer (official)
+- Creality → Cura, Creality Cloud (official)
+
+**Solution: Slicer abstraction layer**
+
+```typescript
+interface SlicerBackend {
+  getInstalledProfiles(printerModel: string): Promise<SliceProfile[]>;
+  slice(
+    stlPath: string,
+    profile: SliceProfile,
+    options: SliceOptions
+  ): Promise<{ outputPath: string; weight: number; time: number }>;
+}
+
+// Implementations
+class BambuStudioSlicer implements SlicerBackend { /* ... */ }
+class OrcaSlicerSlicer implements SlicerBackend { /* ... */ }  // FULU alias
+class CuraSlicer implements SlicerBackend { /* ... */ }
+class PrusaSlicerSlicer implements SlicerBackend { /* ... */ }
+```
+
+**MVP:** Bambu (BambuStudio + FULU) only  
+**Phase 2:** Add Cura (popular, free, multi-vendor)  
+**Phase 3:** Add PrusaSlicer, Creality Slicer (native support where vendor-specific)
+
+---
+
+## 4. Supported Printers & Devices
+
+### 4.1 Bambu Printer Models (MVP)
 
 All printers must be auto-detected from serial number prefix or explicitly specified. **Safety:** observed serial, status, nozzle config, and model must agree before any operation.
 
@@ -74,9 +236,32 @@ All printers must be auto-detected from serial number prefix or explicitly speci
 - Configured serial/model inference cannot replace fresh observed identity
 - Retain conflicts as failures (do not silently override)
 
-### 2.2 iOS Device Capture
+### 4.2 Phase 2–3 Printer Models (Future Multi-Vendor)
 
-**LiDAR-capable iPhones:**
+**OctoPrint-compatible printers (Phase 2):**
+- Creality Ender 3 / 5 / Pro
+- Anycubic Mega / i3 Mega
+- Artillery X1 / X2 / Sidewinder
+- Custom RepRap / Marlin-based printers
+- Note: OctoPrint is software layer; hardware is commodity (almost all FFF)
+
+**Klipper-compatible (Phase 2):**
+- Voron (all)
+- Prusa i3 MK3S+ (with Klipper firmware)
+- Custom Klipper builds
+- Note: Klipper replaces firmware; can run on any Marlin-based printer
+
+**Prusa-official (Phase 3):**
+- Prusa i3 MK3S+
+- Prusa XL
+- Connect directly via Prusa Cloud API
+
+**Creality-official (Phase 3):**
+- Creality K1 / K1 Max
+- Creality Ender 3 v3 (with cloud firmware)
+- Connect directly via Creality Cloud API
+
+### 4.3 iOS Device Capture
 - iPhone 12 Pro / Pro Max
 - iPhone 13 Pro / Pro Max
 - iPhone 14 Pro / Pro Max
@@ -96,7 +281,7 @@ All printers must be auto-detected from serial number prefix or explicitly speci
 - Depth confidence per pixel
 - Lighting estimates (for later shading in CAD preview)
 
-### 2.3 Android Device Capture
+### 4.4 Android Device Capture
 
 **ARCore-capable Android:**
 - Devices with depth sensor (ToF) or Stereo: Samsung Galaxy S20+, S21+, S22+, Note 10+, Pixel 6 Pro, 7 Pro, 8 Pro
@@ -113,7 +298,7 @@ All printers must be auto-detected from serial number prefix or explicitly speci
 
 **Baseline:** Pixel 6 Pro (or newer), Galaxy S21+ as reference devices
 
-### 2.4 Computer Vision & Scanning
+### 4.5 Computer Vision & Scanning
 
 #### Depth Capture Library Choices
 
@@ -167,9 +352,9 @@ All printers must be auto-detected from serial number prefix or explicitly speci
 
 ---
 
-## 3. AI Design Agent & Inference
+## 5. AI Design Agent & Inference
 
-### 3.1 Design Runtime
+### 5.1 Design Runtime
 
 **Architecture:**
 ```
@@ -184,7 +369,7 @@ STL output → Slicer → .3mf (sliced)
 Print via Bambu MCP server
 ```
 
-### 3.2 LLM Model Selection
+### 5.2 LLM Model Selection
 
 **Requirements:**
 - Vision capability (inspect scanned mesh image + reference photos)
@@ -214,7 +399,7 @@ Print via Bambu MCP server
 - Acceptable code generation
 - Risk: newer model, edge cases in Blender output
 
-### 3.3 Blender CAD Workflow
+### 5.3 Blender CAD Workflow
 
 **Tool:** Blender MCP (headless, stdio transport)
 
@@ -265,7 +450,7 @@ print("STL exported successfully")
 - No scene mutations without explicit `execute` flag
 - Deadlines enforced (30s timeout per design generation)
 
-### 3.4 Constraint Extraction & Validation
+### 5.4 Constraint Extraction & Validation
 
 **From user input + scanned mesh:**
 1. **Dimensional constraints**
@@ -289,7 +474,7 @@ print("STL exported successfully")
    - App validates loaded AMS against required filaments
    - Multi-color designs automatically split by slot
 
-### 3.5 Model Validation
+### 5.5 Model Validation
 
 **Printability checks (before slicing):**
 
@@ -317,9 +502,9 @@ print("STL exported successfully")
 
 ---
 
-## 4. Slicing & Print Validation
+## 6. Slicing & Print Validation
 
-### 4.1 Slicer Integration
+### 6.1 Slicer Integration
 
 **MCP server:** [bambu-printer-mcp](https://github.com/DMontgomery40/bambu-printer-mcp)
 
@@ -348,7 +533,7 @@ print("STL exported successfully")
 - Preserve AMS mapping and reject incomplete slot declarations
 - Never silently reuse foreign filament profiles
 
-### 4.2 AMS Mapping & Filament Auto-Matching
+### 6.2 AMS Mapping & Filament Auto-Matching
 
 **AMS system:**
 - Up to 4 units, 4 slots per unit (16 total slots)
@@ -372,9 +557,9 @@ print("STL exported successfully")
 
 ---
 
-## 5. Printer Connectivity
+## 7. Printer Connectivity
 
-### 5.1 LAN-Only Mode (Default)
+### 7.1 LAN-Only Mode (Default for Bambu)
 
 **Bambu printer local network paths** (from README, AGENTS.md):
 
@@ -395,7 +580,7 @@ print("STL exported successfully")
 - Access code displayed in Bambu Studio → user copies to Scan-to-Print app
 - (Or: in future, QR code from printer screen)
 
-### 5.2 Free Tier: Tailscale VPN Tunnel
+### 7.2 Free Tier: Tailscale VPN Tunnel (Bambu + Multi-Vendor)
 
 **Problem:** User's phone is at coffee shop, printer is at home.
 
@@ -417,7 +602,7 @@ Or inside a Docker container, wrapped in Tailscale netcat listener.
 - Network latency: 50–500 ms (varies by relay)
 - MQTT/FTPS work over VPN (verified in AGENTS.md testing)
 
-### 5.3 Paid Tier: Cloud Connectivity
+### 7.3 Paid Tier: Cloud Connectivity (Bambu + Vendor APIs)
 
 **Problem:** User doesn't want to run home server; wants one-tap printing.
 
@@ -451,9 +636,9 @@ Or inside a Docker container, wrapped in Tailscale netcat listener.
 
 ---
 
-## 6. Cloud Architecture (Paid Tier)
+## 8. Cloud Architecture (Paid Tier)
 
-### 6.1 Services
+### 8.1 Services
 
 **Primary stack:**
 - **API Gateway:** REST API (user authentication, design requests, printer queries)
@@ -464,7 +649,7 @@ Or inside a Docker container, wrapped in Tailscale netcat listener.
 - **Storage:** Scanned meshes, design outputs, sliced 3MF files (temporary)
 - **Monitoring:** Logs, traces, cost tracking (Datadog or similar)
 
-### 6.2 Cost Breakdown Per Design Attempt
+### 8.2 Cost Breakdown Per Design Attempt
 
 | Component | Typical Cost | Notes |
 |-----------|--------------|-------|
@@ -481,7 +666,7 @@ Or inside a Docker container, wrapped in Tailscale netcat listener.
 - At 100K designs/month: margin ~$4K/mo (sustainable small team)
 - Scaling pain: GPU capacity (H100 shortage, reservation costs)
 
-### 6.3 Latency Targets
+### 8.3 Latency Targets
 
 | Operation | Timeout | SLA |
 |-----------|---------|-----|
@@ -492,9 +677,9 @@ Or inside a Docker container, wrapped in Tailscale netcat listener.
 
 ---
 
-## 7. Security & Privacy
+## 9. Security & Privacy
 
-### 7.1 Data Classification
+### 9.1 Data Classification
 
 | Data | Sensitivity | Handling |
 |------|-------------|----------|
@@ -505,7 +690,7 @@ Or inside a Docker container, wrapped in Tailscale netcat listener.
 | **Print history** | Medium | Retain for user; allow bulk export/delete |
 | **User account** | High | Standard auth (bcrypt, 2FA optional); SOC 2 Type II compliant (paid tier) |
 
-### 7.2 Privacy
+### 9.2 Privacy
 
 **Open-source tier:** No user registration, all compute local (no data sent anywhere)
 
@@ -515,7 +700,7 @@ Or inside a Docker container, wrapped in Tailscale netcat listener.
 - Design history is owned by user (can export/delete)
 - GDPR/CCPA compliant: data deletion requests honored within 30 days
 
-### 7.3 Printer Safety (Critical)
+### 9.3 Printer Safety (Critical)
 
 From AGENTS.md, enforced at MCP layer:
 
@@ -549,9 +734,9 @@ From AGENTS.md, enforced at MCP layer:
 
 ---
 
-## 8. App Store Rules & Licensing
+## 10. App Store Rules & Licensing
 
-### 8.1 App Store Compliance
+### 10.1 App Store Compliance
 
 **iOS (Apple App Store):**
 - Guideline 3.1.1: "apps may not encourage or promote the unauthorized manufacture of physical objects, weapons, or counterfeit goods"
@@ -573,7 +758,7 @@ From AGENTS.md, enforced at MCP layer:
 - Must declare all permissions (camera, file access, network)
 - Allowed to direct users to TestFlight/sideload for beta
 
-### 8.2 Licensing Strategy
+### 10.2 Licensing Strategy
 
 **Code licensing:**
 - **Open-source MCP server:** GPL-2.0 (inherited from [bambu-printer-mcp](https://github.com/DMontgomery40/bambu-printer-mcp))
@@ -597,9 +782,9 @@ From AGENTS.md, enforced at MCP layer:
 
 ---
 
-## 9. MVP Scope & Milestones
+## 11. MVP Scope & Milestones
 
-### 9.1 MVP Feature Set
+### 11.1 MVP Feature Set
 
 **Phase 1 (Months 1–2): Feasibility & Core Loop**
 - [ ] iOS app UI scaffold (SwiftUI)
@@ -651,7 +836,7 @@ From AGENTS.md, enforced at MCP layer:
   - Safety guidelines (responsible design, not weapons)
 - [ ] **Metrics:** App Store + Google Play release, 1K+ downloads, 50+ monthly active users
 
-### 9.2 Post-MVP Roadmap
+### 11.2 Post-MVP Roadmap
 
 **Q3 2025 (6–9 months):**
 - Parametric design library (user shares designs, community publishes templates)
@@ -666,7 +851,7 @@ From AGENTS.md, enforced at MCP layer:
 
 ---
 
-## 10. Risks & Mitigations
+## 12. Risks & Mitigations
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|-----------|
@@ -683,9 +868,9 @@ From AGENTS.md, enforced at MCP layer:
 
 ---
 
-## 11. Success Metrics & KPIs
+## 13. Success Metrics & KPIs
 
-### 11.1 User Metrics (Free Tier)
+### 13.1 User Metrics (Free Tier)
 
 | Metric | Target (12mo) | Notes |
 |--------|---------------|-------|
@@ -696,7 +881,7 @@ From AGENTS.md, enforced at MCP layer:
 | Avg retries before print | 2–3 | Design tweaks due to fit/complexity |
 | Avg print success rate | 85% | Hardware/filament issues, not app's fault |
 
-### 11.2 Paid Tier Metrics
+### 13.2 Paid Tier Metrics
 
 | Metric | Target (12mo) | Notes |
 |--------|---------------|-------|
@@ -707,7 +892,7 @@ From AGENTS.md, enforced at MCP layer:
 | Design generation success rate | 95%+ | Should be higher (cloud infrastructure) |
 | Avg latency (design generation) | 45–60s | Target <60s for good UX |
 
-### 11.3 Hardware & Printer Metrics
+### 13.3 Hardware & Printer Metrics
 
 | Metric | Target | Notes |
 |--------|--------|-------|
@@ -719,9 +904,9 @@ From AGENTS.md, enforced at MCP layer:
 
 ---
 
-## 12. Open Questions & Dependencies
+## 14. Open Questions & Dependencies
 
-### 12.1 Technical Unknowns
+### 14.1 Technical Unknowns
 
 1. **Blender CAD generation fidelity**
    - How reliably does Claude generate correct Blender Python for fit constraints?
@@ -747,7 +932,7 @@ From AGENTS.md, enforced at MCP layer:
    - Are new printer models (e.g., Bambu X3) coming that break assumptions?
    - Mitigation: Close partnership with MCP maintainer; regression test for each new model
 
-### 12.2 Business/Market Unknowns
+### 14.2 Business/Market Unknowns
 
 1. **Willingness to pay**
    - Is $9.99/mo reasonable for convenience? Or should it be $19.99/mo + usage?
@@ -771,9 +956,9 @@ From AGENTS.md, enforced at MCP layer:
 
 ---
 
-## 13. Sourced Specifications & References
+## 15. Sourced Specifications & References
 
-### 13.1 Bambu Printer Ecosystem
+### 15.1 Bambu Printer Ecosystem
 
 | Reference | URL | Key Info |
 |-----------|-----|----------|
@@ -784,7 +969,7 @@ From AGENTS.md, enforced at MCP layer:
 | **OpenBambuAPI** | [github.com/Doridian/OpenBambuAPI](https://github.com/Doridian/OpenBambuAPI) | Reverse-engineered Bambu MQTT protocol; community documentation |
 | **Bambu Printer Models** | [bambu-lab.com](https://bambu-lab.com/) | P1S, P2S, H2D, H2C, H2S, X2D, A1, A1 mini, X1C, X1E official specs |
 
-### 13.2 Mobile AR & Scanning
+### 15.2 Mobile AR & Scanning
 
 | Reference | URL | Key Info |
 |-----------|-----|----------|
@@ -796,7 +981,7 @@ From AGENTS.md, enforced at MCP layer:
 | **COLMAP** | [colmap.github.io](https://colmap.github.io/) | BSD-licensed structure-from-motion; cloud-based reconstruction option |
 | **Poisson Surface Reconstruction** | [github.com/mkazhdan/PoissonRecon](https://github.com/mkazhdan/PoissonRecon) | Classic mesh generation from point clouds |
 
-### 13.3 AI & CAD Models
+### 15.3 AI & CAD Models
 
 | Reference | URL | Key Info |
 |-----------|-----|----------|
@@ -806,7 +991,7 @@ From AGENTS.md, enforced at MCP layer:
 | **Blender MCP** | [github.com/ModelContextProtocol](https://github.com/ModelContextProtocol) (community) | Headless Blender via MCP; stdio transport; Python scripting |
 | **LLM Cost Calculator** | [openrouter.io](https://openrouter.io/), [artificialanalysis.ai](https://artificialanalysis.ai/) | Public pricing and performance comparisons |
 
-### 13.4 App Store & Legal
+### 15.4 App Store & Legal
 
 | Reference | URL | Key Info |
 |-----------|-----|----------|
@@ -816,7 +1001,7 @@ From AGENTS.md, enforced at MCP layer:
 | **AGPL-3.0 License** | [gnu.org/licenses/agpl-3.0](https://www.gnu.org/licenses/agpl-3.0) | Copyleft; any deployment must release source |
 | **Apache 2.0 License** | [apache.org/licenses/LICENSE-2.0](https://www.apache.org/licenses/LICENSE-2.0) | Permissive; allows proprietary modifications |
 
-### 13.5 Standards & Formats
+### 15.5 Standards & Formats
 
 | Reference | URL | Key Info |
 |-----------|-----|----------|
@@ -828,9 +1013,9 @@ From AGENTS.md, enforced at MCP layer:
 
 ---
 
-## 14. Competitive Landscape
+## 16. Competitive Landscape
 
-### 14.1 Direct Competitors
+### 16.1 Direct Competitors
 
 | Product | Link | Strengths | Weaknesses | Our Edge |
 |---------|------|-----------|-----------|----------|
@@ -839,7 +1024,7 @@ From AGENTS.md, enforced at MCP layer:
 | **Snapmaker Luban** | [snapmakerjs.com](https://snapmakerjs.com/) | Free, open-source, multi-tool support | Not AI-powered, basic CAD features | LLM-driven design, depth scanning, premium UX |
 | **MakerWorld** | [makerworld.com](https://makerworld.com/) | Community models, sliced & printable | Browse-only, not generative, requires account | Generative, phone camera, instant design |
 
-### 14.2 Indirect Competitors / Adjacent Markets
+### 16.2 Indirect Competitors / Adjacent Markets
 
 | Category | Product | Notes |
 |----------|---------|-------|
@@ -850,9 +1035,9 @@ From AGENTS.md, enforced at MCP layer:
 
 ---
 
-## 15. Conclusion & Call to Action
+## 17. Conclusion & Call to Action
 
-### 15.1 Strategic Opportunity
+### 17.1 Strategic Opportunity
 
 Scan-to-Print fills a critical gap: **turning anyone into a designer-maker in 3 minutes**. Unlike desktop CAD (months to learn) or cloud print services (expensive, slow), our app empowers users to:
 - Solve real household problems (custom holders, adapters, organizers)
@@ -861,7 +1046,7 @@ Scan-to-Print fills a critical gap: **turning anyone into a designer-maker in 3 
 
 With Bambu's market growing (P1S, H2D, H2C, X2D, A1), a simple, delightful mobile app can expand the addressable user base from **tinkerers and engineers → every household that owns a Bambu printer**.
 
-### 15.2 Next Steps
+### 17.2 Next Steps
 
 1. **MVP prototyping (Weeks 1–4):**
    - Build iOS ARKit scanning UI (SwiftUI)
@@ -884,7 +1069,7 @@ With Bambu's market growing (P1S, H2D, H2C, X2D, A1), a simple, delightful mobil
    - Advanced scanning (RTAB-Map, reference learning)
    - Geographic expansion (pricing, localization)
 
-### 15.3 Success Criteria
+### 17.3 Success Criteria
 
 **MVP success:** 
 - 1 internal end-to-end flow: scan handlebar → "make a phone mount for iPhone 15" → sliced 3MF → printed part
