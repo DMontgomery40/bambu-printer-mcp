@@ -878,6 +878,24 @@ To stop drying:
 }
 ```
 
+#### inspect_print_file
+
+Inspect a prepared sliced 3MF or textual G-code file offline before deciding what to export or print. This tool copies the file into a private read-only snapshot and reuses the same archive, selected-plate, model/nozzle/material and temperature checks used by print preflight. It never contacts a printer or auto-slices an unsliced project.
+
+```json
+{
+  "file_path": "/path/to/bracket.gcode.3mf",
+  "bambu_model": "p1s",
+  "plate_index": 0,
+  "nozzle_diameters": [0.4],
+  "bed_type": "textured_plate"
+}
+```
+
+`file_path` and explicit `bambu_model` are required; the model is never inferred from configuration. `plate_index` is zero-based and defaults to 0. Nozzle/bed checks are optional comparisons against file declarations, not observations of installed hardware. Only these five argument names are accepted; credentials, host and executable/bridge overrides are not part of this tool.
+
+The generic result has `receipt_version: "1"`, `evidence: "file-only"`, `dispatch_authorized: false`, `artifact` (`sha256`, `byte_length`, `file_format`), the requested `selection`, and the original `inspection` including declared model, nozzles, materials/used filament positions, internal plate path and checked temperature peaks. Hash and byte length identify the exact inspected snapshot; a consumer must compare them with its own artifact and selected plate. The temporary snapshot is removed, and its path is not a dispatch capability. The receipt does not prove printer readiness, physical material/nozzle contents, fit, full motion simulation or permission to print. Actual print routes still independently inspect the dispatched snapshot and require fresh hardware state and human preflight.
+
 #### print_3mf
 
 The primary tool for starting a Bambu print. **Recommended input: a pre-sliced `.gcode.3mf` exported from FULU OrcaSlicer-bambulab, OrcaSlicer, or Bambu Studio** — see [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md). This tool handles the complete workflow:

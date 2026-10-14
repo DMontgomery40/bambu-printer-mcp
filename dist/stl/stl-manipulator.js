@@ -10,6 +10,7 @@ import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { flattenForCli, detectProfilesRoot, resolveBblMachineProfile } from '../slicer/profile-flatten.js';
+import { profileJsonFiles } from '../slicer/profile-files.js';
 const readFileAsync = promisify(fs.readFile);
 const writeFileAsync = promisify(fs.writeFile);
 const BAMBU_PROFILE_ROOTS = [
@@ -134,10 +135,10 @@ export class STLManipulator extends EventEmitter {
             return undefined;
         }
         for (const root of roots) {
-            const candidate = path.join(root, category, `${profileName}.json`);
-            if (fs.existsSync(candidate)) {
+            const candidate = profileJsonFiles(path.join(root, category))
+                .find(file => path.basename(file) === `${profileName}.json`);
+            if (candidate)
                 return candidate;
-            }
         }
         return undefined;
     }
@@ -148,11 +149,7 @@ export class STLManipulator extends EventEmitter {
             if (!fs.existsSync(filamentDir)) {
                 continue;
             }
-            for (const entry of fs.readdirSync(filamentDir)) {
-                if (!entry.endsWith('.json')) {
-                    continue;
-                }
-                const filePath = path.join(filamentDir, entry);
+            for (const filePath of profileJsonFiles(filamentDir)) {
                 try {
                     const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
                     const filamentId = typeof parsed?.filament_id === 'string' ? parsed.filament_id.trim() : '';

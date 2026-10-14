@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.27] – 2026-10-14
+
+### Added
+- Add `inspect_print_file`, an offline read-only tool for an exact private snapshot and selected plate of prepared 3MF/text G-code. Reuse the existing model/nozzle/material/temperature and archive checks, reject unsliced/checksum-only input, and return generic versioned file-only evidence bound to SHA-256, byte length and plate. No printer is contacted, no auto-slicing is performed, and the receipt does not authorize dispatch or establish hardware readiness. Existing print routes retain their independent fresh preflight and human gate.
+
+### Fixed
+- Discover nested vendor process and filament profiles in the selected slicer installation, including inherited defaults and filament IDs, while refusing missing dependencies and linked external directories.
+- Accept the X2D and P2S startup `SYNC R0 T` duration form; other reset forms and extra parameters remain rejected, and heater targets retain their independent limits. Validated offline; no physical print was run.
+
 ## [1.1.26] – 2026-10-10
 
 ### Fixed

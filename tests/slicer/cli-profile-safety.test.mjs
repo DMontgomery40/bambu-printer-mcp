@@ -452,6 +452,45 @@ for (const [kind, file, reference] of [['process', 'SAFETY process base', 'inher
   });
 }
 
+test('nested vendor profiles retain exact process filament and inherited settings', async t => {
+  const f = await fixture(t);
+  await f.write('filament', { name: 'SAFETY filament base', filament_type: ['PLA'], nozzle_temperature: ['220'] });
+  await f.write('filament', { name: 'SAFETY filament', inherits: 'SAFETY filament base', filament_id: 'GFA00' });
+  for (const kind of ['process', 'filament']) {
+    const dir = path.join(f.profiles, 'BBL', kind);
+    const nested = path.join(dir, 'SAFETY', '0.4');
+    await fs.mkdir(nested, { recursive: true });
+    for (const file of (await fs.readdir(dir)).filter(name => name.endsWith('.json')))
+      await fs.rename(path.join(dir, file), path.join(nested, file));
+  }
+  await f.slice();
+  const args = await f.args();
+  const processConfig = JSON.parse(await fs.readFile(args[args.indexOf('--load-settings') + 1].split(';')[1], 'utf8'));
+  assert.equal(processConfig.layer_height, '0.2');
+  assert.equal(processConfig.wall_loops, '2');
+  const filament = JSON.parse(await fs.readFile((await f.loaded())[0], 'utf8'));
+  assert.deepEqual(filament.filament_type, ['PLA']);
+  assert.deepEqual(filament.nozzle_temperature, ['220']);
+  const custom = path.join(f.root, 'custom.json');
+  await fs.writeFile(custom, JSON.stringify({ name: 'Custom', inherits: 'SAFETY process', filament_ids: ['GFA00'] }));
+  await f.slice({}, custom);
+  assert.deepEqual(JSON.parse(await fs.readFile((await f.loaded())[0], 'utf8')).filament_type, ['PLA']);
+});
+
+for (const location of ['nested', 'category root']) {
+  test(`vendor discovery cannot borrow a symlinked foreign profile directory at ${location}`, async t => {
+    const f = await fixture(t);
+    const foreign = path.join(f.root, 'foreign');
+    const category = path.join(f.profiles, 'BBL', 'filament');
+    await fs.mkdir(foreign);
+    await fs.rename(f.filament, path.join(foreign, 'SAFETY filament.json'));
+    if (location === 'category root') await fs.rm(category, { recursive: true });
+    await fs.symlink(foreign, location === 'nested' ? path.join(category, 'external') : category, 'dir');
+    await assert.rejects(f.slice(), /Filament profile.*not found/);
+    await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+  });
+}
+
 test('installed stock BambuStudio presets keep every default process and filament setting', async t => {
   const installed = '/Applications/BambuStudio.app/Contents/Resources/profiles';
   const machineDir = path.join(installed, 'BBL', 'machine');

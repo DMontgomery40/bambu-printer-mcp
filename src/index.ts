@@ -2901,6 +2901,23 @@ class BambuPrinterMCPServer {
             }
           },
           {
+            name: "inspect_print_file",
+            description: "Inspect an exact private snapshot of a prepared sliced 3MF or textual G-code file and selected plate without contacting a printer. Returns versioned file-only evidence; no printer readiness or permission to dispatch is established. Does not auto-slice.",
+            annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+            inputSchema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                file_path: { type: "string", minLength: 1, description: "Local prepared .3mf or textual .gcode artifact to inspect; checksum-only and unsliced projects reject." },
+                bambu_model: { type: "string", enum: [...VALID_BAMBU_MODELS], description: "Explicit file-inspection target model; never inferred from environment or live state." },
+                plate_index: { type: "integer", minimum: 0, description: "Zero-based selected plate; defaults to 0. Raw G-code only supports 0." },
+                nozzle_diameters: { type: "array", minItems: 1, maxItems: 2, items: { type: "number", enum: [0.2, 0.4, 0.6, 0.8] }, description: "Optional requested nozzle diameters to compare with file declarations; this does not observe installed hardware." },
+                bed_type: { type: "string", enum: [...VALID_BED_TYPES], description: "Optional declared bed type to compare with file metadata." },
+              },
+              required: ["file_path", "bambu_model"],
+            },
+          },
+          {
             name: "print_3mf",
             description: "Print a 3MF file on a Bambu Lab printer. Auto-slices if the 3MF has no gcode. IMPORTANT: bambu_model must be specified to ensure safe printer operation.",
             inputSchema: {
@@ -3147,6 +3164,34 @@ class BambuPrinterMCPServer {
         let result;
 
         switch (name) {
+          case "inspect_print_file": {
+            const allowed = new Set(["file_path", "bambu_model", "plate_index", "nozzle_diameters", "bed_type"]);
+            if (!args || Object.keys(args).some(key => !allowed.has(key))) throw new Error("inspect_print_file accepts only file/model/plate/nozzle/bed arguments.");
+            if (typeof args.file_path !== "string" || !args.file_path.trim() || args.file_path.includes("\0")) throw new Error("file_path must name a local prepared artifact.");
+            if (typeof args.bambu_model !== "string" || !args.bambu_model.trim()) throw new Error("An explicit bambu_model is required for file inspection.");
+            const model = validateBambuModel(args.bambu_model);
+            const plateIndex = args.plate_index === undefined ? 0 : args.plate_index;
+            if (typeof plateIndex !== "number" || !Number.isSafeInteger(plateIndex) || plateIndex < 0) throw new Error("plate_index must be a nonnegative safe integer.");
+            if (args.nozzle_diameters !== undefined && (!Array.isArray(args.nozzle_diameters) || args.nozzle_diameters.some(value => typeof value !== "number"))) throw new Error("nozzle_diameters must be numeric sizes.");
+            const nozzles = requestedPrintNozzles(args);
+            if (args.bed_type !== undefined && (typeof args.bed_type !== "string" || !args.bed_type.trim())) throw new Error("bed_type must be a supported plate type.");
+            const bedType = args.bed_type === undefined ? undefined : resolveBedType(args.bed_type);
+            if (extra.signal.aborted) throw new Error("File inspection cancelled.");
+            result = await withPrintSnapshot(args.file_path, async snapshot => {
+              const inspection = await inspectPrintFile(snapshot, { model, nozzleDiameters: nozzles, plateIndex, bedType });
+              if (extra.signal.aborted) throw new Error("File inspection cancelled.");
+              const byteLength = (await fs.promises.stat(snapshot)).size;
+              return {
+                receipt_version: "1",
+                evidence: "file-only",
+                dispatch_authorized: false,
+                artifact: { sha256: inspection.sha256, byte_length: byteLength, file_format: path.extname(snapshot).toLowerCase() === ".3mf" ? "3mf" : "gcode" },
+                selection: { bambu_model: model, plate_index: plateIndex, ...(nozzles === undefined ? {} : { nozzle_diameters: nozzles }), ...(bedType === undefined ? {} : { bed_type: bedType }) },
+                inspection,
+              };
+            });
+            break;
+          }
           case "get_printer_status":
             result = await this.bambu.getStatus(host, bambuSerial, bambuToken);
             break;
