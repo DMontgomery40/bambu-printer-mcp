@@ -376,6 +376,20 @@ test('checked-in H2D SYNC T is a nonnegative duration rather than a heater targe
   for(const command of ['SYNC T-1','SYNC TNaN','SYNC TInfinity','SYNC T','SYNC S5','SYNC T5 S400','SYNC T5 T10','SYNC T5 M104 S400'])
     await assert.rejects(inspect(t,header('H2D','PLA','0.4;0.4')+command+'\n',{model:'h2d'}),/syntax|parameter|unsupported|duration|target/i,command);
 });
+test('X2D and P2S startup SYNC R0 preserves duration and independent heater limits',async t=>{
+  for(const model of ['x2d','p2s']) {
+    const source=header(model.toUpperCase(),'PLA',model==='x2d'?'0.4;0.4':'0.4');
+    for(const command of ['SYNC R0 T1200','SYNC T300 R0','SYNC R0 T0']) {
+      const result=await inspect(t,source+'M104 S220\n'+command+'\n',{model});
+      assert.equal(result.maxNozzleTemperature,220);
+      await assert.rejects(inspect(t,source+command+'\nM104 S400\n',{model}),/temperature|limit/i);
+    }
+    for(const command of ['SYNC R1 T1200','SYNC R-1 T1200','SYNC R0','SYNC R0 T-1','SYNC R0 TNaN','SYNC R0 TInfinity','SYNC R0 R0 T300','SYNC R0 T300 S220','SYNC R0 T300 M104 S400'])
+      await assert.rejects(inspect(t,source+command+'\n',{model}),/parameter|unsupported|syntax|duration/i,command);
+  }
+  for(const model of ['p1s','h2d','a1'])
+    await assert.rejects(inspect(t,header(model.toUpperCase())+'SYNC R0 T300\n',{model}),/unsupported|parameter/i);
+});
 test('all literal H2D startup change and end template commands retain numeric format compatibility',async t=>{
   const {project}=await h2dGuiData();
   const profiles=[project];const base='/Applications/BambuStudio.app/Contents/Resources/profiles/BBL/machine';

@@ -372,10 +372,14 @@ export async function inspectPrintFile(filePath, options) {
             if (/[{}\[\]#]/.test(line))
                 fail('unresolved dynamic command syntax');
             if (/^SYNC(?=$|\s)/i.test(line)) {
-                // H2D change_filament_gcode emits SYNC T{ceil(flush_length / 125) * 5}.
-                // T is a synchronization duration here, not a nozzle temperature. The
-                // vendor template establishes no independent maximum duration.
+                // Vendor SYNC T is a duration, not a heater target. X2D and P2S
+                // startup templates additionally emit R0; no other R form is supported.
                 const args = parameters(line.slice(4));
+                if (args.has('R')) {
+                    if (!['x2d', 'p2s'].includes(model) || args.get('R') !== 0)
+                        fail('unsupported SYNC reset parameters');
+                    args.delete('R');
+                }
                 if (args.size !== 1 || !args.has('T') || !Number.isFinite(args.get('T')) || args.get('T') < 0)
                     fail('unsupported SYNC duration parameters');
                 commandCount++;

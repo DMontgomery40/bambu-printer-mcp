@@ -27,6 +27,7 @@ import fs from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { profileJsonFiles } from './profile-files.js';
 /* -------------------------------------------------------------------------- */
 /* Indexing                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -48,19 +49,7 @@ async function buildNameIndex(profilesRoot, vendor, userProfileRoots = []) {
         ...userProfileRoots.flatMap(root => ['process', 'filament'].map(sub => path.join(root, sub))),
     ];
     for (const dir of directories) {
-        let entries;
-        try {
-            entries = await fs.readdir(dir);
-        }
-        catch {
-            // Vendor or subdir missing -- skip silently; flatten will fail later
-            // with a precise "name not found" error.
-            continue;
-        }
-        for (const entry of entries) {
-            if (!entry.endsWith(".json"))
-                continue;
-            const filePath = path.join(dir, entry);
+        for (const filePath of profileJsonFiles(dir)) {
             let raw;
             try {
                 raw = await fs.readFile(filePath, "utf8");

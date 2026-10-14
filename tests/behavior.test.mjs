@@ -575,6 +575,7 @@ test("printer model safety: schema requires bambu_model, rejects missing/invalid
     toolsWithModel,
     [
       "get_printer_filaments",
+      "inspect_print_file",
       "print_3mf",
       "print_3mf_bambu_network",
       "print_collar_charm",
