@@ -1854,7 +1854,7 @@ test("slice_stl writes the installed nozzle type into the machine preset so prin
       env: {
         ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "p1s", BAMBU_SERIAL: "", BAMBU_TOKEN: "",
         BAMBU_SLICER_PROFILE: "", BAMBU_TEMPLATE_3MF_PATH: "", BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot,
-        BAMBU_SLICER_PROFILE_DIRS: "", BAMBU_NOZZLE_TYPE: "", MCP_ALLOW_EXECUTABLE_ARG: "1", ...extraEnv,
+        BAMBU_SLICER_PROFILE_DIRS: "", BAMBU_NOZZLE_TYPE: "", BAMBU_NOZZLE_VOLUME_TYPE: "", MCP_ALLOW_EXECUTABLE_ARG: "1", ...extraEnv,
       },
       stderr: "pipe",
     });
@@ -1887,6 +1887,62 @@ test("slice_stl writes the installed nozzle type into the machine preset so prin
   result = await (await connect({ BAMBU_NOZZLE_TYPE: "hardened-steel" }))({});
   assert.equal(result.isError, undefined, JSON.stringify(result.content));
   assert.deepEqual(machine().nozzle_type, ["hardened_steel"]);
+});
+
+test("slice_stl slices for the installed nozzle flow type and refuses one the preset lacks", async (t) => {
+  const fakeSlicer = await createFakeBambuSlicer();
+  const writeMachine = (variants) => fs.writeFileSync(path.join(fakeSlicer.profilesRoot, "BBL", "machine", "Bambu Lab P1S 0.4 nozzle.json"), JSON.stringify({
+    name: "Bambu Lab P1S 0.4 nozzle", nozzle_diameter: ["0.4"], extruder_type: ["Direct Drive"], extruder_variant_list: [variants],
+    default_print_profile: "Behavior process", default_filament_profile: ["Behavior filament"], machine_start_gcode: "fixture start",
+  }));
+  writeMachine("Direct Drive Standard,Direct Drive High Flow");
+  const connect = async (extraEnv = {}) => {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [SERVER_ENTRY],
+      env: {
+        ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "p1s", BAMBU_SERIAL: "", BAMBU_TOKEN: "",
+        BAMBU_SLICER_PROFILE: "", BAMBU_TEMPLATE_3MF_PATH: "", BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot,
+        BAMBU_SLICER_PROFILE_DIRS: "", BAMBU_NOZZLE_TYPE: "", BAMBU_NOZZLE_VOLUME_TYPE: "", MCP_ALLOW_EXECUTABLE_ARG: "1", ...extraEnv,
+      },
+      stderr: "pipe",
+    });
+    const client = createClient();
+    t.after(async () => { await closeTransport(transport); });
+    await client.connect(transport);
+    return (extra) => client.callTool({ name: "slice_stl", arguments: {
+      stl_path: SAMPLE_STL, bambu_model: "p1s", slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false, ...extra,
+    } });
+  };
+  const machine = () => {
+    const slicerArgs = JSON.parse(fs.readFileSync(fakeSlicer.argsOutPath, "utf8"));
+    return JSON.parse(fs.readFileSync(slicerArgs[slicerArgs.indexOf("--load-settings") + 1].split(";")[0], "utf8"));
+  };
+  const slice = await connect();
+  let result = await slice({ nozzle_volume_type: "high_flow" });
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.deepEqual(machine().nozzle_volume_type, ["High Flow"]);
+  // Without a choice the preset's Standard default is kept.
+  result = await slice({});
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.deepEqual(machine().nozzle_volume_type, ["Standard"]);
+  // Invalid values stop before the slicer runs.
+  fs.rmSync(fakeSlicer.argsOutPath);
+  result = await slice({ nozzle_volume_type: "turbo" });
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result.content), /Invalid nozzle volume type/);
+  assert.equal(fs.existsSync(fakeSlicer.argsOutPath), false, "the slicer must not run");
+  // BAMBU_NOZZLE_VOLUME_TYPE supplies the default.
+  result = await (await connect({ BAMBU_NOZZLE_VOLUME_TYPE: "High Flow" }))({});
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.deepEqual(machine().nozzle_volume_type, ["High Flow"]);
+  // A preset without High Flow values is refused rather than mislabelled.
+  writeMachine("Direct Drive Standard");
+  fs.rmSync(fakeSlicer.argsOutPath);
+  result = await slice({ nozzle_volume_type: "high_flow" });
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result.content), /declares no High Flow variant/);
+  assert.equal(fs.existsSync(fakeSlicer.argsOutPath), false, "the slicer must not run");
 });
 
 test("template_name resolves by source type for slicer profiles versus 3MF sources", async (t) => {

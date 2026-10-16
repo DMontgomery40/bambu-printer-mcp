@@ -106,6 +106,7 @@ BLENDER_MCP_TIMEOUT_MS=120000
 | `BED_TYPE` | `textured_plate` | No | Bed plate type: `textured_plate`, `cool_plate`, `engineering_plate`, `hot_plate`, `supertack_plate` |
 | `NOZZLE_DIAMETER` | `0.4` | No | Nozzle diameter in mm. Used to select the correct model/nozzle machine preset. |
 | `BAMBU_NOZZLE_TYPE` | model preset's stock nozzle | No | Installed nozzle for slicing: `stainless_steel`, `hardened_steel`, `tungsten_carbide`, or `brass`. Set it if you replaced the stock nozzle; printing requires the job's nozzle type to match the printer's report. |
+| `BAMBU_NOZZLE_VOLUME_TYPE` | `standard` | No | Installed nozzle flow type for slicing: `standard` or `high_flow`. Set `high_flow` if a High Flow nozzle is installed; printing requires the job's flow type to match the printer's report. |
 | `BAMBU_DISPATCH_CHECK_MS` | `15000` | No | How long to watch the printer's reports after an MQTT print command to confirm it started or was refused (0 to 60000; 0 skips the check). |
 | `SLICER_TYPE` | `bambustudio` | No | `bambustudio`, `orcaslicer-bambulab` (FULU), `orcaslicer`, `prusaslicer`, `cura`, or `slic3r` |
 | `SLICER_PATH` | Platform default for the selected slicer | No | Full path to the slicer executable. `BAMBU_STUDIO_PATH` supplies the BambuStudio default only |
@@ -283,6 +284,8 @@ The access token is the **Access Code** shown on the printer's network settings 
 **"The printer rejected the print command (HMS 0500-0500-0001-0007)":** Bambu firmware 01.08.05 and later only accept third-party LAN control with LAN Only Mode and Developer Mode on (Settings > WLAN on the printer). LAN Only Mode turns off cloud and Bambu Handy remote access while it is on. Otherwise start the uploaded file from Bambu Studio or the printer's screen. The rejection stays as a fatal HMS entry that blocks later prints until you clear it with `clear_hms_errors` or dismiss it on the printer.
 
 **"Printer nozzle 0 type is unknown or does not match the job":** the file was sliced for a different nozzle material than the printer reports (a stock P1S preset assumes stainless steel). Slice again with `nozzle_type` or set `BAMBU_NOZZLE_TYPE`.
+
+**"Printer nozzle 0 flow variant is unknown or does not match the job":** the file was sliced for a different nozzle flow type (Standard or High Flow) than the printer reports. Slice again with `nozzle_volume_type` or set `BAMBU_NOZZLE_VOLUME_TYPE`.
 
 **Troubleshooting:** If a LAN or Developer Mode setting is missing, check the instructions for your exact model and firmware. Do not assume that a firmware upgrade is necessary or that all generations expose the same menu. The direct connection uses the printer's LAN access code, not a Bambu account password.
 

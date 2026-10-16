@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Add `nozzle_volume_type` (`standard`, `high_flow`; default `BAMBU_NOZZLE_VOLUME_TYPE`, else the preset's Standard default) to `slice_stl`, `slice_with_template`, and `print_3mf`/`print_3mf_bambu_network` auto-slicing, and pass it to the profile flattener's existing `nozzleVolumeType` override. CLI slices were always Standard, so a printer with a High Flow nozzle got Standard per-variant values (for example the filament's Standard `filament_max_volumetric_speed`) and a job the print gate refuses as a nozzle flow mismatch. A flow type the machine preset doesn't declare in `extruder_variant_list` (for example High Flow on A1 presets) is refused before the slicer runs. Verified with BambuStudio 02.06.00.51 on an H2S 0.6 nozzle preset: the sliced 3MF records `nozzle_volume_type` High Flow and the G-code header uses the filament's High Flow variant; no physical print was run.
+
 ## [1.1.27] – 2026-10-14
 
 ### Added

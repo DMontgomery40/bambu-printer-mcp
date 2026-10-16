@@ -124,6 +124,21 @@ function resolveNozzleType(value: unknown): string | undefined {
   }
   return normalized;
 }
+
+/** BambuStudio's nozzle_volume_type value for each tool argument value. */
+const NOZZLE_VOLUME_TYPES = { standard: "Standard", high_flow: "High Flow" } as const;
+const VALID_NOZZLE_VOLUME_TYPES = Object.keys(NOZZLE_VOLUME_TYPES) as (keyof typeof NOZZLE_VOLUME_TYPES)[];
+
+/** The installed nozzle's flow type. Bambu machine presets assume Standard; the print gate compares this with the printer. */
+function resolveNozzleVolumeType(value: unknown): "Standard" | "High Flow" | undefined {
+  const raw = value === undefined || value === null || value === "" ? process.env.BAMBU_NOZZLE_VOLUME_TYPE?.trim() : value;
+  if (raw === undefined || raw === "") return undefined;
+  const normalized = String(raw).trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (!(VALID_NOZZLE_VOLUME_TYPES as readonly string[]).includes(normalized)) {
+    throw new Error(`Invalid nozzle volume type "${raw}". Valid types: ${VALID_NOZZLE_VOLUME_TYPES.join(", ")}`);
+  }
+  return NOZZLE_VOLUME_TYPES[normalized as keyof typeof NOZZLE_VOLUME_TYPES];
+}
 const VALID_BAMBUSTUDIO_CLI_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"] as const;
 
 // Map model IDs to BambuStudio --load-machine preset names
@@ -1385,6 +1400,7 @@ class BambuPrinterMCPServer {
       skipModifiedGcodes: true,
       bedType: bedType ? resolveBambuStudioCliBedType(bedType) : undefined,
       nozzleType: resolveNozzleType(args?.nozzle_type),
+      nozzleVolumeType: resolveNozzleVolumeType(args?.nozzle_volume_type),
     };
     threeMFPath = await this.stlManipulator.sliceSTL(
       threeMFPath, slicerType, slicerPath, slicerProfile || undefined,
@@ -2364,6 +2380,11 @@ class BambuPrinterMCPServer {
                   enum: [...VALID_NOZZLE_TYPES],
                   description: "Bambu-compatible slicing: the hotend nozzle material installed on the printer (default: BAMBU_NOZZLE_TYPE, else the model preset's stock nozzle, usually stainless_steel). Printing compares it with the printer's reported nozzle."
                 },
+                nozzle_volume_type: {
+                  type: "string",
+                  enum: [...VALID_NOZZLE_VOLUME_TYPES],
+                  description: "Bambu-compatible slicing: the flow type of the nozzle installed on the printer (default: BAMBU_NOZZLE_VOLUME_TYPE, else standard). high_flow uses the presets' High Flow values, such as the filament's High Flow max volumetric speed, and is refused if the machine preset has no High Flow variant. Printing compares it with the printer's reported nozzle flow."
+                },
                 use_printer_filaments: { type: "boolean", description: "When true, and no explicit slicer profile or load_filaments override is provided, use the printer's current or first loaded AMS filament as the slicer filament profile." },
                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
@@ -2418,6 +2439,11 @@ class BambuPrinterMCPServer {
                   type: "string",
                   enum: [...VALID_NOZZLE_TYPES],
                   description: "Bambu-compatible slicing: the hotend nozzle material installed on the printer (default: BAMBU_NOZZLE_TYPE, else the model preset's stock nozzle, usually stainless_steel). Printing compares it with the printer's reported nozzle."
+                },
+                nozzle_volume_type: {
+                  type: "string",
+                  enum: [...VALID_NOZZLE_VOLUME_TYPES],
+                  description: "Bambu-compatible slicing: the flow type of the nozzle installed on the printer (default: BAMBU_NOZZLE_VOLUME_TYPE, else standard). high_flow uses the presets' High Flow values, such as the filament's High Flow max volumetric speed, and is refused if the machine preset has no High Flow variant. Printing compares it with the printer's reported nozzle flow."
                 },
                 use_printer_filaments: { type: "boolean", description: "When true, and no explicit slicer profile or load_filaments override is provided, use the printer's current or first loaded AMS filament as the slicer filament profile. Template 3MF process settings can still be used at the same time." },
                 uptodate: { type: "boolean", description: "Refresh 3MF preset configs to match the latest BambuStudio version. Use when slicing downloaded or older 3MF files to prevent stale-config failures." },
@@ -2525,6 +2551,7 @@ class BambuPrinterMCPServer {
                 password: { type: "string", description: "Printer password/access code override for LAN/local bridge methods." },
                 bed_type: { type: "string", enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"], description: "Bed plate type currently installed (default: textured_plate)." },
                 nozzle_type: { type: "string", enum: [...VALID_NOZZLE_TYPES], description: "Installed nozzle material, used when the 3MF must be auto-sliced (default: BAMBU_NOZZLE_TYPE, else the preset's stock nozzle)." },
+                nozzle_volume_type: { type: "string", enum: [...VALID_NOZZLE_VOLUME_TYPES], description: "Installed nozzle flow type, used when the 3MF must be auto-sliced (default: BAMBU_NOZZLE_VOLUME_TYPE, else standard)." },
                 plate_index: { type: "number", description: "Zero-based plate index to print from the sliced 3MF; converted to FULU's one-based PrintParams plate_index." },
                 project_name: { type: "string", description: "Optional project name sent in FULU PrintParams; defaults to the 3MF filename without extension." },
                 preset_name: { type: "string", description: "Optional preset name sent in FULU PrintParams; defaults to project plus one-based plate index." },
@@ -2951,6 +2978,11 @@ class BambuPrinterMCPServer {
                   type: "string",
                   enum: [...VALID_NOZZLE_TYPES],
                   description: "Installed nozzle material, used when the 3MF must be auto-sliced (default: BAMBU_NOZZLE_TYPE, else the preset's stock nozzle)."
+                },
+                nozzle_volume_type: {
+                  type: "string",
+                  enum: [...VALID_NOZZLE_VOLUME_TYPES],
+                  description: "Installed nozzle flow type, used when the 3MF must be auto-sliced (default: BAMBU_NOZZLE_VOLUME_TYPE, else standard)."
                 },
                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
@@ -3808,6 +3840,7 @@ class BambuPrinterMCPServer {
             if (args?.filament_colours !== undefined) sliceBambuOptions.filamentColours = parseFilamentColours(String(args.filament_colours));
             sliceBambuOptions.bedType = resolveBambuStudioCliBedType(args?.bed_type as string | undefined);
             sliceBambuOptions.nozzleType = resolveNozzleType(args?.nozzle_type);
+            sliceBambuOptions.nozzleVolumeType = resolveNozzleVolumeType(args?.nozzle_volume_type);
             if (args?.enable_timelapse !== undefined) sliceBambuOptions.enableTimelapse = Boolean(args.enable_timelapse);
             if (args?.allow_mix_temp !== undefined) sliceBambuOptions.allowMixTemp = Boolean(args.allow_mix_temp);
             if (args?.scale !== undefined) sliceBambuOptions.scale = Number(args.scale);
@@ -3895,6 +3928,7 @@ class BambuPrinterMCPServer {
             if (args?.filament_colours !== undefined) sliceBambuOptions.filamentColours = parseFilamentColours(String(args.filament_colours));
             sliceBambuOptions.bedType = resolveBambuStudioCliBedType(args?.bed_type as string | undefined);
             sliceBambuOptions.nozzleType = resolveNozzleType(args?.nozzle_type);
+            sliceBambuOptions.nozzleVolumeType = resolveNozzleVolumeType(args?.nozzle_volume_type);
             if (args?.enable_timelapse !== undefined) sliceBambuOptions.enableTimelapse = Boolean(args.enable_timelapse);
             if (args?.allow_mix_temp !== undefined) sliceBambuOptions.allowMixTemp = Boolean(args.allow_mix_temp);
             if (args?.scale !== undefined) sliceBambuOptions.scale = Number(args.scale);
@@ -4023,6 +4057,7 @@ class BambuPrinterMCPServer {
                 skipModifiedGcodes: true,
                 bedType: printBedType,
                 nozzleType: resolveNozzleType(args?.nozzle_type),
+                nozzleVolumeType: resolveNozzleVolumeType(args?.nozzle_volume_type),
               };
               if (!explicitSlicerProfile) {
                 try {
