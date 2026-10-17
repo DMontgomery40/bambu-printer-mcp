@@ -46,8 +46,12 @@ test('ignores a print-job id in model_id when model or returned serial identifie
   assert.throws(() => check(fresh({model_id:undefined,model:'P1S',modules:[{name:'ota',sn:'20PTEST'}]}, {serial:'20PTEST'}), requirements), /contradictory/i);
   assert.throws(() => check(fresh({model_id:'USb5974ce12ab89d',model:'X2D',printer_type:'unknown'}), requirements), /unknown model identity/i);
 });
-test('rejects missing, stale, future and synthetic telemetry provenance', () => {
-  for(const observation of [undefined,{source:'configured',requestedAt:Date.now(),receivedAt:Date.now()}, {source:'mqtt',requestedAt:1,receivedAt:2}, {source:'mqtt',requestedAt:Date.now()+5000,receivedAt:Date.now()+5000}, {source:'mqtt',requestedAt:Date.now(),receivedAt:Date.now()-1}]) {
+test('rejects missing, stale, future and synthetic telemetry provenance', t => {
+  let tick = 1700000000000;
+  // Advance between reads to exercise a millisecond boundary deterministically.
+  t.mock.method(Date, 'now', () => tick++);
+  const now = Date.now();
+  for(const observation of [undefined,{source:'configured',requestedAt:now,receivedAt:now}, {source:'mqtt',requestedAt:1,receivedAt:2}, {source:'mqtt',requestedAt:now+5000,receivedAt:now+5000}, {source:'mqtt',requestedAt:now,receivedAt:now-1}]) {
     assert.throws(() => check(fresh({}, {observation})), /fresh|observ|mqtt|stale/i);
   }
   assert.throws(() => check(fresh({}, {connected:false})), /connect/i);
