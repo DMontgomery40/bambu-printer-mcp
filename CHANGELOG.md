@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Support X2D native printing, upload and controls on x86-64 Linux. `bambu-printer-mcp-native-setup` builds the helper from the package source and installs the Linux networking plug-in that Bambu Studio downloads, the file-tunnel library it loads beside itself, and its two certificates, pinned to exact versions and SHA-256 under a private directory. After installing, it loads the plug-in once offline and withdraws the installation if that fails. `--verify` repeats these checks offline; `--check-update` reports newer plug-ins and whether their `PrintParams` layout still matches the helper, and never installs an unpinned plug-in. Linux without a complete installation, and non-x86-64 Linux, keeps its previous MQTT stop, pause and heater-off controls and names the setup command before any native print contacts the printer. The server passes the validated plug-in and certificate paths to the helper, accepts only the pinned plug-in checksums, never loads Bambu Studio's auto-updating copy, and refuses a helper built from another package version. On Linux, X2D stop and heater-off go out over the native route and MQTT at the same time, so a stuck helper cannot delay them and either route succeeding counts. Shared model, file, state, preflight and dispatch-authorization checks are unchanged.
+- Build the native helper with a POSIX `sh` script on macOS and Linux; `npm run build:native` no longer needs zsh.
+
+### Fixed
+- End one-shot native command, upload and probe runs right after the plug-in's own cleanup, as print runs already do. Its worker threads can outlive that cleanup, and process-exit destructors then crashed successful runs with SIGSEGV (2 of 8 X2D commands on Linux), so the server reported a delivered command as failed. Verified on a physical X2D: 10 of 10 read-only calibration queries exit cleanly and receive the printer's reply; no print was started.
+
 ## [1.1.27] – 2026-10-14
 
 ### Added

@@ -47,6 +47,10 @@ export declare class BambuImplementation {
     print3mf(host: string, serial: string, token: string, options: BambuPrintOptionsInternal): Promise<any>;
     private print3mfPrepared;
     cancelJob(host: string, serial: string, token: string, dispatch?: () => Promise<any>): Promise<any>;
+    /** Raw MQTT stop for routes that already ran the shared cancellation steps. */
+    sendStopOverMqtt(host: string, serial: string, token: string): Promise<any>;
+    /** Raw MQTT heater-off; switching off needs no material or model declaration. */
+    sendHeaterOffOverMqtt(host: string, serial: string, token: string, heater: "bed" | "nozzle"): Promise<any>;
     pauseJob(host: string, serial: string, token: string, dispatch?: () => Promise<any>): Promise<any>;
     resumeJob(host: string, serial: string, token: string, dispatch?: (assertActive: () => void, beforeDispatch: () => Promise<void>) => Promise<any>): Promise<any>;
     clearHmsErrors(host: string, serial: string, token: string, dispatch?: (assertActive: () => void, beforeDispatch: () => Promise<void>) => Promise<any>): Promise<any>;
@@ -54,6 +58,16 @@ export declare class BambuImplementation {
     setAirductMode(host: string, serial: string, token: string, mode: string): Promise<any>;
     rereadAmsRfid(host: string, serial: string, token: string, amsId: number, slotId: number): Promise<any>;
     setTemperature(host: string, serial: string, token: string, component: string, temperature: unknown, bambuModel?: string, material?: string, nozzleDiameter?: number, dispatch?: (heater: "bed" | "nozzle", target: number, assertActive: () => void, beforeDispatch?: () => Promise<void>) => Promise<any>): Promise<{
+        routes: any;
+        native_error: any;
+        mqtt_error: any;
+        status: string;
+        message: string;
+        command: string;
+    } | {
+        routes?: undefined;
+        native_error?: undefined;
+        mqtt_error?: undefined;
         status: string;
         message: string;
         command: string;

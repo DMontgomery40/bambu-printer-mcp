@@ -18,9 +18,11 @@ import { buildBambuConnectImportUrl } from "../dist/bambu-connect.js";
 import {
   buildBambuNativeFanCommand,
   buildBambuNativeTemperatureCommand,
+  isBambuNativePlatform,
   uploadWithBambuNative,
   validateBambuNativeControlMessage,
 } from "../dist/bambu-native.js";
+import { UNPINNED_PLUGIN_ENV, createFakeNativeHome } from "./fixtures/native-home.mjs";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF } from "../dist/3mf_parser.js";
 import { BambuImplementation } from "../dist/printers/bambu.js";
 import { STLManipulator } from "../dist/stl/stl-manipulator.js";
@@ -275,7 +277,7 @@ test("X2D native control accepts Studio device commands but rejects unrelated de
   );
 });
 
-test("X2D public task and AMS tools dispatch through the native helper, including AMS-HT id 128", { skip: process.platform !== "darwin" }, async (t) => {
+test("X2D public task and AMS tools dispatch through the native helper, including AMS-HT id 128", { skip: !isBambuNativePlatform() }, async (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-native-control-"));
   const helperPath = path.join(tempDir, "fake-native-helper.mjs");
   fs.writeFileSync(
@@ -299,6 +301,8 @@ test("X2D public task and AMS tools dispatch through the native helper, includin
       BAMBU_TOKEN: "TEST_TOKEN",
       BAMBU_MODEL: "x2d",
       BAMBU_NATIVE_HELPER: helperPath,
+      BAMBU_NATIVE_HOME: createFakeNativeHome(tempDir),
+      ...UNPINNED_PLUGIN_ENV,
     },
     stderr: "pipe",
   });
@@ -381,7 +385,7 @@ test("X2D public task and AMS tools dispatch through the native helper, includin
   assert.equal(rfidMessage.slot_id, 0);
 });
 
-test("native upload forwards helper progress before returning the final result", { skip: process.platform !== "darwin" }, async (t) => {
+test("native upload forwards helper progress before returning the final result", { skip: !isBambuNativePlatform() }, async (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-native-progress-"));
   const helperPath = path.join(tempDir, "fake-native-helper.mjs");
   fs.writeFileSync(
@@ -397,10 +401,16 @@ test("native upload forwards helper progress before returning the final result",
   fs.chmodSync(helperPath, 0o755);
 
   const previousHelper = process.env.BAMBU_NATIVE_HELPER;
+  const previousHome = process.env.BAMBU_NATIVE_HOME;
   process.env.BAMBU_NATIVE_HELPER = helperPath;
+  process.env.BAMBU_NATIVE_HOME = createFakeNativeHome(tempDir);
+  process.env.BAMBU_NATIVE_ALLOW_UNPINNED_PLUGIN = "1";
   t.after(() => {
+    delete process.env.BAMBU_NATIVE_ALLOW_UNPINNED_PLUGIN;
     if (previousHelper === undefined) delete process.env.BAMBU_NATIVE_HELPER;
     else process.env.BAMBU_NATIVE_HELPER = previousHelper;
+    if (previousHome === undefined) delete process.env.BAMBU_NATIVE_HOME;
+    else process.env.BAMBU_NATIVE_HOME = previousHome;
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -440,6 +450,8 @@ test("native upload forwards helper progress before returning the final result",
       BAMBU_TOKEN: "TEST_TOKEN",
       BAMBU_MODEL: "x2d",
       BAMBU_NATIVE_HELPER: helperPath,
+      BAMBU_NATIVE_HOME: createFakeNativeHome(tempDir),
+      ...UNPINNED_PLUGIN_ENV,
     },
     stderr: "pipe",
   });
