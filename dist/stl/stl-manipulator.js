@@ -405,6 +405,7 @@ export class STLManipulator extends EventEmitter {
             userProfileRoots: configuredBambuProfileDirs(),
             tempDir: this.tempDir,
             bedType: this.resolveBambuStudioBedType(bambuOptions?.bedType),
+            nozzleVolumeType: bambuOptions?.nozzleVolumeType,
             filamentColours: bambuOptions?.filamentColours ?? bundle.filamentColours,
             projectTowerPosition: bundle.projectTowerPosition,
             sourceProfiles: {

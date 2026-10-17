@@ -131,7 +131,7 @@ Before BambuStudio, FULU, or Orca CLI slicing, the MCP:
 3. Sets `from: "User"`, `inherits: <leaf machine name>`, and
    `printer_settings_id` / `print_settings_id` / `filament_settings_id`
    so the CLI's compatibility check passes.
-4. Derives nozzle settings from the selected machine profile and nozzle configuration. Use the exact model preset; a successful slice for another model does not validate the target printer.
+4. Derives nozzle settings from the selected machine profile and nozzle configuration. `nozzle_volume_type` (`standard` or `high_flow`) sets the machine's `nozzle_volume_type`, which selects each profile's Standard or High Flow values; a flow type the preset does not declare in `extruder_variant_list` is refused. Use the exact model preset; a successful slice for another model does not validate the target printer.
 5. Auto-extends `compatible_printers` to include the chosen machine
    when the user picked a non-default printer/process combo.
 6. Removes every key the resolved machine preset defines, other than profile
