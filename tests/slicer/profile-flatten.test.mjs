@@ -436,6 +436,7 @@ test("nozzleVolumeType override produces matching-length array", async () => {
     instantiation: "true",
     nozzle_diameter: ["0.4", "0.4"],
     extruder_type: ["Direct Drive", "Direct Drive"],
+    extruder_variant_list: ["Direct Drive Standard,Direct Drive High Flow", "Direct Drive Standard,Direct Drive High Flow"],
     default_nozzle_volume_type: ["Standard", "Standard"],
     printer_model: "Bambu Lab TESTDUAL",
   });
@@ -454,6 +455,38 @@ test("nozzleVolumeType override produces matching-length array", async () => {
 
   const flat = JSON.parse(await fs.readFile(result.machinePath, "utf8"));
   assert.deepEqual(flat.nozzle_volume_type, ["High Flow", "High Flow"]);
+});
+
+test("nozzleVolumeType the machine preset does not declare is refused", async () => {
+  const { root, bbl } = await makeSyntheticTree();
+  await writeProfile(bbl, "machine", {
+    name: "Bambu Lab TEST 0.4 nozzle",
+    inherits: null,
+    instantiation: "true",
+    nozzle_diameter: ["0.4"],
+    extruder_type: ["Direct Drive"],
+    extruder_variant_list: ["Direct Drive Standard"],
+    printer_model: "Bambu Lab TEST",
+  });
+  await writeProfile(bbl, "machine", {
+    name: "Bambu Lab TEST 0.6 nozzle",
+    inherits: null,
+    instantiation: "true",
+    nozzle_diameter: ["0.6"],
+    printer_model: "Bambu Lab TEST",
+  });
+  await writeProfile(bbl, "process", { name: "p", inherits: null });
+  await writeProfile(bbl, "filament", { name: "f", inherits: null });
+  const flatten = (machineLeaf, nozzleVolumeType) => flattenForCli({
+    machineLeaf, processLeaf: "p", filamentLeaves: ["f"], profilesRoot: root, tempDir: os.tmpdir(), nozzleVolumeType,
+  });
+
+  await assert.rejects(flatten("Bambu Lab TEST 0.4 nozzle", "High Flow"),
+    /High Flow nozzle is refused: "Bambu Lab TEST 0.4 nozzle" declares no High Flow variant for extruder 1 \(declared: Direct Drive Standard\)/);
+  // Without variant declarations a preset has only Standard values.
+  await assert.rejects(flatten("Bambu Lab TEST 0.6 nozzle", "High Flow"), /declares no High Flow variant.*declared: none/);
+  const result = await flatten("Bambu Lab TEST 0.6 nozzle", "Standard");
+  assert.deepEqual(JSON.parse(await fs.readFile(result.machinePath, "utf8")).nozzle_volume_type, ["Standard"]);
 });
 
 test("bedType override stamps the flattened process profile", async () => {
@@ -596,6 +629,41 @@ test("end-to-end against real BBL tree: H2S 0.4 nozzle flattens to a populated p
     keyCount > 100,
     `flattened machine profile should have >100 keys after inherits walk; got ${keyCount}`
   );
+});
+
+test("end-to-end against real BBL tree: H2S 0.6 nozzle takes High Flow, A1 refuses it", async (t) => {
+  const profilesRoot = detectProfilesRoot();
+  try {
+    await fs.access(path.join(profilesRoot, "BBL", "machine"));
+  } catch {
+    t.skip("BambuStudio profiles tree not present on this machine");
+    return;
+  }
+  const flatten = async (machineLeaf, processLeaf) => flattenForCli({
+    machineLeaf, processLeaf, filamentLeaves: [], profilesRoot,
+    tempDir: await fs.mkdtemp(path.join(os.tmpdir(), "flat-hf-")), nozzleVolumeType: "High Flow",
+  });
+  let result;
+  try {
+    result = await flatten("Bambu Lab H2S 0.6 nozzle", "0.30mm Standard @BBL H2S 0.6 nozzle");
+  } catch (error) {
+    if (/not found in index/i.test(error?.message || "")) {
+      t.skip("Installed BambuStudio profiles do not include H2S 0.6 presets");
+      return;
+    }
+    throw error;
+  }
+  const flat = JSON.parse(await fs.readFile(result.machinePath, "utf8"));
+  assert.deepEqual(flat.nozzle_volume_type, ["High Flow"]);
+  assert.ok(flat.extruder_variant_list.some(list => list.split(",").includes("Direct Drive High Flow")));
+
+  try {
+    await flatten("Bambu Lab A1 0.4 nozzle", "0.20mm Standard @BBL A1");
+    assert.fail("A1 presets declare no High Flow variant");
+  } catch (error) {
+    if (/not found in index/i.test(error?.message || "")) return;
+    assert.match(error.message, /declares no High Flow variant/);
+  }
 });
 
 test("end-to-end: H2D matches GUI-sliced ground-truth shape for nozzle_volume_type", async (t) => {

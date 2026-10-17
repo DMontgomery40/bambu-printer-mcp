@@ -1,6 +1,9 @@
 # Changelog
 
-## [1.1.28] – 2026-10-14
+## [1.1.28] – 2026-10-17
+
+### Added
+- Add `nozzle_volume_type` (`standard`, `high_flow`; default `BAMBU_NOZZLE_VOLUME_TYPE`, else the preset's Standard default) to `slice_stl`, `slice_with_template`, and `print_3mf`/`print_3mf_bambu_network` auto-slicing, and pass it to the profile flattener's existing `nozzleVolumeType` override. CLI slices were always Standard, so a printer with a High Flow nozzle got Standard per-variant values (for example the filament's Standard `filament_max_volumetric_speed`) and a job the print gate refuses as a nozzle flow mismatch. A flow type the machine preset doesn't declare in `extruder_variant_list` (for example High Flow on A1 presets) is refused before the slicer runs. Contributed by [patrikmadoran-cyber](https://github.com/patrikmadoran-cyber) in [#54](https://github.com/DMontgomery40/bambu-printer-mcp/pull/54), with a real Windows BambuStudio 02.06.00.51 H2S 0.6 nozzle slice: the sliced 3MF records `nozzle_volume_type` High Flow and the G-code header uses the filament's High Flow variant; no physical print was run.
 
 ### Fixed
 - Update direct FTPS transfers to basic-ftp 6.2.3: reject malformed passwords without crashing or including the password in errors, and recover after rejected control-character commands. Thanks to [Patrick Juchli](https://github.com/patrickjuchli) for the [upstream fixes](https://github.com/patrickjuchli/basic-ftp/releases/tag/v6.2.3). Verified with isolated localhost FTP fixtures, Bambu transport regressions and installed packages; no physical printer action was run.
