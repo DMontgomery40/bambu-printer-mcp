@@ -416,10 +416,10 @@ export async function inspectPrintFile(filePath, options) {
                 const position = ['X', 'Y', 'U', 'V'].filter(key => args.has(key)).join('');
                 const limit = { X: width, U: width, Y: depth, V: depth };
                 if ([...args.keys()].some(key => !'MEXYUVZSCOT'.includes(key)) ||
-                    ![0, 1].includes(args.get('M')) || !Number.isInteger(args.get('E')) || !inRange(args, 'E', 0, nozzleDiameters.length - 1) ||
+                    // X2D and H2D have two physical extruders, whatever the file declares.
+                    ![0, 1].includes(args.get('M')) || !Number.isInteger(args.get('E')) || !inRange(args, 'E', 0, Math.min(nozzleDiameters.length, 2) - 1) ||
                     args.get('S') !== 11 || args.get('C') !== 10 || args.get('O') !== 0 || !inRange(args, 'T', 0, 600000) ||
-                    // Templates capture at layer_z, optionally plus 0.4 mm.
-                    !inRange(args, 'Z', 0, height + 0.4) ||
+                    !inRange(args, 'Z', 0, height) ||
                     !['', 'XY', 'UV'].includes(position) || [...position].some(key => !inRange(args, key, 0, limit[key])))
                     invalid();
                 continue;

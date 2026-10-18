@@ -493,7 +493,10 @@ test('X2D L-1 preheat keeps every declared material and hardware limit wherever 
 });
 test('X2D time-lapse capture accepts only its exact parameters inside the machine volume', async t => {
   const base=header('X2D','PETG','0.4;0.4');
-  await assert.doesNotReject(inspect(t,base+'M9711 M1 E0 X256 Y256 Z260.4 S11 C10 O0 T3000\n',{model:'x2d'}));
+  await assert.doesNotReject(inspect(t,base+'M9711 M1 E1 X256 Y256 Z260 S11 C10 O0 T3000\n',{model:'x2d'}));
+  await assert.rejects(inspect(t,base+'M9711 M1 E0 Z260.4 S11 C10 O0 T3000\n',{model:'x2d'}),/unsupported M9711 time-lapse parameters/,'Z stays inside the machine height');
+  // A file declaring more nozzles cannot widen E beyond the two physical extruders.
+  await assert.rejects(inspect(t,header('X2D','PETG','0.4;0.4;0.4')+'M9711 M0 E2 Z1 S11 C10 O0 T3000\n',{model:'x2d'}),/unsupported M9711 time-lapse parameters/,'E2 with three declared nozzles');
   for(const command of [
     'M9711 M2 E1 Z0.6 S11 C10 O0 T3000','M9711 M0 E2 Z0.6 S11 C10 O0 T3000','M9711 M0 E-1 Z0.6 S11 C10 O0 T3000','M9711 M0 E0.5 Z0.6 S11 C10 O0 T3000',
     'M9711 M0 E1 Z0.6 S12 C10 O0 T3000','M9711 M0 E1 Z0.6 S11 C9 O0 T3000','M9711 M0 E1 Z0.6 S11 C10 O1 T3000',
@@ -508,7 +511,7 @@ test('X2D time-lapse capture accepts only its exact parameters inside the machin
 });
 test('official H2D time-lapse template capture forms pass inside the H2D volume', async t => {
   const settings=JSON.parse(await fs.readFile(new URL('../fixtures/h2d_gui_sliced/project_settings.config',import.meta.url),'utf8'));
-  const values={timelapse_type:'1',most_used_physical_extruder_id:'1',timelapse_pos_x:'340',timelapse_pos_y:'310','layer_z + 0.4':'325.4'};
+  const values={timelapse_type:'1',most_used_physical_extruder_id:'1',timelapse_pos_x:'340',timelapse_pos_y:'310','layer_z + 0.4':'300.4'};
   const forms=settings.time_lapse_gcode.split('\n').filter(line=>/^\s*M9711\s/.test(line))
     .map(line=>line.trim().replace(/\{([^}]+)\}/g,(_,name)=>{assert.ok(name in values,name);return values[name];}));
   assert.equal(forms.length,4,'the fixture holds the official XY, UV and position-free forms');
