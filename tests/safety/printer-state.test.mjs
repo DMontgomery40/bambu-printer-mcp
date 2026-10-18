@@ -231,3 +231,31 @@ test('official H2C and H2D Pro returned serials agree with declared identity and
     assert.throws(()=>check(fresh({model_id:undefined}),req({model,serial,nozzleDiameters:[]})),/identity|model/i);
   }
 });
+
+// Dual-nozzle printers report one virtual external slot per nozzle, numbered as Bambu
+// Studio's VIRTUAL_TRAY_MAIN_ID (255, right/main) and VIRTUAL_TRAY_DEPUTY_ID (254, left/deputy).
+const dualNozzleInfo={nozzle:{info:[{id:0,diameter:0.4,type:'HH01',stat:0},{id:1,diameter:0.4,type:'HH01',stat:0}]}};
+const x2d=(vir_slot,raw={})=>fresh({model_id:undefined,model:'X2D',device:dualNozzleInfo,ams:{ams:[{id:'0',tray:[0,1,2,3].map(id=>({id:String(id),tray_type:'PLA'}))}]},...(vir_slot===undefined?{}:{vir_slot}),...raw});
+const x2dReq=(extra={})=>req({model:'x2d',nozzleDiameters:[0.4,0.4],materials:['PLA','PLA','PLA','PLA','PLA'],useAMS:true,amsMapping:[0,1,2,3,255],...extra});
+test('dual-nozzle printers select the external spool slot by id: 255 right/main and 254 left/deputy', () => {
+  const both=[{id:'254',tray_type:'PLA'},{id:'255',tray_type:'PLA'}];
+  assert.doesNotThrow(() => check(x2d(both),x2dReq()));
+  assert.doesNotThrow(() => check(x2d(both),x2dReq({amsMapping:[0,1,2,3,254]})));
+  assert.doesNotThrow(() => check(x2d(both),x2dReq({amsMapping:[254,255,-1,-1,-1],usedFilamentPositions:[0,1]})));
+  const mixed=[{id:'254',tray_type:'PLA'},{id:'255',tray_type:'PETG'}];
+  assert.doesNotThrow(() => check(x2d(mixed),x2dReq({amsMapping:[0,1,2,3,254]})));
+  assert.throws(() => check(x2d(mixed),x2dReq()),/PETG|material/i);
+  assert.throws(() => check(x2d([{id:'254',tray_type:'PLA'}]),x2dReq()),/255/i);
+  assert.throws(() => check(x2d([{id:'255',tray_type:'PLA'},{id:'255',tray_type:'PLA'}]),x2dReq()),/ambiguous/i);
+  assert.throws(() => check(x2d(undefined),x2dReq()),/255/i);
+  assert.throws(() => check(x2d(undefined,{vt_tray:{tray_type:'PLA'}}),x2dReq()),/255/i);
+  assert.doesNotThrow(() => check(x2d(undefined,{vt_tray:{tray_type:'PLA'}}),x2dReq({amsMapping:[0,1,2,3,254]})));
+  assert.throws(() => check(x2d(both),x2dReq({amsMapping:[0,1,2,3,256]})),/mapping/i);
+  for(const model of ['h2d','h2c']) assert.doesNotThrow(() => check(fresh({model_id:undefined,model:model.toUpperCase(),device:dualNozzleInfo,vir_slot:both}),req({model,nozzleDiameters:[0.4,0.4],useAMS:true,amsMapping:[255]})),model);
+});
+test('single-nozzle printers still reject tray 255 and two external spool reports', () => {
+  assert.throws(() => check(fresh({vir_slot:[{id:'255',tray_type:'PLA'}]}),req({useAMS:true,amsMapping:[255]})),/mapping/i);
+  assert.throws(() => check(fresh({model_id:undefined,model:'H2S',vir_slot:[{id:'255',tray_type:'PLA'}]}),req({model:'h2s',useAMS:true,amsMapping:[255]})),/mapping/i);
+  assert.throws(() => check(fresh({vir_slot:[{id:'254',tray_type:'PLA'},{id:'255',tray_type:'PLA'}]})),/ambiguous/i);
+  assert.doesNotThrow(() => check(fresh({vir_slot:[{id:'254',tray_type:'PLA'}]})));
+});

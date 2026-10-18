@@ -135,3 +135,76 @@ test("X2D MCP print requests stop before slicing, status, uploads, and connectio
   }
   assert.equal(await fs.readFile(effectsFile, "utf8"), "", "bridge routing must not use the direct printer transport");
 });
+
+// Dual external spools: 255 (right/main nozzle) and 254 (left/deputy nozzle) must reach the
+// configured bridge unchanged and still pass through the fresh per-nozzle material check.
+test("X2D bridge prints send tray 255 unchanged after the per-nozzle external spool check", async (t) => {
+  const { dir, file: slicedFile } = await fixture(t);
+  const bridgeFile = path.join(dir, "bridge.jsonl");
+  const virSlotFile = path.join(dir, "vir_slot.json");
+  await fs.writeFile(bridgeFile, "");
+  await fs.writeFile(virSlotFile, JSON.stringify([{ id: "254", tray_type: "PLA" }, { id: "255", tray_type: "PLA" }]));
+  const preload = `
+    import { appendFileSync, readFileSync } from 'node:fs';
+    import { BambuImplementation } from ${JSON.stringify(new URL("../dist/printers/bambu.js", import.meta.url).href)};
+    import { BambuNetworkBridge } from ${JSON.stringify(new URL("../dist/bambu-network-bridge.js", import.meta.url).href)};
+    for (const method of ['getPrinter', 'getStatus', 'ftpUpload']) {
+      BambuImplementation.prototype[method] = async () => { throw new Error('Unexpected printer side effect: ' + method); };
+    }
+    BambuNetworkBridge.prototype.callWithAgent = async (method, payload) => {
+      appendFileSync(${JSON.stringify(bridgeFile)}, JSON.stringify({ method, payload }) + '\\n');
+      return { ok: true, value: 0 };
+    };
+    BambuImplementation.prototype.getSafetyStatus = async (_host, serial) => ({
+      connected:true, serial, model:'x2d', status:'IDLE',
+      raw:{model:'x2d',gcode_state:'IDLE',print_error:0,hms:[],nozzle_diameter:['0.4','0.4'],
+        device:{nozzle:{info:[{id:0,diameter:0.4,type:'HH01',stat:0},{id:1,diameter:0.4,type:'HH01',stat:0}]}},
+        vir_slot: JSON.parse(readFileSync(${JSON.stringify(virSlotFile)}, 'utf8'))},
+      observation:{source:'mqtt',requestedAt:Date.now()-1,receivedAt:Date.now(),identitySource:'report'}
+    });
+  `;
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, path.join(ROOT, "dist/index.js")],
+    cwd: dir,
+    env: {
+      ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "", BAMBU_PRINTER_MODEL: "",
+      BAMBU_PRINTER_HOST: "127.0.0.1", BAMBU_PRINTER_SERIAL: "UNKNOWN", BAMBU_PRINTER_ACCESS_TOKEN: "DUMMY",
+      BAMBU_NETWORK_BRIDGE_COMMAND: "/configured/test-only/bridge",
+    },
+    stderr: "pipe",
+  });
+  const client = new Client({ name: "x2d-dual-external", version: "0" }, { capabilities: { elicitation: { form: {} } } });
+  client.setRequestHandler(ElicitRequestSchema, async () => ({ action: "accept", content: { confirmed: true } }));
+  t.after(() => transport.close());
+  await client.connect(transport);
+  const print = (extra) => client.callTool({ name: "print_3mf_bambu_network", arguments: {
+    three_mf_path: slicedFile, bambu_model: "x2d", bambu_serial: "20PTEST", connection_mode: "bambu_network", connection_type: "lan", ...extra,
+  } });
+  const bridgeCalls = async () => (await fs.readFile(bridgeFile, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
+
+  for (const [index, args] of [{ ams_mapping: [255] }, { ams_slots: [255] }, { ams_mapping: [254] }].entries()) {
+    const result = await print(args);
+    assert.notEqual(result.isError, true, `${JSON.stringify(args)}: ${result.content?.[0]?.text}`);
+    const calls = await bridgeCalls();
+    assert.equal(calls.length, index + 1);
+    assert.equal(calls[index].method, "net.start_local_print");
+    assert.equal(calls[index].payload.params.ams_mapping, JSON.stringify(Object.values(args)[0]), "external tray ids reach the bridge unchanged");
+    assert.equal(calls[index].payload.params.task_use_ams, true);
+  }
+  const before = (await bridgeCalls()).length;
+  for (const args of [{ ams_mapping: [256] }, { ams_slots: [256] }]) {
+    const result = await print(args);
+    assert.equal(result.isError, true, JSON.stringify(args));
+    assert.match(result.content?.[0]?.text || "", /255/);
+  }
+  await fs.writeFile(virSlotFile, JSON.stringify([{ id: "254", tray_type: "PLA" }, { id: "255", tray_type: "PETG" }]));
+  const contradicted = await print({ ams_mapping: [255] });
+  assert.equal(contradicted.isError, true);
+  assert.match(contradicted.content?.[0]?.text || "", /PETG|material/i);
+  await fs.writeFile(virSlotFile, JSON.stringify([{ id: "254", tray_type: "PLA" }]));
+  const missing = await print({ ams_mapping: [255] });
+  assert.equal(missing.isError, true);
+  assert.match(missing.content?.[0]?.text || "", /255/);
+  assert.equal((await bridgeCalls()).length, before, "rejected mappings must never reach the bridge");
+});

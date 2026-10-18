@@ -30,6 +30,15 @@ export const MACHINE_LIMITS = {
     h2s: { nozzle: 350, bed: 120, chamber: 65, volume: [340, 320, 340] },
     x2d: { nozzle: 300, bed: 120, chamber: 65, volume: [256, 256, 260] },
 };
+/** Printers with two physical nozzles. Bambu Studio numbers the right/main nozzle 0
+ * (MAIN_EXTRUDER_ID) and the left/deputy nozzle 1 (DEPUTY_EXTRUDER_ID), and reports one
+ * virtual external-spool slot per nozzle: 255 (VIRTUAL_TRAY_MAIN_ID) and 254
+ * (VIRTUAL_TRAY_DEPUTY_ID). The single-nozzle H2S is deliberately absent. */
+export const DUAL_NOZZLE_MODELS = new Set(['h2d', 'h2dpro', 'h2c', 'x2d']);
+export function isDualNozzleModel(model) {
+    const normalized = normalizeModel(model);
+    return normalized !== undefined && DUAL_NOZZLE_MODELS.has(normalized);
+}
 export function normalizeModel(value) {
     if (typeof value !== 'string')
         return undefined;

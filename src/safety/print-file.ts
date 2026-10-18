@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readBoundedPrintFile, loadSafe3mfArchive } from './archive.js';
-import { MACHINE_LIMITS, normalizeMaterial, normalizeModel, validateStartupPurgeTemperature, validateTemperature } from './limits.js';
+import { MACHINE_LIMITS, isDualNozzleModel, normalizeMaterial, normalizeModel, validateStartupPurgeTemperature, validateTemperature } from './limits.js';
 
 export interface PrintFileInspection {
   model: string;
@@ -135,6 +135,7 @@ function validateBounds(headers: Metadata[], model: string, plate: Metadata): vo
 export async function inspectPrintFile(filePath: string, options: {model:string; nozzleDiameters?:number[]; plateIndex?:number; bedType?:string}): Promise<PrintFileInspection> {
   const model=normalizeModel(options.model);
   if(!model) return fail(`unknown or missing printer model '${options.model}'`);
+  const dualNozzle=isDualNozzleModel(model);
   const plateIndex=options.plateIndex ?? 0;
   if(!Number.isInteger(plateIndex)||plateIndex<0) return fail('selected plate index must be a nonnegative integer');
   if(/\.md5$/i.test(filePath)) return fail('a checksum file is not a printable artifact');
@@ -273,8 +274,12 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
     try {
       if(isLayerMarker(lines[index]) || /^\s*;\s*MACHINE_START_GCODE_END\s*$/i.test(lines[index])) closeStartupWindow();
       let line=stripComments(lines[index]);if(!line||line==='%') continue;
-      // The official H2C template emits this literal separator without a semicolon.
-      if(line==='========== record data ==========' && h2cStartup(index)) continue;
+      // Official dual-nozzle Bambu Studio templates emit literal banner separators
+      // without a semicolon: H2C `========== record data ==========` and the X2D
+      // change_filament_gcode `======== X2D filament_change gcode ==========`. They are
+      // comments to the firmware, so they are skipped only on those models and only
+      // when nothing between the rules resembles a G/M/T command.
+      if(/^=+ .* =+$/.test(line) && dualNozzle && !/[GMT]\s*\d/i.test(line)) continue;
       line=line.replace(/^N\d+\s*/i,'').replace(/\*\d+\s*$/,'');
       if(/[{}\[\]#]/.test(line)) fail('unresolved dynamic command syntax');
       if(/^SYNC(?=$|\s)/i.test(line)) {
@@ -292,6 +297,20 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
       if(!command) fail(`unsupported G-code command syntax '${line.slice(0,100)}'`);
       const [base,subcode]=command![2].split('.');
       const code=command![1].toUpperCase()+String(Number(base))+(subcode===undefined?'':'.'+subcode);const argumentsText=line.slice(command![0].length).trim();commandCount++;
+      if(code==='M9711') {
+        // Official X2D/H2-series time_lapse_gcode: M9711 M<timelapse type> E<most used
+        // physical extruder> [U/V or X/Y safe position] Z<layer height> S11 C10 O0 T3000.
+        // M is the timelapse type, T a timeout, E a physical nozzle index: none is a
+        // heater target or a filament selection, so M in the arguments is not a second
+        // command. Other models keep rejecting it as multiple commands on one line.
+        if(!dualNozzle) fail('unsupported timelapse command M9711 for this model');
+        const args=parameters(argumentsText);
+        for(const key of args.keys()) if(!'MEUVXYZSCOT'.includes(key)) fail(`unsupported M9711 timelapse parameter ${key}`);
+        if(!args.has('M') || !args.has('E') || !Number.isInteger(args.get('E')) || args.get('E')!<0 || args.get('E')!>=nozzleDiameters.length) fail('unsupported M9711 timelapse type or extruder parameters');
+        // The official templates fix the capture parameters; other values are unverified.
+        if(args.get('S')!==11 || args.get('C')!==10 || args.get('O')!==0 || args.get('T')!==3000) fail('unsupported M9711 timelapse capture parameters');
+        continue;
+      }
       if(!['M117','M118','M1002','M1006','M900','M970','M983.1','G383'].includes(code) && /[GM]\s*\d/i.test(argumentsText)) fail('multiple commands on one line are unsupported');
       // Coordinated extrusion closes the startup-only allowance even when the
       // source omits layer comments. Retraction also closes it conservatively.
@@ -330,7 +349,13 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
           heat('bed',args.get('D')!,undefined,true);continue;
         }
         const vendorWait=code==='M109' && ['a1','a1mini'].includes(model);
-        for(const key of args.keys()) if(!'SRTA'.includes(key) && !(key==='H' && vendorWait)) fail(`unsupported ${code} temperature parameter ${key}`);
+        // Bambu Studio addresses a physical nozzle on dual-nozzle machines with N<index>
+        // (X2D `M104 T1 S25 N0` multi-extruder pre-cooling and wipe-tower reheats).
+        // N selects a nozzle, never a target, so it is accepted only on those models,
+        // only for nozzle heaters, and only within the declared nozzle count.
+        const nozzleIndex=['M104','M109'].includes(code) && dualNozzle;
+        for(const key of args.keys()) if(!'SRTA'.includes(key) && !(key==='H' && vendorWait) && !(key==='N' && nozzleIndex)) fail(`unsupported ${code} temperature parameter ${key}`);
+        if(args.has('N') && (!Number.isInteger(args.get('N')) || args.get('N')!<0 || args.get('N')!>=nozzleDiameters.length)) fail(`unsupported ${code} nozzle index N`);
         if(args.has('H') && (!Number.isFinite(args.get('H')) || args.get('H')!<0 || args.get('H')!>300)) fail(`unsupported ${code} wait parameter H`);
         if(!args.has('S')&&!args.has('R')) fail(`missing ${code} temperature target`);
         const component= ['M104','M109'].includes(code)?'nozzle': ['M140','M190'].includes(code)?'bed':'chamber';

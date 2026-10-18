@@ -475,6 +475,9 @@ test('H2C startup forms reject other models, late commands, extra parameters and
   const forms=['M620 N','M104 O-80 A','M140 D55','M190 D55','M620.14 X95.5 Y336','G383.3 U140 L0','G383 O2 U140 L0','G383.7 U140 J0','========== record data =========='];
   for(const command of forms) {
     await assert.rejects(inspect(t,header()+'; EXECUTABLE_BLOCK_START\n'+command+'\n',{model:'p1s'}),/unsupported|syntax|missing/i,command);
+    // The bare banner separator is a comment on every dual-nozzle model (the X2D
+    // change_filament_gcode emits one at each filament change), so it is not startup-bound.
+    if(command.startsWith('=')) continue;
     await assert.rejects(inspect(t,h2cHeader()+'; EXECUTABLE_BLOCK_START\nM104 S220\n; MACHINE_START_GCODE_END\n'+command+'\n',{model:'h2c'}),/unsupported|syntax|missing|startup/i,command);
   }
   for(const command of ['M140 D130','M190 D130','M140 D55 S400','M104 O20 A','M104 O-80 A S330','G383.3 U400 L0','G383.3 U140 L8','G383.7 U140 J1','M620 N1','M620.14 X95 Y336 T400','M104 S330'])
@@ -513,4 +516,39 @@ test('H2C all-hotend preheat checks unused declared materials without adding AMS
 
 test('unrecognized G383 U targets cannot bypass other models thermal checks',async t=>{
   for(const model of ['P1S','H2D','X2D']) await assert.rejects(inspect(t,header(model)+'G383 O2 U400 L0\n',{model:model.toLowerCase()}),/unsupported|temperature/i);
+});
+
+// Official X2D 02.08 output: Bambu Studio emits `M104 T<heater> S<target> N<nozzle>` for
+// multi-extruder pre-cooling and wipe-tower reheats, the change_filament_gcode template
+// opens with a bare `======== X2D filament_change gcode ==========` banner, and the
+// time_lapse_gcode template emits `M9711 M.. E.. [U.. V..] Z.. S11 C10 O0 T3000`.
+const x2dHeader=(materials='PLA;PLA')=>header('X2D',materials,'0.4;0.4');
+test('X2D banner separators, M9711 timelapse and N nozzle index pass only on dual-nozzle models',async t=>{
+  const source=x2dHeader()+'M104 T1 S25 N0\nM109 T0 S220 N1\n======== X2D filament_change gcode ==========\nM620 S0A B H-1\nM104 S220\nM621 S0A B\nM622 J1\nM9711 M0 E0 U205 V162 Z1.4 S11 C10 O0 T3000\nM9711 M1 E1 Z1.6 S11 C10 O0 T3000\nM9711 M0 E1 X205 Y162 Z1.8 S11 C10 O0 T3000\nM623\n';
+  const r=await inspect(t,source,{model:'x2d'});
+  assert.equal(r.maxNozzleTemperature,220);assert.deepEqual(r.usedFilamentPositions,[0]);
+  for(const model of ['h2d','h2c']) await assert.doesNotReject(inspect(t,header(model.toUpperCase(),'PLA','0.4;0.4')+'M104 T1 S25 N0\n==== banner ====\nM9711 M0 E1 Z1.4 S11 C10 O0 T3000\nM104 S220\n',{model}),model);
+  for(const [model,nozzle] of [['P1S','0.4'],['H2S','0.4'],['A1','0.4'],['P2S','0.4']]) for(const command of ['======== X2D filament_change gcode ==========','M9711 M0 E0 U205 V162 Z1.4 S11 C10 O0 T3000','M104 S220 N0','M109 T0 S220 N0'])
+    await assert.rejects(inspect(t,header(model,'PLA',nozzle)+command+'\n',{model:model.toLowerCase()}),/unsupported|syntax|multiple|parameter/i,model+' '+command);
+  // A banner can never hide a command, M9711 keeps its official shape, N stays a declared nozzle, and N never relaxes heater limits.
+  for(const command of ['======== M104 S400 ========','==== G1 X0 ====','=== T0 ===','========','= =','M9711 M0 E2 Z1.4 S11 C10 O0 T3000','M9711 M0 E-1 Z1.4 S11 C10 O0 T3000','M9711 M0 E0.5 Z1.4 S11 C10 O0 T3000','M9711 M0 E0 Z1.4 S11 C10 O0 T3000 P1','M9711 E0 Z1.4 S11 C10 O0 T3000','M9711 M0 Z1.4 S11 C10 O0 T3000','M9711 M0 E0 Z1.4 S12 C10 O0 T3000','M9711 M0 E0 Z1.4 S11 C10 O0','M9711 M0 E0 Z1.4 S11 C10 O0 T3000 M104 S400','M9711 M0 E0 Z{layer_z} S11 C10 O0 T3000','M104 S220 N2','M104 S220 N-1','M104 S220 N0.5','M104 S220 N','M140 S55 N0','M191 S40 N0','M104 S400 N0','M104 T1 S400 N0','M109 R400 N1'])
+    await assert.rejects(inspect(t,x2dHeader()+command+'\n',{model:'x2d'}),/unsupported|syntax|parameter|temperature|limit|nozzle|dynamic|multiple/i,command);
+});
+test('pinned official X2D 02.08 change-filament and timelapse templates are inspected literally',async t=>{
+  // BambuStudio v02.08.02.61, resources/profiles/BBL/machine/Bambu Lab X2D 0.4 nozzle template <name>.json
+  const hashes={change_filament_gcode:'0c10a06ad5f6fb9062082b10edaab5ce465962db1dc2d6ffdccea0f0409748d1',time_lapse_gcode:'65b30d1bfb5f2d5043e7da71cade5c1e561fa596029d9fcd0a171835a5e6a542'};
+  const lines=[];
+  for(const [name,hash] of Object.entries(hashes)) {
+    const bytes=await fs.readFile(new URL(`../fixtures/x2d-02.08/${name}.json`,import.meta.url));
+    assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'),hash,name);
+    lines.push(...JSON.parse(bytes)[name].split('\n').map(l=>l.trim()).filter(l=>/^(?:=|M9711\s|M620 |M621 |M620\.22|M104|M109)/.test(l)));
+  }
+  assert.ok(lines.includes('======== X2D filament_change gcode =========='),'bare banner is in the pinned template');
+  assert.equal(lines.filter(l=>l.startsWith('M9711')).length,2,'both M9711 forms are in the pinned template');
+  // Substitute safe declared-PLA example values; this is offline template inspection,
+  // not macro execution or a claim that a slicer or printer ran these lines.
+  const expand=line=>{for(let pass=0;pass<3;pass++) line=line.replace(/\{[^{}]*\}|\[[^\[\]]*\]/g,expr=>/timelapse_type/.test(expr)?'0':/extruder_id/.test(expr)?'0':/pos_x/.test(expr)?'205':/pos_y/.test(expr)?'162':/layer_z/.test(expr)?'1.4':/next_hotend/.test(expr)?'-1':/filament_id/.test(expr)?'0':/temp/.test(expr)?'220':'0');return line;};
+  const r=await inspect(t,x2dHeader()+lines.map(expand).join('\n')+'\nM104 S220\n',{model:'x2d'});
+  assert.equal(r.maxNozzleTemperature,220);assert.deepEqual(r.usedFilamentPositions,[0]);
+  t.diagnostic(`Parsed ${lines.length} literal X2D template lines with safe example substitutions`);
 });

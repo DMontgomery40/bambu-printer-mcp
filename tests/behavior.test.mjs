@@ -13,7 +13,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import JSZip from "jszip";
-import { hasAmsMappingInput, normalizeAmsMappingObject } from "../dist/ams-mapping.js";
+import { bridgeAmsMapping2Entry, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue } from "../dist/ams-mapping.js";
 import { buildBambuConnectImportUrl } from "../dist/bambu-connect.js";
 import {
   buildBambuNativeFanCommand,
@@ -1215,6 +1215,70 @@ test("ams_mapping object preserves filament-position order instead of tray sorti
     [5, 2],
     "numeric object keys must drive position order before tray value order"
   );
+});
+
+test("dual-nozzle tray values admit 255 as the right/main external spool; single-nozzle values do not", () => {
+  assert.equal(normalizeBridgeAmsTrayValue(255, "ams_slots[0]", { dualNozzle: true }), 255);
+  assert.equal(normalizeBridgeAmsTrayValue("254", "ams_slots[0]", { dualNozzle: true }), 254);
+  assert.throws(() => normalizeBridgeAmsTrayValue(255, "ams_slots[0]"), /128-254/);
+  assert.throws(() => normalizeBridgeAmsTrayValue(255, "ams_slots[0]", {}), /128-254/);
+  assert.throws(() => normalizeBridgeAmsTrayValue(256, "ams_slots[0]", { dualNozzle: true }), /255/);
+  assert.deepEqual(normalizeAmsMappingObject({ 0: 255, 1: 0 }, "ams_mapping", { dualNozzle: true }), [255, 0]);
+  assert.throws(() => normalizeAmsMappingObject({ 0: 255, 1: 0 }), /128-254/);
+  // Bambu Studio sends virtual trays as ams_id 254/255 with slot_id 0; unused stays {255,255}.
+  assert.deepEqual(bridgeAmsMapping2Entry(255, true), { ams_id: 255, slot_id: 0 });
+  assert.deepEqual(bridgeAmsMapping2Entry(255, false), { ams_id: 255, slot_id: 255 });
+  assert.deepEqual(bridgeAmsMapping2Entry(254, true), { ams_id: 254, slot_id: 254 });
+  assert.deepEqual(bridgeAmsMapping2Entry(-1, true), { ams_id: 255, slot_id: 255 });
+  assert.deepEqual(bridgeAmsMapping2Entry(131, true), { ams_id: 128, slot_id: 3 });
+});
+
+test("H2D project_file sends both external spools unchanged and encodes 255 as the main virtual slot", async () => {
+  const threeMfPath = await writeSliced3mfFixture({ name: "h2d-dual-external", bambuModel: "h2d", bedType: "Textured PEI Plate", projectFilamentTypes: ["PLA", "PLA", "PLA", "PLA"], plateFilamentIds: [0, 1] });
+  const bambu = new BambuImplementation(async () => true);
+  stubFreshSafetyStatus(bambu, "h2d");
+  const baseStatus = bambu.getSafetyStatus;
+  let virSlot = [{ id: "254", tray_type: "PLA" }, { id: "255", tray_type: "PLA" }];
+  bambu.getSafetyStatus = async (...args) => { const status = await baseStatus(...args); status.raw.vir_slot = virSlot; return status; };
+  let publishedPayload = null;
+  bambu.ftpUpload = async () => {};
+  bambu.getPrinter = async () => ({ publish: async (payload) => { publishedPayload = payload; } });
+  try {
+    await bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsMapping: [254, 255, -1, -1], bedType: "Textured PEI Plate" });
+    assert.deepEqual(publishedPayload.print.ams_mapping, [254, 255, -1, -1]);
+    assert.deepEqual(publishedPayload.print.ams_mapping2, [
+      { ams_id: 254, slot_id: 254 },
+      { ams_id: 255, slot_id: 0 },
+      { ams_id: 255, slot_id: 255 },
+      { ams_id: 255, slot_id: 255 },
+    ]);
+    publishedPayload = null;
+    await bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external-slots", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsSlots: [255, 254], bedType: "Textured PEI Plate" });
+    assert.deepEqual(publishedPayload.print.ams_mapping, [255, 254, -1, -1]);
+    publishedPayload = null;
+    virSlot = [{ id: "254", tray_type: "PLA" }, { id: "255", tray_type: "PETG" }];
+    await assert.rejects(bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external-bad", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsMapping: [254, 255, -1, -1], bedType: "Textured PEI Plate" }), /PETG|material/i);
+    assert.equal(publishedPayload, null, "a contradicted main external spool must not publish");
+    await assert.rejects(bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external-range", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsMapping: [254, 256, -1, -1], bedType: "Textured PEI Plate" }), /255/);
+  } finally {
+    fs.rmSync(threeMfPath, { force: true });
+  }
+});
+
+test("single-nozzle H2S project_file keeps rejecting tray 255", async () => {
+  const threeMfPath = await writeSliced3mfFixture({ name: "h2s-255" });
+  const bambu = new BambuImplementation(async () => true);
+  stubFreshSafetyStatus(bambu, "h2s");
+  let published = false;
+  bambu.ftpUpload = async () => {};
+  bambu.getPrinter = async () => ({ publish: async () => { published = true; } });
+  try {
+    await assert.rejects(bambu.print3mf("127.0.0.1", "0938TEST0000000", "TEST_TOKEN", { projectName: "h2s-255", bambuModel: "h2s", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsMapping: [-1, 255, -1, -1], bedType: "supertack_plate" }), /128-254/);
+    await assert.rejects(bambu.print3mf("127.0.0.1", "0938TEST0000000", "TEST_TOKEN", { projectName: "h2s-255-slots", bambuModel: "h2s", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsSlots: [255], bedType: "supertack_plate" }), /128-254/);
+    assert.equal(published, false);
+  } finally {
+    fs.rmSync(threeMfPath, { force: true });
+  }
 });
 
 test("ams_mapping input treats empty arrays and objects as absent", () => {

@@ -21,6 +21,12 @@ export declare const MACHINE_LIMITS: Readonly<Record<string, {
     chamber: number;
     volume: readonly number[];
 }>>;
+/** Printers with two physical nozzles. Bambu Studio numbers the right/main nozzle 0
+ * (MAIN_EXTRUDER_ID) and the left/deputy nozzle 1 (DEPUTY_EXTRUDER_ID), and reports one
+ * virtual external-spool slot per nozzle: 255 (VIRTUAL_TRAY_MAIN_ID) and 254
+ * (VIRTUAL_TRAY_DEPUTY_ID). The single-nozzle H2S is deliberately absent. */
+export declare const DUAL_NOZZLE_MODELS: ReadonlySet<string>;
+export declare function isDualNozzleModel(model: unknown): boolean;
 export declare function normalizeModel(value: unknown): string | undefined;
 export declare function normalizeMaterial(value: unknown): string | undefined;
 export declare function validateTemperature(component: 'nozzle' | 'bed' | 'chamber', value: unknown, model: string, materials?: string[]): number;
