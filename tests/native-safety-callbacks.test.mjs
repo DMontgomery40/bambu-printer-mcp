@@ -13,7 +13,7 @@ function setup(t, raw = {}) {
   });
   let confirmations = 0, reads = 0;
   const printer = new BambuImplementation(async () => { confirmations++; return true; });
-  const report = { model: "x2d", gcode_state: "IDLE", nozzle_diameter: ["0.4", "0.4"], print_error: 0, hms: [], ...raw };
+  const report = { vir_slot: [{id:255,tray_type:"PLA"},{id:254,tray_type:"PLA"}], model: "x2d", gcode_state: "IDLE", nozzle_diameter: ["0.4", "0.4"], print_error: 0, hms: [], ...raw };
   printer.getSafetyStatus = async () => {
     reads++;
     return { connected: true, serial, model: report.model, status: report.gcode_state, raw: structuredClone(report),
@@ -69,7 +69,7 @@ for (const [label, changed, error] of [
 ]) test(`native resume rechecks ${label} at helper dispatch`, async t => {
   const s = setup(t, { gcode_state: "PAUSE", gcode_file: "cache/checked.3mf" });
   s.printer.recordCheckedJob(host, serial, "cache/checked.3mf", {
-    model: "x2d", nozzleDiameters: [0.4, 0.4], materials: ["PLA"], usedFilamentPositions: [0], useAMS: false,
+    model: "x2d", nozzleDiameters: [0.4, 0.4], materials: ["PLA"], usedFilamentPositions: [0], filamentNozzleIndices: [0], amsMapping: [255], useAMS: false,
   });
   let sent = false;
   await assert.rejects(s.printer.resumeJob(host, serial, token, async (_active, beforeDispatch) => {

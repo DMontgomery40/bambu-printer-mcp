@@ -16,6 +16,8 @@ export interface PrintFileInspection {
   selectsAms: boolean;
   nozzleTypes?: string[];
   nozzleFlows?: string[];
+  /** Physical nozzle index for each declared filament, composed from the selected plate headers. */
+  filamentNozzleIndices?: number[];
 }
 type Metadata = Record<string, unknown>;
 const NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
@@ -238,6 +240,22 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
   const materials=consistent(metadataValues(metadata,['filament_type']),value=>{
     const values=list(value);return values.length && values.every(v=>!!normalizeMaterial(v))?values.map(v=>normalizeMaterial(v)!):undefined;
   },'filament material');
+  // GCode.cpp uses 1-based filament_map logical extruders and then indexes
+  // physical_extruder_map to select the physical nozzle. Only this selected
+  // plate's headers establish that binding; unsliced project defaults do not.
+  const headerMap=(key:string,count:number,low:number,high:number):number[]|undefined=>{
+    const values=metadataValues(headers,[key]);
+    if(!values.length) return undefined;
+    return consistent(values,value=>{
+      const entries=list(value);
+      return entries.length===count && entries.every(v=>NUMBER.test(v) && Number.isInteger(Number(v)) && Number(v)>=low && Number(v)<=high)
+        ? entries.map(Number):undefined;
+    },key.replace(/_/g,' '));
+  };
+  const physicalExtruderMap=headerMap('physical_extruder_map',nozzleDiameters.length,0,dualNozzle?Math.min(nozzleDiameters.length,2)-1:nozzleDiameters.length-1);
+  if(physicalExtruderMap && new Set(physicalExtruderMap).size!==physicalExtruderMap.length) fail('physical extruder map must be a complete permutation');
+  const filamentMap=headerMap('filament_map',materials.length,1,nozzleDiameters.length);
+  const filamentNozzleIndices=filamentMap && physicalExtruderMap ? filamentMap.map(logical=>physicalExtruderMap[logical-1]):undefined;
   const bedValues=metadataValues([...metadata,plate],['curr_bed_type','bed_type']);
   const bedType=bedValues.length?consistent(bedValues,normalizeBed,'bed type'):undefined;
   if(options.bedType && (!bedType || normalizeBed(options.bedType)!==bedType)) return fail('selected bed type cannot be verified or contradicts the sliced file; re-slice with the intended bed');
@@ -279,12 +297,11 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
     try {
       if(isLayerMarker(lines[index]) || /^\s*;\s*MACHINE_START_GCODE_END\s*$/i.test(lines[index])) closeStartupWindow();
       let line=stripComments(lines[index]);if(!line||line==='%') continue;
-      // Official dual-nozzle Bambu Studio templates emit literal banner separators
-      // without a semicolon: H2C `========== record data ==========` and the X2D
-      // change_filament_gcode `======== X2D filament_change gcode ==========`. They are
-      // comments to the firmware, so they are skipped only on those models and only
-      // when nothing between the rules resembles a G/M/T command.
-      if(/^=+ .* =+$/.test(line) && dualNozzle && !/[GMT]\s*\d/i.test(line)) continue;
+      // Accept only the exact vendor banners in their documented model/scope.
+      // X2D emits its filament-change banner throughout a print; H2C's record
+      // separator stays inside its explicitly bounded startup block.
+      if(line==='======== X2D filament_change gcode ==========' && model==='x2d') continue;
+      if(line==='========== record data ==========' && h2cStartup(index)) continue;
       line=line.replace(/^N\d+\s*/i,'').replace(/\*\d+\s*$/,'');
       if(/[{}\[\]#]/.test(line)) fail('unresolved dynamic command syntax');
       if(/^SYNC(?=$|\s)/i.test(line)) {
@@ -366,17 +383,17 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
         // only for nozzle heaters, and only within the declared nozzle count.
         const nozzleIndex=['M104','M109'].includes(code) && dualNozzle;
         for(const key of args.keys()) if(!'SRTA'.includes(key) && !(key==='H' && vendorWait) && !(key==='N' && nozzleIndex)) fail(`unsupported ${code} temperature parameter ${key}`);
-        if(args.has('N') && (!Number.isInteger(args.get('N')) || args.get('N')!<0 || args.get('N')!>=nozzleDiameters.length)) fail(`unsupported ${code} nozzle index N`);
+        if(args.has('N') && (!Number.isInteger(args.get('N')) || args.get('N')!<0 || args.get('N')!>=Math.min(nozzleDiameters.length,2))) fail(`unsupported ${code} nozzle index N`);
         if(args.has('H') && (!Number.isFinite(args.get('H')) || args.get('H')!<0 || args.get('H')!>300)) fail(`unsupported ${code} wait parameter H`);
         if(!args.has('S')&&!args.has('R')) fail(`missing ${code} temperature target`);
         const component= ['M104','M109'].includes(code)?'nozzle': ['M140','M190'].includes(code)?'bed':'chamber';
         // Heater T is a physical nozzle, unlike standalone remapped T filament selection.
         // Without a verified per-filament nozzle map, apply all possible materials.
         if(args.has('T') && (!Number.isInteger(args.get('T')) || args.get('T')!<0 || args.get('T')!>=nozzleDiameters.length)) fail('physical heater target has no declared nozzle');
-        const position= args.has('T') ? undefined : active;
+        const position= args.has('T') || args.has('N') ? undefined : active;
         const commonFlush=code==='M109' && args.size===1 && args.get('S')===290 && model==='x1e' && !depositionStarted && !commonFlushUsed && boundedX1ePurge(lines,index);
         if(commonFlush) commonFlushUsed=true;
-        for(const key of ['S','R']) if(args.has(key)) heat(component,args.get(key)!,position,args.has('T') || args.has('A'),commonFlush);
+        for(const key of ['S','R']) if(args.has(key)) heat(component,args.get(key)!,position,args.has('T') || args.has('N') || args.has('A'),commonFlush);
       } else if(code==='M620' || code==='M621') {
         const args=parameters(argumentsText,model==='x2d'?'MAB':model==='h2c'?'MAN':'MA');
         if(args.has('N') && (code!=='M620' || !h2cStartup(index) || args.size!==1 || !Number.isNaN(args.get('N')!))) fail('unsupported H2C startup hotend-remap flag');
@@ -475,5 +492,5 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
   }
   if(!commandCount) return fail('selected G-code contains no printable commands');
   if(!used.size) materials.forEach((_,index)=>used.add(index));
-  return {model,nozzleDiameters,materials,usedFilamentPositions:[...used].sort((a,b)=>a-b),plateInternalPath,sha256,maxNozzleTemperature,maxBedTemperature,maxChamberTemperature,bedType,selectsAms,nozzleTypes,nozzleFlows};
+  return {model,nozzleDiameters,materials,usedFilamentPositions:[...used].sort((a,b)=>a-b),plateInternalPath,sha256,maxNozzleTemperature,maxBedTemperature,maxChamberTemperature,bedType,selectsAms,nozzleTypes,nozzleFlows,filamentNozzleIndices};
 }

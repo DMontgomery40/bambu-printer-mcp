@@ -16,14 +16,14 @@ process.env.BAMBU_DISPATCH_CHECK_MS = "0";
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const unsupportedX2D = /X2D direct printing is not supported.*native eMMC/i;
 
-async function fixture(t, sliced = true) {
+async function fixture(t, sliced = true, physicalNozzle = 0) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-x2d-safety-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, sliced ? "cube.gcode.3mf" : "cube.3mf");
   const zip = new JSZip();
   zip.file("3D/3dmodel.model", '<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources/><build/></model>');
   if (sliced) {
-    zip.file("Metadata/plate_1.gcode", "; printer_model = Bambu Lab X2D\n; nozzle_diameter = 0.4;0.4\n; filament_type = PLA\n; curr_bed_type = Textured PEI Plate\n; filament_colour = #FFFFFF\nG1 X0 Y0\n");
+    zip.file("Metadata/plate_1.gcode", `; filament_map = ${physicalNozzle + 1}\n; physical_extruder_map = 0,1\n` + "; printer_model = Bambu Lab X2D\n; nozzle_diameter = 0.4;0.4\n; filament_type = PLA\n; curr_bed_type = Textured PEI Plate\n; filament_colour = #FFFFFF\nG1 X0 Y0\n");
     zip.file("Metadata/plate_1.json", JSON.stringify({ filament_ids: [0] }));
   }
   await fs.writeFile(file, await zip.generateAsync({ type: "nodebuffer" }));
@@ -77,7 +77,7 @@ test("X2D MCP print requests stop before slicing, status, uploads, and connectio
     };
     BambuImplementation.prototype.getSafetyStatus = async (_host, serial) => ({
       connected:true, serial, model:'x2d', status:'IDLE',
-      raw:{model:'x2d',gcode_state:'IDLE',print_error:0,hms:[],nozzle_diameter:['0.4','0.4']},
+      raw:{model:'x2d',vir_slot:[{id:254,tray_type:'PLA'},{id:255,tray_type:'PLA'}],gcode_state:'IDLE',print_error:0,hms:[],nozzle_diameter:['0.4','0.4']},
       observation:{source:'mqtt',requestedAt:Date.now()-1,receivedAt:Date.now(),identitySource:'report'}
     });
   `;
@@ -138,7 +138,7 @@ test("X2D MCP print requests stop before slicing, status, uploads, and connectio
 
 // Dual external spools: 255 (right/main nozzle) and 254 (left/deputy nozzle) must reach the
 // configured bridge unchanged and still pass through the fresh per-nozzle material check.
-test("X2D bridge prints send tray 255 unchanged after the per-nozzle external spool check", async (t) => {
+test("X2D bridge prints encode verified external spools using the official virtual-slot contract", async (t) => {
   const { dir, file: slicedFile } = await fixture(t);
   const bridgeFile = path.join(dir, "bridge.jsonl");
   const virSlotFile = path.join(dir, "vir_slot.json");
@@ -157,7 +157,7 @@ test("X2D bridge prints send tray 255 unchanged after the per-nozzle external sp
     };
     BambuImplementation.prototype.getSafetyStatus = async (_host, serial) => ({
       connected:true, serial, model:'x2d', status:'IDLE',
-      raw:{model:'x2d',gcode_state:'IDLE',print_error:0,hms:[],nozzle_diameter:['0.4','0.4'],
+      raw:{model:'x2d',vir_slot:[{id:254,tray_type:'PLA'},{id:255,tray_type:'PLA'}],gcode_state:'IDLE',print_error:0,hms:[],nozzle_diameter:['0.4','0.4'],
         device:{nozzle:{info:[{id:0,diameter:0.4,type:'HH01',stat:0},{id:1,diameter:0.4,type:'HH01',stat:0}]}},
         vir_slot: JSON.parse(readFileSync(${JSON.stringify(virSlotFile)}, 'utf8'))},
       observation:{source:'mqtt',requestedAt:Date.now()-1,receivedAt:Date.now(),identitySource:'report'}
@@ -183,16 +183,23 @@ test("X2D bridge prints send tray 255 unchanged after the per-nozzle external sp
   } });
   const bridgeCalls = async () => (await fs.readFile(bridgeFile, "utf8")).trim().split("\n").filter(Boolean).map(JSON.parse);
 
-  for (const [index, args] of [{ ams_mapping: [255] }, { ams_slots: [255] }, { ams_mapping: [254] }].entries()) {
+  const left = await fixture(t, true, 1);
+  for (const [index, args] of [{ ams_mapping: [255] }, { ams_slots: [255] }, { ams_mapping: [254], three_mf_path: left.file }, { ams_mapping: [255], use_ams: false }].entries()) {
     const result = await print(args);
     assert.notEqual(result.isError, true, `${JSON.stringify(args)}: ${result.content?.[0]?.text}`);
     const calls = await bridgeCalls();
     assert.equal(calls.length, index + 1);
     assert.equal(calls[index].method, "net.start_local_print");
-    assert.equal(calls[index].payload.params.ams_mapping, JSON.stringify(Object.values(args)[0]), "external tray ids reach the bridge unchanged");
-    assert.equal(calls[index].payload.params.task_use_ams, true);
+    assert.equal(calls[index].payload.params.ams_mapping, "[-1]", "flat mapping uses the vendor virtual-tray sentinel");
+    assert.equal(calls[index].payload.params.task_use_ams, args.use_ams !== false);
+    assert.deepEqual(JSON.parse(calls[index].payload.params.ams_mapping2), [{ams_id:index === 2 ? 254 : 255,slot_id:0}]);
   }
   const before = (await bridgeCalls()).length;
+  for (const args of [{ ams_mapping: [254], use_ams: false }, { ams_slots: [254], use_ams: false }]) {
+    const result = await print(args);
+    assert.equal(result.isError, true, 'explicit wrong-nozzle spool must not be silently replaced');
+    assert.match(result.content?.[0]?.text || '', /nozzle|binding|spool/i);
+  }
   for (const args of [{ ams_mapping: [256] }, { ams_slots: [256] }]) {
     const result = await print(args);
     assert.equal(result.isError, true, JSON.stringify(args));

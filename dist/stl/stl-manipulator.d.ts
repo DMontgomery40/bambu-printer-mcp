@@ -22,7 +22,7 @@ export type TransformationParams = {
     relative?: boolean;
     selectionBounds?: THREE.Box3;
 };
-export declare const SLICER_TYPES: readonly ["bambustudio", "orcaslicer", "orcaslicer-bambulab", "prusaslicer", "cura", "slic3r"];
+export declare const SLICER_TYPES: readonly ["bambustudio", "orcaslicer", "orcaslicer-bambulab", "orca-slicer-api", "prusaslicer", "cura", "slic3r"];
 export type SlicerType = typeof SLICER_TYPES[number];
 export declare function normalizeSlicerType(rawSlicerType: string): SlicerType;
 export declare function isBambuCompatibleSlicer(slicerType: SlicerType): boolean;

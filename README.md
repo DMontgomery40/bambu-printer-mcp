@@ -210,7 +210,7 @@ The optional FULU **BambuNetwork bridge** exposes `bambu_network_bridge_status`,
 - Start G-code files already stored on the printer
 - **Collar charm print wrapper** (`print_collar_charm`) — specialized two-color workflow with fixed tray policy for inner (black, AMS 1 slot 1) and outer (white, AMS 2 slot 1) charm parts
 - STL manipulation: scale, rotate, extend base, merge vertices, center at origin, lay flat, and inspect model info
-- Slice STL or 3MF files using an external CLI. BambuStudio, FULU, and Orca require the exact machine preset and resolve BBL dependencies before slicing; see [FULU/Orca CLI setup and validation limits](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#fulu-and-orca-cli-safety-limit).
+- Slice STL or 3MF files using an external CLI, or use the optional [`orca-slicer-api` backend](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md) in a separate container without a local slicer executable. Remote slicing requires a matching read-only Orca profile tree and currently supports one filament slot and one selected plate. BambuStudio, FULU, and Orca require the exact machine preset and resolve BBL dependencies before slicing; see [FULU/Orca CLI setup and validation limits](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#fulu-and-orca-cli-safety-limit).
 - Inspect slicer settings from a saved 3MF template or extracted profile via `get_slice_settings`
 - Enumerate saved slicing templates from the local registry via `list_templates`
 - Save templates into the local registry via `save_template`
@@ -279,7 +279,7 @@ If you are using the direct-feed spool holder (no AMS attached) or want to bypas
 
 For H2 projects with declared filaments, also provide the required mapping; `use_ams: false` alone does not remove the firmware's mapping requirement. See [`print_3mf`](#print_3mf).
 
-Dual-nozzle printers (H2D, H2D Pro, H2C, X2D) have two external spool holders, and the printer reports one virtual slot per nozzle. Use Bambu Studio's ids in `ams_slots`/`ams_mapping`: `254` is the left/deputy nozzle's external spool and `255` the right/main nozzle's. The sliced plate's `filament_map` header (`1` = left, `2` = right) tells you which nozzle each filament was sliced for. Single-nozzle printers keep `254` as their only external tray.
+Dual-nozzle printers (H2D, H2D Pro, H2C, X2D) have two external spool holders, and the printer reports one virtual slot per nozzle. Use Bambu Studio's ids in `ams_slots`/`ams_mapping`: `254` is the left/deputy nozzle's external spool and `255` the right/main nozzle's. The server composes the selected plate's `filament_map` with `physical_extruder_map` to verify each filament's physical nozzle (`0` = right, `1` = left), and requires the matching fresh `vir_slot` report. An explicit external-spool mapping is preserved with `use_ams: false`; a missing mapping is derived only from these inspected headers. Single-nozzle printers keep `254` as their only external tray.
 
 ### Auto-match AMS by RFID
 

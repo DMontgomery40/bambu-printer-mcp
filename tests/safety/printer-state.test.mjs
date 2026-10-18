@@ -36,7 +36,7 @@ const rawPrinter = (publish) => {
 test('accepts observed model aliases and a manually declared external material', () => {
   assert.doesNotThrow(() => check(fresh()));
   assert.doesNotThrow(() => check(fresh({model_id:undefined,model:'Bambu Lab A1 mini'}), req({model:'a1mini'})));
-  assert.doesNotThrow(() => check(fresh({model_id:undefined,model:'H2D Pro'}), req({model:'h2dpro',nozzleDiameters:[]})));
+  assert.doesNotThrow(() => check(fresh({model_id:undefined,model:'H2D Pro'}), req({model:'h2dpro',nozzleDiameters:[],verifyMaterials:false})));
 });
 test('ignores a print-job id in model_id when model or returned serial identifies X2D', () => {
   const requirements = req({model:'x2d',nozzleDiameters:[],verifyMaterials:false});
@@ -73,10 +73,10 @@ test('diameter must be reported and match; bed-only state reads may omit diamete
 });
 test('matches used nozzles by index rather than accepting one matching nozzle among multiple', () => {
   const status = fresh({model_id:'O1D',nozzle_diameter:undefined,device:{nozzle:{info:[{id:0,diameter:0.4,type:'HH01',stat:0},{id:1,diameter:0.6,type:'HS01',stat:0}]}}});
-  assert.doesNotThrow(() => check(status,req({model:'h2d',nozzleDiameters:[0.4,0.6]})));
+  assert.doesNotThrow(() => check(status,req({model:'h2d',nozzleDiameters:[0.4,0.6],verifyMaterials:false})));
   assert.throws(() => check(status,req({model:'h2d',nozzleDiameters:[0.4,0.4]})), /nozzle|diameter/i);
   assert.throws(() => check(status,req({model:'h2d',nozzleDiameters:[0.4]})), /nozzle|ambiguous/i);
-  assert.doesNotThrow(() => check(status,req({model:'h2d',nozzleDiameters:[0.6],usedNozzleIndices:[1],nozzleFlows:['Standard']})));
+  assert.doesNotThrow(() => check(status,req({model:'h2d',nozzleDiameters:[0.6],usedNozzleIndices:[1],nozzleFlows:['Standard'],verifyMaterials:false})));
   assert.throws(() => check(status,req({model:'h2d',nozzleDiameters:[0.6],usedNozzleIndices:[1],nozzleFlows:['High Flow']})), /flow/i);
 });
 test('reported type, flow, absent or abnormal multi nozzle state cannot contradict job', () => {
@@ -158,7 +158,7 @@ test('old raw observations and fresh partial error reports cannot satisfy a new 
 
 test('a scalar file diameter is accepted only when every fresh physical nozzle matches', () => {
   const device={nozzle:{info:[{id:0,diameter:0.4,type:'HH01',stat:0},{id:1,diameter:0.4,type:'HH01',stat:0}]}};
-  assert.doesNotThrow(() => check(fresh({model_id:'O1D',device}),req({model:'h2d'})));
+  assert.doesNotThrow(() => check(fresh({model_id:'O1D',device}),req({model:'h2d',verifyMaterials:false})));
 });
 test('modern external spool reports cannot be hidden by a matching legacy tray field', () => {
   assert.throws(() => check(fresh({vt_tray:{tray_type:'PLA'},vir_slot:[{id:'254',tray_type:'PETG'}]})),/material/i);
@@ -230,7 +230,7 @@ test('official H2C and H2D Pro returned serials agree with declared identity and
   for(const [prefix,model,modelId,other] of [['31B','h2c','O1C2','O1E'],['239','h2dpro','O1E','O1C2']]) {
     const serial=prefix+'TEST';
     const status=fresh({model_id:modelId,modules:[{name:'ota',sn:serial}]},{serial});
-    assert.doesNotThrow(()=>check(status,req({model,serial,nozzleDiameters:[]})));
+    assert.doesNotThrow(()=>check(status,req({model,serial,nozzleDiameters:[],verifyMaterials:false})));
     assert.throws(()=>check(fresh({model_id:other,modules:[{name:'ota',sn:serial}]},{serial}),req({model,serial,nozzleDiameters:[]})),/identity|conflict|model/i);
     assert.throws(()=>check(fresh({model_id:undefined}),req({model,serial,nozzleDiameters:[]})),/identity|model/i);
   }
@@ -240,22 +240,45 @@ test('official H2C and H2D Pro returned serials agree with declared identity and
 // Studio's VIRTUAL_TRAY_MAIN_ID (255, right/main) and VIRTUAL_TRAY_DEPUTY_ID (254, left/deputy).
 const dualNozzleInfo={nozzle:{info:[{id:0,diameter:0.4,type:'HH01',stat:0},{id:1,diameter:0.4,type:'HH01',stat:0}]}};
 const x2d=(vir_slot,raw={})=>fresh({model_id:undefined,model:'X2D',device:dualNozzleInfo,ams:{ams:[{id:'0',tray:[0,1,2,3].map(id=>({id:String(id),tray_type:'PLA'}))}]},...(vir_slot===undefined?{}:{vir_slot}),...raw});
-const x2dReq=(extra={})=>req({model:'x2d',nozzleDiameters:[0.4,0.4],materials:['PLA','PLA','PLA','PLA','PLA'],useAMS:true,amsMapping:[0,1,2,3,255],...extra});
+const x2dReq=(extra={})=>req({model:'x2d',nozzleDiameters:[0.4,0.4],materials:['PLA','PLA','PLA','PLA','PLA'],useAMS:true,amsMapping:[0,1,2,3,255],filamentNozzleIndices:[0,0,0,0,0],...extra});
 test('dual-nozzle printers select the external spool slot by id: 255 right/main and 254 left/deputy', () => {
   const both=[{id:'254',tray_type:'PLA'},{id:'255',tray_type:'PLA'}];
   assert.doesNotThrow(() => check(x2d(both),x2dReq()));
-  assert.doesNotThrow(() => check(x2d(both),x2dReq({amsMapping:[0,1,2,3,254]})));
-  assert.doesNotThrow(() => check(x2d(both),x2dReq({amsMapping:[254,255,-1,-1,-1],usedFilamentPositions:[0,1]})));
+  assert.doesNotThrow(() => check(x2d(both),x2dReq({amsMapping:[0,1,2,3,254],filamentNozzleIndices:[0,0,0,0,1]})));
+  assert.doesNotThrow(() => check(x2d(both),x2dReq({amsMapping:[254,255,-1,-1,-1],usedFilamentPositions:[0,1],filamentNozzleIndices:[1,0]})));
   const mixed=[{id:'254',tray_type:'PLA'},{id:'255',tray_type:'PETG'}];
-  assert.doesNotThrow(() => check(x2d(mixed),x2dReq({amsMapping:[0,1,2,3,254]})));
+  assert.doesNotThrow(() => check(x2d(mixed),x2dReq({amsMapping:[0,1,2,3,254],filamentNozzleIndices:[0,0,0,0,1]})));
   assert.throws(() => check(x2d(mixed),x2dReq()),/PETG|material/i);
   assert.throws(() => check(x2d([{id:'254',tray_type:'PLA'}]),x2dReq()),/255/i);
   assert.throws(() => check(x2d([{id:'255',tray_type:'PLA'},{id:'255',tray_type:'PLA'}]),x2dReq()),/ambiguous/i);
   assert.throws(() => check(x2d(undefined),x2dReq()),/255/i);
   assert.throws(() => check(x2d(undefined,{vt_tray:{tray_type:'PLA'}}),x2dReq()),/255/i);
-  assert.doesNotThrow(() => check(x2d(undefined,{vt_tray:{tray_type:'PLA'}}),x2dReq({amsMapping:[0,1,2,3,254]})));
+  assert.throws(() => check(x2d(undefined,{vt_tray:{tray_type:'PLA'}}),x2dReq({amsMapping:[0,1,2,3,254],filamentNozzleIndices:[0,0,0,0,1]})),/vir_slot/i);
   assert.throws(() => check(x2d(both),x2dReq({amsMapping:[0,1,2,3,256]})),/mapping/i);
-  for(const model of ['h2d','h2c']) assert.doesNotThrow(() => check(fresh({model_id:undefined,model:model.toUpperCase(),device:dualNozzleInfo,vir_slot:both}),req({model,nozzleDiameters:[0.4,0.4],useAMS:true,amsMapping:[255]})),model);
+  for(const model of ['h2d','h2c']) assert.doesNotThrow(() => check(fresh({model_id:undefined,model:model.toUpperCase(),device:dualNozzleInfo,vir_slot:both}),req({model,nozzleDiameters:[0.4,0.4],useAMS:true,amsMapping:[255],filamentNozzleIndices:[0]})),model);
+});
+test('dual-nozzle deputy spool cannot borrow the legacy main-spool material report', () => {
+  assert.throws(() => check(x2d(undefined,{vt_tray:{tray_type:'PLA'}}),
+    x2dReq({materials:['PLA'],usedFilamentPositions:[0],amsMapping:[254],filamentNozzleIndices:[1]})),/per-nozzle|vir_slot/i);
+});
+test('external-only dual-nozzle jobs validate the explicitly selected spool instead of slot 254', () => {
+  const both=[{id:'254',tray_type:'PLA'},{id:'255',tray_type:'PETG'}];
+  assert.throws(() => check(x2d(both),x2dReq({materials:['PLA'],usedFilamentPositions:[0],useAMS:false,amsMapping:[255],filamentNozzleIndices:[0]})),/PETG|material/i);
+});
+test('dual external spools require the inspected physical nozzle binding, and derive external-only defaults from it', () => {
+  const both=[{id:'254',tray_type:'PLA'},{id:'255',tray_type:'PETG'}];
+  const right={materials:['PETG'],usedFilamentPositions:[0],filamentNozzleIndices:[0]};
+  assert.equal(check(x2d(both),x2dReq({...right,useAMS:false,amsMapping:undefined})).filaments[0].trayIndex,255);
+  assert.equal(check(x2d(both),x2dReq({...right,useAMS:false,amsMapping:[255]})).filaments[0].trayIndex,255);
+  assert.equal(check(x2d(both),x2dReq({materials:['PLA'],usedFilamentPositions:[0],filamentNozzleIndices:[1],useAMS:false,amsMapping:undefined})).filaments[0].trayIndex,254);
+  for(const useAMS of [true,false]) {
+    assert.throws(() => check(x2d(both),x2dReq({...right,useAMS,amsMapping:[254]})),/does not feed physical nozzle/);
+    assert.throws(() => check(x2d(both),x2dReq({...right,useAMS,amsMapping:[255],filamentNozzleIndices:undefined})),/verified physical nozzle binding/);
+  }
+  assert.throws(() => check(x2d(both),x2dReq({...right,useAMS:false,amsMapping:undefined,filamentNozzleIndices:undefined})),/ambiguous.*filament_map/);
+  assert.throws(() => check(x2d(both),x2dReq({...right,useAMS:false,amsMapping:[0]})),/AMS trays require use_ams:true/);
+  // Missing bindings do not change ordinary AMS or single-nozzle material checks.
+  assert.doesNotThrow(() => check(x2d(both),x2dReq({materials:['PLA'],usedFilamentPositions:[0],amsMapping:[0],filamentNozzleIndices:undefined})));
 });
 test('single-nozzle printers still reject tray 255 and two external spool reports', () => {
   assert.throws(() => check(fresh({vir_slot:[{id:'255',tray_type:'PLA'}]}),req({useAMS:true,amsMapping:[255]})),/mapping/i);

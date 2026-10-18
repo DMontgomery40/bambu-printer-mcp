@@ -103,6 +103,8 @@ export interface PrinterStateRequirements {
   nozzleDiameters: number[];
   materials?: string[];
   usedFilamentPositions?: number[];
+  /** Verified physical nozzle index for each project filament, composed from the inspected plate mappings. */
+  filamentNozzleIndices?: number[];
   amsMapping?: number[];
   useAMS?: boolean;
   requireIdle?: boolean;
@@ -293,7 +295,7 @@ function externalTray(raw: Record<string,any>, trayIndex: number, model: string)
     if (dualNozzle && selected.length === 0 && slots.length > 0) throw new Error(`External spool ${trayIndex} is not in the fresh per-nozzle report; cannot verify the selected material.`);
     if (slots.length > 0) throw new Error("External spool report is ambiguous for this nozzle; cannot verify the selected material.");
   }
-  if (trayIndex === 255) throw new Error("Main-nozzle external spool 255 requires a fresh per-nozzle vir_slot report.");
+  if (dualNozzle) throw new Error(`Dual-nozzle external spool ${trayIndex} requires a fresh per-nozzle vir_slot report; legacy vt_tray cannot verify the selected nozzle.`);
   return object(raw.vt_tray) ? raw.vt_tray : undefined;
 }
 function mappedTray(raw: Record<string,any>, index: number): Record<string,any> {
@@ -368,13 +370,25 @@ export function validatePrinterState(status: any, requirements: PrinterStateRequ
     const materials = requirements.materials ?? [];
     const positions = requirements.usedFilamentPositions ?? materials.map((_, index) => index);
     // 255 is the right/main nozzle external spool only on dual-nozzle printers.
-    const maxTray = isDualNozzleModel(model) ? 255 : 254;
+    const dualNozzle = isDualNozzleModel(model);
+    const maxTray = dualNozzle ? 255 : 254;
     if (!positions.length) throw new Error("A declared material is required for each used filament or external spool.");
     for (const position of positions) {
       const material = normalizeMaterial(materials[position]);
       if (!Number.isInteger(position) || position < 0 || !material) throw new Error(`A known declared material is required for filament position ${position}.`);
-      const trayIndex = requirements.useAMS ? requirements.amsMapping?.[position] : 254;
+      const physicalNozzle = requirements.filamentNozzleIndices?.[position];
+      const externalForNozzle = physicalNozzle === 0 ? 255 : physicalNozzle === 1 ? 254 : undefined;
+      const trayIndex = requirements.useAMS || requirements.amsMapping !== undefined
+        ? requirements.amsMapping?.[position] : dualNozzle ? externalForNozzle : 254;
+      if (!requirements.useAMS && dualNozzle && requirements.amsMapping === undefined && externalForNozzle === undefined) {
+        throw new Error(`External spool for filament position ${position} is ambiguous; re-slice with complete filament_map and physical_extruder_map nozzle bindings or provide a verified sliced plate.`);
+      }
       if (trayIndex === undefined || !Number.isInteger(trayIndex) || trayIndex < 0 || trayIndex > maxTray) throw new Error(`Complete AMS mapping is required for filament position ${position}.`);
+      if (!requirements.useAMS && trayIndex < 254) throw new Error("External-spool printing requires an external spool mapping; AMS trays require use_ams:true.");
+      if (dualNozzle && trayIndex >= 254) {
+        if (externalForNozzle === undefined) throw new Error(`External spool ${trayIndex} needs a verified physical nozzle binding for filament position ${position}; re-slice with complete filament_map and physical_extruder_map metadata.`);
+        if (trayIndex !== externalForNozzle) throw new Error(`External spool ${trayIndex} does not feed physical nozzle ${physicalNozzle} for filament position ${position}; use spool ${externalForNozzle}.`);
+      }
       const tray = trayIndex >= 254 ? externalTray(raw,trayIndex,model) : mappedTray(raw,trayIndex);
       const reportedType = typeof tray?.tray_type === "string" ? tray.tray_type.trim() : "";
       if (reportedType && normalizeMaterial(reportedType) !== material) throw new Error(`Reported material ${reportedType} in slot ${trayIndex} contradicts declared ${materials[position]}.`);

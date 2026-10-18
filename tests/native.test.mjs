@@ -59,7 +59,7 @@ console.log('native_print result=0');
 `, { mode: 0o755 });
   const zip = new JSZip();
   zip.file("3D/3dmodel.model", '<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources/><build/></model>');
-  zip.file("Metadata/plate_1.gcode", `; printer_model = Bambu Lab X2D\n; nozzle_diameter = 0.4;0.4\n; filament_type = PLA\n; curr_bed_type = Textured PEI Plate\n; filament_colour = #FFFFFF\n${gcode}`);
+  zip.file("Metadata/plate_1.gcode", `; printer_model = Bambu Lab X2D\n; nozzle_diameter = 0.4;0.4\n; filament_type = PLA\n; filament_map = 1\n; physical_extruder_map = 1,0\n; curr_bed_type = Textured PEI Plate\n; filament_colour = #FFFFFF\n${gcode}`);
   zip.file("Metadata/plate_1.json", JSON.stringify({ filament_ids: [0] }));
   await fs.writeFile(file, await zip.generateAsync({ type: "nodebuffer" }));
   const preload = `
@@ -84,7 +84,7 @@ console.log('native_print result=0');
       record('status');
       const observedState = ${JSON.stringify(dispatchState)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchState)} : ${JSON.stringify(state)};
       return { connected:true, serial, model:'x2d', status:observedState,
-        raw: {serial,model:'x2d',gcode_state:observedState,print_error:${JSON.stringify(dispatchError)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchError)} : 0,hms:${JSON.stringify(hms)},nozzle_diameter:['0.4','0.4'],
+        raw: {serial,model:'x2d',vir_slot:[{id:254,tray_type:'PLA'},{id:255,tray_type:'PLA'}],gcode_state:observedState,print_error:${JSON.stringify(dispatchError)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchError)} : 0,hms:${JSON.stringify(hms)},nozzle_diameter:['0.4','0.4'],
           ams: { ams:[{id:'0',tray:[{id:'0',tray_type:'PLA'}]}, {id:'128',tray:[{id:'0',tray_type:'PLA'}]}] } },
         observation:{source:'mqtt',requestedAt:Date.now()-1,receivedAt:Date.now(),identitySource:'report'} };
     };
@@ -162,7 +162,7 @@ test("native AMS cannot silently fall back; explicit external-spool printing is 
   assert.notEqual(result.isError, true, JSON.stringify(result));
   const call = (await s.events()).find(e => e.kind === "helper");
   assert.equal(call.useAMS, "false");
-  assert.deepEqual(JSON.parse(call.mapping), [254]);
+  assert.deepEqual(JSON.parse(call.mapping), [-1]);
 });
 
 for (const [label, options, transport] of [

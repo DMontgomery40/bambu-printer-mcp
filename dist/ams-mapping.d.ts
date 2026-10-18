@@ -8,12 +8,11 @@ export declare function describeAmsTrayRange(options?: AmsTrayValueOptions): str
 export declare function normalizeBridgeAmsTrayValue(value: unknown, label: string, options?: AmsTrayValueOptions): number;
 export declare function normalizeAmsMappingObject(mapping: Record<string, unknown>, label?: string, options?: AmsTrayValueOptions): number[];
 export declare function hasAmsMappingInput(value: unknown): boolean;
-/** One `ams_mapping2` entry for a flat project-level tray value. Unused positions are
- * the firmware sentinel {255,255}. External spools keep the existing {254,254} form for
- * the (single or left/deputy) external spool; the right/main external spool 255 of a
- * dual-nozzle printer is sent as ams_id 255 with slot_id 0, the virtual-slot form Bambu
- * Studio builds (SelectMachine.cpp sets slot_id "0" for VIRTUAL_TRAY_* results), which
- * keeps it distinct from the unused sentinel. */
+/** Flat wire entries use -1 for dual-nozzle virtual trays; ams_mapping2 identifies their spool. */
+export declare function bridgeAmsMappingValue(value: number, dualNozzle?: boolean): number;
+/** Select an external spool only from a verified physical nozzle on dual-nozzle printers. */
+export declare function externalTrayForNozzle(nozzle: number | undefined, dualNozzle?: boolean): number;
+/** Virtual trays use slot zero on dual-nozzle printers; retain the historical single-nozzle form. */
 export declare function bridgeAmsMapping2Entry(value: number, dualNozzle?: boolean): {
     ams_id: number;
     slot_id: number;

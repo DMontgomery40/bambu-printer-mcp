@@ -8,7 +8,7 @@ import { Readable } from "node:stream";
 import { readSafe3mfArchive } from "../safety/archive.js";
 import { inspectPrintFile, type PrintFileInspection } from "../safety/print-file.js";
 import { isDualNozzleModel, normalizeModel, validateTemperature } from "../safety/limits.js";
-import { bridgeAmsMapping2Entry, describeAmsTrayRange } from "../ams-mapping.js";
+import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, describeAmsTrayRange } from "../ams-mapping.js";
 import { describeHmsKey, hiddenHmsKeys, hiddenHmsNotices, reportedHmsKey, validatePrinterState, manualHeatingRequirements, type PrinterStateRequirements } from "../safety/printer-state.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRemotePath, cancelPendingPrinterOperations } from "../safety/artifact.js";
 import { Client as FTPClient } from "basic-ftp";
@@ -800,7 +800,7 @@ export class BambuImplementation {
       );
       baseMapping = Array<number>(projectLen).fill(-1);
       positions.forEach((pos, i) => {
-        baseMapping[pos] = options.useAMS === false ? 254 : i;
+        baseMapping[pos] = options.useAMS === false ? externalTrayForNozzle(inspection.filamentNozzleIndices?.[pos], dualNozzle) : i;
       });
     }
 
@@ -899,7 +899,7 @@ export class BambuImplementation {
           project_id: submissionId,
           subtask_id: submissionId,
           task_id: submissionId,
-          ams_mapping: amsMapping,
+          ams_mapping: amsMapping.map(value => bridgeAmsMappingValue(value, dualNozzle)),
           ams_mapping2: amsMapping2,
         },
       };

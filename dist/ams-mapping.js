@@ -48,19 +48,28 @@ export function hasAmsMappingInput(value) {
         return Object.keys(value).length > 0;
     return value !== undefined && value !== null;
 }
-/** One `ams_mapping2` entry for a flat project-level tray value. Unused positions are
- * the firmware sentinel {255,255}. External spools keep the existing {254,254} form for
- * the (single or left/deputy) external spool; the right/main external spool 255 of a
- * dual-nozzle printer is sent as ams_id 255 with slot_id 0, the virtual-slot form Bambu
- * Studio builds (SelectMachine.cpp sets slot_id "0" for VIRTUAL_TRAY_* results), which
- * keeps it distinct from the unused sentinel. */
+/** Flat wire entries use -1 for dual-nozzle virtual trays; ams_mapping2 identifies their spool. */
+export function bridgeAmsMappingValue(value, dualNozzle = false) {
+    return dualNozzle && (value === 254 || value === 255) ? -1 : value;
+}
+/** Select an external spool only from a verified physical nozzle on dual-nozzle printers. */
+export function externalTrayForNozzle(nozzle, dualNozzle = false) {
+    if (!dualNozzle)
+        return 254;
+    if (nozzle === 0)
+        return 255;
+    if (nozzle === 1)
+        return 254;
+    throw new Error("External-spool printing requires inspected filament_map and physical_extruder_map nozzle bindings.");
+}
+/** Virtual trays use slot zero on dual-nozzle printers; retain the historical single-nozzle form. */
 export function bridgeAmsMapping2Entry(value, dualNozzle = false) {
     if (value < 0)
         return { ams_id: 255, slot_id: 255 };
     if (value === 255)
         return dualNozzle ? { ams_id: 255, slot_id: 0 } : { ams_id: 255, slot_id: 255 };
     if (value === 254)
-        return { ams_id: 254, slot_id: 254 };
+        return { ams_id: 254, slot_id: dualNozzle ? 0 : 254 };
     if (value >= 128)
         return { ams_id: 128, slot_id: value - 128 };
     return { ams_id: Math.floor(value / 4), slot_id: value % 4 };

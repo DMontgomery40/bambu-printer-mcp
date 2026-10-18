@@ -532,9 +532,6 @@ test('H2C startup forms reject other models, late commands, extra parameters and
   const forms=['M620 N','M104 O-80 A','M140 D55','M190 D55','M620.14 X95.5 Y336','G383.3 U140 L0','G383 O2 U140 L0','G383.7 U140 J0','========== record data =========='];
   for(const command of forms) {
     await assert.rejects(inspect(t,header()+'; EXECUTABLE_BLOCK_START\n'+command+'\n',{model:'p1s'}),/unsupported|syntax|missing/i,command);
-    // The bare banner separator is a comment on every dual-nozzle model (the X2D
-    // change_filament_gcode emits one at each filament change), so it is not startup-bound.
-    if(command.startsWith('=')) continue;
     await assert.rejects(inspect(t,h2cHeader()+'; EXECUTABLE_BLOCK_START\nM104 S220\n; MACHINE_START_GCODE_END\n'+command+'\n',{model:'h2c'}),/unsupported|syntax|missing|startup/i,command);
   }
   for(const command of ['M140 D130','M190 D130','M140 D55 S400','M104 O20 A','M104 O-80 A S330','G383.3 U400 L0','G383.3 U140 L8','G383.7 U140 J1','M620 N1','M620.14 X95 Y336 T400','M104 S330'])
@@ -584,9 +581,9 @@ test('X2D banner separators, M9711 timelapse and N nozzle index pass only on dua
   const source=x2dHeader()+'M104 T1 S25 N0\nM109 T0 S220 N1\n======== X2D filament_change gcode ==========\nM620 S0A B H-1\nM104 S220\nM621 S0A B\nM622 J1\nM9711 M0 E0 U205 V162 Z1.4 S11 C10 O0 T3000\nM9711 M1 E1 Z1.6 S11 C10 O0 T3000\nM9711 M0 E1 X205 Y162 Z1.8 S11 C10 O0 T3000\nM623\n';
   const r=await inspect(t,source,{model:'x2d'});
   assert.equal(r.maxNozzleTemperature,220);assert.deepEqual(r.usedFilamentPositions,[0]);
-  await assert.doesNotReject(inspect(t,header('H2D','PLA','0.4;0.4')+'M104 T1 S25 N0\n==== banner ====\nM9711 M0 E1 Z1.4 S11 C10 O0 T3000\nM104 S220\n',{model:'h2d'}));
-  // The released M9711 rule covers X2D and H2D; H2C keeps the banner and nozzle-index forms.
-  await assert.doesNotReject(inspect(t,header('H2C','PLA','0.4;0.4')+'M104 T1 S25 N0\n==== banner ====\nM104 S220\n',{model:'h2c'}));
+  await assert.doesNotReject(inspect(t,header('H2D','PLA','0.4;0.4')+'M104 T1 S25 N0\nM9711 M0 E1 Z1.4 S11 C10 O0 T3000\nM104 S220\n',{model:'h2d'}));
+  // The released M9711 rule covers X2D and H2D; H2C keeps the nozzle-index form.
+  await assert.doesNotReject(inspect(t,header('H2C','PLA','0.4;0.4')+'M104 T1 S25 N0\nM104 S220\n',{model:'h2c'}));
   for(const [model,nozzle] of [['P1S','0.4'],['H2S','0.4'],['A1','0.4'],['P2S','0.4']]) for(const command of ['======== X2D filament_change gcode ==========','M9711 M0 E0 U205 V162 Z1.4 S11 C10 O0 T3000','M104 S220 N0','M109 T0 S220 N0'])
     await assert.rejects(inspect(t,header(model,'PLA',nozzle)+command+'\n',{model:model.toLowerCase()}),/unsupported|syntax|multiple|parameter/i,model+' '+command);
   // A banner can never hide a command, M9711 keeps its official shape, N stays a declared nozzle, and N never relaxes heater limits.
@@ -610,4 +607,54 @@ test('pinned official X2D 02.08 change-filament and timelapse templates are insp
   const r=await inspect(t,x2dHeader()+lines.map(expand).join('\n')+'\nM104 S220\n',{model:'x2d'});
   assert.equal(r.maxNozzleTemperature,220);assert.deepEqual(r.usedFilamentPositions,[0]);
   t.diagnostic(`Parsed ${lines.length} literal X2D template lines with safe example substitutions`);
+});
+
+
+test('physical N heater targets cannot borrow an active ABS material to overheat a PLA nozzle',async t=>{
+  for(const command of ['M104 S290 N1','M109 R290 N1']) {
+    await assert.rejects(inspect(t,x2dHeader('ABS;PLA')+'T0\n'+command+'\n',{model:'x2d'}),/PLA|temperature|limit/i,command);
+  }
+  await assert.rejects(inspect(t,header('X2D','PLA','0.4;0.4;0.4')+'M104 S220 N2\n',{model:'x2d'}),/nozzle/i,'physical nozzle count remains two even with excess declarations');
+});
+
+test('only literal official X2D filament-change and startup-bound H2C banners pass',async t=>{
+  const banner='======== X2D filament_change gcode ==========';
+  await assert.doesNotReject(inspect(t,x2dHeader()+'M104 S220\n; LAYER:1\n'+banner+'\n',{model:'x2d'}));
+  for(const model of ['X2D','H2D','H2D Pro','H2C']) {
+    for(const invalid of ['==== banner ====','========== record data ==========']) {
+      await assert.rejects(inspect(t,header(model,'PLA','0.4;0.4')+invalid+'\nM104 S220\n',{model:model.toLowerCase().replace(/ /g,'')}),/syntax|unsupported/i,model+' '+invalid);
+    }
+    if(model!=='X2D') await assert.rejects(inspect(t,header(model,'PLA','0.4;0.4')+banner+'\nM104 S220\n',{model:model.toLowerCase().replace(/ /g,'')}),/syntax|unsupported/i);
+  }
+});
+
+test('selected plate filament and physical extruder headers compose a per-filament physical nozzle map',async t=>{
+  const source=x2dHeader('PLA;PLA;PLA;PLA;PLA')+'; filament_map = 1,1,1,1,2\n; physical_extruder_map = 1,0\nT4\nM104 S220\n';
+  const r=await inspect(t,source,{model:'x2d'});
+  assert.deepEqual(r.filamentNozzleIndices,[1,1,1,1,0]);
+  const selected=await inspect(t,'',{model:'x2d'}, {
+    'Metadata/project_settings.config':{printer_model:'Bambu Lab X2D',nozzle_diameter:['0.4','0.4'],filament_type:['PLA','PLA','PLA','PLA','PLA'],filament_map:['2','2','2','2','1'],physical_extruder_map:['0','1']},
+    'Metadata/plate_1.gcode':source,
+    'Metadata/plate_2.gcode':x2dHeader('PLA;PLA;PLA;PLA;PLA')+'; filament_map = 2,2,2,2,1\n; physical_extruder_map = 1,0\nT0\nM104 S220\n',
+  });
+  assert.deepEqual(selected.filamentNozzleIndices,[1,1,1,1,0],'unsliced project defaults and other plates do not override the inspected plate');
+  for(const metadata of ['', '; filament_map = 1,2\n', '; physical_extruder_map = 1,0\n']) {
+    const incomplete=await inspect(t,x2dHeader()+metadata+'T0\nM104 S220\n',{model:'x2d'});
+    assert.equal(incomplete.filamentNozzleIndices,undefined);
+  }
+});
+
+test('malformed or conflicting nozzle-binding headers cannot authorize physical spool selection',async t=>{
+  const valid='; filament_map = 1,2\n; physical_extruder_map = 1,0\n';
+  for(const metadata of [
+    '; filament_map = 1\n; physical_extruder_map = 1,0\n',
+    '; filament_map = 1,3\n; physical_extruder_map = 1,0\n',
+    '; filament_map = 1,0\n; physical_extruder_map = 1,0\n',
+    '; filament_map = 1,1.5\n; physical_extruder_map = 1,0\n',
+    '; filament_map = 1,2\n; physical_extruder_map = 0,0\n',
+    '; filament_map = 1,2\n; physical_extruder_map = 0\n',
+    '; filament_map = 1,2\n; physical_extruder_map = 0,2\n',
+    valid+'; filament_map = 2,1\n',
+    valid+'; physical_extruder_map = 0,1\n',
+  ]) await assert.rejects(inspect(t,x2dHeader()+metadata+'T0\nM104 S220\n',{model:'x2d'}),/filament map|physical extruder map|binding/i,metadata);
 });

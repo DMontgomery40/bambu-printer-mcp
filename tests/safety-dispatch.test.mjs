@@ -23,7 +23,7 @@ const token = "TEST_TOKEN";
 function safetyStatus({ model = "p1s", nozzle = "0.4", state = "IDLE", ...raw } = {}) {
   return {
     connected: true, model, status: state, serial,
-    raw: { model, gcode_state: state, nozzle_diameter: nozzle, print_error: 0, hms: [], ...raw },
+    raw: { model, ...(["h2d","h2dpro","h2c","x2d"].includes(model) ? {vir_slot:[{id:254,tray_type:"PLA"},{id:255,tray_type:"PLA"}]} : {}), gcode_state: state, nozzle_diameter: nozzle, print_error: 0, hms: [], ...raw },
     observation: { source: "mqtt", receivedAt: Date.now(), requestedAt: Date.now() - 1, identitySource: "report" },
   };
 }
@@ -33,7 +33,7 @@ async function fixture(t, { model = "p1s", nozzle = "0.4", nozzleDiameters, mate
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, raw ? "job.gcode" : "job.gcode.3mf");
   const nozzles = (nozzleDiameters ?? [nozzle]).map(String);
-  const content = `; printer_model = Bambu Lab ${model === "a1mini" ? "A1 mini" : model.toUpperCase()}\n; nozzle_diameter = ${nozzles.join(";")}\n; filament_type = ${material}\n; filament_colour = #FFFFFF\n; curr_bed_type = Textured PEI Plate\n${gcode}`;
+  const content = `; printer_model = Bambu Lab ${model === "a1mini" ? "A1 mini" : model.toUpperCase()}\n; nozzle_diameter = ${nozzles.join(";")}\n; filament_type = ${material}\n${nozzles.length === 2 ? `; filament_map = ${material.split(";").map(() => 1).join(",")}\n; physical_extruder_map = 1,0\n` : ""}; filament_colour = #FFFFFF\n; curr_bed_type = Textured PEI Plate\n${gcode}`;
   if (raw) await fs.writeFile(file, content);
   else {
     const zip = new JSZip();
@@ -343,7 +343,7 @@ async function interceptedMcp(t, { blockBridgeInitialization = false, realBridge
       const now = Date.now();
       const reported=fs.existsSync(${JSON.stringify(statusPath)}) ? JSON.parse(fs.readFileSync(${JSON.stringify(statusPath)},'utf8')) : {};
       return {connected:true, model:${JSON.stringify(model)}, status:reported.gcode_state??'IDLE', serial:${JSON.stringify(serial)},
-        raw:{model:${JSON.stringify(model)},gcode_state:'IDLE',nozzle_diameter:${JSON.stringify(String(nozzleDiameters[0]))},device:{nozzle:{info:${JSON.stringify(nozzleDiameters.map((diameter, id) => ({ id, diameter, type: "HH01", stat: 0 })))}}},print_error:0,hms:[],...${JSON.stringify(ams ? { ams } : {})},...reported},
+        raw:{model:${JSON.stringify(model)},...${JSON.stringify(['h2d','h2dpro','h2c','x2d'].includes(model) ? {vir_slot:[{id:254,tray_type:'PLA'},{id:255,tray_type:'PLA'}]} : {})},gcode_state:'IDLE',nozzle_diameter:${JSON.stringify(String(nozzleDiameters[0]))},device:{nozzle:{info:${JSON.stringify(nozzleDiameters.map((diameter, id) => ({ id, diameter, type: "HH01", stat: 0 })))}}},print_error:0,hms:[],...${JSON.stringify(ams ? { ams } : {})},...reported},
         observation:{source:'mqtt',requestedAt:now,receivedAt:now,identitySource:'report'}};
     };
     BambuNetworkBridge.prototype.ensureAgent = async () => {
@@ -501,7 +501,14 @@ for (const tool of ["print_3mf", "print_3mf_bambu_network"]) {
       const file = await fixture(t, { model: "h2d", nozzleDiameters: [0.4, 0.6] });
       const result = await client.callTool({ name: tool, arguments: { three_mf_path: file, bambu_model: "h2d", bed_type: "textured_plate", use_ams: false, ...nozzleArgs } });
       assert.notEqual(result.isError, true, result.content?.[0]?.text);
-      const events = (await fs.readFile(eventsPath, "utf8")).trim().split("\n").map(JSON.parse);
+      const beforeWrongSpool = await fs.readFile(eventsPath, "utf8");
+      for (const mapping of [{ams_mapping:[255]}, {ams_slots:[255]}]) {
+        const wrong = await client.callTool({name:tool,arguments:{three_mf_path:file,bambu_model:"h2d",bed_type:"textured_plate",use_ams:false,...nozzleArgs,...mapping}});
+        assert.equal(wrong.isError,true,'wrong-nozzle explicit spool must not be replaced');
+        assert.match(wrong.content?.[0]?.text ?? '',/nozzle|binding|spool/i);
+        assert.equal(await fs.readFile(eventsPath,"utf8"),beforeWrongSpool,'rejected mapping must not upload or dispatch');
+      }
+      const events = beforeWrongSpool.trim().split("\n").map(JSON.parse);
       if (tool === "print_3mf") {
         assert.deepEqual(events.map(event => event.action), ["upload", "publish"]);
         assert.equal(events[1].payload.print.command, "project_file");

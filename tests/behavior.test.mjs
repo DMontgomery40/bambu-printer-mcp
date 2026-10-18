@@ -55,6 +55,7 @@ async function writeSliced3mfFixture({
     `; filament_ids = ${projectFilamentIds.join(";")}`,
     `; filament_colour = ${projectFilamentColors.join(";")}`,
     `; filament_type = ${projectFilamentTypes.join(";")}`,
+    ...(nozzleDiameters.length === 2 ? [`; filament_map = ${projectFilamentTypes.map((_, i) => i === 1 ? 2 : 1).join(",")}`, "; physical_extruder_map = 1,0"] : []),
     "G1 X0 Y0",
     "",
   ].join("\n");
@@ -1240,12 +1241,12 @@ test("dual-nozzle tray values admit 255 as the right/main external spool; single
   // Bambu Studio sends virtual trays as ams_id 254/255 with slot_id 0; unused stays {255,255}.
   assert.deepEqual(bridgeAmsMapping2Entry(255, true), { ams_id: 255, slot_id: 0 });
   assert.deepEqual(bridgeAmsMapping2Entry(255, false), { ams_id: 255, slot_id: 255 });
-  assert.deepEqual(bridgeAmsMapping2Entry(254, true), { ams_id: 254, slot_id: 254 });
+  assert.deepEqual(bridgeAmsMapping2Entry(254, true), { ams_id: 254, slot_id: 0 });
   assert.deepEqual(bridgeAmsMapping2Entry(-1, true), { ams_id: 255, slot_id: 255 });
   assert.deepEqual(bridgeAmsMapping2Entry(131, true), { ams_id: 128, slot_id: 3 });
 });
 
-test("H2D project_file sends both external spools unchanged and encodes 255 as the main virtual slot", async () => {
+test("H2D project_file uses official virtual-spool wire mapping and validates nozzle binding", async () => {
   const threeMfPath = await writeSliced3mfFixture({ name: "h2d-dual-external", bambuModel: "h2d", bedType: "Textured PEI Plate", projectFilamentTypes: ["PLA", "PLA", "PLA", "PLA"], plateFilamentIds: [0, 1] });
   const bambu = new BambuImplementation(async () => true);
   stubFreshSafetyStatus(bambu, "h2d");
@@ -1257,16 +1258,19 @@ test("H2D project_file sends both external spools unchanged and encodes 255 as t
   bambu.getPrinter = async () => ({ publish: async (payload) => { publishedPayload = payload; } });
   try {
     await bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsMapping: [254, 255, -1, -1], bedType: "Textured PEI Plate" });
-    assert.deepEqual(publishedPayload.print.ams_mapping, [254, 255, -1, -1]);
+    assert.deepEqual(publishedPayload.print.ams_mapping, [-1, -1, -1, -1]);
     assert.deepEqual(publishedPayload.print.ams_mapping2, [
-      { ams_id: 254, slot_id: 254 },
+      { ams_id: 254, slot_id: 0 },
       { ams_id: 255, slot_id: 0 },
       { ams_id: 255, slot_id: 255 },
       { ams_id: 255, slot_id: 255 },
     ]);
     publishedPayload = null;
-    await bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external-slots", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsSlots: [255, 254], bedType: "Textured PEI Plate" });
-    assert.deepEqual(publishedPayload.print.ams_mapping, [255, 254, -1, -1]);
+    await bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external-slots", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsSlots: [254, 255], bedType: "Textured PEI Plate" });
+    assert.deepEqual(publishedPayload.print.ams_mapping, [-1, -1, -1, -1]);
+    publishedPayload = null;
+    await assert.rejects(bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "wrong-nozzle", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: false, amsSlots: [255, 254], bedType: "Textured PEI Plate" }), /nozzle|binding/i);
+    assert.equal(publishedPayload, null);
     publishedPayload = null;
     virSlot = [{ id: "254", tray_type: "PLA" }, { id: "255", tray_type: "PETG" }];
     await assert.rejects(bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external-bad", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsMapping: [254, 255, -1, -1], bedType: "Textured PEI Plate" }), /PETG|material/i);
