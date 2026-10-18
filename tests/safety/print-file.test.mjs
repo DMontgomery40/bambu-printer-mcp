@@ -485,6 +485,8 @@ test('X2D L-1 preheat keeps every declared material and hardware limit wherever 
     ['PETG;PETG','M620.17 T0 L-1',/nozzle\/material temperature mapping/],
     ['PETG;PETG','M620.17 T0 S230 L-1 P1',/unsupported M620.17 parameter P/],
   ]) await assert.rejects(inspect(t,header('X2D',materials,'0.4;0.4')+command+'\n',{model:'x2d'}),pattern,command);
+  // A file declaring more nozzles cannot widen T beyond the two physical nozzles.
+  await assert.rejects(inspect(t,header('X2D','PETG;PETG;PETG','0.4;0.4;0.4')+'M620.17 T2 S230 L-1\n',{model:'x2d'}),/nozzle\/material temperature mapping/,'T2 with three declared nozzles');
   // The all-material bound is never looser than an accepted L<position>, so a later idle preheat is checked, not refused.
   const later=await inspect(t,header('X2D','PETG;PETG','0.4;0.4')+'; CHANGE_LAYER\nG1 X5 Y5 E1\nM620.17 T0 S240 L-1\n',{model:'x2d'});
   assert.equal(later.maxNozzleTemperature,240);

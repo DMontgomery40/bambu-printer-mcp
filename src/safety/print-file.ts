@@ -441,7 +441,9 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
           // against the hardware limit and every declared material, like other
           // heater commands without a verified filament. That is never looser
           // than an accepted L<position> form. Material left in the nozzle from
-          // an earlier job is live state that no file can declare.
+          // an earlier job is live state that no file can declare. T names one
+          // of the two physical nozzles, whatever the file declares.
+          if(args.get('T')!>1) fail('unsupported M620.17 nozzle/material temperature mapping');
           heat('nozzle',args.get('S')!,undefined,true);
         } else heat('nozzle',args.get('S')!,requirePosition(args.get('L')!));
       } else if((/^M620\./.test(code) && !['M620.3','M620.6','M620.11'].includes(code)) || /^M621\./.test(code)) {
