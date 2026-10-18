@@ -8,7 +8,7 @@ import { Readable } from "node:stream";
 import { readSafe3mfArchive } from "../safety/archive.js";
 import { inspectPrintFile } from "../safety/print-file.js";
 import { normalizeModel, validateTemperature } from "../safety/limits.js";
-import { validatePrinterState, manualHeatingRequirements } from "../safety/printer-state.js";
+import { describeHmsKey, hiddenHmsKeys, hiddenHmsNotices, reportedHmsKey, validatePrinterState, manualHeatingRequirements } from "../safety/printer-state.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRemotePath, cancelPendingPrinterOperations } from "../safety/artifact.js";
 import { Client as FTPClient } from "basic-ftp";
 import { BambuPrinter } from "bambu-js";
@@ -395,11 +395,14 @@ export class BambuImplementation {
     async confirmPrintPreflight(serial, status, inspection) {
         const finishedJob = this.finishedJobIdentity(status);
         const cleared = this.clearedErrors.get(serial);
+        const notices = hiddenHmsNotices(status?.raw, serial, inspection.model);
         await this.confirmHardwareAction(`Start a checked print on ${inspection.model.toUpperCase()} (${serial})? Nozzles: ${inspection.nozzleDiameters.join(", ")} mm. ` +
             `Materials: ${inspection.materials.join(", ")}. Peak targets: nozzle ${inspection.maxNozzleTemperature}°C, bed ${inspection.maxBedTemperature}°C, chamber ${inspection.maxChamberTemperature}°C. ` +
             `File SHA-256: ${inspection.sha256}. Confirm the physical spool labels and that the build plate is clear.` +
             (finishedJob !== undefined ? " The printer reports FINISH: remove the previous part and debris before confirming." : "") +
-            (cleared ? ` Previously cleared hardware codes: ${cleared.join(", ")}. Confirm their physical causes have been resolved.` : ""), finishedJob !== undefined || !!cleared);
+            (cleared ? ` Previously cleared hardware codes: ${cleared.map(describeHmsKey).join(", ")}. Confirm their physical causes have been resolved.` : "") +
+            (notices.length ? ` The printer also reports ${notices.join(", ")}, which Bambu lists for this model without text and never shows as a fault; ` +
+                `${notices.length === 1 ? "it does" : "they do"} not block printing.` : ""), finishedJob !== undefined || !!cleared);
         return finishedJob;
     }
     assertBedClearance(status, confirmedFinishedJob) {
@@ -867,10 +870,12 @@ export class BambuImplementation {
             const codesFor = (status) => {
                 if (!Array.isArray(status.raw?.hms) || status.raw?.print_error === undefined)
                     throw new Error("Fresh error codes are required before clearing hardware errors.");
-                return [`print_error:${status.raw.print_error}`, ...status.raw.hms.map((entry) => `hms:${entry.attr}:${entry.code}`)].sort();
+                // Hidden notices never block and survive clean_print_error, so they are not errors to clear or re-acknowledge.
+                const hidden = new Set(hiddenHmsKeys(status.raw, serial, String(status.model ?? "")));
+                return [`print_error:${status.raw.print_error}`, ...status.raw.hms.map(reportedHmsKey).filter((key) => !hidden.has(key))].sort();
             };
             const codes = codesFor(await this.getSafetyStatus(host, serial, token));
-            await this.confirmHardwareAction(`Clear reported hardware errors on ${serial}: ${codes.join(", ")}? Inspect the printer and resolve the physical cause first. Confirm only after removing obstructions and correcting the fault.`, true);
+            await this.confirmHardwareAction(`Clear reported hardware errors on ${serial}: ${codes.map(describeHmsKey).join(", ")}? Inspect the printer and resolve the physical cause first. Confirm only after removing obstructions and correcting the fault.`, true);
             const beforeDispatch = async () => {
                 assertActive();
                 const current = codesFor(await this.getSafetyStatus(host, serial, token));

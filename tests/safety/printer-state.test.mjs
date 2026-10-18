@@ -231,3 +231,34 @@ test('official H2C and H2D Pro returned serials agree with declared identity and
     assert.throws(()=>check(fresh({model_id:undefined}),req({model,serial,nozzleDiameters:[]})),/identity|model/i);
   }
 });
+
+// X2D re-raises this camera entry (serious level) at every boot. Bambu lists it for
+// the X2D with empty text, so its screen, Studio and Handy never show it.
+const hiddenCamera = { attr: 83887616, code: 131184 };
+const x2dStatus = hms => fresh({ model_id: 'USb5974ce12ab89d', modules: [{ name: 'ota', sn: '20PTEST' }], hms }, { serial: '20PTEST' });
+const x2dRequirements = req({ model: 'x2d', nozzleDiameters: [], verifyMaterials: false });
+test('a code Bambu hides for this model is a notice; documented, fatal, unlisted and foreign codes still block', () => {
+  assert.doesNotThrow(() => check(x2dStatus([hiddenCamera]), x2dRequirements));
+  assert.deepEqual(safety.hiddenHmsNotices(x2dStatus([hiddenCamera]).raw, '20PTEST', 'x2d'), ['HMS 0500-0600-0002-0070']);
+  assert.deepEqual(safety.hiddenHmsKeys(x2dStatus([hiddenCamera]).raw, '20PTEST', 'x2d'), ['hms:83887616:131184']);
+  // A sparse report without a serial, a misconfigured 20P serial, and a verified P1S: the X2D table must not apply.
+  assert.throws(() => check(fresh({ hms: [hiddenCamera] }, { serial: '20PTEST' })), /HMS 0500-0600-0002-0070/, 'table prefix must match the verified model');
+  assert.deepEqual(safety.hiddenHmsNotices({ hms: [hiddenCamera] }, '20PTEST', 'p1s'), []);
+  assert.equal(safety.describeHmsKey('hms:83887616:131184'), 'HMS 0500-0600-0002-0070');
+  assert.equal(safety.describeHmsKey('print_error:0'), 'print_error:0');
+  assert.equal(safety.describeHmsKey('hms:abc:5'), 'hms:abc:5');
+  assert.deepEqual(safety.hiddenHmsNotices(x2dStatus([hiddenCamera, hiddenCamera]).raw, '20PTEST', 'x2d'), ['HMS 0500-0600-0002-0070'], 'repeated entries are named once');
+  assert.equal(safety.reportedHmsKey({ attr: '83887616', code: '131184' }), 'hms:83887616:131184', 'one key format for gate and clearing');
+  assert.throws(() => check(x2dStatus([hiddenCamera, { attr: 83887616, code: 0x20002 }]), x2dRequirements), /HMS 0500-0600-0002-0002/, 'documented camera fault');
+  assert.throws(() => check(x2dStatus([{ attr: 83887616, code: 0x10070 }]), x2dRequirements), /HMS 0500-0600-0001-0070/, 'fatal level');
+  assert.throws(() => check(x2dStatus([{ attr: 83887616, code: 0x20099 }]), x2dRequirements), /HMS 0500-0600-0002-0099/, 'not in Bambu table');
+  assert.throws(() => check(fresh({ hms: [hiddenCamera] })), /HMS 0500-0600-0002-0070/, 'P1S has no table');
+  assert.deepEqual(safety.hiddenHmsNotices(fresh({ hms: [hiddenCamera] }).raw, '01PTEST', 'p1s'), []);
+  const h2c = hms => fresh({ model_id: undefined, modules: [{ name: 'ota', sn: '31BTEST' }], hms }, { serial: '31BTEST' });
+  const h2cRequirements = req({ model: 'h2c', nozzleDiameters: [], verifyMaterials: false });
+  assert.doesNotThrow(() => check(h2c([{ attr: 83887616, code: 0x20005 }, { attr: 83887616, code: 0x20006 }]), h2cRequirements));
+  assert.throws(() => check(h2c([hiddenCamera]), h2cRequirements), /HMS 0500-0600-0002-0070/, 'hidden on X2D only');
+  // The table follows the observed serial prefix, as Bambu Studio selects it.
+  assert.deepEqual(safety.hiddenHmsNotices({ hms: [hiddenCamera] }, '31BTEST', 'h2c'), []);
+  assert.throws(() => check(x2dStatus([{ attr: 83887616 }]), x2dRequirements), /HMS errors;/, 'malformed entry');
+});
