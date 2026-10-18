@@ -333,7 +333,11 @@ function isEmergencyCommand(messageJson: string): boolean {
     (command?.command === "set_nozzle_temp" && command.target_temp === 0);
 }
 
-async function interruptNativeOperations(serial: string): Promise<void> {
+/**
+ * Interrupt this printer's pending print, upload and heating helpers and
+ * resolve once they have exited, so none can still dispatch afterwards.
+ */
+export async function interruptNativeOperations(serial: string): Promise<void> {
   const pending = [...activeHelpers.values()].filter(helper => helper.serial === serial && !helper.emergency);
   for (const helper of pending) helper.interrupt();
   // Send stop/heater-off only after an older helper can no longer send a

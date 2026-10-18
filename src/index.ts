@@ -29,6 +29,7 @@ import {
   assertBambuNativeAvailable,
   bambuNativeControlsAvailable,
   bambuNativeUnavailableReason,
+  interruptNativeOperations,
   validateBambuNativeMetadata,
   buildBambuNativeFanCommand,
   buildBambuNativeTemperatureCommand,
@@ -1767,10 +1768,12 @@ class BambuPrinterMCPServer {
     args: Record<string, any>, host: string, bambuSerial: string, bambuToken: string,
     onUpdate?: BambuNativeUpdateCallback, signal?: AbortSignal
   ): Promise<Record<string, unknown>> {
-    assertBambuNativeAvailable();
     if (args.print) throw new Error("Native upload never starts printing; use print_3mf.");
+    // Resolve and enforce the model first, as the print path does, so a
+    // non-X2D request is never told to install the native helper.
     const model = await this.resolveBambuModel(args.bambu_model);
     if (model !== "x2d") throw new Error("connection_mode=bambu_native is restricted to X2D.");
+    assertBambuNativeAvailable();
     const unsupported = ["use_ams", "ams_mapping", "ams_mapping2", "ams_mapping_info", "nozzle_mapping", "nozzles_info",
       "bed_leveling", "flow_calibration", "vibration_calibration", "layer_inspect", "timelapse"];
     for (const key of unsupported) {
@@ -3159,20 +3162,29 @@ class BambuPrinterMCPServer {
         (nativeUnavailable ??= x2dTarget ? bambuNativeUnavailableReason() ?? null : "The selected printer is not an X2D.");
       const nativeControls = () => nativeUnavailableReason() === null;
       // Linux sent X2D stop and heater-off over MQTT before the native route
-      // existed. Send them over both routes at once there: a stuck helper must
-      // not delay an emergency control, and a repeated stop or heater-off is
-      // harmless. Either route succeeding is success. macOS stays native-only.
+      // existed. Send them over both routes there: a stuck helper must not
+      // delay an emergency control, and a repeated stop or heater-off is
+      // harmless. The immediate MQTT send can precede the exit of an older
+      // print or heating helper that then still dispatches, so MQTT is sent
+      // again once every older helper for this printer has exited, and only
+      // that send counts. Either counted route succeeding is success. macOS
+      // stays native-only.
       const linuxEmergency = (native: () => Promise<any>, mqtt: () => Promise<any>) => async () => {
         if (process.platform !== "linux") return native();
-        const [nativeResult, mqttResult] = await Promise.allSettled([native(), mqtt()]);
+        const [nativeResult, immediateResult, mqttResult] = await Promise.allSettled([
+          native(),
+          mqtt(),
+          interruptNativeOperations(bambuSerial).then(() => mqtt()),
+        ]);
         const reason = (result: PromiseSettledResult<any>) =>
           result.status === "rejected" ? (result.reason instanceof Error ? result.reason.message : String(result.reason)) : undefined;
         if (nativeResult.status === "rejected" && mqttResult.status === "rejected") {
           throw new Error(`native route: ${reason(nativeResult)}; MQTT route: ${reason(mqttResult)}`);
         }
+        const state = (result: PromiseSettledResult<any>) => result.status === "fulfilled" ? "sent" : "failed";
         return {
           status: "success",
-          routes: { native: nativeResult.status === "fulfilled" ? "sent" : "failed", mqtt: mqttResult.status === "fulfilled" ? "sent" : "failed" },
+          routes: { native: state(nativeResult), mqtt: state(mqttResult), mqtt_immediate: state(immediateResult) },
           ...(reason(nativeResult) ? { native_error: reason(nativeResult) } : {}),
           ...(reason(mqttResult) ? { mqtt_error: reason(mqttResult) } : {}),
         };

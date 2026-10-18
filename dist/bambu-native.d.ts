@@ -100,6 +100,11 @@ export declare function assertBambuNativeAvailable(): void;
 export declare function bambuNativeControlsAvailable(): boolean;
 /** Why native X2D controls are not used on this host, or undefined when they are. */
 export declare function bambuNativeUnavailableReason(): string | undefined;
+/**
+ * Interrupt this printer's pending print, upload and heating helpers and
+ * resolve once they have exited, so none can still dispatch afterwards.
+ */
+export declare function interruptNativeOperations(serial: string): Promise<void>;
 export declare function buildBambuNativeFanCommand(fan: string | number, speed: number, sequenceId?: string): BambuNativeFanCommand;
 export declare function buildBambuNativeTemperatureCommand(component: string, temperature: number, sequenceId?: string): BambuNativeTemperatureCommand;
 export declare function validateBambuNativeControlMessage(messageJson: string): {

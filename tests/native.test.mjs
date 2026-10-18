@@ -70,7 +70,13 @@ console.log('native_print result=0');
     const record = kind => appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({kind})+'\\n');
     BambuImplementation.prototype.getPrinter = async () => {
       if (${mqttFails}) { record('mqtt-failed'); throw new Error('simulated MQTT failure'); }
-      return { publish: async () => record('mqtt') };
+      // Note which older print/heating helpers were still alive at each MQTT send.
+      return { publish: async () => {
+        const alive = readFileSync(${JSON.stringify(eventsFile)}, 'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse)
+          .filter(old => old.mode === '--print-authorized' || old.command?.print?.temp > 0)
+          .filter(old => { try { process.kill(old.pid, 0); return true; } catch { return false; } }).map(old => old.pid);
+        appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({ kind: 'mqtt', olderAlive: alive }) + '\\n');
+      } };
     };
     BambuImplementation.prototype.ftpUpload = async () => { record('ftp'); throw new Error('unexpected FTPS'); };
     BambuImplementation.prototype.disconnectAll = async () => { record('disconnect'); };
@@ -502,15 +508,15 @@ for (const [name, args] of [["cancel_print", {}], ["set_temperature", { componen
     const s = await server(t, { platform: "linux" });
     const result = await s.client.callTool({ name, arguments: args });
     assert.notEqual(result.isError, true, JSON.stringify(result));
-    assert.deepEqual((await s.events()).map(e => e.kind).sort(), ["helper", "mqtt"]);
-    assert.match(result.content[0].text, /"native":\s*"sent"[\s\S]*"mqtt":\s*"sent"/);
+    assert.deepEqual((await s.events()).map(e => e.kind).sort(), ["helper", "mqtt", "mqtt"], "immediate MQTT plus the send after older helpers exit");
+    assert.match(result.content[0].text, /"native":\s*"sent"[\s\S]*"mqtt":\s*"sent"[\s\S]*"mqtt_immediate":\s*"sent"/);
   });
 
   test(`Linux ${name} still succeeds over MQTT when the native helper fails`, async t => {
     const s = await server(t, { platform: "linux", helperFails: true });
     const result = await s.client.callTool({ name, arguments: args });
     assert.notEqual(result.isError, true, JSON.stringify(result));
-    assert.deepEqual((await s.events()).map(e => e.kind).sort(), ["helper", "mqtt"]);
+    assert.deepEqual((await s.events()).map(e => e.kind).sort(), ["helper", "mqtt", "mqtt"], "immediate MQTT plus the send after older helpers exit");
     assert.match(result.content[0].text, /"native":\s*"failed"[\s\S]*"mqtt":\s*"sent"[\s\S]*native_error/);
   });
 
@@ -542,5 +548,32 @@ test("x2d_native_control names why Linux native controls are unavailable", async
     message_json: JSON.stringify({ print: { command: "extrusion_cali_get", sequence_id: "1" } }) } });
   assert.equal(result.isError, true);
   assert.match(result.content[0].text, /not the pinned Bambu plug-in.*bambu-printer-mcp@\d+\.\d+\.\d+ bambu-printer-mcp-native-setup/);
+  assert.deepEqual(await s.events(), []);
+});
+
+for (const name of ["cancel_print", "set_temperature"]) {
+  test(`Linux ${name} sends MQTT again after a SIGTERM-resistant print helper has exited`, async t => {
+    const s = await server(t, { platform: "linux", model: "", helperDelay: 3000, ignoreTerm: true });
+    const pending = s.print({ use_ams: false });
+    const call = await until(async () => (await s.events()).find(e => e.mode === "--print-authorized"));
+    const result = await s.client.callTool({ name, arguments: name === "set_temperature"
+      ? { component: "bed", temperature: 0, bambu_model: "x2d" } : {} });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.equal((await pending).isError, true);
+    const sends = (await s.events()).filter(e => e.kind === "mqtt");
+    assert.equal(sends.length, 2);
+    assert.deepEqual(sends.at(-1).olderAlive, [], "the counted MQTT send follows the old helper's exit");
+    assert.equal(exited(call.pid), true);
+    assert.equal((await s.events()).some(e => e.kind === "sent"), false, "the old helper never dispatched");
+  });
+}
+
+test("Linux native upload rejects a non-X2D model before asking for the native setup", async t => {
+  const s = await server(t, { platform: "linux", installedHelper: false });
+  const result = await s.client.callTool({ name: "upload_file", arguments: {
+    file_path: s.file, filename: "cube.3mf", connection_mode: "bambu_native", bambu_model: "p1s" } });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /restricted to X2D/);
+  assert.doesNotMatch(result.content[0].text, /native-setup/);
   assert.deepEqual(await s.events(), []);
 });

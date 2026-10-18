@@ -244,7 +244,11 @@ function isEmergencyCommand(messageJson) {
         (command?.command === "set_bed_temp" && command.temp === 0) ||
         (command?.command === "set_nozzle_temp" && command.target_temp === 0);
 }
-async function interruptNativeOperations(serial) {
+/**
+ * Interrupt this printer's pending print, upload and heating helpers and
+ * resolve once they have exited, so none can still dispatch afterwards.
+ */
+export async function interruptNativeOperations(serial) {
     const pending = [...activeHelpers.values()].filter(helper => helper.serial === serial && !helper.emergency);
     for (const helper of pending)
         helper.interrupt();
