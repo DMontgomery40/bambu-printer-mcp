@@ -84,7 +84,7 @@ console.log('native_print result=0');
       record('status');
       const observedState = ${JSON.stringify(dispatchState)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchState)} : ${JSON.stringify(state)};
       return { connected:true, serial, model:'x2d', status:observedState,
-        raw: {model:'x2d',gcode_state:observedState,print_error:${JSON.stringify(dispatchError)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchError)} : 0,hms:${JSON.stringify(hms)},nozzle_diameter:['0.4','0.4'],
+        raw: {serial,model:'x2d',gcode_state:observedState,print_error:${JSON.stringify(dispatchError)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchError)} : 0,hms:${JSON.stringify(hms)},nozzle_diameter:['0.4','0.4'],
           ams: { ams:[{id:'0',tray:[{id:'0',tray_type:'PLA'}]}, {id:'128',tray:[{id:'0',tray_type:'PLA'}]}] } },
         observation:{source:'mqtt',requestedAt:Date.now()-1,receivedAt:Date.now(),identitySource:'report'} };
     };

@@ -747,7 +747,7 @@ test("the print preflight names hidden HMS notices that do not block printing", 
   const prompts = [];
   const printer = new BambuImplementation(async message => { prompts.push(message); return true; });
   const inspection = { model: "x2d", nozzleDiameters: [0.4, 0.4], materials: ["PETG"], maxNozzleTemperature: 270, maxBedTemperature: 70, maxChamberTemperature: 0, sha256: "a".repeat(64) };
-  await printer.confirmPrintPreflight("20PTEST", { raw: { gcode_state: "IDLE", hms: [{ attr: 83887616, code: 131184 }] } }, inspection);
+  await printer.confirmPrintPreflight("20PTEST", { raw: { serial: "20PTEST", gcode_state: "IDLE", hms: [{ attr: 83887616, code: 131184 }] } }, inspection);
   assert.match(prompts[0], /The printer also reports HMS 0500-0600-0002-0070, which Bambu lists for this model without text and never shows as a fault; it does not block printing/);
   await printer.confirmPrintPreflight("20PTEST", { raw: { gcode_state: "IDLE", hms: [] } }, inspection);
   assert.doesNotMatch(prompts[1], /also reports/);
@@ -757,7 +757,7 @@ for (const [stage, appearsOnRead] of [["confirmation recheck", 2], ["dispatch re
   test(`a hidden notice that first appears at the ${stage} stops the print until it is confirmed`, async (t) => {
     // H2D (serial prefix 094) lists 0500-0100-0002-0003 without text.
     const notice = { attr: 0x05000100, code: 0x00020003 };
-    const h2d = hms => ({ ...safetyStatus({ model: "h2d", nozzle: ["0.4", "0.4"], hms }), serial: "094TESTSAFETY" });
+    const h2d = hms => ({ ...safetyStatus({ model: "h2d", nozzle: ["0.4", "0.4"], hms, sn: "094TESTSAFETY" }), serial: "094TESTSAFETY" });
     const file = await fixture(t, { model: "h2d", nozzleDiameters: [0.4, 0.4] });
     const { printer, events } = isolatedPrinter();
     let reads = 0;
@@ -779,7 +779,7 @@ for (const [stage, appearsOnRead] of [["confirmation recheck", 2], ["dispatch re
 }
 
 test("clearing never records a hidden notice, and clear prompts show Bambu's HMS form", async () => {
-  const x2d = raw => ({ ...safetyStatus({ model: "x2d", nozzle: ["0.4", "0.4"], ...raw }), serial: "20PTEST" });
+  const x2d = raw => ({ ...safetyStatus({ model: "x2d", nozzle: ["0.4", "0.4"], ...raw, sn: "20PTEST" }), serial: "20PTEST" });
   const prompts = [];
   const printer = new BambuImplementation(async message => { prompts.push(message); return true; });
   printer.getSafetyStatus = async () => x2d({ hms: [{ attr: 83887616, code: 131184 }, { attr: 1, code: 0x20001 }] });

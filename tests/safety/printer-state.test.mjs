@@ -266,3 +266,20 @@ test('a code Bambu hides for this model is a notice; documented, fatal, unlisted
   assert.deepEqual(safety.hiddenHmsNotices({ hms: [hiddenCamera] }, '31BTEST', 'h2c'), []);
   assert.throws(() => check(x2dStatus([{ attr: 83887616 }]), x2dRequirements), /HMS errors;/, 'malformed entry');
 });
+
+test('a recognized model without a returned serial cannot downgrade hidden HMS faults', () => {
+  const status = fresh({ model_id: undefined, model: 'X2D', hms: [hiddenCamera] },
+    { serial: '20PTEST', observedSerial: '20PTEST' });
+  assert.throws(() => check(status, x2dRequirements), /HMS 0500-0600-0002-0070/);
+});
+
+test('hidden HMS notices and clear exclusions require the serial in the raw report', () => {
+  const raw = { model: 'X2D', hms: [hiddenCamera] };
+  assert.deepEqual(safety.hiddenHmsNotices(raw, '20PTEST', 'x2d'), []);
+  assert.deepEqual(safety.hiddenHmsKeys(raw, '20PTEST', 'x2d'), []);
+  for (const reported of [{ serial: '20PTEST' }, { serial_number: '20PTEST' }, { sn: '20PTEST' },
+    { device: { sn: '20PTEST' } }, { modules: [{ name: 'ota', sn: '20PTEST' }] }]) {
+    assert.deepEqual(safety.hiddenHmsNotices({ ...raw, ...reported }, '20PTEST', 'x2d'), ['HMS 0500-0600-0002-0070']);
+    assert.deepEqual(safety.hiddenHmsKeys({ ...raw, ...reported }, '20PTEST', 'x2d'), ['hms:83887616:131184']);
+  }
+});

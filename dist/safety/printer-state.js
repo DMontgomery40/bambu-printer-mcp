@@ -227,9 +227,14 @@ function isHiddenNotice(serial, model, entry) {
     return hiddenHmsSets.get(prefix)?.has(entry.hex) === true;
 }
 function hiddenHmsEntries(raw, serial, model) {
-    const entries = object(raw) && Array.isArray(raw.hms) ? raw.hms : [];
+    if (!object(raw))
+        return [];
+    const identity = observedIdentity(raw, serial);
+    if (!identity.observedSerial || identity.model !== normalizeModel(model))
+        return [];
+    const entries = Array.isArray(raw.hms) ? raw.hms : [];
     const seen = new Set();
-    return entries.map(hmsCode).filter((entry) => !!entry && isHiddenNotice(serial, model, entry) && !seen.has(entry.hex) && !!seen.add(entry.hex));
+    return entries.map(hmsCode).filter((entry) => !!entry && isHiddenNotice(identity.observedSerial, model, entry) && !seen.has(entry.hex) && !!seen.add(entry.hex));
 }
 /** Labels of reported entries that pass only because Bambu hides them for this printer. */
 export function hiddenHmsNotices(raw, serial, model) {
@@ -327,7 +332,7 @@ export function validatePrinterState(status, requirements) {
     const model = normalizeModel(requirements.model);
     if (!model || !identity.model || model !== identity.model)
         throw new Error(`Printer model identity mismatch: requested ${requirements.model}, observed ${identity.model ?? "unknown"}.`);
-    validateErrors(raw, requirements.requireIdle !== false, String(status.serial ?? ""), model);
+    validateErrors(raw, requirements.requireIdle !== false, identity.observedSerial ?? "", model);
     if (requirements.requireLoadedFilament && (raw.ams?.tray_now !== undefined || Array.isArray(raw.ams?.ams))) {
         const current = finiteNumber(raw.ams?.tray_now);
         if (current === 255)
