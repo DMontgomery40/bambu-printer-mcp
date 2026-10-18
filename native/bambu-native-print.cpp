@@ -14,6 +14,10 @@
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
+#if !defined(__APPLE__)
+#include <pwd.h>
+#include <unistd.h>
+#endif
 #include <thread>
 
 // This small adapter intentionally mirrors the public C++ ABI declarations
@@ -111,13 +115,37 @@ void outputLine(const std::string &line) {
     std::cout << line << std::endl;
 }
 
+// End a one-shot run once the plug-in's own cleanup (destroy_agent) is done.
+// Its worker threads can outlive that cleanup; process-exit destructors and
+// dlclose then crashed successful command, upload and probe runs with SIGSEGV
+// on Linux. Flush the protocol output and let the OS reclaim the rest.
+[[noreturn]] void exitNow(int code) {
+    std::cout.flush();
+    std::cerr.flush();
+    std::_Exit(code);
+}
+
 std::string envOr(const char *name, const std::string &fallback = {}) {
     const char *value = std::getenv(name);
     return value && *value ? std::string(value) : fallback;
 }
 
 std::string homeDir() {
+#if defined(__APPLE__)
     return envOr("HOME", "/Users/Shared");
+#else
+    // Match Node's os.homedir() so the server and helper agree without HOME.
+    const std::string home = envOr("HOME");
+    if (!home.empty()) return home;
+    const passwd *entry = getpwuid(getuid());
+    return entry && entry->pw_dir ? std::string(entry->pw_dir) : std::string("/");
+#endif
+}
+
+#if defined(__APPLE__)
+bool isRegularFile(const std::string &path) {
+    struct stat fileStat {};
+    return stat(path.c_str(), &fileStat) == 0 && S_ISREG(fileStat.st_mode);
 }
 
 std::string defaultPluginPath() {
@@ -125,12 +153,42 @@ std::string defaultPluginPath() {
     // present; older Bambu Studio installations remain a compatible fallback.
     const std::string connectPlugin =
         "/Applications/Bambu Connect.app/Contents/Resources/app.asar.unpacked/plugins/plugins-mac/libbambu_networking.dylib";
-    struct stat connectStat {};
-    if (stat(connectPlugin.c_str(), &connectStat) == 0 && S_ISREG(connectStat.st_mode)) {
-        return connectPlugin;
-    }
+    if (isRegularFile(connectPlugin)) return connectPlugin;
     return homeDir() + "/Library/Application Support/BambuStudio/plugins/libbambu_networking.dylib";
 }
+
+std::string defaultConfigDir() {
+    return envOr("BAMBU_NATIVE_CONFIG_DIR", homeDir() + "/Library/Application Support/BambuStudio");
+}
+
+std::string defaultCertDir() {
+    return envOr("BAMBU_NATIVE_CERT_DIR", "/Applications/BambuStudio.app/Contents/Resources/cert");
+}
+#else
+// Linux has no application bundle to borrow from. The setup script installs a
+// pinned plug-in and certificates under one private directory. The server
+// passes the resolved paths explicitly; these defaults only serve direct use
+// and mirror bambuNativeManagedPaths() in src/bambu-native.ts.
+std::string nativeHomeDir() {
+    const std::string configured = envOr("BAMBU_NATIVE_HOME");
+    if (!configured.empty()) return configured;
+    return envOr("XDG_CONFIG_HOME", homeDir() + "/.config") + "/bambu-printer-mcp/bambu-native";
+}
+
+std::string defaultPluginPath() {
+    // Only the pinned plug-in: Bambu Studio's own copy auto-updates and its
+    // PrintParams layout is not checked against this helper.
+    return nativeHomeDir() + "/plugins/libbambu_networking.so";
+}
+
+std::string defaultConfigDir() {
+    return envOr("BAMBU_NATIVE_CONFIG_DIR", nativeHomeDir() + "/config");
+}
+
+std::string defaultCertDir() {
+    return envOr("BAMBU_NATIVE_CERT_DIR", nativeHomeDir() + "/cert");
+}
+#endif
 
 void *symbol(void *handle, const char *name) {
     return dlsym(handle, name);
@@ -238,10 +296,8 @@ void runProbe(NativeApi &api) {
 
     // Avoid calling the C++ string-returning symbol in the probe. The tunnel
     // API is C ABI and is the only part needed to verify the X2D route.
-    const std::string configDir = envOr("BAMBU_NATIVE_CONFIG_DIR",
-                                        homeDir() + "/Library/Application Support/BambuStudio");
-    const std::string certDir = envOr("BAMBU_NATIVE_CERT_DIR",
-                                      "/Applications/BambuStudio.app/Contents/Resources/cert");
+    const std::string configDir = defaultConfigDir();
+    const std::string certDir = defaultCertDir();
     const std::string certFile = envOr("BAMBU_NATIVE_CERT_FILE", "slicer_base64.cer");
     void *agent = api.createAgent(configDir);
     if (!agent) throw std::runtime_error("bambu_network_create_agent returned null in probe");
@@ -256,7 +312,8 @@ void runProbe(NativeApi &api) {
     const FtErr createResult = api.ftTunnelCreate(localUrl(host, token).c_str(), &tunnel);
     if (createResult != 0 || !tunnel) {
         outputLine("probe=failed stage=tunnel_create result=" + std::to_string(createResult));
-        return;
+        api.destroyAgent(agent);
+        exitNow(22);
     }
 
     const FtErr connectResult = api.ftTunnelSyncConnect(tunnel);
@@ -264,6 +321,7 @@ void runProbe(NativeApi &api) {
     api.destroyAgent(agent);
     outputLine("probe=local_tunnel version=" + version + " ft_abi=" + std::to_string(abi) +
                " connect_result=" + std::to_string(connectResult));
+    if (connectResult != 0) exitNow(22);
 }
 
 void runMqttProbe(NativeApi &api) {
@@ -274,10 +332,8 @@ void runMqttProbe(NativeApi &api) {
         throw std::runtime_error("BAMBU_NATIVE_HOST, BAMBU_NATIVE_ACCESS_CODE, and BAMBU_NATIVE_SERIAL are required for --probe-mqtt");
     }
 
-    const std::string configDir = envOr("BAMBU_NATIVE_CONFIG_DIR",
-                                        homeDir() + "/Library/Application Support/BambuStudio");
-    const std::string certDir = envOr("BAMBU_NATIVE_CERT_DIR",
-                                      "/Applications/BambuStudio.app/Contents/Resources/cert");
+    const std::string configDir = defaultConfigDir();
+    const std::string certDir = defaultCertDir();
     const std::string certFile = envOr("BAMBU_NATIVE_CERT_FILE", "slicer_base64.cer");
     void *agent = api.createAgent(configDir);
     if (!agent) throw std::runtime_error("bambu_network_create_agent returned null in MQTT probe");
@@ -384,7 +440,7 @@ void runMqttProbe(NativeApi &api) {
     destroyAgent();
     outputLine("probe=mqtt status=" + std::to_string(status) +
                (message.empty() ? std::string{} : " message=" + message));
-    if (!ok) std::exit(21);
+    exitNow(ok ? 0 : 21);
 }
 
 std::string bedTypeForNative(const std::string &bedType) {
@@ -475,10 +531,8 @@ void runOperation(NativeApi &api, NativeOperation operation) {
                                  " file is not readable: " + file);
     }
 
-    const std::string configDir = envOr("BAMBU_NATIVE_CONFIG_DIR",
-                                        homeDir() + "/Library/Application Support/BambuStudio");
-    const std::string certDir = envOr("BAMBU_NATIVE_CERT_DIR",
-                                      "/Applications/BambuStudio.app/Contents/Resources/cert");
+    const std::string configDir = defaultConfigDir();
+    const std::string certDir = defaultCertDir();
     const std::string certFile = envOr("BAMBU_NATIVE_CERT_FILE", "slicer_base64.cer");
     const std::string country = envOr("BAMBU_NATIVE_COUNTRY", "US");
 
@@ -653,8 +707,7 @@ void runOperation(NativeApi &api, NativeOperation operation) {
         }
         outputLine("native_command result=" + std::to_string(result));
         destroyAgent();
-        if (result != 0) std::exit(20);
-        return;
+        exitNow(result == 0 ? 0 : 20);
     }
 
     std::this_thread::sleep_for(std::chrono::seconds(3));
@@ -729,35 +782,56 @@ void runOperation(NativeApi &api, NativeOperation operation) {
     // crash after acceptance; let the OS reclaim it without changing that result.
     // outputLine flushes the receipt before exiting. Upload/control paths retain
     // their existing cleanup, and no dispatched print is replayed here.
-    if (!uploadOnly) std::_Exit(result == 0 ? 0 : 20);
+    if (!uploadOnly) exitNow(result == 0 ? 0 : 20);
     destroyAgent();
-    if (result != 0) std::exit(20);
+    exitNow(result == 0 ? 0 : 20);
 }
 
 } // namespace
 
+// Load the plug-in and resolve every required symbol without any network
+// access. On Linux also load the file-tunnel library the plug-in opens from its
+// own directory, so missing system libraries surface at setup time.
+void runPluginCheck(const NativeApi &) {
+#if !defined(__APPLE__)
+    const std::string plugin = envOr("BAMBU_NATIVE_PLUGIN", defaultPluginPath());
+    // Resolve beside the plug-in, never through the system library path.
+    const std::string::size_type slash = plugin.find_last_of('/');
+    const std::string source = (slash == std::string::npos ? std::string("./") : plugin.substr(0, slash + 1)) + "libBambuSource.so";
+    void *handle = dlopen(source.c_str(), RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+        const char *error = dlerror();
+        throw std::runtime_error("could not load Bambu tunnel library: " + source + (error ? std::string(": ") + error : std::string()));
+    }
+    dlclose(handle);
+#endif
+    outputLine("plugin=ok");
+}
+
 int main(int argc, char **argv) {
     try {
+        const bool pluginCheck = argc == 2 && std::strcmp(argv[1], "--check-plugin") == 0;
         const bool probe = argc == 2 && std::strcmp(argv[1], "--probe") == 0;
         const bool mqttProbe = argc == 2 && std::strcmp(argv[1], "--probe-mqtt") == 0;
         const bool print = argc == 2 && std::strcmp(argv[1], "--print-authorized") == 0;
         const bool upload = argc == 2 && std::strcmp(argv[1], "--upload") == 0;
         const bool command = argc == 2 && std::strcmp(argv[1], "--command") == 0;
         const bool authorizedCommand = argc == 2 && std::strcmp(argv[1], "--command-authorized") == 0;
-        if (!probe && !mqttProbe && !print && !upload && !command && !authorizedCommand) {
-            std::cerr << "usage: bambu-native-print --probe|--probe-mqtt|--print-authorized|--upload|--command|--command-authorized" << std::endl;
+        if (!pluginCheck && !probe && !mqttProbe && !print && !upload && !command && !authorizedCommand) {
+            std::cerr << "usage: bambu-native-print --check-plugin|--probe|--probe-mqtt|--print-authorized|--upload|--command|--command-authorized" << std::endl;
             return 2;
         }
         NativeApi api = loadApi();
+        if (pluginCheck) runPluginCheck(api);
         if (probe) runProbe(api);
         if (mqttProbe) runMqttProbe(api);
         if (print) runOperation(api, NativeOperation::Print);
         if (upload) runOperation(api, NativeOperation::Upload);
         if (command) runOperation(api, NativeOperation::Command);
         if (authorizedCommand) runOperation(api, NativeOperation::AuthorizedCommand);
-        return 0;
+        exitNow(0);
     } catch (const std::exception &error) {
         std::cerr << "native_error=" << error.what() << std::endl;
-        return 1;
+        exitNow(1);
     }
 }

@@ -46,8 +46,12 @@ test('ignores a print-job id in model_id when model or returned serial identifie
   assert.throws(() => check(fresh({model_id:undefined,model:'P1S',modules:[{name:'ota',sn:'20PTEST'}]}, {serial:'20PTEST'}), requirements), /contradictory/i);
   assert.throws(() => check(fresh({model_id:'USb5974ce12ab89d',model:'X2D',printer_type:'unknown'}), requirements), /unknown model identity/i);
 });
-test('rejects missing, stale, future and synthetic telemetry provenance', () => {
-  for(const observation of [undefined,{source:'configured',requestedAt:Date.now(),receivedAt:Date.now()}, {source:'mqtt',requestedAt:1,receivedAt:2}, {source:'mqtt',requestedAt:Date.now()+5000,receivedAt:Date.now()+5000}, {source:'mqtt',requestedAt:Date.now(),receivedAt:Date.now()-1}]) {
+test('rejects missing, stale, future and synthetic telemetry provenance', t => {
+  let tick = 1700000000000;
+  // Advance between reads to exercise a millisecond boundary deterministically.
+  t.mock.method(Date, 'now', () => tick++);
+  const now = Date.now();
+  for(const observation of [undefined,{source:'configured',requestedAt:now,receivedAt:now}, {source:'mqtt',requestedAt:1,receivedAt:2}, {source:'mqtt',requestedAt:now+5000,receivedAt:now+5000}, {source:'mqtt',requestedAt:now,receivedAt:now-1}]) {
     assert.throws(() => check(fresh({}, {observation})), /fresh|observ|mqtt|stale/i);
   }
   assert.throws(() => check(fresh({}, {connected:false})), /connect/i);
@@ -229,5 +233,53 @@ test('official H2C and H2D Pro returned serials agree with declared identity and
     assert.doesNotThrow(()=>check(status,req({model,serial,nozzleDiameters:[]})));
     assert.throws(()=>check(fresh({model_id:other,modules:[{name:'ota',sn:serial}]},{serial}),req({model,serial,nozzleDiameters:[]})),/identity|conflict|model/i);
     assert.throws(()=>check(fresh({model_id:undefined}),req({model,serial,nozzleDiameters:[]})),/identity|model/i);
+  }
+});
+
+// X2D re-raises this camera entry (serious level) at every boot. Bambu lists it for
+// the X2D with empty text, so its screen, Studio and Handy never show it.
+const hiddenCamera = { attr: 83887616, code: 131184 };
+const x2dStatus = hms => fresh({ model_id: 'USb5974ce12ab89d', modules: [{ name: 'ota', sn: '20PTEST' }], hms }, { serial: '20PTEST' });
+const x2dRequirements = req({ model: 'x2d', nozzleDiameters: [], verifyMaterials: false });
+test('a code Bambu hides for this model is a notice; documented, fatal, unlisted and foreign codes still block', () => {
+  assert.doesNotThrow(() => check(x2dStatus([hiddenCamera]), x2dRequirements));
+  assert.deepEqual(safety.hiddenHmsNotices(x2dStatus([hiddenCamera]).raw, '20PTEST', 'x2d'), ['HMS 0500-0600-0002-0070']);
+  assert.deepEqual(safety.hiddenHmsKeys(x2dStatus([hiddenCamera]).raw, '20PTEST', 'x2d'), ['hms:83887616:131184']);
+  // A sparse report without a serial, a misconfigured 20P serial, and a verified P1S: the X2D table must not apply.
+  assert.throws(() => check(fresh({ hms: [hiddenCamera] }, { serial: '20PTEST' })), /HMS 0500-0600-0002-0070/, 'table prefix must match the verified model');
+  assert.deepEqual(safety.hiddenHmsNotices({ hms: [hiddenCamera] }, '20PTEST', 'p1s'), []);
+  assert.equal(safety.describeHmsKey('hms:83887616:131184'), 'HMS 0500-0600-0002-0070');
+  assert.equal(safety.describeHmsKey('print_error:0'), 'print_error:0');
+  assert.equal(safety.describeHmsKey('hms:abc:5'), 'hms:abc:5');
+  assert.deepEqual(safety.hiddenHmsNotices(x2dStatus([hiddenCamera, hiddenCamera]).raw, '20PTEST', 'x2d'), ['HMS 0500-0600-0002-0070'], 'repeated entries are named once');
+  assert.equal(safety.reportedHmsKey({ attr: '83887616', code: '131184' }), 'hms:83887616:131184', 'one key format for gate and clearing');
+  assert.throws(() => check(x2dStatus([hiddenCamera, { attr: 83887616, code: 0x20002 }]), x2dRequirements), /HMS 0500-0600-0002-0002/, 'documented camera fault');
+  assert.throws(() => check(x2dStatus([{ attr: 83887616, code: 0x10070 }]), x2dRequirements), /HMS 0500-0600-0001-0070/, 'fatal level');
+  assert.throws(() => check(x2dStatus([{ attr: 83887616, code: 0x20099 }]), x2dRequirements), /HMS 0500-0600-0002-0099/, 'not in Bambu table');
+  assert.throws(() => check(fresh({ hms: [hiddenCamera] })), /HMS 0500-0600-0002-0070/, 'P1S has no table');
+  assert.deepEqual(safety.hiddenHmsNotices(fresh({ hms: [hiddenCamera] }).raw, '01PTEST', 'p1s'), []);
+  const h2c = hms => fresh({ model_id: undefined, modules: [{ name: 'ota', sn: '31BTEST' }], hms }, { serial: '31BTEST' });
+  const h2cRequirements = req({ model: 'h2c', nozzleDiameters: [], verifyMaterials: false });
+  assert.doesNotThrow(() => check(h2c([{ attr: 83887616, code: 0x20005 }, { attr: 83887616, code: 0x20006 }]), h2cRequirements));
+  assert.throws(() => check(h2c([hiddenCamera]), h2cRequirements), /HMS 0500-0600-0002-0070/, 'hidden on X2D only');
+  // The table follows the observed serial prefix, as Bambu Studio selects it.
+  assert.deepEqual(safety.hiddenHmsNotices({ hms: [hiddenCamera] }, '31BTEST', 'h2c'), []);
+  assert.throws(() => check(x2dStatus([{ attr: 83887616 }]), x2dRequirements), /HMS errors;/, 'malformed entry');
+});
+
+test('a recognized model without a returned serial cannot downgrade hidden HMS faults', () => {
+  const status = fresh({ model_id: undefined, model: 'X2D', hms: [hiddenCamera] },
+    { serial: '20PTEST', observedSerial: '20PTEST' });
+  assert.throws(() => check(status, x2dRequirements), /HMS 0500-0600-0002-0070/);
+});
+
+test('hidden HMS notices and clear exclusions require the serial in the raw report', () => {
+  const raw = { model: 'X2D', hms: [hiddenCamera] };
+  assert.deepEqual(safety.hiddenHmsNotices(raw, '20PTEST', 'x2d'), []);
+  assert.deepEqual(safety.hiddenHmsKeys(raw, '20PTEST', 'x2d'), []);
+  for (const reported of [{ serial: '20PTEST' }, { serial_number: '20PTEST' }, { sn: '20PTEST' },
+    { device: { sn: '20PTEST' } }, { modules: [{ name: 'ota', sn: '20PTEST' }] }]) {
+    assert.deepEqual(safety.hiddenHmsNotices({ ...raw, ...reported }, '20PTEST', 'x2d'), ['HMS 0500-0600-0002-0070']);
+    assert.deepEqual(safety.hiddenHmsKeys({ ...raw, ...reported }, '20PTEST', 'x2d'), ['hms:83887616:131184']);
   }
 });

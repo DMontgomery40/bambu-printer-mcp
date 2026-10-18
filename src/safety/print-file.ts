@@ -57,6 +57,11 @@ function stripComments(line: string): string {
 /** A deliberately narrow parameter lexer for commands affecting heat/material selection.
  * Unknown nonthermal vendor commands do not require a global G-code allowlist.
  */
+/** True when the parameter is present, finite and within [low, high]. */
+function inRange(args: Map<string,number>, key: string, low: number, high: number): boolean {
+  const value=args.get(key);
+  return value!==undefined && Number.isFinite(value) && value>=low && value<=high;
+}
 function parameters(text: string, flags = ''): Map<string,number> {
   const result=new Map<string,number>();let rest=text.trim();
   while(rest) {
@@ -292,6 +297,26 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
       if(!command) fail(`unsupported G-code command syntax '${line.slice(0,100)}'`);
       const [base,subcode]=command![2].split('.');
       const code=command![1].toUpperCase()+String(Number(base))+(subcode===undefined?'':'.'+subcode);const argumentsText=line.slice(command![0].length).trim();commandCount++;
+      if(code==='M9711') {
+        // Official X2D and H2D time-lapse capture (Bambu Studio and OrcaSlicer
+        // templates), emitted on every layer: M is the time-lapse mode and E the
+        // physical extruder, not a second command; T is a duration, not a heater.
+        // It sets no temperature. Positions stay inside the machine volume.
+        const invalid=()=>fail('unsupported M9711 time-lapse parameters');
+        if(!['x2d','h2d'].includes(model)) invalid();
+        let args:Map<string,number>;
+        try {args=parameters(argumentsText);} catch {return invalid();}
+        const [width,depth,height]=MACHINE_LIMITS[model].volume;
+        const position=['X','Y','U','V'].filter(key=>args.has(key)).join('');
+        const limit:Record<string,number>={X:width,U:width,Y:depth,V:depth};
+        if([...args.keys()].some(key=>!'MEXYUVZSCOT'.includes(key)) ||
+           // X2D and H2D have two physical extruders, whatever the file declares.
+           ![0,1].includes(args.get('M')!) || !Number.isInteger(args.get('E')) || !inRange(args,'E',0,Math.min(nozzleDiameters.length,2)-1) ||
+           args.get('S')!==11 || args.get('C')!==10 || args.get('O')!==0 || !inRange(args,'T',0,600000) ||
+           !inRange(args,'Z',0,height) ||
+           !['','XY','UV'].includes(position) || [...position].some(key=>!inRange(args,key,0,limit[key]))) invalid();
+        continue;
+      }
       if(!['M117','M118','M1002','M1006','M900','M970','M983.1','G383'].includes(code) && /[GM]\s*\d/i.test(argumentsText)) fail('multiple commands on one line are unsupported');
       // Coordinated extrusion closes the startup-only allowance even when the
       // source omits layer comments. Retraction also closes it conservatively.
@@ -409,7 +434,18 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
         const args=parameters(argumentsText);
         if(!args.has('S') || !args.has('L') || !args.has('T') || !Number.isInteger(args.get('T')) || args.get('T')!<0 || args.get('T')!>=nozzleDiameters.length) fail('unsupported M620.17 nozzle/material temperature mapping');
         for(const key of args.keys()) if(!'SLT'.includes(key)) fail(`unsupported M620.17 parameter ${key}`);
-        heat('nozzle',args.get('S')!,requirePosition(args.get('L')!));
+        if(args.get('L')===-1 && model==='x2d') {
+          // OrcaSlicer's X2D start G-code preheats a nozzle with no assigned
+          // filament (L-1) for toolhead-offset calibration; Bambu Studio writes
+          // L0 there. No project filament is selected, so check the target
+          // against the hardware limit and every declared material, like other
+          // heater commands without a verified filament. That is never looser
+          // than an accepted L<position> form. Material left in the nozzle from
+          // an earlier job is live state that no file can declare. T names one
+          // of the two physical nozzles, whatever the file declares.
+          if(args.get('T')!>1) fail('unsupported M620.17 nozzle/material temperature mapping');
+          heat('nozzle',args.get('S')!,undefined,true);
+        } else heat('nozzle',args.get('S')!,requirePosition(args.get('L')!));
       } else if((/^M620\./.test(code) && !['M620.3','M620.6','M620.11'].includes(code)) || /^M621\./.test(code)) {
         fail(`unsupported thermal-affecting filament command ${code}`);
       } else if(code==='M145') {
