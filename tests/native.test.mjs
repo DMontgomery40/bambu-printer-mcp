@@ -15,7 +15,7 @@ const printerModule = new URL("../dist/printers/bambu.js", import.meta.url).href
 
 // Exercise platform dispatch on every CI OS. Only the OS selector and transport
 // boundaries are mocked; file inspection, AMS validation and preflight are real.
-async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState, dispatchError, installedHelper = true, installedPlugin = true, tunnelLibrary = true, arch = "x64", unpinnedOptIn = true, helperFails = false, mqttFails = false } = {}) {
+async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState, dispatchError, installedHelper = true, installedPlugin = true, tunnelLibrary = true, arch = "x64", unpinnedOptIn = true, helperFails = false, mqttFails = false, hms = [] } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-native-test-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const eventsFile = path.join(dir, "events.jsonl");
@@ -84,7 +84,7 @@ console.log('native_print result=0');
       record('status');
       const observedState = ${JSON.stringify(dispatchState)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchState)} : ${JSON.stringify(state)};
       return { connected:true, serial, model:'x2d', status:observedState,
-        raw: {model:'x2d',gcode_state:observedState,print_error:${JSON.stringify(dispatchError)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchError)} : 0,hms:[],nozzle_diameter:['0.4','0.4'],
+        raw: {model:'x2d',gcode_state:observedState,print_error:${JSON.stringify(dispatchError)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchError)} : 0,hms:${JSON.stringify(hms)},nozzle_diameter:['0.4','0.4'],
           ams: { ams:[{id:'0',tray:[{id:'0',tray_type:'PLA'}]}, {id:'128',tray:[{id:'0',tray_type:'PLA'}]}] } },
         observation:{source:'mqtt',requestedAt:Date.now()-1,receivedAt:Date.now(),identitySource:'report'} };
     };
@@ -576,4 +576,16 @@ test("Linux native upload rejects a non-X2D model before asking for the native s
   assert.match(result.content[0].text, /restricted to X2D/);
   assert.doesNotMatch(result.content[0].text, /native-setup/);
   assert.deepEqual(await s.events(), []);
+});
+
+test("X2D prints past the hidden boot camera notice without clearing, other codes still block", async t => {
+  const s = await server(t, { hms: [{ attr: 83887616, code: 131184 }] });
+  const printed = await s.print({ ams_slots: [0] });
+  assert.notEqual(printed.isError, true, JSON.stringify(printed));
+  assert.ok((await s.events()).some(e => e.kind === "dispatched"));
+  const blocked = await server(t, { hms: [{ attr: 83887616, code: 131184 }, { attr: 83887616, code: 0x20002 }] });
+  const result = await blocked.print({ ams_slots: [0] });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /HMS 0500-0600-0002-0002/);
+  assert.equal((await blocked.events()).some(e => e.kind === "helper"), false);
 });

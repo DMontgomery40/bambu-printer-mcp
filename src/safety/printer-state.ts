@@ -1,3 +1,4 @@
+import { HIDDEN_HMS } from "./hidden-hms.js";
 import { BambuClient, GetVersionCommand, PushAllCommand } from "bambu-node";
 import { normalizeMaterial, normalizeModel } from "./limits.js";
 
@@ -6,7 +7,7 @@ const MODEL_IDS: Record<string, string> = {
   O1C: "H2C", O1C2: "H2C", O1D: "H2D", O1E: "H2D Pro", O1S: "H2S", N6: "X2D",
   N2S: "A1", A1M: "A1 Mini", C11: "P1P", C12: "P1S", C13: "X1E", "BL-P001": "X1C", "BL-P002": "X1",
 };
-const SERIAL_MODELS: Record<string, string> = {
+export const SERIAL_MODELS: Record<string, string> = {
   "093": "H2S", "094": "H2D", "31B": "H2C", "239": "H2D Pro", "20P": "X2D",
   "00M": "X1C", "00W": "X1", "03W": "X1E", "01S": "P1P", "01P": "P1S", "22E": "P2S", "039": "A1", "030": "A1 Mini",
 };
@@ -183,24 +184,92 @@ function reportedNozzles(raw: Record<string,any>): ReportedNozzle[] {
   return output;
 }
 
-function validateErrors(raw: Record<string,any>, requireIdle: boolean) {
+const hiddenHmsSets = new Map(Object.entries(HIDDEN_HMS).map(([prefix, codes]) => [prefix, new Set(codes)]));
+
+type HmsEntry = { attr: number; code: number; severity: number; hex: string };
+function hmsCode(entry: any): HmsEntry | undefined {
+  const code = finiteNumber(entry?.code);
+  const attr = finiteNumber(entry?.attr);
+  const valid = (value: number | undefined): value is number => value !== undefined && Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
+  if (!valid(code) || !valid(attr)) return undefined;
+  // BambuStudio DevHMS.cpp: code >> 16; DevHMS.h: 1=fatal,2=serious,3=common,4=info.
+  return { attr, code, severity: Math.floor(code / 65536), hex: (attr.toString(16).padStart(8, "0") + code.toString(16).padStart(8, "0")).toUpperCase() };
+}
+
+const hmsLabel = (hex: string) => `HMS ${hex.slice(0, 4)}-${hex.slice(4, 8)}-${hex.slice(8, 12)}-${hex.slice(12)}`;
+const hmsKey = (entry: HmsEntry) => `hms:${entry.attr}:${entry.code}`;
+
+/** The one key format for a reported entry, shared by the gate and clear_hms_errors. */
+export function reportedHmsKey(entry: unknown): string {
+  const parsed = hmsCode(entry);
+  return parsed ? hmsKey(parsed) : `hms:${(entry as any)?.attr}:${(entry as any)?.code}`;
+}
+
+/** Bambu's display form of a cleared-code key such as "hms:83887616:131184"; other keys unchanged. */
+export function describeHmsKey(key: string): string {
+  const match = /^hms:(\d+):(\d+)$/.exec(key);
+  const entry = match ? hmsCode({ attr: Number(match[1]), code: Number(match[2]) }) : undefined;
+  return entry ? hmsLabel(entry.hex) : key;
+}
+
+/**
+ * A serious or common entry that Bambu lists for this serial prefix with empty
+ * text: Bambu Studio, Bambu Handy and the printer screen never show it, and
+ * the printer keeps printing with it (an X2D raises 0500-0600-0002-0070 at
+ * every boot). Bambu Studio selects the table by serial prefix, so this does
+ * too, but only when that prefix belongs to the verified model: a sparse report
+ * without a serial must not let a misconfigured serial pick another model's
+ * table. Fatal, invalid-level and unlisted entries never qualify.
+ */
+function isHiddenNotice(serial: string, model: string, entry: HmsEntry): boolean {
+  if (entry.severity !== 2 && entry.severity !== 3) return false;
+  const prefix = serial.trim().toUpperCase().slice(0, 3);
+  const normalized = normalizeModel(model);
+  if (!normalized || normalizeModel(SERIAL_MODELS[prefix] ?? "") !== normalized) return false;
+  return hiddenHmsSets.get(prefix)?.has(entry.hex) === true;
+}
+
+function hiddenHmsEntries(raw: unknown, serial: string, model: string): HmsEntry[] {
+  const entries = object(raw) && Array.isArray(raw.hms) ? raw.hms : [];
+  const seen = new Set<string>();
+  return entries.map(hmsCode).filter((entry): entry is HmsEntry =>
+    !!entry && isHiddenNotice(serial, model, entry) && !seen.has(entry.hex) && !!seen.add(entry.hex));
+}
+
+/** Labels of reported entries that pass only because Bambu hides them for this printer. */
+export function hiddenHmsNotices(raw: unknown, serial: string, model: string): string[] {
+  return hiddenHmsEntries(raw, serial, model).map(entry => hmsLabel(entry.hex));
+}
+
+/** Cleared-code keys of reported hidden entries; clearing never removes them, so they are not re-acknowledged. */
+export function hiddenHmsKeys(raw: unknown, serial: string, model: string): string[] {
+  return hiddenHmsEntries(raw, serial, model).map(hmsKey);
+}
+
+const loggedHiddenNotices = new Set<string>();
+/** Name each hidden entry a check passed once per printer on stderr, so headless runs still record it. */
+function logHiddenNotices(raw: Record<string, any>, serial: string, model: string): void {
+  for (const entry of hiddenHmsEntries(raw, serial, model)) {
+    const key = `${serial}:${entry.hex}`;
+    if (loggedHiddenNotices.has(key)) continue;
+    loggedHiddenNotices.add(key);
+    console.error(`Printer ${serial} reports ${hmsLabel(entry.hex)}, which Bambu lists for it without text and never shows as a fault; it does not block operations.`);
+  }
+}
+
+function validateErrors(raw: Record<string,any>, requireIdle: boolean, serial: string, model: string) {
   const state = typeof raw.gcode_state === "string" ? raw.gcode_state.toUpperCase() : "UNKNOWN";
   if (requireIdle && !["IDLE","FINISH"].includes(state)) throw new Error(`Printer state ${state} is not safely idle.`);
   if (!requireIdle && !["IDLE","FINISH","RUNNING","PAUSE"].includes(state)) throw new Error(`Printer state ${state} is unknown or failed.`);
   if (finiteNumber(raw.print_error) !== 0) throw new Error("Printer reports a print error or did not report its error state.");
   if (!Array.isArray(raw.hms)) throw new Error("Printer HMS error state is missing or malformed.");
-  for (const entry of raw.hms) {
-    const code = finiteNumber(entry?.code);
-    const attr = finiteNumber(entry?.attr);
-    // BambuStudio DevHMS.cpp: code >> 16; DevHMS.h: 1=fatal,2=serious,3=common,4=info.
+  for (const reported of raw.hms) {
+    const entry = hmsCode(reported);
     // Unknown severities fail closed; attr identifies the module and is not a severity bitmask.
-    if (code === undefined || attr === undefined || !Number.isInteger(code) || !Number.isInteger(attr) || code < 0 || code > 0xffffffff || attr < 0 || attr > 0xffffffff || Math.floor(code / 65536) !== 4) {
-      const hex = (value: number) => value.toString(16).toUpperCase().padStart(8, "0");
-      const label = code !== undefined && attr !== undefined && Number.isInteger(code) && Number.isInteger(attr) && code >= 0 && attr >= 0
-        ? ` (HMS ${hex(attr).slice(0, 4)}-${hex(attr).slice(4)}-${hex(code).slice(0, 4)}-${hex(code).slice(4)})` : "";
-      throw new Error(`Printer reports actionable or unknown HMS errors${label}; inspect and resolve them before proceeding.`);
-    }
+    if (entry && (entry.severity === 4 || isHiddenNotice(serial, model, entry))) continue;
+    throw new Error(`Printer reports actionable or unknown HMS errors${entry ? ` (${hmsLabel(entry.hex)})` : ""}; inspect and resolve them before proceeding.`);
   }
+  logHiddenNotices(raw, serial, model);
 }
 function trayRange(value: unknown, label: string): number | undefined {
   if (value === undefined || value === null || value === "" || value === "0" || value === 0) return undefined;
@@ -248,7 +317,7 @@ export function validatePrinterState(status: any, requirements: PrinterStateRequ
   const identity = observedIdentity(raw, String(status.serial ?? ""));
   const model = normalizeModel(requirements.model);
   if (!model || !identity.model || model !== identity.model) throw new Error(`Printer model identity mismatch: requested ${requirements.model}, observed ${identity.model ?? "unknown"}.`);
-  validateErrors(raw, requirements.requireIdle !== false);
+  validateErrors(raw, requirements.requireIdle !== false, String(status.serial ?? ""), model);
   if (requirements.requireLoadedFilament && (raw.ams?.tray_now !== undefined || Array.isArray(raw.ams?.ams))) {
     const current = finiteNumber(raw.ams?.tray_now);
     if (current === 255) throw new Error("The nozzle is explicitly reported unloaded. Load the declared filament before starting or resuming this G-code job.");

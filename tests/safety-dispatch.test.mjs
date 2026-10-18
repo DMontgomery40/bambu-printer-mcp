@@ -725,7 +725,7 @@ test("hardware errors cannot be cleared without human confirmation", async () =>
   const prompts = [];
   printer.confirm = async message => { prompts.push(message); return false; };
   await assert.rejects(printer.clearHmsErrors(host, serial, token), /confirmation.*declined/i);
-  assert.match(prompts[0], /print_error:123.*hms:1:131073|hms:1:131073.*print_error:123/);
+  assert.match(prompts[0], /print_error:123.*HMS 0000-0001-0002-0001|HMS 0000-0001-0002-0001.*print_error:123/);
   assertNoDispatch(events);
 });
 
@@ -741,6 +741,53 @@ test("cleared hardware codes are returned and acknowledged again before printing
   await assert.rejects(printer.print3mf(host, serial, token, { projectName: "confirm", filePath: file, bambuModel: "p1s", useAMS: false }), /confirmation.*declined/i);
   assert.match(prompts[0], /Previously cleared hardware codes: print_error:123/);
   assertNoDispatch(events);
+});
+
+test("the print preflight names hidden HMS notices that do not block printing", async () => {
+  const prompts = [];
+  const printer = new BambuImplementation(async message => { prompts.push(message); return true; });
+  const inspection = { model: "x2d", nozzleDiameters: [0.4, 0.4], materials: ["PETG"], maxNozzleTemperature: 270, maxBedTemperature: 70, maxChamberTemperature: 0, sha256: "a".repeat(64) };
+  await printer.confirmPrintPreflight("20PTEST", { raw: { gcode_state: "IDLE", hms: [{ attr: 83887616, code: 131184 }] } }, inspection);
+  assert.match(prompts[0], /The printer also reports HMS 0500-0600-0002-0070, which Bambu lists for this model without text and never shows as a fault; it does not block printing/);
+  await printer.confirmPrintPreflight("20PTEST", { raw: { gcode_state: "IDLE", hms: [] } }, inspection);
+  assert.doesNotMatch(prompts[1], /also reports/);
+});
+
+for (const [stage, appearsOnRead] of [["confirmation recheck", 2], ["dispatch recheck", 3]]) {
+  test(`a hidden notice that first appears at the ${stage} stops the print until it is confirmed`, async (t) => {
+    // H2D (serial prefix 094) lists 0500-0100-0002-0003 without text.
+    const notice = { attr: 0x05000100, code: 0x00020003 };
+    const h2d = hms => ({ ...safetyStatus({ model: "h2d", nozzle: ["0.4", "0.4"], hms }), serial: "094TESTSAFETY" });
+    const file = await fixture(t, { model: "h2d", nozzleDiameters: [0.4, 0.4] });
+    const { printer, events } = isolatedPrinter();
+    let reads = 0;
+    printer.getSafetyStatus = async () => h2d(++reads >= appearsOnRead ? [notice] : []);
+    const prompts = [];
+    printer.confirm = async message => { prompts.push(message); return true; };
+    const options = { projectName: "late-notice", filePath: file, bambuModel: "h2d", useAMS: false };
+    await assert.rejects(printer.print3mf(host, "094TESTSAFETY", token, options),
+      /reported HMS 0500-0100-0002-0003 after the print confirmation.*start the print again/);
+    assert.doesNotMatch(prompts[0], /also reports/);
+    assert.equal(events.some(({ action }) => action === "publish"), false, "an unnamed notice must stop the print before it is sent");
+
+    // The retry names the notice, and the print goes out.
+    printer.getSafetyStatus = async () => h2d([notice]);
+    await printer.print3mf(host, "094TESTSAFETY", token, options);
+    assert.match(prompts[1], /The printer also reports HMS 0500-0100-0002-0003/);
+    assert.equal(events.filter(({ action }) => action === "publish").length, 1);
+  });
+}
+
+test("clearing never records a hidden notice, and clear prompts show Bambu's HMS form", async () => {
+  const x2d = raw => ({ ...safetyStatus({ model: "x2d", nozzle: ["0.4", "0.4"], ...raw }), serial: "20PTEST" });
+  const prompts = [];
+  const printer = new BambuImplementation(async message => { prompts.push(message); return true; });
+  printer.getSafetyStatus = async () => x2d({ hms: [{ attr: 83887616, code: 131184 }, { attr: 1, code: 0x20001 }] });
+  printer.getPrinter = async () => ({ publish: async () => {} });
+  const cleared = await printer.clearHmsErrors(host, "20PTEST", token);
+  assert.deepEqual(cleared.cleared_codes, ["hms:1:131073", "print_error:0"], "the hidden camera entry is not an error to clear");
+  assert.match(prompts[0], /HMS 0000-0001-0002-0001, print_error:0\?/);
+  assert.doesNotMatch(prompts[0], /0500-0600-0002-0070|83887616/);
 });
 
 test("changed hardware codes during confirmation are not cleared", async () => {
