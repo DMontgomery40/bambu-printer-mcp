@@ -56,6 +56,18 @@ export function validateRemoteSliceOptions(options = {}) {
         throw new Error('Remote slicing requires one positive plate number; slicing all plates is unsupported.');
     return plate;
 }
+/** The remote API forwards this display name to Orca's --curr-bed-type. */
+function remoteBedType(value) {
+    const names = {
+        textured_plate: 'Textured PEI Plate', textured_pei_plate: 'Textured PEI Plate',
+        cool_plate: 'Cool Plate', engineering_plate: 'Engineering Plate',
+        hot_plate: 'High Temp Plate', high_temp_plate: 'High Temp Plate',
+    };
+    const key = typeof value === 'string' ? value.trim().toLowerCase().replace(/[\s-]+/g, '_') : '';
+    if (typeof names[key] !== 'string')
+        throw new Error('Unsupported remote bed type; use textured_plate, cool_plate, engineering_plate, or hot_plate.');
+    return names[key];
+}
 async function readResponse(response, limit) {
     const size = Number(response.headers.get('content-length'));
     if (size > limit) {
@@ -102,6 +114,8 @@ export async function sliceWithOrcaApi(input) {
     const config = configuration();
     const machine = JSON.parse(await fs.readFile(input.machinePath, 'utf8'));
     const filament = JSON.parse(await fs.readFile(input.filamentPaths[0], 'utf8'));
+    const processProfile = JSON.parse(await fs.readFile(input.processPath, 'utf8'));
+    const bedType = remoteBedType(options.bedType ?? processProfile.curr_bed_type ?? 'textured_plate');
     const model = normalizeModel(machine.printer_model);
     const nozzles = Array.isArray(machine.nozzle_diameter) ? machine.nozzle_diameter.map(Number) : [];
     const materialValues = Array.isArray(filament.filament_type) ? filament.filament_type : [];
@@ -121,6 +135,9 @@ export async function sliceWithOrcaApi(input) {
     const request = async (route, init = {}) => {
         if (input.isCancelled())
             controller.abort();
+        // Do not pass multipart data to fetch after cancellation: undici may start
+        // its body producer before checking the signal and close it mid-enqueue.
+        controller.signal.throwIfAborted();
         let response;
         try {
             response = await fetch(config.base + route, { ...init, headers: config.headers, signal: controller.signal, redirect: 'manual' });
@@ -156,6 +173,7 @@ export async function sliceWithOrcaApi(input) {
         }
         form.set('exportType', '3mf');
         form.set('plate', String(plate));
+        form.set('bedType', bedType);
         form.set('resolveProfileInheritance', 'false');
         if (options.arrange === true)
             form.set('arrange', 'true');
@@ -188,7 +206,7 @@ export async function sliceWithOrcaApi(input) {
         await fs.writeFile(input.outputPath, result, { flag: 'wx', mode: 0o600 });
         wroteOutput = true;
         const inspection = await inspectPrintFile(input.outputPath, {
-            model, nozzleDiameters: nozzles, plateIndex: plate - 1, bedType: options.bedType,
+            model, nozzleDiameters: nozzles, plateIndex: plate - 1, bedType,
         });
         if (JSON.stringify(inspection.materials) !== JSON.stringify(materials)) {
             throw new Error('Remote sliced file materials contradict the prepared filament profile.');

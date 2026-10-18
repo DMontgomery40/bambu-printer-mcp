@@ -7,9 +7,9 @@ import { test } from 'node:test';
 import JSZip from 'jszip';
 import { STLManipulator, normalizeSlicerType } from '../dist/stl/stl-manipulator.js';
 
-async function artifact({ model = 'p1s', nozzle = '0.4', plate = 1, command = 'G1 X10 Y10', material = 'PLA' } = {}) {
+async function artifact({ model = 'p1s', nozzle = '0.4', plate = 1, command = 'G1 X10 Y10', material = 'PLA', bed = 'Textured PEI Plate' } = {}) {
   const zip = new JSZip();
-  zip.file(`Metadata/plate_${plate}.gcode`, `; printer_model = ${model}\n; nozzle_diameter = ${nozzle}\n; filament_type = ${material}\n; curr_bed_type = Textured PEI Plate\n${command}\n`);
+  zip.file(`Metadata/plate_${plate}.gcode`, `; printer_model = ${model}\n; nozzle_diameter = ${nozzle}\n; filament_type = ${material}\n; curr_bed_type = ${bed}\n${command}\n`);
   return zip.generateAsync({ type: 'nodebuffer' });
 }
 
@@ -335,4 +335,34 @@ test('MCP print_3mf remote auto-slice failure cannot upload or publish the unsli
   assert.equal(f.requests[0].form.get('plate'), '1');
   assert.deepEqual((await mcp.events()).filter(event => ['upload', 'publish'].includes(event.action)), []);
   assert.equal(mcp.stderr().includes('mcp-fixture-secret'), false);
+});
+
+
+for (const [bedType, bed] of [['hot_plate', 'High Temp Plate'], ['cool_plate', 'Cool Plate']]) {
+  test(`remote forwards ${bedType} as the upstream bed display name`, async t => {
+    const result = await artifact({ bed });
+    const f = await fixture(t, (_req, res) => send(res, result));
+    const output = await f.slice({ bedType });
+    assert.deepEqual(await fs.readFile(output), result);
+    assert.equal(f.requests[0].form.get('bedType'), bed);
+    const prepared = JSON.parse(await f.requests[0].form.get('presetProfile').text());
+    assert.equal(prepared.curr_bed_type, bed);
+  });
+}
+
+test('remote forwards a standalone custom process bed when no explicit override is supplied', async t => {
+  const result = await artifact({ bed: 'Cool Plate' });
+  const f = await fixture(t, (_req, res) => send(res, result));
+  const custom = path.join(f.dir, 'custom-bed.json');
+  await fs.writeFile(custom, JSON.stringify({ name: 'Custom bed', type: 'process', from: 'User', curr_bed_type: 'Cool Plate' }));
+  await f.slice({}, custom);
+  assert.equal(f.requests[0].form.get('bedType'), 'Cool Plate');
+});
+
+test('remote rejects an unsupported prepared bed before HTTP', async t => {
+  const f = await fixture(t, () => {});
+  const custom = path.join(f.dir, 'unknown-bed.json');
+  await fs.writeFile(custom, JSON.stringify({ name: 'Unknown bed', type: 'process', from: 'User', curr_bed_type: 'Unknown Plate' }));
+  await assert.rejects(f.slice({}, custom), /unsupported.*bed/i);
+  assert.equal(f.requests.length, 0);
 });
