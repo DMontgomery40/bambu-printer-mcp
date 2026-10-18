@@ -13,6 +13,8 @@
 
 - End one-shot native command, upload and probe runs right after the plug-in's own cleanup, as print runs already do. Its worker threads can outlive that cleanup, and process-exit destructors then crashed successful runs with SIGSEGV (2 of 8 X2D commands on Linux), so the server reported a delivered command as failed. Contributed by [mygrexit](https://github.com/mygrexit) in [#56](https://github.com/DMontgomery40/bambu-printer-mcp/pull/56), with contributor-reported X2D Linux hardware queries and print-start evidence. Maintainer verification uses offline and compiled stub tests; no maintainer physical print was run.
 
+- Accept X2D jobs from OrcaSlicer 2.4.2. Its start G-code preheats a nozzle without assigned filament with `M620.17 … L-1` for toolhead-offset calibration, where Bambu Studio writes `L0`; that target is now checked against the X2D hardware limit and every declared material, which is never looser than the accepted `L<position>` form. The per-layer time-lapse capture `M9711 M<mode> E<extruder> …` from the official X2D and H2D templates is accepted with its exact parameters inside the machine volume instead of being read as a second `M0` command. The `L-1` form names one of the two physical nozzles; other models, other negative positions and extra parameters stay rejected. Material left in an idle nozzle from an earlier job is live state that file inspection cannot see, as with Bambu Studio's `L0` form. Validated offline with two OrcaSlicer X2D files that a physical X2D printed outside this MCP; no print was started by this change.
+
 ## [1.1.27] – 2026-10-14
 
 ### Added
