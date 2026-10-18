@@ -753,6 +753,31 @@ test("the print preflight names hidden HMS notices that do not block printing", 
   assert.doesNotMatch(prompts[1], /also reports/);
 });
 
+for (const [stage, appearsOnRead] of [["confirmation recheck", 2], ["dispatch recheck", 3]]) {
+  test(`a hidden notice that first appears at the ${stage} stops the print until it is confirmed`, async (t) => {
+    // H2D (serial prefix 094) lists 0500-0100-0002-0003 without text.
+    const notice = { attr: 0x05000100, code: 0x00020003 };
+    const h2d = hms => ({ ...safetyStatus({ model: "h2d", nozzle: ["0.4", "0.4"], hms }), serial: "094TESTSAFETY" });
+    const file = await fixture(t, { model: "h2d", nozzleDiameters: [0.4, 0.4] });
+    const { printer, events } = isolatedPrinter();
+    let reads = 0;
+    printer.getSafetyStatus = async () => h2d(++reads >= appearsOnRead ? [notice] : []);
+    const prompts = [];
+    printer.confirm = async message => { prompts.push(message); return true; };
+    const options = { projectName: "late-notice", filePath: file, bambuModel: "h2d", useAMS: false };
+    await assert.rejects(printer.print3mf(host, "094TESTSAFETY", token, options),
+      /reported HMS 0500-0100-0002-0003 after the print confirmation.*start the print again/);
+    assert.doesNotMatch(prompts[0], /also reports/);
+    assert.equal(events.some(({ action }) => action === "publish"), false, "an unnamed notice must stop the print before it is sent");
+
+    // The retry names the notice, and the print goes out.
+    printer.getSafetyStatus = async () => h2d([notice]);
+    await printer.print3mf(host, "094TESTSAFETY", token, options);
+    assert.match(prompts[1], /The printer also reports HMS 0500-0100-0002-0003/);
+    assert.equal(events.filter(({ action }) => action === "publish").length, 1);
+  });
+}
+
 test("clearing never records a hidden notice, and clear prompts show Bambu's HMS form", async () => {
   const x2d = raw => ({ ...safetyStatus({ model: "x2d", nozzle: ["0.4", "0.4"], ...raw }), serial: "20PTEST" });
   const prompts = [];

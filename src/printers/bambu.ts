@@ -461,6 +461,9 @@ class BambuClientStore {
   }
 }
 
+/** What the human confirmed in confirmPrintPreflight, checked again before dispatch. */
+export type PrintPreflight = { finishedJob?: string; serial: string; model: string; notices: string[] };
+
 export class BambuImplementation {
   private printerStore: BambuClientStore;
   private checkedJobs = new Map<string, { remotePath: string; requirements: PrinterStateRequirements }>();
@@ -481,7 +484,12 @@ export class BambuImplementation {
     return status.raw.gcode_state === "FINISH" ? JSON.stringify([status.raw.gcode_file, status.raw.subtask_name, status.raw.task_id, status.raw.subtask_id]) : undefined;
   }
 
-  async confirmPrintPreflight(serial: string, status: any, inspection: Awaited<ReturnType<typeof inspectPrintFile>>): Promise<string | undefined> {
+  /**
+   * The human print confirmation. Its result goes to assertBedClearance at
+   * every later state check of the same print, which stops the print if the
+   * situation the human confirmed has changed.
+   */
+  async confirmPrintPreflight(serial: string, status: any, inspection: Awaited<ReturnType<typeof inspectPrintFile>>): Promise<PrintPreflight> {
     const finishedJob = this.finishedJobIdentity(status);
     const cleared = this.clearedErrors.get(serial);
     const notices = hiddenHmsNotices(status?.raw, serial, inspection.model);
@@ -495,13 +503,21 @@ export class BambuImplementation {
         `${notices.length === 1 ? "it does" : "they do"} not block printing.` : ""),
       finishedJob !== undefined || !!cleared
     );
-    return finishedJob;
+    return { finishedJob, serial, model: inspection.model, notices };
   }
 
-  assertBedClearance(status: any, confirmedFinishedJob: string | undefined): void {
+  /** Stop a print whose confirmed situation changed: a newly finished job, or a hidden HMS notice the preflight did not name. */
+  assertBedClearance(status: any, preflight: PrintPreflight): void {
     const current = this.finishedJobIdentity(status);
-    if (current !== undefined && current !== confirmedFinishedJob) {
+    if (current !== undefined && current !== preflight.finishedJob) {
       throw new Error("Printer reports a newly finished job. Confirm that its part and debris have been removed before retrying the print.");
+    }
+    // An X2D raises its hidden camera notice about 15 seconds after boot, so it
+    // can appear after the human confirmed. Never pass a notice nobody was told about.
+    const unnamed = hiddenHmsNotices(status?.raw, preflight.serial, preflight.model).filter(notice => !preflight.notices.includes(notice));
+    if (unnamed.length) {
+      throw new Error(`Printer reported ${unnamed.join(", ")} after the print confirmation. ` +
+        "Bambu hides it and it does not block printing, but it was not named when you confirmed; start the print again to review it.");
     }
   }
 

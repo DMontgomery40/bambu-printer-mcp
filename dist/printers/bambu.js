@@ -392,6 +392,11 @@ export class BambuImplementation {
     finishedJobIdentity(status) {
         return status.raw.gcode_state === "FINISH" ? JSON.stringify([status.raw.gcode_file, status.raw.subtask_name, status.raw.task_id, status.raw.subtask_id]) : undefined;
     }
+    /**
+     * The human print confirmation. Its result goes to assertBedClearance at
+     * every later state check of the same print, which stops the print if the
+     * situation the human confirmed has changed.
+     */
     async confirmPrintPreflight(serial, status, inspection) {
         const finishedJob = this.finishedJobIdentity(status);
         const cleared = this.clearedErrors.get(serial);
@@ -403,12 +408,20 @@ export class BambuImplementation {
             (cleared ? ` Previously cleared hardware codes: ${cleared.map(describeHmsKey).join(", ")}. Confirm their physical causes have been resolved.` : "") +
             (notices.length ? ` The printer also reports ${notices.join(", ")}, which Bambu lists for this model without text and never shows as a fault; ` +
                 `${notices.length === 1 ? "it does" : "they do"} not block printing.` : ""), finishedJob !== undefined || !!cleared);
-        return finishedJob;
+        return { finishedJob, serial, model: inspection.model, notices };
     }
-    assertBedClearance(status, confirmedFinishedJob) {
+    /** Stop a print whose confirmed situation changed: a newly finished job, or a hidden HMS notice the preflight did not name. */
+    assertBedClearance(status, preflight) {
         const current = this.finishedJobIdentity(status);
-        if (current !== undefined && current !== confirmedFinishedJob) {
+        if (current !== undefined && current !== preflight.finishedJob) {
             throw new Error("Printer reports a newly finished job. Confirm that its part and debris have been removed before retrying the print.");
+        }
+        // An X2D raises its hidden camera notice about 15 seconds after boot, so it
+        // can appear after the human confirmed. Never pass a notice nobody was told about.
+        const unnamed = hiddenHmsNotices(status?.raw, preflight.serial, preflight.model).filter(notice => !preflight.notices.includes(notice));
+        if (unnamed.length) {
+            throw new Error(`Printer reported ${unnamed.join(", ")} after the print confirmation. ` +
+                "Bambu hides it and it does not block printing, but it was not named when you confirmed; start the print again to review it.");
         }
     }
     async getPrinter(host, serial, token) {
