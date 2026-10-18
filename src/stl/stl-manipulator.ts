@@ -11,6 +11,7 @@ import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { flattenForCli, detectProfilesRoot, resolveBblMachineProfile } from '../slicer/profile-flatten.js';
 import { profileJsonFiles } from '../slicer/profile-files.js';
+import { sliceWithOrcaApi, validateRemoteSliceOptions } from '../slicer/remote-slicer.js';
 
 const readFileAsync = promisify(fs.readFile);
 const writeFileAsync = promisify(fs.writeFile);
@@ -57,6 +58,7 @@ export const SLICER_TYPES = [
   'bambustudio',
   'orcaslicer',
   'orcaslicer-bambulab',
+  'orca-slicer-api',
   'prusaslicer',
   'cura',
   'slic3r',
@@ -81,6 +83,8 @@ const SLICER_TYPE_ALIASES: Record<string, SlicerType> = {
   orcastudio: 'orcaslicer-bambulab',
   'orcaslicer-bmcu': 'orcaslicer-bambulab',
   'orca-bmcu': 'orcaslicer-bambulab',
+  'orca-slicer-api': 'orca-slicer-api',
+  'orcaslicer-api': 'orca-slicer-api',
   prusaslicer: 'prusaslicer',
   'prusa-slicer': 'prusaslicer',
   cura: 'cura',
@@ -105,7 +109,8 @@ export function isBambuCompatibleSlicer(slicerType: SlicerType): boolean {
   return (
     slicerType === 'bambustudio' ||
     slicerType === 'orcaslicer' ||
-    slicerType === 'orcaslicer-bambulab'
+    slicerType === 'orcaslicer-bambulab' ||
+    slicerType === 'orca-slicer-api'
   );
 }
 
@@ -1591,7 +1596,7 @@ export class STLManipulator extends EventEmitter {
     const operationId = this.generateOperationId();
     this.activeOperations.set(operationId, true);
 
-    if (isPathLikeExecutable(slicerPath) && !fs.existsSync(slicerPath)) {
+    if (slicerType !== 'orca-slicer-api' && isPathLikeExecutable(slicerPath) && !fs.existsSync(slicerPath)) {
       throw new Error(`Slicer executable not found at: ${slicerPath}`);
     }
     if (slicerProfile && !fs.existsSync(slicerProfile)) {
@@ -1638,6 +1643,7 @@ export class STLManipulator extends EventEmitter {
         case 'bambustudio':
         case 'orcaslicer':
         case 'orcaslicer-bambulab':
+        case 'orca-slicer-api':
           // Bambu-compatible CLI: slice and export as 3MF with embedded gcode.
           // FULU's OrcaSlicer-bambulab fork keeps this Bambu-style path.
           // For 3MF input: slice in place and export sliced 3MF
@@ -1645,12 +1651,19 @@ export class STLManipulator extends EventEmitter {
           {
             const is3mf = stlFilePath.toLowerCase().endsWith('.3mf');
             const outputBase = path.basename(stlFilePath, is3mf ? '.3mf' : '.stl');
-            const bambuOutputPath = path.join(this.tempDir, outputBase + '_sliced.3mf');
+            const remote = slicerType === 'orca-slicer-api';
+            if (remote) {
+              validateRemoteSliceOptions(bambuOptions);
+              if (!process.env.BAMBU_PROFILES_ROOT) throw new Error('Remote slicing requires BAMBU_PROFILES_ROOT pointing to the matching Orca profile tree (a read-only mount is sufficient).');
+              if (slicerProfile && !fs.existsSync(slicerProfile)) throw new Error('Remote slicing process profile does not exist.');
+            }
+            const profileSlicerType = remote ? 'orcaslicer' : slicerType;
+            const bambuOutputPath = path.join(this.tempDir, outputBase + (remote ? `_${operationId}` : '') + '_sliced.3mf');
             const outputDir = path.dirname(bambuOutputPath);
-            const profilesRoot = detectProfilesRoot(slicerPath, slicerType);
+            const profilesRoot = detectProfilesRoot(remote ? undefined : slicerPath, profileSlicerType);
             const rawBundle = await this.resolveBambuLikeSettingsBundle(
               outputBase,
-              slicerType,
+              profileSlicerType,
               slicerProfile,
               printerPreset,
               bambuOptions,
@@ -1676,7 +1689,7 @@ export class STLManipulator extends EventEmitter {
             // absolute-extrusion normalization after resolving those ancestors.
             // The machine owns the extrusion mode and layer G-code once process
             // files lose machine keys, so normalize it there as well.
-            if (slicerType === 'orcaslicer' && settingsBundle.settingsArg) {
+            if (profileSlicerType === 'orcaslicer' && settingsBundle.settingsArg) {
               const [machinePath, processPath] = settingsBundle.settingsArg.split(';');
               settingsBundle.settingsArg = [
                 this.writeTempJson(outputBase, 'machine_orca_resolved',
@@ -1686,6 +1699,16 @@ export class STLManipulator extends EventEmitter {
               ].join(';');
             }
             const cliBundle = this.isolateMachineSettings(settingsBundle);
+            if (remote) {
+              const [machinePath, processPath] = cliBundle.settingsArg?.split(';') ?? [];
+              if (!machinePath || !processPath) throw new Error('Remote slicing requires complete prepared machine and process profiles.');
+              outputFilePath = await sliceWithOrcaApi({
+                inputPath: stlFilePath, machinePath, processPath,
+                filamentPaths: cliBundle.filamentPaths, outputPath: bambuOutputPath,
+                options: bambuOptions, isCancelled: () => !this.activeOperations.get(operationId),
+              });
+              break;
+            }
             args = [
               '--slice', String(bambuOptions?.slicePlate ?? 0),
               '--outputdir', outputDir,
@@ -1729,47 +1752,49 @@ export class STLManipulator extends EventEmitter {
           throw new Error(`Unsupported slicer type: ${slicerType}`);
       }
 
-      if (progressCallback) progressCallback(20, `Executing slicer: ${slicerPath} ${args.join(' ')}`);
-      console.error(`Executing: ${slicerPath} ${args.join(' ')}`);
+      if (slicerType !== 'orca-slicer-api') {
+        if (progressCallback) progressCallback(20, `Executing slicer: ${slicerPath} ${args.join(' ')}`);
+        console.error(`Executing: ${slicerPath} ${args.join(' ')}`);
 
-      // Execute the slicer
-      await new Promise<void>((resolve, reject) => {
-        const process = execFile(slicerPath, args, (error, stdout, stderr) => {
-          if (error) {
-            console.error(`Slicer Error: ${error.message}`);
-            console.error(`Slicer Stderr: ${stderr}`);
-            reject(new Error(`Slicer failed: ${error.message}. Stderr: ${stderr}`));
-          } else {
-            console.error(`Slicer Stdout: ${stdout}`);
-             if (stderr) {
-                 console.warn(`Slicer Stderr: ${stderr}`); // Log stderr even on success
-             }
-            resolve();
-          }
-        });
-
-        // Optional: Add listeners for stdout/stderr for real-time progress if slicer provides it
-        // process.stdout?.on('data', (data) => { console.error(`Slicer stdout: ${data}`); });
-        // process.stderr?.on('data', (data) => { console.error(`Slicer stderr: ${data}`); });
-        
-        // Check for cancellation periodically
-        const checkCancel = setInterval(() => {
-           if (!this.activeOperations.get(operationId)) {
-               clearInterval(checkCancel);
-               try {
-                   process.kill(); // Attempt to kill the slicer process
-                   reject(new Error("Slicing operation cancelled"));
-               } catch (killError) {
-                   console.error("Error attempting to kill slicer process:", killError);
-                   reject(new Error("Slicing operation cancelled, but failed to kill process."));
+        // Execute the slicer
+        await new Promise<void>((resolve, reject) => {
+          const process = execFile(slicerPath, args, (error, stdout, stderr) => {
+            if (error) {
+              console.error(`Slicer Error: ${error.message}`);
+              console.error(`Slicer Stderr: ${stderr}`);
+              reject(new Error(`Slicer failed: ${error.message}. Stderr: ${stderr}`));
+            } else {
+              console.error(`Slicer Stdout: ${stdout}`);
+               if (stderr) {
+                   console.warn(`Slicer Stderr: ${stderr}`); // Log stderr even on success
                }
-           }
-       }, 500); 
+              resolve();
+            }
+          });
 
-       process.on('exit', () => clearInterval(checkCancel));
-       process.on('error', () => clearInterval(checkCancel)); // Ensure interval cleared on process error too
+          // Optional: Add listeners for stdout/stderr for real-time progress if slicer provides it
+          // process.stdout?.on('data', (data) => { console.error(`Slicer stdout: ${data}`); });
+          // process.stderr?.on('data', (data) => { console.error(`Slicer stderr: ${data}`); });
+        
+          // Check for cancellation periodically
+          const checkCancel = setInterval(() => {
+             if (!this.activeOperations.get(operationId)) {
+                 clearInterval(checkCancel);
+                 try {
+                     process.kill(); // Attempt to kill the slicer process
+                     reject(new Error("Slicing operation cancelled"));
+                 } catch (killError) {
+                     console.error("Error attempting to kill slicer process:", killError);
+                     reject(new Error("Slicing operation cancelled, but failed to kill process."));
+                 }
+             }
+         }, 500);
 
-      });
+         process.on('exit', () => clearInterval(checkCancel));
+         process.on('error', () => clearInterval(checkCancel)); // Ensure interval cleared on process error too
+
+        });
+      }
 
       if (!this.activeOperations.get(operationId)) {
         // This check might be redundant if the promise rejected on kill, but good safety

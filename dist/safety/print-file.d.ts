@@ -12,6 +12,8 @@ export interface PrintFileInspection {
     selectsAms: boolean;
     nozzleTypes?: string[];
     nozzleFlows?: string[];
+    /** Physical nozzle index for each declared filament, composed from the selected plate headers. */
+    filamentNozzleIndices?: number[];
 }
 /** Inspect the exact selected plate. This does not simulate firmware or arbitrary motion:
  * only declared object bounds are checked, never purge/homing/wipe travel coordinates.

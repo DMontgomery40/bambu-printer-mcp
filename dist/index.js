@@ -14,11 +14,12 @@ import { BambuNetworkBridge } from "./bambu-network-bridge.js";
 import { assertBambuNativeAvailable, bambuNativeControlsAvailable, bambuNativeUnavailableReason, interruptNativeOperations, validateBambuNativeMetadata, buildBambuNativeFanCommand, buildBambuNativeTemperatureCommand, printWithBambuNative, sendCommandWithBambuNative, uploadWithBambuNative, } from "./bambu-native.js";
 import { importFileViaBambuConnect } from "./bambu-connect.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
-import { hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue } from "./ams-mapping.js";
+import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue } from "./ams-mapping.js";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, parse3MF } from './3mf_parser.js';
 import { BambuImplementation, assertDirectPrintSupported } from "./printers/bambu.js";
 import { inspectPrintFile } from "./safety/print-file.js";
 import { validatePrinterState } from "./safety/printer-state.js";
+import { isDualNozzleModel } from "./safety/limits.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safety/artifact.js";
 import { detectProfilesRoot } from "./slicer/profile-flatten.js";
 dotenv.config();
@@ -523,7 +524,7 @@ function defaultSlicerPathFor(slicerType) {
 }
 function resolveSlicerConfig(args) {
     const slicerType = normalizeSlicerType(String(args?.slicer_type || DEFAULT_SLICER_TYPE));
-    const slicerPath = String(args?.slicer_path || process.env.SLICER_PATH || defaultSlicerPathFor(slicerType));
+    const slicerPath = slicerType === "orca-slicer-api" ? "" : String(args?.slicer_path || process.env.SLICER_PATH || defaultSlicerPathFor(slicerType));
     const slicerProfile = String(args?.slicer_profile || DEFAULT_SLICER_PROFILE);
     return { slicerType, slicerPath, slicerProfile };
 }
@@ -735,18 +736,10 @@ function stringifyBridgeJson(value) {
         return value;
     return JSON.stringify(value);
 }
-function nativeAmsMapping2(mapping) {
+function nativeAmsMapping2(mapping, dualNozzle = false) {
     if (!mapping || mapping.length === 0)
         return undefined;
-    return JSON.stringify(mapping.map((value) => {
-        if (value < 0 || value === 255)
-            return { ams_id: 255, slot_id: 255 };
-        if (value === 254)
-            return { ams_id: 254, slot_id: 254 };
-        if (value >= 128)
-            return { ams_id: 128, slot_id: value - 128 };
-        return { ams_id: Math.floor(value / 4), slot_id: value % 4 };
-    }));
+    return JSON.stringify(mapping.map((value) => bridgeAmsMapping2Entry(value, dualNozzle)));
 }
 function redactPrintParams(params) {
     return {
@@ -1025,6 +1018,9 @@ class BambuPrinterMCPServer {
     resolveSlicerConfigFromArgs(args, toolName) {
         const config = resolveSlicerConfig(args);
         if (args?.slicer_path !== undefined) {
+            if (config.slicerType === "orca-slicer-api") {
+                throw new Error(`${toolName}: remote slicing uses trusted SLICER_API_URL and BAMBU_PROFILES_ROOT configuration; slicer_path is unsupported.`);
+            }
             const resolvedSlicerPath = this.resolveExecutableSelectorArg(args.slicer_path, toolName, "slicer_path");
             if (resolvedSlicerPath !== undefined) {
                 config.slicerPath = resolvedSlicerPath;
@@ -1048,10 +1044,10 @@ class BambuPrinterMCPServer {
         }
         console.error(`3MF has no gcode - auto-slicing with ${slicerType} for ${printModel}`);
         const autoSliceOptions = {
-            uptodate: true,
-            ensureOnBed: true,
-            minSave: true,
-            skipModifiedGcodes: true,
+            ...(slicerType === "orca-slicer-api" ? {} : {
+                uptodate: true, ensureOnBed: true, minSave: true, skipModifiedGcodes: true,
+            }),
+            ...(slicerType === "orca-slicer-api" ? { slicePlate: Number(args.plate_index ?? 0) + 1 } : {}),
             bedType: bedType ? resolveBambuStudioCliBedType(bedType) : undefined,
             nozzleType: resolveNozzleType(args?.nozzle_type),
             nozzleVolumeType: resolveNozzleVolumeType(args?.nozzle_volume_type),
@@ -1063,8 +1059,9 @@ class BambuPrinterMCPServer {
     async resolveAmsPrintSettings(threeMFPath, args, host, bambuSerial, bambuToken, printModel, printNozzle) {
         const parsed3MFData = await parse3MF(threeMFPath);
         let parsedAmsMapping;
+        const trayOptions = { dualNozzle: isDualNozzleModel(printModel) };
         if (parsed3MFData.slicerConfig?.ams_mapping) {
-            const slots = normalizeAmsMappingObject(parsed3MFData.slicerConfig.ams_mapping);
+            const slots = normalizeAmsMappingObject(parsed3MFData.slicerConfig.ams_mapping, "ams_mapping", trayOptions);
             if (slots.length > 0) {
                 parsedAmsMapping = slots;
             }
@@ -1077,10 +1074,10 @@ class BambuPrinterMCPServer {
         if (hasUserAmsMapping) {
             let userMappingOverride;
             if (Array.isArray(args.ams_mapping)) {
-                userMappingOverride = args.ams_mapping.map((v, i) => normalizeBridgeAmsTrayValue(v, `ams_mapping[${i}]`));
+                userMappingOverride = args.ams_mapping.map((v, i) => normalizeBridgeAmsTrayValue(v, `ams_mapping[${i}]`, trayOptions));
             }
             else if (args.ams_mapping && typeof args.ams_mapping === 'object') {
-                userMappingOverride = normalizeAmsMappingObject(args.ams_mapping);
+                userMappingOverride = normalizeAmsMappingObject(args.ams_mapping, "ams_mapping", trayOptions);
             }
             if (userMappingOverride && userMappingOverride.length > 0) {
                 finalAmsMapping = userMappingOverride;
@@ -1089,7 +1086,7 @@ class BambuPrinterMCPServer {
             }
         }
         if (!hasUserAmsMapping && hasUserAmsSlots) {
-            const userSlots = args.ams_slots.map((slot, i) => normalizeBridgeAmsTrayValue(slot, `ams_slots[${i}]`));
+            const userSlots = args.ams_slots.map((slot, i) => normalizeBridgeAmsTrayValue(slot, `ams_slots[${i}]`, trayOptions));
             finalAmsSlots = userSlots;
             finalAmsMapping = undefined;
             useAMS = userSlots.length > 0;
@@ -1106,8 +1103,10 @@ class BambuPrinterMCPServer {
             useAMS = true;
         }
         if (args?.use_ams === false) {
-            finalAmsMapping = undefined;
-            finalAmsSlots = undefined;
+            if (!hasUserAmsMapping)
+                finalAmsMapping = undefined;
+            if (!hasUserAmsSlots)
+                finalAmsSlots = undefined;
             useAMS = false;
         }
         if ((!finalAmsMapping || finalAmsMapping.length === 0) && (!finalAmsSlots || finalAmsSlots.length === 0)) {
@@ -1177,8 +1176,16 @@ class BambuPrinterMCPServer {
                 inspection.usedFilamentPositions.forEach((position, index) => { mapping[position] = finalAmsSlots[index]; });
             }
             if (!useAMS) {
-                mapping = Array(inspection.materials.length).fill(-1);
-                inspection.usedFilamentPositions.forEach(position => { mapping[position] = 254; });
+                mapping ?? (mapping = Array(inspection.materials.length).fill(-1));
+                const dualNozzle = isDualNozzleModel(printModel);
+                for (const position of inspection.usedFilamentPositions) {
+                    if (mapping[position] === undefined || mapping[position] < 0) {
+                        mapping[position] = externalTrayForNozzle(inspection.filamentNozzleIndices?.[position], dualNozzle);
+                    }
+                    if (mapping[position] !== 254 && !(dualNozzle && mapping[position] === 255)) {
+                        throw new Error("use_ams:false requires an external-spool mapping for every used filament.");
+                    }
+                }
             }
             const requirements = { ...inspection, amsMapping: mapping, useAMS };
             const initialStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
@@ -1187,7 +1194,7 @@ class BambuPrinterMCPServer {
             const confirmedStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
             validatePrinterState(confirmedStatus, requirements);
             this.bambu.assertBedClearance(confirmedStatus, bedClearance);
-            const amsMapping = stringifyBridgeJson(mapping);
+            const amsMapping = stringifyBridgeJson(mapping?.map(value => bridgeAmsMappingValue(value, isDualNozzleModel(printModel))));
             const remoteFileName = uniquePrintName(threeMFPath);
             const params = {
                 dev_id: devId,
@@ -1204,7 +1211,7 @@ class BambuPrinterMCPServer {
                 ftp_file_md5: String(args?.ftp_file_md5 || ""),
                 nozzle_mapping: stringifyBridgeJson(args?.nozzle_mapping) || "",
                 ams_mapping: amsMapping || "",
-                ams_mapping2: stringifyBridgeJson(args?.ams_mapping2) || "",
+                ams_mapping2: nativeAmsMapping2(mapping, isDualNozzleModel(printModel)) || "",
                 ams_mapping_info: stringifyBridgeJson(args?.ams_mapping_info) || "",
                 nozzles_info: stringifyBridgeJson(args?.nozzles_info) || "",
                 connection_type: connectionType,
@@ -1244,7 +1251,7 @@ class BambuPrinterMCPServer {
                     host: devIp, serial: devId, token: password || bambuToken, filePath: snapshot,
                     projectName: String(params.task_name), presetName, remoteName: remoteFileName,
                     plateIndex, bedType: printBedType, useAMS,
-                    amsMapping, amsMapping2: nativeAmsMapping2(mapping),
+                    amsMapping, amsMapping2: nativeAmsMapping2(mapping, isDualNozzleModel(printModel)),
                     bedLeveling: params.task_bed_leveling,
                     flowCalibration: params.task_flow_cali,
                     vibrationCalibration: params.task_vibration_cali,
@@ -1447,10 +1454,9 @@ class BambuPrinterMCPServer {
             throw new Error('BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF for SuperTack or choose textured_plate, cool_plate, engineering_plate, or hot_plate.');
         }
         const autoSliceOptions = {
-            uptodate: true,
-            ensureOnBed: true,
-            minSave: true,
-            skipModifiedGcodes: true,
+            ...(slicerType === "orca-slicer-api" ? {} : {
+                uptodate: true, ensureOnBed: true, minSave: true, skipModifiedGcodes: true,
+            }),
             bedType,
         };
         try {
@@ -1943,7 +1949,7 @@ class BambuPrinterMCPServer {
                                 rotate_y: { type: "number", description: "Rotate the model around the Y-axis by this many degrees before slicing. Useful for reorienting prints for better layer adhesion." },
                                 min_save: { type: "boolean", description: "Write a smaller output 3MF by omitting non-essential metadata. Reduces file size for faster FTP upload to the printer." },
                                 skip_modified_gcodes: { type: "boolean", description: "Strip custom start/end gcodes embedded in the 3MF. Recommended for downloaded 3MFs since custom gcodes from other users' profiles may be unsafe for your printer." },
-                                slice_plate: { type: "number", description: "Which plate index to slice. 0 = all plates (default). Use 1, 2, etc. to slice only a specific plate in multi-plate 3MF projects." }
+                                slice_plate: { type: "number", description: "Which plate index to slice. 0 = all plates for local slicers; remote slicing defaults to plate 1 and rejects 0. Use 1, 2, etc. to slice only a specific plate in multi-plate 3MF projects." }
                             },
                             required: ["stl_path", "bambu_model"]
                         }
@@ -2046,8 +2052,8 @@ class BambuPrinterMCPServer {
                                 nozzle_diameter: { type: "string", description: "Nozzle diameter in mm for auto-slicing (default: 0.4)." },
                                 nozzle_diameters: { type: "array", minItems: 1, maxItems: 2, items: { type: "number", enum: [0.2, 0.4, 0.6, 0.8] }, description: "Complete per-nozzle diameters for pre-sliced jobs, e.g. [0.4, 0.6]. Omit to verify file metadata against every reported nozzle; cannot combine with nozzle_diameter." },
                                 use_ams: { type: "boolean", description: "Whether to use the AMS; defaults to auto-detect from the 3MF mapping." },
-                                ams_mapping: { type: "array", description: "AMS slot mapping array used by both local MCP printing and FULU PrintParams.", items: { type: "number" } },
-                                ams_slots: { type: "array", description: "Per-used-filament AMS slot list, matching the local LAN print path.", items: { type: "number" } },
+                                ams_mapping: { type: "array", description: "AMS slot mapping array used by both local MCP printing and FULU PrintParams. Same tray values as print_3mf: 254 = external spool; on dual-nozzle printers 254 = left/deputy nozzle external and 255 = right/main nozzle external.", items: { type: "number" } },
+                                ams_slots: { type: "array", description: "Per-used-filament AMS slot list, matching the local LAN print path (254/255 external spool rules as in print_3mf).", items: { type: "number" } },
                                 ams_mapping_bridge: { type: "string", description: "Raw JSON string override for FULU PrintParams ams_mapping when the automatic array is not enough." },
                                 ams_mapping2: { type: "string", description: "Raw JSON string for FULU PrintParams ams_mapping2, matching OrcaSlicer-bambulab's v1 AMS mapping field." },
                                 ams_mapping_info: { type: "string", description: "Raw JSON string for FULU PrintParams ams_mapping_info, matching OrcaSlicer-bambulab's detailed AMS mapping field." },
@@ -2475,12 +2481,12 @@ class BambuPrinterMCPServer {
                                 use_ams: { type: "boolean", description: "Whether to use the AMS (default: auto-detect from 3MF)" },
                                 ams_mapping: {
                                     type: "array",
-                                    description: "Project-level AMS mapping array. Position = project filament index, value = absolute AMS tray (0-3=AMS 0, 4-7=AMS 1, 8-11=AMS 2, 128+=AMS-HT, 254=external, -1=unused). Prefer ams_slots unless you know the project-level layout.",
+                                    description: "Project-level AMS mapping array. Position = project filament index, value = absolute AMS tray (0-3=AMS 0, 4-7=AMS 1, 8-11=AMS 2, 128+=AMS-HT, 254=external, -1=unused). On dual-nozzle printers (H2D, H2D Pro, H2C, X2D) 254 is the LEFT/deputy nozzle external spool and 255 the RIGHT/main nozzle external spool, matching Bambu Studio's virtual tray ids; the gcode header's filament_map (1=left, 2=right) says which nozzle each filament was sliced for. Prefer ams_slots unless you know the project-level layout.",
                                     items: { type: "number" }
                                 },
                                 ams_slots: {
                                     type: "array",
-                                    description: "Preferred AMS input: one absolute tray index per USED filament in plate order, e.g. [1] for a single-filament print pulling from AMS 0 slot 1. Expanded to project-level ams_mapping automatically from the 3MF's plate_N.json and gcode header.",
+                                    description: "Preferred AMS input: one absolute tray index per USED filament in plate order, e.g. [1] for a single-filament print pulling from AMS 0 slot 1. Use 254 for the external spool (on dual-nozzle printers: 254 = left/deputy nozzle external, 255 = right/main nozzle external). Expanded to project-level ams_mapping automatically from the 3MF's plate_N.json and gcode header.",
                                     items: { type: "number" }
                                 },
                                 auto_match_ams: {
@@ -3415,10 +3421,9 @@ class BambuPrinterMCPServer {
                             }
                             console.error(`3MF has no gcode — auto-slicing with ${slicerType} for ${printModel}`);
                             const autoSliceOptions = {
-                                uptodate: true,
-                                ensureOnBed: true,
-                                minSave: true,
-                                skipModifiedGcodes: true,
+                                ...(slicerType === "orca-slicer-api" ? { slicePlate: plateIndex + 1 } : {
+                                    uptodate: true, ensureOnBed: true, minSave: true, skipModifiedGcodes: true,
+                                }),
                                 bedType: printBedType,
                                 nozzleType: resolveNozzleType(args?.nozzle_type),
                                 nozzleVolumeType: resolveNozzleVolumeType(args?.nozzle_volume_type),
@@ -3440,9 +3445,10 @@ class BambuPrinterMCPServer {
                         }
                         const parsed3MFData = await parse3MF(threeMFPath);
                         const isH2Print = H2_BAMBU_MODELS.has(printModel);
+                        const trayOptions = { dualNozzle: isDualNozzleModel(printModel) };
                         let parsedAmsMapping;
                         if (!isH2Print && parsed3MFData.slicerConfig?.ams_mapping) {
-                            const slots = normalizeAmsMappingObject(parsed3MFData.slicerConfig.ams_mapping);
+                            const slots = normalizeAmsMappingObject(parsed3MFData.slicerConfig.ams_mapping, "ams_mapping", trayOptions);
                             if (slots.length > 0) {
                                 parsedAmsMapping = slots;
                             }
@@ -3455,10 +3461,10 @@ class BambuPrinterMCPServer {
                         if (hasUserAmsMapping) {
                             let userMappingOverride;
                             if (Array.isArray(args.ams_mapping)) {
-                                userMappingOverride = args.ams_mapping.map((v, i) => normalizeBridgeAmsTrayValue(v, `ams_mapping[${i}]`));
+                                userMappingOverride = args.ams_mapping.map((v, i) => normalizeBridgeAmsTrayValue(v, `ams_mapping[${i}]`, trayOptions));
                             }
                             else if (args.ams_mapping && typeof args.ams_mapping === 'object') {
-                                userMappingOverride = normalizeAmsMappingObject(args.ams_mapping);
+                                userMappingOverride = normalizeAmsMappingObject(args.ams_mapping, "ams_mapping", trayOptions);
                             }
                             if (userMappingOverride && userMappingOverride.length > 0) {
                                 finalAmsMapping = userMappingOverride;
@@ -3499,8 +3505,10 @@ class BambuPrinterMCPServer {
                             }
                         }
                         if (args?.use_ams === false) {
-                            finalAmsMapping = undefined;
-                            finalAmsSlots = undefined;
+                            if (!hasUserAmsMapping)
+                                finalAmsMapping = undefined;
+                            if (!hasUserAmsSlots)
+                                finalAmsSlots = undefined;
                             useAMS = false;
                         }
                         if ((!finalAmsMapping || finalAmsMapping.length === 0) && (!finalAmsSlots || finalAmsSlots.length === 0)) {

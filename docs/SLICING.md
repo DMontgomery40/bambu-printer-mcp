@@ -154,6 +154,69 @@ slot list to replace.
 Implementation: [`src/slicer/profile-flatten.ts`](../src/slicer/profile-flatten.ts).
 Optional installed-slicer smoke test: `node scripts/test-cli-slice.mjs --model h2s` (substitute the supported target model). This slices a fixture; it does not print.
 
+## Remote Orca slicing
+
+Set `SLICER_TYPE=orca-slicer-api` to use a separately hosted
+[AFKFelix/orca-slicer-api](https://github.com/AFKFelix/orca-slicer-api) service.
+The MCP host does not need an Orca executable or `SLICER_PATH`. It still needs a
+read-only copy or mount of the **matching remote Orca installation's**
+`resources/profiles` tree, including `BBL/cli_config.json` and the exact
+model/nozzle machine preset:
+
+```dotenv
+SLICER_TYPE=orca-slicer-api
+SLICER_API_URL=http://orcaslicer:3000
+BAMBU_PROFILES_ROOT=/mnt/orca/resources/profiles
+SLICER_API_MODE=sync
+SLICER_API_TIMEOUT_MS=600000
+```
+
+`SLICER_API_URL` is trusted server configuration, never a tool argument. A proxy
+path prefix is supported. Use HTTPS when the connection needs transport
+protection. The URL cannot contain credentials, a query, or a fragment. For
+reverse-proxy authentication, set `SLICER_API_TOKEN`; the default header is
+`Authorization: Bearer <token>`. Set `SLICER_API_TOKEN_HEADER=X-API-Key` to send the
+raw token through a custom header. Redirects are rejected, returned job URLs are
+ignored, and remote errors do not echo response bodies or authentication values.
+
+The backend targets the upstream API contract at
+[`a9a28f0a7b0c6f51b9be158509e9e9677532b868`](https://github.com/AFKFelix/orca-slicer-api/tree/a9a28f0a7b0c6f51b9be158509e9e9677532b868).
+`sync` submits multipart data to `/slice`. `async` submits once to `/slice-async`,
+polls `/slice-async/{requestId}`, downloads its `/result`, and deletes the finished
+job. The timeout covers submission, polling and downloading (default ten minutes;
+accepted range 1–3600000 ms). Timeout or cancellation does not cancel an active
+upstream job: the API has no active-job cancellation endpoint. The client reports
+that work may continue and never retries submission automatically.
+
+Before HTTP submission, the same local Orca preparation resolves `inherits` and
+`include` recursively, validates the exact bundled machine and its CLI config,
+preserves custom process/filament overrides, and prepares colour and nozzle
+settings. The client uploads those complete machine, process and filament JSON
+files with `resolveProfileInheritance=false`; their retained leaf identity
+metadata serves the CLI compatibility check. The service cannot substitute its
+default profiles for missing local machine provenance.
+
+The supported subset is STL or 3MF input with **exactly one filament slot** and
+one positive, one-based `slice_plate` (default `1`). Uploaded profiles preserve
+custom settings and a single explicit/project/profile filament colour. Bed type,
+nozzle type and nozzle flow settings use the existing validated profile overlays.
+`arrange=true` and `orient=true` are supported. Explicit `false` for either is
+rejected because the pinned upstream multipart implementation treats nonempty
+strings as true. Requests for all plates (`slice_plate=0`), multiple filament
+slots, object/filament-ID remapping, repetitions, transforms, and CLI-only flags
+such as `ensure_on_bed`, `uptodate`, `min_save`, `skip_modified_gcodes`,
+`enable_timelapse`, and `allow_mix_temp` are rejected rather than dropped. Use a
+local backend when those controls are required.
+
+Downloads are capped at 100 MB, saved under a unique private output name, and
+independently inspected as a sliced 3MF before being returned. The selected plate
+must retain its original `Metadata/plate_N.gcode` identity; renumbered results
+are rejected. The file must match the prepared model, nozzle diameters and
+material, and its commands must pass the existing independent safety inspection.
+Printing still performs its own fresh live-printer preflight. HTTP fixture tests
+verify the transport and failure boundaries; they do not establish a real Orca
+slice or physical print.
+
 ## Why the sliced file matters
 
 The slicer supplies model-specific start G-code, filament declarations, and plate metadata. Renaming a geometry-only `.3mf` to `.gcode.3mf` does not create those contents. An incorrectly prepared project may fail AMS validation, be rejected by firmware, or stop after heating.

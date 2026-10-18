@@ -7,7 +7,8 @@ import os from "node:os";
 import { Readable } from "node:stream";
 import { readSafe3mfArchive } from "../safety/archive.js";
 import { inspectPrintFile } from "../safety/print-file.js";
-import { normalizeModel, validateTemperature } from "../safety/limits.js";
+import { isDualNozzleModel, normalizeModel, validateTemperature } from "../safety/limits.js";
+import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, describeAmsTrayRange } from "../ams-mapping.js";
 import { describeHmsKey, hiddenHmsKeys, hiddenHmsNotices, reportedHmsKey, validatePrinterState, manualHeatingRequirements } from "../safety/printer-state.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRemotePath, cancelPendingPrinterOperations } from "../safety/artifact.js";
 import { Client as FTPClient } from "basic-ftp";
@@ -620,12 +621,17 @@ export class BambuImplementation {
         // `plate_N.json.filament_ids` -- and expand to a full project-level
         // array here. `amsMapping` is the raw escape hatch (takes precedence
         // when both are supplied).
+        // Dual-nozzle printers address two external spools: 254 feeds the left/deputy
+        // nozzle and 255 the right/main nozzle (Bambu Studio VIRTUAL_TRAY_DEPUTY_ID /
+        // VIRTUAL_TRAY_MAIN_ID). Single-nozzle printers keep 254 as the only external tray.
+        const dualNozzle = isDualNozzleModel(model);
+        const externalTrays = dualNozzle ? [254, 255] : [254];
         const validateTrayValue = (v, label) => {
             if (!Number.isInteger(v) ||
                 v < -1 ||
                 (v > 15 && v < 128) ||
-                v > 254) {
-                throw new Error(`${label} values must be integers in [-1, 15] (absolute tray) or 128-254 (HT/external); got ${v}`);
+                v > (dualNozzle ? 255 : 254)) {
+                throw new Error(`${label} values must be integers in ${describeAmsTrayRange({ dualNozzle })}; got ${v}`);
             }
         };
         let baseMapping;
@@ -655,7 +661,7 @@ export class BambuImplementation {
             const projectLen = Math.max(projectMetadata.projectFilamentCount, ...positions.map((p) => p + 1), 1);
             baseMapping = Array(projectLen).fill(-1);
             positions.forEach((pos, i) => {
-                baseMapping[pos] = options.useAMS === false ? 254 : i;
+                baseMapping[pos] = options.useAMS === false ? externalTrayForNozzle(inspection.filamentNozzleIndices?.[pos], dualNozzle) : i;
             });
         }
         let amsMapping;
@@ -663,15 +669,7 @@ export class BambuImplementation {
         if (usesH2ProjectFile) {
             const projLen = Math.max(projectMetadata.projectFilamentCount, baseMapping.length, 1);
             amsMapping = Array.from({ length: projLen }, (_, i) => i < baseMapping.length ? baseMapping[i] : -1);
-            amsMapping2 = amsMapping.map((v) => {
-                if (v < 0 || v === 255)
-                    return { ams_id: 255, slot_id: 255 };
-                if (v === 254)
-                    return { ams_id: 254, slot_id: 254 };
-                if (v >= 128)
-                    return { ams_id: 128, slot_id: v - 128 };
-                return { ams_id: Math.floor(v / 4), slot_id: v % 4 };
-            });
+            amsMapping2 = amsMapping.map((v) => bridgeAmsMapping2Entry(v, dualNozzle));
         }
         else {
             amsMapping = Array.from({ length: Math.max(5, baseMapping.length, projectMetadata.projectFilamentCount) }, (_, i) => i < baseMapping.length ? baseMapping[i] : -1);
@@ -681,8 +679,8 @@ export class BambuImplementation {
             if (baseMapping[position] === undefined || baseMapping[position] < 0) {
                 throw new Error(`Missing physical filament mapping for project filament ${position}.`);
             }
-            if (options.useAMS === false && baseMapping[position] !== 254) {
-                throw new Error("External-spool printing requires external spool mapping (254).");
+            if (options.useAMS === false && !externalTrays.includes(baseMapping[position])) {
+                throw new Error(`External-spool printing requires external spool mapping (${externalTrays.join(" or ")}).`);
             }
         }
         const legacyContainer = options.filePath.toLowerCase().endsWith(".gcode.3mf") && !usesH2ProjectFile && !isA1;
@@ -768,7 +766,7 @@ export class BambuImplementation {
                     project_id: submissionId,
                     subtask_id: submissionId,
                     task_id: submissionId,
-                    ams_mapping: amsMapping,
+                    ams_mapping: amsMapping.map(value => bridgeAmsMappingValue(value, dualNozzle)),
                     ams_mapping2: amsMapping2,
                 },
             };

@@ -1,6 +1,6 @@
 import { HIDDEN_HMS } from "./hidden-hms.js";
 import { BambuClient, GetVersionCommand, PushAllCommand } from "bambu-node";
-import { normalizeMaterial, normalizeModel } from "./limits.js";
+import { isDualNozzleModel, normalizeMaterial, normalizeModel } from "./limits.js";
 
 const MAX_REPORT_AGE_MS = 15_000;
 const MODEL_IDS: Record<string, string> = {
@@ -103,6 +103,8 @@ export interface PrinterStateRequirements {
   nozzleDiameters: number[];
   materials?: string[];
   usedFilamentPositions?: number[];
+  /** Verified physical nozzle index for each project filament, composed from the inspected plate mappings. */
+  filamentNozzleIndices?: number[];
   amsMapping?: number[];
   useAMS?: boolean;
   requireIdle?: boolean;
@@ -280,13 +282,20 @@ function trayRange(value: unknown, label: string): number | undefined {
   if (number === undefined || number <= 0) throw new Error(`Reported filament ${label} temperature is malformed.`);
   return number;
 }
-function externalTray(raw: Record<string,any>): Record<string,any> | undefined {
+/** Dual-nozzle printers report one virtual external slot per nozzle, numbered as Bambu
+ * Studio does (VIRTUAL_TRAY_MAIN_ID 255 = right/main nozzle, VIRTUAL_TRAY_DEPUTY_ID 254 =
+ * left/deputy nozzle), so the requested tray selects its slot. Single-nozzle printers keep
+ * requiring exactly one slot 254 report, then the legacy vt_tray field. */
+function externalTray(raw: Record<string,any>, trayIndex: number, model: string): Record<string,any> | undefined {
   const slots = raw.vir_slot;
+  const dualNozzle = isDualNozzleModel(model);
   if (Array.isArray(slots)) {
-    const selected = slots.filter((slot:any) => Number(slot?.id) === 254);
-    if (slots.length === 1 && selected.length === 1) return selected[0];
+    const selected = slots.filter((slot:any) => Number(slot?.id) === trayIndex);
+    if (selected.length === 1 && (dualNozzle || slots.length === 1)) return selected[0];
+    if (dualNozzle && selected.length === 0 && slots.length > 0) throw new Error(`External spool ${trayIndex} is not in the fresh per-nozzle report; cannot verify the selected material.`);
     if (slots.length > 0) throw new Error("External spool report is ambiguous for this nozzle; cannot verify the selected material.");
   }
+  if (dualNozzle) throw new Error(`Dual-nozzle external spool ${trayIndex} requires a fresh per-nozzle vir_slot report; legacy vt_tray cannot verify the selected nozzle.`);
   return object(raw.vt_tray) ? raw.vt_tray : undefined;
 }
 function mappedTray(raw: Record<string,any>, index: number): Record<string,any> {
@@ -332,7 +341,7 @@ export function validatePrinterState(status: any, requirements: PrinterStateRequ
     }
   }
   const nozzles = requirements.nozzleDiameters.length ? reportedNozzles(raw) : [];
-  if (requirements.nozzleDiameters.length && ["h2d","h2dpro","h2c","x2d"].includes(model) &&
+  if (requirements.nozzleDiameters.length && isDualNozzleModel(model) &&
       !Array.isArray(raw.device?.nozzle?.info) && !Array.isArray(raw.nozzle_diameter)) {
     throw new Error("A scalar legacy nozzle report is ambiguous for this multi-nozzle printer; fresh per-nozzle configuration is required.");
   }
@@ -360,13 +369,27 @@ export function validatePrinterState(status: any, requirements: PrinterStateRequ
   if (requirements.verifyMaterials !== false && (requirements.materials !== undefined || requirements.nozzleDiameters.length)) {
     const materials = requirements.materials ?? [];
     const positions = requirements.usedFilamentPositions ?? materials.map((_, index) => index);
+    // 255 is the right/main nozzle external spool only on dual-nozzle printers.
+    const dualNozzle = isDualNozzleModel(model);
+    const maxTray = dualNozzle ? 255 : 254;
     if (!positions.length) throw new Error("A declared material is required for each used filament or external spool.");
     for (const position of positions) {
       const material = normalizeMaterial(materials[position]);
       if (!Number.isInteger(position) || position < 0 || !material) throw new Error(`A known declared material is required for filament position ${position}.`);
-      const trayIndex = requirements.useAMS ? requirements.amsMapping?.[position] : 254;
-      if (trayIndex === undefined || !Number.isInteger(trayIndex) || trayIndex < 0 || trayIndex > 254) throw new Error(`Complete AMS mapping is required for filament position ${position}.`);
-      const tray = trayIndex === 254 ? externalTray(raw) : mappedTray(raw,trayIndex);
+      const physicalNozzle = requirements.filamentNozzleIndices?.[position];
+      const externalForNozzle = physicalNozzle === 0 ? 255 : physicalNozzle === 1 ? 254 : undefined;
+      const trayIndex = requirements.useAMS || requirements.amsMapping !== undefined
+        ? requirements.amsMapping?.[position] : dualNozzle ? externalForNozzle : 254;
+      if (!requirements.useAMS && dualNozzle && requirements.amsMapping === undefined && externalForNozzle === undefined) {
+        throw new Error(`External spool for filament position ${position} is ambiguous; re-slice with complete filament_map and physical_extruder_map nozzle bindings or provide a verified sliced plate.`);
+      }
+      if (trayIndex === undefined || !Number.isInteger(trayIndex) || trayIndex < 0 || trayIndex > maxTray) throw new Error(`Complete AMS mapping is required for filament position ${position}.`);
+      if (!requirements.useAMS && trayIndex < 254) throw new Error("External-spool printing requires an external spool mapping; AMS trays require use_ams:true.");
+      if (dualNozzle && trayIndex >= 254) {
+        if (externalForNozzle === undefined) throw new Error(`External spool ${trayIndex} needs a verified physical nozzle binding for filament position ${position}; re-slice with complete filament_map and physical_extruder_map metadata.`);
+        if (trayIndex !== externalForNozzle) throw new Error(`External spool ${trayIndex} does not feed physical nozzle ${physicalNozzle} for filament position ${position}; use spool ${externalForNozzle}.`);
+      }
+      const tray = trayIndex >= 254 ? externalTray(raw,trayIndex,model) : mappedTray(raw,trayIndex);
       const reportedType = typeof tray?.tray_type === "string" ? tray.tray_type.trim() : "";
       if (reportedType && normalizeMaterial(reportedType) !== material) throw new Error(`Reported material ${reportedType} in slot ${trayIndex} contradicts declared ${materials[position]}.`);
       const nozzleMin = trayRange(tray?.nozzle_temp_min,"minimum");
@@ -384,7 +407,7 @@ export function manualHeatingRequirements(status: any, model: string, nozzleDiam
   if (!normalized) throw new Error("A known printer model is required for manual nozzle heating.");
   const raw = status?.raw;
   if (!object(raw)) throw new Error("A fresh printer report is required for manual nozzle heating.");
-  if (["h2d","h2dpro","h2c","x2d"].includes(normalized) || reportedNozzles(raw).some(nozzle => nozzle.index !== 0)) {
+  if (isDualNozzleModel(normalized) || reportedNozzles(raw).some(nozzle => nozzle.index !== 0)) {
     throw new Error("Manual heating cannot verify the active nozzle and loaded material on this multi-nozzle printer. Use a checked sliced print instead.");
   }
   const requirements: PrinterStateRequirements = {

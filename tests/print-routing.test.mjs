@@ -16,7 +16,7 @@ async function capture(t, model, serial, { sparse = false, useAMS = true, suffix
   const zip = new JSZip();
   const filamentCount = sparse ? 6 : 1;
   const nozzleDiameters = ["h2d", "h2c"].includes(model) ? [0.4, 0.4] : [0.4];
-  zip.file("Metadata/plate_1.gcode", `; printer_model = ${model}\n; nozzle_diameter = ${nozzleDiameters.join(";")}\n; filament_type = ${Array(filamentCount).fill("PLA").join(";")}\n; filament_colour = ${Array(filamentCount).fill("#FFFFFF").join(";")}\nM104 S220\nM140 S60\nG1 X0 Y0\n`);
+  zip.file("Metadata/plate_1.gcode", `; printer_model = ${model}\n; nozzle_diameter = ${nozzleDiameters.join(";")}\n; filament_type = ${Array(filamentCount).fill("PLA").join(";")}\n${nozzleDiameters.length===2 ? `; filament_map = ${Array(filamentCount).fill(1).join(";")}\n; physical_extruder_map = 1,0\n` : ""}; filament_colour = ${Array(filamentCount).fill("#FFFFFF").join(";")}\nM104 S220\nM140 S60\nG1 X0 Y0\n`);
   zip.file("Metadata/project_settings.config", JSON.stringify({ printer_model: model, nozzle_diameter: nozzleDiameters.map(String), filament_type: Array(filamentCount).fill("PLA") }));
   zip.file("Metadata/plate_1.json", JSON.stringify({ filament_ids: [sparse ? 5 : 0] }));
   await fs.writeFile(file, await zip.generateAsync({ type: "nodebuffer" }));
@@ -27,7 +27,7 @@ async function capture(t, model, serial, { sparse = false, useAMS = true, suffix
   printer.getSafetyStatus = async () => {
     const now = Date.now();
     return { connected: true, model, status: "IDLE", serial,
-      raw: { model, gcode_state: "IDLE", nozzle_diameter: "0.4", nozzle_type: "hardened_steel", device: { nozzle: { info: nozzleDiameters.map((diameter, id) => ({ id, diameter, type: "HH01", stat: 0 })) } }, print_error: 0, hms: [], ams: { tray_now: "254", ams: [{ id: "0", tray: [{ id: "1", tray_type: "PLA", nozzle_temp_min: "190", nozzle_temp_max: "240" }] }] } },
+      raw: { ...(nozzleDiameters.length===2 ? {vir_slot:[{id:255,tray_type:"PLA"},{id:254,tray_type:"PLA"}]} : {}), model, gcode_state: "IDLE", nozzle_diameter: "0.4", nozzle_type: "hardened_steel", device: { nozzle: { info: nozzleDiameters.map((diameter, id) => ({ id, diameter, type: "HH01", stat: 0 })) } }, print_error: 0, hms: [], ams: { tray_now: "254", ams: [{ id: "0", tray: [{ id: "1", tray_type: "PLA", nozzle_temp_min: "190", nozzle_temp_max: "240" }] }] } },
       observation: { source: "mqtt", requestedAt: now, receivedAt: now, identitySource: "report" } };
   };
   printer.getPrinter = async () => ({ publish: async (message) => { published.push(typeof message === "string" ? JSON.parse(message) : message); } });

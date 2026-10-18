@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.1.29] – 2026-10-18
+
+### Added
+- Add the optional `orca-slicer-api` backend for containerized deployments in [#50](https://github.com/DMontgomery40/bambu-printer-mcp/issues/50), requested by [Pavel Bukhatkin (welderpb)](https://github.com/welderpb). Use a trusted API URL, optional token/header, bounded timeout and synchronous or asynchronous jobs without a local slicer executable. A matching read-only Orca profile tree still supplies the exact model/nozzle preset and recursively resolved machine/process/filament profiles. The current upstream API supports one filament slot and one selected plate; unsupported options and multi-slot projects fail explicitly. Downloaded output is independently inspected before use, and print confirmation and fresh-state checks remain mandatory. Verified with local HTTP fixtures and the pinned genuine API application using an isolated fake CLI; no real remote slice or physical print is claimed.
+
+### Fixed
+- Forward the validated remote bed selection to the API and inspect the returned file against the same bed, preserving non-default hot/cool/custom process selections.
+- Stop cancelled remote multipart requests before entering `fetch`, preventing an uncaught stream error in Node.js 24.21 while retaining cancellation and timeout warnings.
+- Accept stock X2D `M104`/`M109 N` physical-nozzle selectors and the exact filament-change separator from Bambu Studio 02.08.02.61, contributed by [travismcashan](https://github.com/travismcashan) in [#59](https://github.com/DMontgomery40/bambu-printer-mcp/pull/59). Keep heater targets within every applicable declared material ceiling; retain H2C's startup-only record separator and reject unrelated executable-looking banners.
+- Support both dual-nozzle external spools: `255` selects the right/main nozzle and `254` the left/deputy nozzle. Bind each selected spool to the inspected plate's composed `filament_map` and `physical_extruder_map`, require its fresh `vir_slot` report, and preserve explicit selections when `use_ams: false`. Encode both virtual trays as flat `-1` with the selected virtual ID and `slot_id: 0` in `ams_mapping2`, matching Bambu Studio. Single-nozzle routing stays unchanged. Covered by offline stock-template inspection and mocked direct, native and bridge dispatch regressions; no physical print was run.
+
 ## [1.1.28] – 2026-10-18
 
 ### Added

@@ -7,6 +7,8 @@ export interface PrinterStateRequirements {
     nozzleDiameters: number[];
     materials?: string[];
     usedFilamentPositions?: number[];
+    /** Verified physical nozzle index for each project filament, composed from the inspected plate mappings. */
+    filamentNozzleIndices?: number[];
     amsMapping?: number[];
     useAMS?: boolean;
     requireIdle?: boolean;

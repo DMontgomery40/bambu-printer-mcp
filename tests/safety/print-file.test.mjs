@@ -571,3 +571,90 @@ test('H2C all-hotend preheat checks unused declared materials without adding AMS
 test('unrecognized G383 U targets cannot bypass other models thermal checks',async t=>{
   for(const model of ['P1S','H2D','X2D']) await assert.rejects(inspect(t,header(model)+'G383 O2 U400 L0\n',{model:model.toLowerCase()}),/unsupported|temperature/i);
 });
+
+// Official X2D 02.08 output: Bambu Studio emits `M104 T<heater> S<target> N<nozzle>` for
+// multi-extruder pre-cooling and wipe-tower reheats, the change_filament_gcode template
+// opens with a bare `======== X2D filament_change gcode ==========` banner, and the
+// time_lapse_gcode template emits `M9711 M.. E.. [U.. V..] Z.. S11 C10 O0 T3000`.
+const x2dHeader=(materials='PLA;PLA')=>header('X2D',materials,'0.4;0.4');
+test('X2D banner separators, M9711 timelapse and N nozzle index pass only on dual-nozzle models',async t=>{
+  const source=x2dHeader()+'M104 T1 S25 N0\nM109 T0 S220 N1\n======== X2D filament_change gcode ==========\nM620 S0A B H-1\nM104 S220\nM621 S0A B\nM622 J1\nM9711 M0 E0 U205 V162 Z1.4 S11 C10 O0 T3000\nM9711 M1 E1 Z1.6 S11 C10 O0 T3000\nM9711 M0 E1 X205 Y162 Z1.8 S11 C10 O0 T3000\nM623\n';
+  const r=await inspect(t,source,{model:'x2d'});
+  assert.equal(r.maxNozzleTemperature,220);assert.deepEqual(r.usedFilamentPositions,[0]);
+  await assert.doesNotReject(inspect(t,header('H2D','PLA','0.4;0.4')+'M104 T1 S25 N0\nM9711 M0 E1 Z1.4 S11 C10 O0 T3000\nM104 S220\n',{model:'h2d'}));
+  // The released M9711 rule covers X2D and H2D; H2C keeps the nozzle-index form.
+  await assert.doesNotReject(inspect(t,header('H2C','PLA','0.4;0.4')+'M104 T1 S25 N0\nM104 S220\n',{model:'h2c'}));
+  for(const [model,nozzle] of [['P1S','0.4'],['H2S','0.4'],['A1','0.4'],['P2S','0.4']]) for(const command of ['======== X2D filament_change gcode ==========','M9711 M0 E0 U205 V162 Z1.4 S11 C10 O0 T3000','M104 S220 N0','M109 T0 S220 N0'])
+    await assert.rejects(inspect(t,header(model,'PLA',nozzle)+command+'\n',{model:model.toLowerCase()}),/unsupported|syntax|multiple|parameter/i,model+' '+command);
+  // A banner can never hide a command, M9711 keeps its official shape, N stays a declared nozzle, and N never relaxes heater limits.
+  for(const command of ['======== M104 S400 ========','==== G1 X0 ====','=== T0 ===','========','= =','M9711 M0 E2 Z1.4 S11 C10 O0 T3000','M9711 M0 E-1 Z1.4 S11 C10 O0 T3000','M9711 M0 E0.5 Z1.4 S11 C10 O0 T3000','M9711 M0 E0 Z1.4 S11 C10 O0 T3000 P1','M9711 E0 Z1.4 S11 C10 O0 T3000','M9711 M0 Z1.4 S11 C10 O0 T3000','M9711 M0 E0 Z1.4 S12 C10 O0 T3000','M9711 M0 E0 Z1.4 S11 C10 O0','M9711 M0 E0 Z1.4 S11 C10 O0 T3000 M104 S400','M9711 M0 E0 Z{layer_z} S11 C10 O0 T3000','M104 S220 N2','M104 S220 N-1','M104 S220 N0.5','M104 S220 N','M140 S55 N0','M191 S40 N0','M104 S400 N0','M104 T1 S400 N0','M109 R400 N1'])
+    await assert.rejects(inspect(t,x2dHeader()+command+'\n',{model:'x2d'}),/unsupported|syntax|parameter|temperature|limit|nozzle|dynamic|multiple/i,command);
+});
+test('pinned official X2D 02.08 change-filament and timelapse templates are inspected literally',async t=>{
+  // BambuStudio v02.08.02.61, resources/profiles/BBL/machine/Bambu Lab X2D 0.4 nozzle template <name>.json
+  const hashes={change_filament_gcode:'0c10a06ad5f6fb9062082b10edaab5ce465962db1dc2d6ffdccea0f0409748d1',time_lapse_gcode:'65b30d1bfb5f2d5043e7da71cade5c1e561fa596029d9fcd0a171835a5e6a542'};
+  const lines=[];
+  for(const [name,hash] of Object.entries(hashes)) {
+    const bytes=await fs.readFile(new URL(`../fixtures/x2d-02.08/${name}.json`,import.meta.url));
+    assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'),hash,name);
+    lines.push(...JSON.parse(bytes)[name].split('\n').map(l=>l.trim()).filter(l=>/^(?:=|M9711\s|M620 |M621 |M620\.22|M104|M109)/.test(l)));
+  }
+  assert.ok(lines.includes('======== X2D filament_change gcode =========='),'bare banner is in the pinned template');
+  assert.equal(lines.filter(l=>l.startsWith('M9711')).length,2,'both M9711 forms are in the pinned template');
+  // Substitute safe declared-PLA example values; this is offline template inspection,
+  // not macro execution or a claim that a slicer or printer ran these lines.
+  const expand=line=>{for(let pass=0;pass<3;pass++) line=line.replace(/\{[^{}]*\}|\[[^\[\]]*\]/g,expr=>/timelapse_type/.test(expr)?'0':/extruder_id/.test(expr)?'0':/pos_x/.test(expr)?'205':/pos_y/.test(expr)?'162':/layer_z/.test(expr)?'1.4':/next_hotend/.test(expr)?'-1':/filament_id/.test(expr)?'0':/temp/.test(expr)?'220':'0');return line;};
+  const r=await inspect(t,x2dHeader()+lines.map(expand).join('\n')+'\nM104 S220\n',{model:'x2d'});
+  assert.equal(r.maxNozzleTemperature,220);assert.deepEqual(r.usedFilamentPositions,[0]);
+  t.diagnostic(`Parsed ${lines.length} literal X2D template lines with safe example substitutions`);
+});
+
+
+test('physical N heater targets cannot borrow an active ABS material to overheat a PLA nozzle',async t=>{
+  for(const command of ['M104 S290 N1','M109 R290 N1']) {
+    await assert.rejects(inspect(t,x2dHeader('ABS;PLA')+'T0\n'+command+'\n',{model:'x2d'}),/PLA|temperature|limit/i,command);
+  }
+  await assert.rejects(inspect(t,header('X2D','PLA','0.4;0.4;0.4')+'M104 S220 N2\n',{model:'x2d'}),/nozzle/i,'physical nozzle count remains two even with excess declarations');
+});
+
+test('only literal official X2D filament-change and startup-bound H2C banners pass',async t=>{
+  const banner='======== X2D filament_change gcode ==========';
+  await assert.doesNotReject(inspect(t,x2dHeader()+'M104 S220\n; LAYER:1\n'+banner+'\n',{model:'x2d'}));
+  for(const model of ['X2D','H2D','H2D Pro','H2C']) {
+    for(const invalid of ['==== banner ====','========== record data ==========']) {
+      await assert.rejects(inspect(t,header(model,'PLA','0.4;0.4')+invalid+'\nM104 S220\n',{model:model.toLowerCase().replace(/ /g,'')}),/syntax|unsupported/i,model+' '+invalid);
+    }
+    if(model!=='X2D') await assert.rejects(inspect(t,header(model,'PLA','0.4;0.4')+banner+'\nM104 S220\n',{model:model.toLowerCase().replace(/ /g,'')}),/syntax|unsupported/i);
+  }
+});
+
+test('selected plate filament and physical extruder headers compose a per-filament physical nozzle map',async t=>{
+  const source=x2dHeader('PLA;PLA;PLA;PLA;PLA')+'; filament_map = 1,1,1,1,2\n; physical_extruder_map = 1,0\nT4\nM104 S220\n';
+  const r=await inspect(t,source,{model:'x2d'});
+  assert.deepEqual(r.filamentNozzleIndices,[1,1,1,1,0]);
+  const selected=await inspect(t,'',{model:'x2d'}, {
+    'Metadata/project_settings.config':{printer_model:'Bambu Lab X2D',nozzle_diameter:['0.4','0.4'],filament_type:['PLA','PLA','PLA','PLA','PLA'],filament_map:['2','2','2','2','1'],physical_extruder_map:['0','1']},
+    'Metadata/plate_1.gcode':source,
+    'Metadata/plate_2.gcode':x2dHeader('PLA;PLA;PLA;PLA;PLA')+'; filament_map = 2,2,2,2,1\n; physical_extruder_map = 1,0\nT0\nM104 S220\n',
+  });
+  assert.deepEqual(selected.filamentNozzleIndices,[1,1,1,1,0],'unsliced project defaults and other plates do not override the inspected plate');
+  for(const metadata of ['', '; filament_map = 1,2\n', '; physical_extruder_map = 1,0\n']) {
+    const incomplete=await inspect(t,x2dHeader()+metadata+'T0\nM104 S220\n',{model:'x2d'});
+    assert.equal(incomplete.filamentNozzleIndices,undefined);
+  }
+});
+
+test('malformed or conflicting nozzle-binding headers cannot authorize physical spool selection',async t=>{
+  const valid='; filament_map = 1,2\n; physical_extruder_map = 1,0\n';
+  for(const metadata of [
+    '; filament_map = 1\n; physical_extruder_map = 1,0\n',
+    '; filament_map = 1,3\n; physical_extruder_map = 1,0\n',
+    '; filament_map = 1,0\n; physical_extruder_map = 1,0\n',
+    '; filament_map = 1,1.5\n; physical_extruder_map = 1,0\n',
+    '; filament_map = 1,2\n; physical_extruder_map = 0,0\n',
+    '; filament_map = 1,2\n; physical_extruder_map = 0\n',
+    '; filament_map = 1,2\n; physical_extruder_map = 0,2\n',
+    valid+'; filament_map = 2,1\n',
+    valid+'; physical_extruder_map = 0,1\n',
+  ]) await assert.rejects(inspect(t,x2dHeader()+metadata+'T0\nM104 S220\n',{model:'x2d'}),/filament map|physical extruder map|binding/i,metadata);
+});
