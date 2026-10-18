@@ -17,10 +17,11 @@
     "package:mcpb": "npm run build && node scripts/package-mcpb.mjs",
     "version": "node scripts/sync-manifest-version.mjs",
     "postinstall": "node scripts/install-patches.mjs",
-    "build:native": "scripts/build-bambu-native.zsh"
+    "build:native": "sh scripts/build-bambu-native.sh"
   },
   "bin": {
-    "bambu-printer-mcp": "dist/index.js"
+    "bambu-printer-mcp": "dist/index.js",
+    "bambu-printer-mcp-native-setup": "scripts/setup-bambu-native.mjs"
   },
   "files": [
     "dist",
@@ -32,7 +33,8 @@
     "LICENSE",
     "native/*.cpp",
     "native/*.h",
-    "scripts/build-bambu-native.zsh"
+    "scripts/build-bambu-native.sh",
+    "scripts/setup-bambu-native.mjs"
   ],
   "keywords": [
     "mcp",

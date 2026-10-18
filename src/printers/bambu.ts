@@ -85,7 +85,7 @@ const H2_MODEL_NAMES = new Set(["h2", "h2c", "h2d", "h2dpro", "h2d pro", "h2s", 
 export function assertDirectPrintSupported(model: string | undefined, serial?: string): void {
   if (model?.trim().toLowerCase() === "x2d" || serial?.trim().toUpperCase().startsWith("20P")) {
     throw new Error(
-      "X2D direct printing is not supported through legacy MQTT/FTPS. Use the macOS native eMMC route via print_3mf. " +
+      "X2D direct printing is not supported through legacy MQTT/FTPS. Use the native eMMC route via print_3mf (macOS, or Linux with the native helper installed). " +
       "X2D status and slicing remain available on all supported platforms."
     );
   }
@@ -944,6 +944,21 @@ export class BambuImplementation {
     }
   }
 
+  /** Raw MQTT stop for routes that already ran the shared cancellation steps. */
+  async sendStopOverMqtt(host: string, serial: string, token: string): Promise<any> {
+    const printer = await this.getPrinter(host, serial, token);
+    await invokeWithoutAck(printer, new UpdateStateCommand({ state: "stop" }));
+    return { status: "success", message: "Cancel command sent over MQTT." };
+  }
+
+  /** Raw MQTT heater-off; switching off needs no material or model declaration. */
+  async sendHeaterOffOverMqtt(host: string, serial: string, token: string, heater: "bed" | "nozzle"): Promise<any> {
+    const printer = await this.getPrinter(host, serial, token);
+    const gcode = `${heater === "bed" ? "M140" : "M104"} S0`;
+    await invokeWithoutAck(printer, new GCodeLineCommand({ gcodes: [gcode] }));
+    return { status: "success", message: `Heater-off sent over MQTT for ${heater}.`, command: gcode };
+  }
+
   async pauseJob(host: string, serial: string, token: string, dispatch?: () => Promise<any>): Promise<any> {
     const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
     try {
@@ -1141,9 +1156,12 @@ export class BambuImplementation {
       }
       const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
       assertActive();
-      if (dispatch) await dispatch(heater, targetTemperature, assertActive, beforeDispatch);
-      else await invokeWithoutAck(printer!, new GCodeLineCommand({ gcodes: [gcode] }));
-      return { status: "success", message: `Temperature command sent for ${normalizedComponent}.`, command: gcode };
+      const dispatched = dispatch ? await dispatch(heater, targetTemperature, assertActive, beforeDispatch) : undefined;
+      if (!dispatch) await invokeWithoutAck(printer!, new GCodeLineCommand({ gcodes: [gcode] }));
+      // Keep route details from a dual-route Linux heater-off.
+      const routeDetails = dispatched && typeof dispatched === "object" && "routes" in dispatched
+        ? { routes: dispatched.routes, native_error: dispatched.native_error, mqtt_error: dispatched.mqtt_error } : {};
+      return { status: "success", message: `Temperature command sent for ${normalizedComponent}.`, command: gcode, ...routeDetails };
     };
     if (targetTemperature === 0) {
       cancelPendingPrinterOperations(host, serial);
