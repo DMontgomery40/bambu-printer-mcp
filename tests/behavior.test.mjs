@@ -18,9 +18,11 @@ import { buildBambuConnectImportUrl } from "../dist/bambu-connect.js";
 import {
   buildBambuNativeFanCommand,
   buildBambuNativeTemperatureCommand,
+  isBambuNativePlatform,
   uploadWithBambuNative,
   validateBambuNativeControlMessage,
 } from "../dist/bambu-native.js";
+import { UNPINNED_PLUGIN_ENV, createFakeNativeHome } from "./fixtures/native-home.mjs";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF } from "../dist/3mf_parser.js";
 import { BambuImplementation } from "../dist/printers/bambu.js";
 import { STLManipulator } from "../dist/stl/stl-manipulator.js";
@@ -275,7 +277,7 @@ test("X2D native control accepts Studio device commands but rejects unrelated de
   );
 });
 
-test("X2D public task and AMS tools dispatch through the native helper, including AMS-HT id 128", { skip: process.platform !== "darwin" }, async (t) => {
+test("X2D public task and AMS tools dispatch through the native helper, including AMS-HT id 128", { skip: !isBambuNativePlatform() }, async (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-native-control-"));
   const helperPath = path.join(tempDir, "fake-native-helper.mjs");
   fs.writeFileSync(
@@ -299,6 +301,8 @@ test("X2D public task and AMS tools dispatch through the native helper, includin
       BAMBU_TOKEN: "TEST_TOKEN",
       BAMBU_MODEL: "x2d",
       BAMBU_NATIVE_HELPER: helperPath,
+      BAMBU_NATIVE_HOME: createFakeNativeHome(tempDir),
+      ...UNPINNED_PLUGIN_ENV,
     },
     stderr: "pipe",
   });
@@ -381,7 +385,7 @@ test("X2D public task and AMS tools dispatch through the native helper, includin
   assert.equal(rfidMessage.slot_id, 0);
 });
 
-test("native upload forwards helper progress before returning the final result", { skip: process.platform !== "darwin" }, async (t) => {
+test("native upload forwards helper progress before returning the final result", { skip: !isBambuNativePlatform() }, async (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-native-progress-"));
   const helperPath = path.join(tempDir, "fake-native-helper.mjs");
   fs.writeFileSync(
@@ -397,10 +401,16 @@ test("native upload forwards helper progress before returning the final result",
   fs.chmodSync(helperPath, 0o755);
 
   const previousHelper = process.env.BAMBU_NATIVE_HELPER;
+  const previousHome = process.env.BAMBU_NATIVE_HOME;
   process.env.BAMBU_NATIVE_HELPER = helperPath;
+  process.env.BAMBU_NATIVE_HOME = createFakeNativeHome(tempDir);
+  process.env.BAMBU_NATIVE_ALLOW_UNPINNED_PLUGIN = "1";
   t.after(() => {
+    delete process.env.BAMBU_NATIVE_ALLOW_UNPINNED_PLUGIN;
     if (previousHelper === undefined) delete process.env.BAMBU_NATIVE_HELPER;
     else process.env.BAMBU_NATIVE_HELPER = previousHelper;
+    if (previousHome === undefined) delete process.env.BAMBU_NATIVE_HOME;
+    else process.env.BAMBU_NATIVE_HOME = previousHome;
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -440,6 +450,8 @@ test("native upload forwards helper progress before returning the final result",
       BAMBU_TOKEN: "TEST_TOKEN",
       BAMBU_MODEL: "x2d",
       BAMBU_NATIVE_HELPER: helperPath,
+      BAMBU_NATIVE_HOME: createFakeNativeHome(tempDir),
+      ...UNPINNED_PLUGIN_ENV,
     },
     stderr: "pipe",
   });
@@ -1918,7 +1930,7 @@ test("slice_stl writes the installed nozzle type into the machine preset so prin
       env: {
         ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "p1s", BAMBU_SERIAL: "", BAMBU_TOKEN: "",
         BAMBU_SLICER_PROFILE: "", BAMBU_TEMPLATE_3MF_PATH: "", BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot,
-        BAMBU_SLICER_PROFILE_DIRS: "", BAMBU_NOZZLE_TYPE: "", MCP_ALLOW_EXECUTABLE_ARG: "1", ...extraEnv,
+        BAMBU_SLICER_PROFILE_DIRS: "", BAMBU_NOZZLE_TYPE: "", BAMBU_NOZZLE_VOLUME_TYPE: "", MCP_ALLOW_EXECUTABLE_ARG: "1", ...extraEnv,
       },
       stderr: "pipe",
     });
@@ -1951,6 +1963,62 @@ test("slice_stl writes the installed nozzle type into the machine preset so prin
   result = await (await connect({ BAMBU_NOZZLE_TYPE: "hardened-steel" }))({});
   assert.equal(result.isError, undefined, JSON.stringify(result.content));
   assert.deepEqual(machine().nozzle_type, ["hardened_steel"]);
+});
+
+test("slice_stl slices for the installed nozzle flow type and refuses one the preset lacks", async (t) => {
+  const fakeSlicer = await createFakeBambuSlicer();
+  const writeMachine = (variants) => fs.writeFileSync(path.join(fakeSlicer.profilesRoot, "BBL", "machine", "Bambu Lab P1S 0.4 nozzle.json"), JSON.stringify({
+    name: "Bambu Lab P1S 0.4 nozzle", nozzle_diameter: ["0.4"], extruder_type: ["Direct Drive"], extruder_variant_list: [variants],
+    default_print_profile: "Behavior process", default_filament_profile: ["Behavior filament"], machine_start_gcode: "fixture start",
+  }));
+  writeMachine("Direct Drive Standard,Direct Drive High Flow");
+  const connect = async (extraEnv = {}) => {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [SERVER_ENTRY],
+      env: {
+        ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "p1s", BAMBU_SERIAL: "", BAMBU_TOKEN: "",
+        BAMBU_SLICER_PROFILE: "", BAMBU_TEMPLATE_3MF_PATH: "", BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot,
+        BAMBU_SLICER_PROFILE_DIRS: "", BAMBU_NOZZLE_TYPE: "", BAMBU_NOZZLE_VOLUME_TYPE: "", MCP_ALLOW_EXECUTABLE_ARG: "1", ...extraEnv,
+      },
+      stderr: "pipe",
+    });
+    const client = createClient();
+    t.after(async () => { await closeTransport(transport); });
+    await client.connect(transport);
+    return (extra) => client.callTool({ name: "slice_stl", arguments: {
+      stl_path: SAMPLE_STL, bambu_model: "p1s", slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false, ...extra,
+    } });
+  };
+  const machine = () => {
+    const slicerArgs = JSON.parse(fs.readFileSync(fakeSlicer.argsOutPath, "utf8"));
+    return JSON.parse(fs.readFileSync(slicerArgs[slicerArgs.indexOf("--load-settings") + 1].split(";")[0], "utf8"));
+  };
+  const slice = await connect();
+  let result = await slice({ nozzle_volume_type: "high_flow" });
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.deepEqual(machine().nozzle_volume_type, ["High Flow"]);
+  // Without a choice the preset's Standard default is kept.
+  result = await slice({});
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.deepEqual(machine().nozzle_volume_type, ["Standard"]);
+  // Invalid values stop before the slicer runs.
+  fs.rmSync(fakeSlicer.argsOutPath);
+  result = await slice({ nozzle_volume_type: "turbo" });
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result.content), /Invalid nozzle volume type/);
+  assert.equal(fs.existsSync(fakeSlicer.argsOutPath), false, "the slicer must not run");
+  // BAMBU_NOZZLE_VOLUME_TYPE supplies the default.
+  result = await (await connect({ BAMBU_NOZZLE_VOLUME_TYPE: "High Flow" }))({});
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.deepEqual(machine().nozzle_volume_type, ["High Flow"]);
+  // A preset without High Flow values is refused rather than mislabelled.
+  writeMachine("Direct Drive Standard");
+  fs.rmSync(fakeSlicer.argsOutPath);
+  result = await slice({ nozzle_volume_type: "high_flow" });
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result.content), /declares no High Flow variant/);
+  assert.equal(fs.existsSync(fakeSlicer.argsOutPath), false, "the slicer must not run");
 });
 
 test("template_name resolves by source type for slicer profiles versus 3MF sources", async (t) => {

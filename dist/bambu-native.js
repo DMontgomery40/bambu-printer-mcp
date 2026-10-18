@@ -1,32 +1,228 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 function firstExistingExecutable(candidates) {
     return candidates.find((candidate) => {
         try {
-            return fs.statSync(candidate).isFile() && (fs.statSync(candidate).mode & 0o111) !== 0;
+            const stat = fs.statSync(candidate);
+            return stat.isFile() && (stat.mode & 0o111) !== 0;
         }
         catch {
             return false;
         }
     });
 }
+/**
+ * Hosts for which the native helper and Bambu's networking plug-in exist.
+ * Bambu publishes its Linux plug-in for x86-64 only.
+ */
+export function isBambuNativePlatform(platform = process.platform, arch = process.arch) {
+    return platform === "darwin" || (platform === "linux" && arch === "x64");
+}
+/**
+ * Private directory used by `bambu-printer-mcp-native-setup` on Linux. Mirrors
+ * nativeHomeDir() in native/bambu-native-print.cpp: empty values count as unset.
+ */
+export function bambuNativeHomeDir(env = process.env) {
+    if (env.BAMBU_NATIVE_HOME)
+        return env.BAMBU_NATIVE_HOME;
+    const configHome = env.XDG_CONFIG_HOME || path.join(env.HOME || os.homedir(), ".config");
+    return path.join(configHome, "bambu-printer-mcp", "bambu-native");
+}
+export const BAMBU_NATIVE_CERTIFICATES = ["slicer_base64.cer", "printer.cer"];
+/**
+ * The networking plug-in followed by the library it loads from its own
+ * directory for the eMMC file tunnel; without it uploads fail with -4.
+ */
+export const BAMBU_NATIVE_PLUGIN_LIBRARIES = ["libbambu_networking.so", "libBambuSource.so"];
+/**
+ * The only Linux plug-in build whose PrintParams layout matches the helper
+ * (Bambu Studio v02.08.02.61, network agent 02.08.02.54). The setup installs
+ * exactly these files and the server refuses anything else.
+ */
+export const BAMBU_NATIVE_PINNED_PLUGIN = Object.freeze({
+    version: "02.08.02.54",
+    sha256: Object.freeze({
+        "libbambu_networking.so": "bba49709c8dea14ba70251b43965646c0a5e2cde8fd133c64f764d425691bdf2",
+        "libBambuSource.so": "4e05f16fa02740fd12f0040b9efc3e70d43446c7a1a877c6a3926ef0758ca7db",
+    }),
+});
+/** Layout shared by the Linux setup script, the server and the helper's environment. */
+export function bambuNativeManagedPaths(env = process.env) {
+    const home = bambuNativeHomeDir(env);
+    return {
+        home,
+        helper: path.join(home, "bin", "bambu-native-print"),
+        plugin: path.join(home, "plugins", BAMBU_NATIVE_PLUGIN_LIBRARIES[0]),
+        certDir: path.join(home, "cert"),
+        configDir: path.join(home, "config"),
+        receipt: path.join(home, "install.json"),
+    };
+}
+const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+export const BAMBU_NATIVE_SOURCE = path.join(PACKAGE_ROOT, "native", "bambu-native-print.cpp");
+export function sha256Hex(data) {
+    return createHash("sha256").update(data).digest("hex");
+}
+export function sha256File(file) {
+    return sha256Hex(fs.readFileSync(file));
+}
+let nativeSourceSha256;
+/** The packaged helper source never changes while the server runs. */
+function packagedHelperSha256() {
+    nativeSourceSha256 ?? (nativeSourceSha256 = sha256File(BAMBU_NATIVE_SOURCE));
+    return nativeSourceSha256;
+}
+function packageVersion() {
+    try {
+        return String(JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, "package.json"), "utf8")).version || "");
+    }
+    catch {
+        return "";
+    }
+}
+/**
+ * Name the setup from this server's own version, whose helper source it
+ * accepts, and its own install directory when that is not the default.
+ */
+export function bambuNativeSetupCommand(version = packageVersion(), env = process.env) {
+    const home = bambuNativeHomeDir(env);
+    const defaultHome = bambuNativeHomeDir({ HOME: env.HOME });
+    const homeOption = home === defaultHome ? "" : ` --home ${JSON.stringify(home)}`;
+    return `npx -y -p bambu-printer-mcp${version ? `@${version}` : ""} bambu-printer-mcp-native-setup${homeOption}`;
+}
+const linuxSetupHint = () => `Run \`${bambuNativeSetupCommand()}\` to build the helper and install the pinned networking plug-in.`;
+const verifiedLibraries = new Map();
+/** Hash a plug-in library once per file version; it is ~16 MB. */
+function libraryMatches(file, expected) {
+    const stat = fs.statSync(file);
+    const key = `${fs.realpathSync(file)}\n${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+    let digest = verifiedLibraries.get(key);
+    if (!digest) {
+        digest = sha256File(file);
+        verifiedLibraries.set(key, digest);
+    }
+    return digest === expected;
+}
+function samePath(a, b) {
+    try {
+        return fs.realpathSync(a) === fs.realpathSync(b);
+    }
+    catch {
+        return path.resolve(a) === path.resolve(b);
+    }
+}
+function isRegularFile(file) {
+    try {
+        return fs.statSync(file).isFile();
+    }
+    catch {
+        return false;
+    }
+}
+/**
+ * Resolve a complete native installation. On Linux the helper, the pinned
+ * plug-in and both certificates must be present before any native route is
+ * chosen, and their resolved paths are handed to the helper so server and
+ * helper can never disagree about which plug-in is loaded.
+ */
+function resolveNativeInstall() {
+    if (!isBambuNativePlatform()) {
+        throw new Error("Bambu native X2D transport requires macOS or x86-64 Linux and Bambu's networking plug-in.");
+    }
+    const helper = resolveNativeHelper();
+    if (process.platform !== "linux")
+        return { helper, env: {} };
+    const managed = bambuNativeManagedPaths();
+    const plugin = process.env.BAMBU_NATIVE_PLUGIN || managed.plugin;
+    const certDir = process.env.BAMBU_NATIVE_CERT_DIR || managed.certDir;
+    const configDir = process.env.BAMBU_NATIVE_CONFIG_DIR || managed.configDir;
+    const certFile = process.env.BAMBU_NATIVE_CERT_FILE || BAMBU_NATIVE_CERTIFICATES[0];
+    if (!isRegularFile(plugin)) {
+        throw new Error(`Bambu networking plug-in is not installed at ${plugin}. ${linuxSetupHint()}`);
+    }
+    for (const library of BAMBU_NATIVE_PLUGIN_LIBRARIES.slice(1)) {
+        if (!isRegularFile(path.join(path.dirname(plugin), library))) {
+            throw new Error(`Bambu networking library ${library} is missing beside ${plugin}. ${linuxSetupHint()}`);
+        }
+    }
+    // A different plug-in build can change the PrintParams layout passed by
+    // value to start_local_print. Only an explicit trusted opt-in skips this.
+    if (process.env.BAMBU_NATIVE_ALLOW_UNPINNED_PLUGIN !== "1") {
+        const files = [
+            [plugin, BAMBU_NATIVE_PINNED_PLUGIN.sha256[BAMBU_NATIVE_PLUGIN_LIBRARIES[0]]],
+            ...BAMBU_NATIVE_PLUGIN_LIBRARIES.slice(1).map(library => [path.join(path.dirname(plugin), library), BAMBU_NATIVE_PINNED_PLUGIN.sha256[library]]),
+        ];
+        for (const [file, expected] of files) {
+            if (!libraryMatches(file, expected)) {
+                throw new Error(`${file} is not the pinned Bambu plug-in ${BAMBU_NATIVE_PINNED_PLUGIN.version}. ${linuxSetupHint()}`);
+            }
+        }
+    }
+    for (const certificate of new Set([certFile, ...BAMBU_NATIVE_CERTIFICATES.slice(1)])) {
+        if (!isRegularFile(path.join(certDir, certificate))) {
+            throw new Error(`Bambu certificate ${certificate} is missing from ${certDir}. ${linuxSetupHint()}`);
+        }
+    }
+    if (samePath(helper, managed.helper)) {
+        // A setup run from another package version builds a different helper.
+        let built;
+        try {
+            built = JSON.parse(fs.readFileSync(managed.receipt, "utf8")).helperSourceSha256;
+        }
+        catch {
+            built = undefined;
+        }
+        if (built !== packagedHelperSha256()) {
+            throw new Error(`The installed native helper was built from a different bambu-printer-mcp version. ${linuxSetupHint()}`);
+        }
+    }
+    return {
+        helper,
+        env: { BAMBU_NATIVE_PLUGIN: plugin, BAMBU_NATIVE_CERT_DIR: certDir, BAMBU_NATIVE_CONFIG_DIR: configDir },
+    };
+}
 export function assertBambuNativeAvailable() {
-    if (process.platform !== "darwin")
-        throw new Error("Bambu native X2D transport requires macOS and the installed Bambu Studio networking plug-in.");
-    resolveNativeHelper();
+    resolveNativeInstall();
+}
+/**
+ * True when X2D controls should use the native route. macOS keeps its
+ * unconditional routing. Linux opts in only with a complete installation, so
+ * stop, pause and heater-off keep their MQTT route otherwise.
+ */
+export function bambuNativeControlsAvailable() {
+    return bambuNativeUnavailableReason() === undefined;
+}
+/** Why native X2D controls are not used on this host, or undefined when they are. */
+export function bambuNativeUnavailableReason() {
+    if (process.platform === "darwin")
+        return undefined;
+    if (process.platform !== "linux")
+        return "Native X2D controls require macOS or x86-64 Linux.";
+    try {
+        resolveNativeInstall();
+        return undefined;
+    }
+    catch (error) {
+        return error instanceof Error ? error.message : String(error);
+    }
 }
 function resolveNativeHelper() {
     const configured = process.env.BAMBU_NATIVE_HELPER?.trim();
-    const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+    // Linux uses only the setup-managed helper, whose receipt proves it matches
+    // this package; a package-local build could be stale after an update.
     const candidates = [
         configured,
-        path.resolve(packageRoot, "native/bambu-native-print"),
+        process.platform === "linux" ? bambuNativeManagedPaths().helper : path.resolve(PACKAGE_ROOT, "native/bambu-native-print"),
     ].filter((value) => Boolean(value));
     const helper = firstExistingExecutable(candidates);
     if (!helper) {
-        throw new Error("Bambu native helper is not installed. Build native/bambu-native-print with clang++ or set BAMBU_NATIVE_HELPER.");
+        throw new Error(process.platform === "linux"
+            ? `Bambu native helper is not installed. ${linuxSetupHint()} Alternatively set BAMBU_NATIVE_HELPER.`
+            : "Bambu native helper is not installed. Build native/bambu-native-print with clang++ or set BAMBU_NATIVE_HELPER.");
     }
     return helper;
 }
@@ -48,7 +244,11 @@ function isEmergencyCommand(messageJson) {
         (command?.command === "set_bed_temp" && command.temp === 0) ||
         (command?.command === "set_nozzle_temp" && command.target_temp === 0);
 }
-async function interruptNativeOperations(serial) {
+/**
+ * Interrupt this printer's pending print, upload and heating helpers and
+ * resolve once they have exited, so none can still dispatch afterwards.
+ */
+export async function interruptNativeOperations(serial) {
     const pending = [...activeHelpers.values()].filter(helper => helper.serial === serial && !helper.emergency);
     for (const helper of pending)
         helper.interrupt();
@@ -63,11 +263,10 @@ function runNativeHelper(mode, env, timeoutMs, onUpdate, execution = {}) {
     if (needsAuthorization && typeof execution.beforeDispatch !== "function") {
         throw new Error("Native dispatch requires a beforeDispatch fresh-state check.");
     }
-    assertBambuNativeAvailable();
-    const helper = resolveNativeHelper();
+    const install = resolveNativeInstall();
     return new Promise((resolve, reject) => {
-        const child = spawn(helper, [mode], {
-            env,
+        const child = spawn(install.helper, [mode], {
+            env: { ...env, ...install.env },
             stdio: ["pipe", "pipe", "pipe"],
         });
         let markClosed;
@@ -514,7 +713,7 @@ export async function probeBambuNative(host, token) {
         BAMBU_NATIVE_ACCESS_CODE: token,
     }, 20000);
     if (result.resultCode !== 0) {
-        throw new Error(`Bambu native local tunnel probe failed (${result.resultCode}).`);
+        throw new Error(`Bambu native local tunnel probe failed (${result.resultCode}): ${result.updates.join(" | ") || tail(result.stderr, 500)}`);
     }
     return { status: "ok", route: "bambu:///local", updates: result.updates };
 }

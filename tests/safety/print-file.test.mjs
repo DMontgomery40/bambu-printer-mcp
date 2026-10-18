@@ -464,6 +464,63 @@ test('X2D vendor switches and runout purge retain declared filament and heater c
     await assert.rejects(inspect(t,header(model,'PLA',model==='H2D'?'0.4;0.4':'0.4')+command+'\n',{model:model.toLowerCase()}),/parameter|unsupported/i);
 });
 
+// Exact forms from OrcaSlicer 2.4.2 X2D 0.4 output (PLA cube and PETG HF shelf,
+// both printed successfully on a physical X2D outside this MCP).
+const orcaX2dStartup = (target=230) => `M620.17 T0 S${target} L-1\nM620.17 T1 S${target} L0\nM620 D-1\nG383 O1 T${target} L0\n`;
+const orcaX2dLayer = 'M9711 M0 E1 X183 Y128 Z0.6 S11 C10 O0 T3000\nM9711 M0 E1 Z0.65 S11 C10 O0 T3000\n';
+test('X2D OrcaSlicer idle-nozzle preheat and time-lapse capture pass with heater checks', async t => {
+  const base=header('X2D','PETG;PETG','0.4;0.4');
+  const result=await inspect(t,base+orcaX2dStartup()+'; CHANGE_LAYER\nG1 X10 Y10 E1\n'+orcaX2dLayer+'M9711 M1 E0 U10 V20 Z1 S11 C10 O0 T3000\n',{model:'x2d'});
+  assert.equal(result.maxNozzleTemperature,230);
+  assert.deepEqual(result.usedFilamentPositions,[0],'a nozzle without filament (L-1) selects no filament');
+});
+test('X2D L-1 preheat keeps every declared material and hardware limit wherever it appears', async t => {
+  for(const [materials,command,pattern] of [
+    ['PLA;PLA','M620.17 T0 S270 L-1',/PLA nozzle temperature 270/],
+    ['PETG;PLA','M620.17 T1 S270 L-1',/PLA nozzle temperature 270/],
+    ['PLA;PLA','; CHANGE_LAYER\nG1 X5 Y5 E1\nM620.17 T0 S270 L-1',/PLA nozzle temperature 270/],
+    ['PETG;PETG','M620.17 T0 S310 L-1',/hardware limit/],
+    ['PETG;PETG','M620.17 T2 S230 L-1',/nozzle\/material temperature mapping/],
+    ['PETG;PETG','M620.17 T0 S230 L-2',/position -2 has no declared material/],
+    ['PETG;PETG','M620.17 T0 L-1',/nozzle\/material temperature mapping/],
+    ['PETG;PETG','M620.17 T0 S230 L-1 P1',/unsupported M620.17 parameter P/],
+  ]) await assert.rejects(inspect(t,header('X2D',materials,'0.4;0.4')+command+'\n',{model:'x2d'}),pattern,command);
+  // A file declaring more nozzles cannot widen T beyond the two physical nozzles.
+  await assert.rejects(inspect(t,header('X2D','PETG;PETG;PETG','0.4;0.4;0.4')+'M620.17 T2 S230 L-1\n',{model:'x2d'}),/nozzle\/material temperature mapping/,'T2 with three declared nozzles');
+  // The all-material bound is never looser than an accepted L<position>, so a later idle preheat is checked, not refused.
+  const later=await inspect(t,header('X2D','PETG;PETG','0.4;0.4')+'; CHANGE_LAYER\nG1 X5 Y5 E1\nM620.17 T0 S240 L-1\n',{model:'x2d'});
+  assert.equal(later.maxNozzleTemperature,240);
+  for(const model of ['H2D','H2C'])
+    await assert.rejects(inspect(t,header(model,'PETG;PETG','0.4;0.4')+'M620.17 T0 S230 L-1\n',{model:model.toLowerCase()}),/position -1 has no declared material/,model);
+});
+test('X2D time-lapse capture accepts only its exact parameters inside the machine volume', async t => {
+  const base=header('X2D','PETG','0.4;0.4');
+  await assert.doesNotReject(inspect(t,base+'M9711 M1 E1 X256 Y256 Z260 S11 C10 O0 T3000\n',{model:'x2d'}));
+  await assert.rejects(inspect(t,base+'M9711 M1 E0 Z260.4 S11 C10 O0 T3000\n',{model:'x2d'}),/unsupported M9711 time-lapse parameters/,'Z stays inside the machine height');
+  // A file declaring more nozzles cannot widen E beyond the two physical extruders.
+  await assert.rejects(inspect(t,header('X2D','PETG','0.4;0.4;0.4')+'M9711 M0 E2 Z1 S11 C10 O0 T3000\n',{model:'x2d'}),/unsupported M9711 time-lapse parameters/,'E2 with three declared nozzles');
+  for(const command of [
+    'M9711 M2 E1 Z0.6 S11 C10 O0 T3000','M9711 M0 E2 Z0.6 S11 C10 O0 T3000','M9711 M0 E-1 Z0.6 S11 C10 O0 T3000','M9711 M0 E0.5 Z0.6 S11 C10 O0 T3000',
+    'M9711 M0 E1 Z0.6 S12 C10 O0 T3000','M9711 M0 E1 Z0.6 S11 C9 O0 T3000','M9711 M0 E1 Z0.6 S11 C10 O1 T3000',
+    'M9711 M0 E1 Z0.6 S11 C10 O0','M9711 M0 E1 X10 Z0.6 S11 C10 O0 T3000','M9711 M0 E1 X10 V10 Z0.6 S11 C10 O0 T3000',
+    'M9711 M0 E1 X10 Y10 U1 V1 Z0.6 S11 C10 O0 T3000','M9711 M0 E1 X257 Y10 Z0.6 S11 C10 O0 T3000','M9711 M0 E1 U10 V257 Z0.6 S11 C10 O0 T3000',
+    'M9711 M0 E1 Z261 S11 C10 O0 T3000','M9711 M0 E1 Z-1 S11 C10 O0 T3000','M9711 M0 E1 Z0.6 S11 C10 O0 T-1',
+    'M9711 M0 E1 Z0.6 S11 C10 O0 T3000 P1','M9711 M0 E1 Z0.6 S11 C10 O0 T3000 M104 S400','M9711 M0 E1 Z0.6 S11 C10 O0 T3000 G1',
+    'M9711 E1 Z0.6 S11 C10 O0 T3000','M9711 M0 E1 Z0.6 S11 C10 O0 T3000 X','M9711',
+  ]) await assert.rejects(inspect(t,base+command+'\n',{model:'x2d'}),/unsupported M9711 time-lapse parameters/,command);
+  for(const [model,nozzle] of [['H2C','0.4;0.4'],['H2S','0.4'],['P1S','0.4']])
+    await assert.rejects(inspect(t,header(model,'PETG',nozzle)+orcaX2dLayer,{model:model.toLowerCase()}),/unsupported M9711 time-lapse parameters/,model);
+});
+test('official H2D time-lapse template capture forms pass inside the H2D volume', async t => {
+  const settings=JSON.parse(await fs.readFile(new URL('../fixtures/h2d_gui_sliced/project_settings.config',import.meta.url),'utf8'));
+  const values={timelapse_type:'1',most_used_physical_extruder_id:'1',timelapse_pos_x:'340',timelapse_pos_y:'310','layer_z + 0.4':'300.4'};
+  const forms=settings.time_lapse_gcode.split('\n').filter(line=>/^\s*M9711\s/.test(line))
+    .map(line=>line.trim().replace(/\{([^}]+)\}/g,(_,name)=>{assert.ok(name in values,name);return values[name];}));
+  assert.equal(forms.length,4,'the fixture holds the official XY, UV and position-free forms');
+  await assert.doesNotReject(inspect(t,header('H2D','PETG','0.4;0.4')+forms.join('\n')+'\n',{model:'h2d'}));
+  await assert.rejects(inspect(t,header('H2D','PETG','0.4;0.4')+forms[0].replace('X340','X351')+'\n',{model:'h2d'}),/unsupported M9711 time-lapse parameters/);
+});
+
 const h2cHeader=()=>header('H2C','PLA','0.4;0.4')+'; nozzle_temperature_initial_layer = 220\n';
 const h2cStartup = 'M620 N\nM104 O-80 A\nM140 D55\nM620.14 X95.5 Y336\nM190 D55\nG383.3 U140 L0\nG383.7 U140 J0\n========== record data ==========\nM104 S220\n';
 test('BambuStudio 02.08 H2C startup commands pass without losing independent temperature checks',async t=>{
@@ -527,7 +584,9 @@ test('X2D banner separators, M9711 timelapse and N nozzle index pass only on dua
   const source=x2dHeader()+'M104 T1 S25 N0\nM109 T0 S220 N1\n======== X2D filament_change gcode ==========\nM620 S0A B H-1\nM104 S220\nM621 S0A B\nM622 J1\nM9711 M0 E0 U205 V162 Z1.4 S11 C10 O0 T3000\nM9711 M1 E1 Z1.6 S11 C10 O0 T3000\nM9711 M0 E1 X205 Y162 Z1.8 S11 C10 O0 T3000\nM623\n';
   const r=await inspect(t,source,{model:'x2d'});
   assert.equal(r.maxNozzleTemperature,220);assert.deepEqual(r.usedFilamentPositions,[0]);
-  for(const model of ['h2d','h2c']) await assert.doesNotReject(inspect(t,header(model.toUpperCase(),'PLA','0.4;0.4')+'M104 T1 S25 N0\n==== banner ====\nM9711 M0 E1 Z1.4 S11 C10 O0 T3000\nM104 S220\n',{model}),model);
+  await assert.doesNotReject(inspect(t,header('H2D','PLA','0.4;0.4')+'M104 T1 S25 N0\n==== banner ====\nM9711 M0 E1 Z1.4 S11 C10 O0 T3000\nM104 S220\n',{model:'h2d'}));
+  // The released M9711 rule covers X2D and H2D; H2C keeps the banner and nozzle-index forms.
+  await assert.doesNotReject(inspect(t,header('H2C','PLA','0.4;0.4')+'M104 T1 S25 N0\n==== banner ====\nM104 S220\n',{model:'h2c'}));
   for(const [model,nozzle] of [['P1S','0.4'],['H2S','0.4'],['A1','0.4'],['P2S','0.4']]) for(const command of ['======== X2D filament_change gcode ==========','M9711 M0 E0 U205 V162 Z1.4 S11 C10 O0 T3000','M104 S220 N0','M109 T0 S220 N0'])
     await assert.rejects(inspect(t,header(model,'PLA',nozzle)+command+'\n',{model:model.toLowerCase()}),/unsupported|syntax|multiple|parameter/i,model+' '+command);
   // A banner can never hide a command, M9711 keeps its official shape, N stays a declared nozzle, and N never relaxes heater limits.

@@ -46,10 +46,13 @@ function assertPatchedParser(packageRoot) {
 
 function assertNativePackage(packageRoot, cwd) {
   assert.ok(fs.existsSync(path.join(packageRoot, "native/bambu-native-print.cpp")));
-  assert.ok(fs.existsSync(path.join(packageRoot, "scripts/build-bambu-native.zsh")));
+  assert.ok(fs.existsSync(path.join(packageRoot, "scripts/build-bambu-native.sh")));
+  assert.ok(fs.existsSync(path.join(packageRoot, "scripts/setup-bambu-native.mjs")));
   assert.equal(fs.existsSync(path.join(packageRoot, "native/bambu-native-print")), false, "a developer's binary must not ship");
+  if (process.platform !== "darwin" && process.platform !== "linux") return;
+  execFileSync("/bin/sh", [path.join(packageRoot, "scripts/build-bambu-native.sh")], { cwd, timeout: 60000, stdio: "pipe" });
+  // Linux routes only through the setup-managed install; the compile above is the package check.
   if (process.platform !== "darwin") return;
-  execFileSync("/bin/zsh", [path.join(packageRoot, "scripts/build-bambu-native.zsh")], { cwd, timeout: 60000, stdio: "pipe" });
   // Resolve from the installed module while launched outside the package; no printer connections.
   execFileSync(process.execPath, ["--input-type=module", "-e", `
     const { pathToFileURL } = await import('node:url');

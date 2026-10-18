@@ -9,7 +9,7 @@ import { readSafe3mfArchive } from "../safety/archive.js";
 import { inspectPrintFile, type PrintFileInspection } from "../safety/print-file.js";
 import { isDualNozzleModel, normalizeModel, validateTemperature } from "../safety/limits.js";
 import { bridgeAmsMapping2Entry, describeAmsTrayRange } from "../ams-mapping.js";
-import { validatePrinterState, manualHeatingRequirements, type PrinterStateRequirements } from "../safety/printer-state.js";
+import { describeHmsKey, hiddenHmsKeys, hiddenHmsNotices, reportedHmsKey, validatePrinterState, manualHeatingRequirements, type PrinterStateRequirements } from "../safety/printer-state.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRemotePath, cancelPendingPrinterOperations } from "../safety/artifact.js";
 import { Client as FTPClient } from "basic-ftp";
 import { BambuPrinter } from "bambu-js";
@@ -86,7 +86,7 @@ const H2_MODEL_NAMES = new Set(["h2", "h2c", "h2d", "h2dpro", "h2d pro", "h2s", 
 export function assertDirectPrintSupported(model: string | undefined, serial?: string): void {
   if (model?.trim().toLowerCase() === "x2d" || serial?.trim().toUpperCase().startsWith("20P")) {
     throw new Error(
-      "X2D direct printing is not supported through legacy MQTT/FTPS. Use the macOS native eMMC route via print_3mf. " +
+      "X2D direct printing is not supported through legacy MQTT/FTPS. Use the native eMMC route via print_3mf (macOS, or Linux with the native helper installed). " +
       "X2D status and slicing remain available on all supported platforms."
     );
   }
@@ -462,6 +462,9 @@ class BambuClientStore {
   }
 }
 
+/** What the human confirmed in confirmPrintPreflight, checked again before dispatch. */
+export type PrintPreflight = { finishedJob?: string; serial: string; model: string; notices: string[] };
+
 export class BambuImplementation {
   private printerStore: BambuClientStore;
   private checkedJobs = new Map<string, { remotePath: string; requirements: PrinterStateRequirements }>();
@@ -482,24 +485,40 @@ export class BambuImplementation {
     return status.raw.gcode_state === "FINISH" ? JSON.stringify([status.raw.gcode_file, status.raw.subtask_name, status.raw.task_id, status.raw.subtask_id]) : undefined;
   }
 
-  async confirmPrintPreflight(serial: string, status: any, inspection: Awaited<ReturnType<typeof inspectPrintFile>>): Promise<string | undefined> {
+  /**
+   * The human print confirmation. Its result goes to assertBedClearance at
+   * every later state check of the same print, which stops the print if the
+   * situation the human confirmed has changed.
+   */
+  async confirmPrintPreflight(serial: string, status: any, inspection: Awaited<ReturnType<typeof inspectPrintFile>>): Promise<PrintPreflight> {
     const finishedJob = this.finishedJobIdentity(status);
     const cleared = this.clearedErrors.get(serial);
+    const notices = hiddenHmsNotices(status?.raw, serial, inspection.model);
     await this.confirmHardwareAction(
       `Start a checked print on ${inspection.model.toUpperCase()} (${serial})? Nozzles: ${inspection.nozzleDiameters.join(", ")} mm. ` +
       `Materials: ${inspection.materials.join(", ")}. Peak targets: nozzle ${inspection.maxNozzleTemperature}°C, bed ${inspection.maxBedTemperature}°C, chamber ${inspection.maxChamberTemperature}°C. ` +
       `File SHA-256: ${inspection.sha256}. Confirm the physical spool labels and that the build plate is clear.` +
       (finishedJob !== undefined ? " The printer reports FINISH: remove the previous part and debris before confirming." : "") +
-      (cleared ? ` Previously cleared hardware codes: ${cleared.join(", ")}. Confirm their physical causes have been resolved.` : ""),
+      (cleared ? ` Previously cleared hardware codes: ${cleared.map(describeHmsKey).join(", ")}. Confirm their physical causes have been resolved.` : "") +
+      (notices.length ? ` The printer also reports ${notices.join(", ")}, which Bambu lists for this model without text and never shows as a fault; ` +
+        `${notices.length === 1 ? "it does" : "they do"} not block printing.` : ""),
       finishedJob !== undefined || !!cleared
     );
-    return finishedJob;
+    return { finishedJob, serial, model: inspection.model, notices };
   }
 
-  assertBedClearance(status: any, confirmedFinishedJob: string | undefined): void {
+  /** Stop a print whose confirmed situation changed: a newly finished job, or a hidden HMS notice the preflight did not name. */
+  assertBedClearance(status: any, preflight: PrintPreflight): void {
     const current = this.finishedJobIdentity(status);
-    if (current !== undefined && current !== confirmedFinishedJob) {
+    if (current !== undefined && current !== preflight.finishedJob) {
       throw new Error("Printer reports a newly finished job. Confirm that its part and debris have been removed before retrying the print.");
+    }
+    // An X2D raises its hidden camera notice about 15 seconds after boot, so it
+    // can appear after the human confirmed. Never pass a notice nobody was told about.
+    const unnamed = hiddenHmsNotices(status?.raw, preflight.serial, preflight.model).filter(notice => !preflight.notices.includes(notice));
+    if (unnamed.length) {
+      throw new Error(`Printer reported ${unnamed.join(", ")} after the print confirmation. ` +
+        "Bambu hides it and it does not block printing, but it was not named when you confirmed; start the print again to review it.");
     }
   }
 
@@ -945,6 +964,21 @@ export class BambuImplementation {
     }
   }
 
+  /** Raw MQTT stop for routes that already ran the shared cancellation steps. */
+  async sendStopOverMqtt(host: string, serial: string, token: string): Promise<any> {
+    const printer = await this.getPrinter(host, serial, token);
+    await invokeWithoutAck(printer, new UpdateStateCommand({ state: "stop" }));
+    return { status: "success", message: "Cancel command sent over MQTT." };
+  }
+
+  /** Raw MQTT heater-off; switching off needs no material or model declaration. */
+  async sendHeaterOffOverMqtt(host: string, serial: string, token: string, heater: "bed" | "nozzle"): Promise<any> {
+    const printer = await this.getPrinter(host, serial, token);
+    const gcode = `${heater === "bed" ? "M140" : "M104"} S0`;
+    await invokeWithoutAck(printer, new GCodeLineCommand({ gcodes: [gcode] }));
+    return { status: "success", message: `Heater-off sent over MQTT for ${heater}.`, command: gcode };
+  }
+
   async pauseJob(host: string, serial: string, token: string, dispatch?: () => Promise<any>): Promise<any> {
     const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
     try {
@@ -983,10 +1017,12 @@ export class BambuImplementation {
     return withPrinterOperation(host, serial, async assertActive => {
       const codesFor = (status: any): string[] => {
         if (!Array.isArray(status.raw?.hms) || status.raw?.print_error === undefined) throw new Error("Fresh error codes are required before clearing hardware errors.");
-        return [`print_error:${status.raw.print_error}`, ...status.raw.hms.map((entry: any) => `hms:${entry.attr}:${entry.code}`)].sort();
+        // Hidden notices never block and survive clean_print_error, so they are not errors to clear or re-acknowledge.
+        const hidden = new Set(hiddenHmsKeys(status.raw, serial, String(status.model ?? "")));
+        return [`print_error:${status.raw.print_error}`, ...status.raw.hms.map(reportedHmsKey).filter((key: string) => !hidden.has(key))].sort();
       };
       const codes = codesFor(await this.getSafetyStatus(host, serial, token));
-      await this.confirmHardwareAction(`Clear reported hardware errors on ${serial}: ${codes.join(", ")}? Inspect the printer and resolve the physical cause first. Confirm only after removing obstructions and correcting the fault.`, true);
+      await this.confirmHardwareAction(`Clear reported hardware errors on ${serial}: ${codes.map(describeHmsKey).join(", ")}? Inspect the printer and resolve the physical cause first. Confirm only after removing obstructions and correcting the fault.`, true);
       const beforeDispatch = async () => {
         assertActive();
         const current = codesFor(await this.getSafetyStatus(host, serial, token));
@@ -1142,9 +1178,12 @@ export class BambuImplementation {
       }
       const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
       assertActive();
-      if (dispatch) await dispatch(heater, targetTemperature, assertActive, beforeDispatch);
-      else await invokeWithoutAck(printer!, new GCodeLineCommand({ gcodes: [gcode] }));
-      return { status: "success", message: `Temperature command sent for ${normalizedComponent}.`, command: gcode };
+      const dispatched = dispatch ? await dispatch(heater, targetTemperature, assertActive, beforeDispatch) : undefined;
+      if (!dispatch) await invokeWithoutAck(printer!, new GCodeLineCommand({ gcodes: [gcode] }));
+      // Keep route details from a dual-route Linux heater-off.
+      const routeDetails = dispatched && typeof dispatched === "object" && "routes" in dispatched
+        ? { routes: dispatched.routes, native_error: dispatched.native_error, mqtt_error: dispatched.mqtt_error } : {};
+      return { status: "success", message: `Temperature command sent for ${normalizedComponent}.`, command: gcode, ...routeDetails };
     };
     if (targetTemperature === 0) {
       cancelPendingPrinterOperations(host, serial);

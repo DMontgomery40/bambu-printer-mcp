@@ -285,3 +285,54 @@ test('explicit native print rejection remains a failure', async t => {
   await helper(t, {printResult:-1});
   await assert.rejects(printWithBambuNative(options, undefined, {beforeDispatch:async()=>{}}), /failed.*20/);
 });
+
+test("compiled native command exits cleanly even when plug-in teardown would crash at process exit", { skip: process.platform === "win32" }, async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-native-exit-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const driver = path.join(directory, "driver.cpp");
+  const executable = path.join(directory, "helper");
+  const source = fileURLToPath(new URL("../native/bambu-native-print.cpp", import.meta.url));
+  // A plug-in whose worker threads outlive destroy_agent crashed one-shot runs
+  // in process-exit destructors (SIGSEGV on Linux). Simulate that destructor:
+  // a normal exit would abort, the helper must end before it runs.
+  await fs.writeFile(driver, `
+#define main unused_native_main
+#include ${JSON.stringify(source)}
+#undef main
+BBL::OnLocalConnectedFn connected;
+int main() {
+  std::atexit([] { std::abort(); });
+  NativeApi api;
+  api.createAgent = [](std::string) -> void* { return reinterpret_cast<void*>(1); };
+  api.destroyAgent = [](void*) { outputLine("stub_destroy_agent"); return 0; };
+  api.setConfigDir = [](void*,std::string) { return 0; };
+  api.initLog = [](void*) { return 0; };
+  api.setCertFile = [](void*,std::string,std::string) { return 0; };
+  api.setCountryCode = [](void*,std::string) { return 0; };
+  api.start = [](void*) { return 0; };
+  api.setQueueOnMain = [](void*,std::function<void(std::function<void()>)>) { return 0; };
+  api.setPrinterConnected = [](void*,std::function<void(std::string)>) { return 0; };
+  api.setLocalConnect = [](void*,BBL::OnLocalConnectedFn callback) { connected=callback; return 0; };
+  api.setMessage = [](void*,std::function<void(std::string,std::string)>) { return 0; };
+  api.setLocalMessage = api.setMessage;
+  api.updateCert = [](void*) { return 0; };
+  api.installDeviceCert = [](void*,std::string,bool) {};
+  api.connectPrinter = [](void*,std::string serial,std::string,std::string,std::string,bool) { connected(0,serial,""); return 0; };
+  api.sendMessageToPrinter = [](void*,std::string,std::string,int,int) { return std::atoi(envOr("STUB_SEND_RESULT","0").c_str()); };
+  try { runOperation(api, NativeOperation::Command); }
+  catch(const std::exception &error) { std::cerr<<error.what()<<std::endl; return 1; }
+  return 0;
+}
+`);
+  const compiled = spawnSync(process.env.CXX || "c++", ["-std=c++17", "-O0", driver, "-o", executable, "-ldl", "-pthread"], { encoding: "utf8", timeout: 60000 });
+  assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
+  const env = { ...process.env, BAMBU_NATIVE_HOST: "127.0.0.1", BAMBU_NATIVE_SERIAL: "20PEXIT", BAMBU_NATIVE_ACCESS_CODE: "DUMMY",
+    BAMBU_NATIVE_COMMAND_CONFIRM: "1", BAMBU_NATIVE_COMMAND_JSON: JSON.stringify({ print: { command: "pause", sequence_id: "1" } }) };
+  const sent = spawnSync(executable, [], { encoding: "utf8", timeout: 15000, env });
+  assert.equal(sent.signal, null, sent.stderr);
+  assert.equal(sent.status, 0, sent.stderr);
+  assert.match(sent.stdout, /native_command result=0\nstub_destroy_agent\n/, "plug-in cleanup still runs before exit");
+  const refused = spawnSync(executable, [], { encoding: "utf8", timeout: 15000, env: { ...env, STUB_SEND_RESULT: "-1" } });
+  assert.equal(refused.signal, null, refused.stderr);
+  assert.equal(refused.status, 20, "a refused command keeps its failure code");
+});

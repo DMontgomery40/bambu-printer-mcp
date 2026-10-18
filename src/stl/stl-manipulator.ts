@@ -166,6 +166,7 @@ export interface BambuSliceOptions {
   filamentColours?: string[];  // positional #RRGGBB per loaded filament slot
   bedType?: string;            // Bambu bed type, e.g. textured_plate or cool_plate
   nozzleType?: string;         // installed hotend material written into the machine preset
+  nozzleVolumeType?: 'Standard' | 'High Flow'; // installed nozzle flow, the machine preset's nozzle_volume_type
   enableTimelapse?: boolean;   // --enable-timelapse: timelapse-aware slicing
   allowMixTemp?: boolean;      // --allow-mix-temp: allow mixed-temp filaments
   scale?: number;              // --scale factor: uniform scale
@@ -563,6 +564,7 @@ export class STLManipulator extends EventEmitter {
       userProfileRoots: configuredBambuProfileDirs(),
       tempDir: this.tempDir,
       bedType: this.resolveBambuStudioBedType(bambuOptions?.bedType),
+      nozzleVolumeType: bambuOptions?.nozzleVolumeType,
       filamentColours: bambuOptions?.filamentColours ?? bundle.filamentColours,
       projectTowerPosition: bundle.projectTowerPosition,
       sourceProfiles: {

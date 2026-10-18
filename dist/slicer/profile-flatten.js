@@ -228,6 +228,29 @@ function enforceMatchingNozzles(arr) {
         }
     }
 }
+/**
+ * BambuStudio picks each per-variant machine, process, and filament value
+ * (e.g. filament_max_volumetric_speed) by "<extruder_type> <nozzle_volume_type>"
+ * among the variants each extruder declares in extruder_variant_list. A flow
+ * type the preset doesn't declare has no values to pick, so refuse it instead
+ * of labelling a job for a nozzle it wasn't sliced for.
+ */
+function assertNozzleVariantDeclared(flat, volumeType, machineLeaf) {
+    const strings = (key) => Array.isArray(flat[key]) ? flat[key].map(String) : [];
+    const extruderTypes = strings("extruder_type");
+    const declaredLists = strings("extruder_variant_list");
+    const count = flat["nozzle_volume_type"].length;
+    for (let i = 0; i < count; i++) {
+        const extruderType = extruderTypes[i] ?? extruderTypes[0];
+        const declared = (declaredLists[i] ?? declaredLists[0] ?? "").split(",").map((v) => v.trim()).filter(Boolean);
+        const matches = (variant) => extruderType ? variant === `${extruderType} ${volumeType}` : variant.endsWith(` ${volumeType}`);
+        // Presets without variant declarations only have Standard values.
+        if (declared.length === 0 ? volumeType === "Standard" : declared.some(matches))
+            continue;
+        throw new Error(`Slicing for a ${volumeType} nozzle is refused: "${machineLeaf}" declares no ${volumeType} variant ` +
+            `for extruder ${i + 1} (declared: ${declared.join(", ") || "none"}).`);
+    }
+}
 /** Best-effort extruder count for fallback nozzle_volume_type sizing. */
 /** BambuStudio's built-in filament_colour default. */
 export const DEFAULT_FILAMENT_COLOUR = "#00AE42";
@@ -545,6 +568,8 @@ export async function flattenForCli(opts) {
     });
     // CLI-specific post-processing on machine profile only.
     deriveNozzleVolumeType(machineFlat, opts.nozzleVolumeType);
+    if (opts.nozzleVolumeType)
+        assertNozzleVariantDeclared(machineFlat, opts.nozzleVolumeType, opts.machineLeaf);
     applyMachineModelBedMetadata(machineFlat, machineIndex);
     // A standalone custom machine can accompany process/filament profiles that
     // need BBL resolution; do not impose bundled model config on that machine.
