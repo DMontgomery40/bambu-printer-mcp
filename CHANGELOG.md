@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- Stop waiting indefinitely for MQTT on Linux X2D stop and heater-off. When the printer could not be reached over MQTT, the MQTT connect kept retrying and `cancel_print` or heater-off never returned, even after the native route had already sent the command. Each MQTT send now gives up after 15 seconds (`BAMBU_EMERGENCY_MQTT_TIMEOUT_MS`, 1-60 s) and is reported as failed; the result still counts the native route, and the call fails only when neither route succeeds. The wait for older print or heating helpers to exit stays separate, so it never counts against that limit. Verified with mocked native helpers and a never-connecting MQTT client; on the previous code these calls hung until the MCP client gave up.
+
 ## [1.1.29] – 2026-10-18
 
 ### Added

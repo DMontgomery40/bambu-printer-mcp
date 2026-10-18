@@ -15,7 +15,7 @@ const printerModule = new URL("../dist/printers/bambu.js", import.meta.url).href
 
 // Exercise platform dispatch on every CI OS. Only the OS selector and transport
 // boundaries are mocked; file inspection, AMS validation and preflight are real.
-async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState, dispatchError, installedHelper = true, installedPlugin = true, tunnelLibrary = true, arch = "x64", unpinnedOptIn = true, helperFails = false, mqttFails = false, hms = [] } = {}) {
+async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState, dispatchError, installedHelper = true, installedPlugin = true, tunnelLibrary = true, arch = "x64", unpinnedOptIn = true, helperFails = false, mqttFails = false, mqttHangs = false, hms = [] } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-native-test-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const eventsFile = path.join(dir, "events.jsonl");
@@ -70,6 +70,7 @@ console.log('native_print result=0');
     const record = kind => appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({kind})+'\\n');
     BambuImplementation.prototype.getPrinter = async () => {
       if (${mqttFails}) { record('mqtt-failed'); throw new Error('simulated MQTT failure'); }
+      if (${mqttHangs}) { record('mqtt-hung'); return new Promise(() => {}); }
       // Note which older print/heating helpers were still alive at each MQTT send.
       return { publish: async () => {
         const alive = readFileSync(${JSON.stringify(eventsFile)}, 'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse)
@@ -98,7 +99,7 @@ console.log('native_print result=0');
       BAMBU_NATIVE_HELPER: installedHelper ? helper : "",
       BAMBU_NATIVE_HOME: installedPlugin ? createFakeNativeHome(dir, { tunnelLibrary }) : path.join(dir, "empty-native-home"),
       ...(unpinnedOptIn ? UNPINNED_PLUGIN_ENV : { BAMBU_NATIVE_ALLOW_UNPINNED_PLUGIN: "" }),
-      BAMBU_DEFAULT_CONNECTION_MODE: "", BAMBU_REQUIRE_CONFIRMATION: "1" }, stderr: "pipe",
+      BAMBU_DEFAULT_CONNECTION_MODE: "", BAMBU_REQUIRE_CONFIRMATION: "1", BAMBU_EMERGENCY_MQTT_TIMEOUT_MS: "500" }, stderr: "pipe",
   });
   const client = new Client({ name: "native-regression", version: "0" }, { capabilities: { elicitation: { form: {} } } });
   const prompts = [];
@@ -520,6 +521,22 @@ for (const [name, args] of [["cancel_print", {}], ["set_temperature", { componen
     assert.match(result.content[0].text, /"native":\s*"failed"[\s\S]*"mqtt":\s*"sent"[\s\S]*native_error/);
   });
 
+  test(`Linux ${name} returns the native result when MQTT never connects`, async t => {
+    const s = await server(t, { platform: "linux", mqttHangs: true });
+    const started = Date.now();
+    const result = await s.client.callTool({ name, arguments: args });
+    assert.ok(Date.now() - started < 5_000, "a hanging MQTT connect must not hold back the stop");
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.match(result.content[0].text, /"native":\s*"sent"[\s\S]*"mqtt":\s*"failed"[\s\S]*no MQTT confirmation within 0.5 s/);
+  });
+
+  test(`Linux ${name} fails, naming both routes, when the helper fails and MQTT never connects`, async t => {
+    const s = await server(t, { platform: "linux", helperFails: true, mqttHangs: true });
+    const result = await s.client.callTool({ name, arguments: args });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /native route: .*MQTT route: no MQTT confirmation within 0.5 s/);
+  });
+
   test(`Linux ${name} reports both reasons when both routes fail`, async t => {
     const s = await server(t, { platform: "linux", helperFails: true, mqttFails: true });
     const result = await s.client.callTool({ name, arguments: args });
@@ -563,6 +580,7 @@ for (const name of ["cancel_print", "set_temperature"]) {
     const sends = (await s.events()).filter(e => e.kind === "mqtt");
     assert.equal(sends.length, 2);
     assert.deepEqual(sends.at(-1).olderAlive, [], "the counted MQTT send follows the old helper's exit");
+    assert.match(result.content[0].text, /"mqtt":\s*"sent"/, "the wait for the old helper does not count against the MQTT bound");
     assert.equal(exited(call.pid), true);
     assert.equal((await s.events()).some(e => e.kind === "sent"), false, "the old helper never dispatched");
   });

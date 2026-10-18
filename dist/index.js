@@ -52,6 +52,16 @@ const DEFAULT_BAMBU_MODEL = process.env.BAMBU_PRINTER_MODEL?.trim().toLowerCase(
 const DEFAULT_BAMBU_CONNECTION_MODE = process.env.BAMBU_DEFAULT_CONNECTION_MODE?.trim().toLowerCase() || "";
 const DEFAULT_BED_TYPE = process.env.BED_TYPE?.trim().toLowerCase() || "textured_plate";
 const DEFAULT_NOZZLE_DIAMETER = process.env.NOZZLE_DIAMETER?.trim() || "0.4";
+/** Bound for each Linux X2D emergency MQTT send (BAMBU_EMERGENCY_MQTT_TIMEOUT_MS, 1-60 s). */
+function withEmergencyMqttTimeout(send) {
+    const raw = Number(process.env.BAMBU_EMERGENCY_MQTT_TIMEOUT_MS?.trim() || 15000);
+    const ms = Number.isInteger(raw) && raw >= 1 && raw <= 60000 ? raw : 15000;
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`no MQTT confirmation within ${ms / 1000} s`)), ms);
+    });
+    return Promise.race([send, timeout]).finally(() => clearTimeout(timer));
+}
 function requestedPrintNozzles(args) {
     if (args.nozzle_diameters !== undefined && args.nozzle_diameter !== undefined) {
         throw new Error("Supply nozzle_diameters or nozzle_diameter, not both.");
@@ -2676,10 +2686,13 @@ class BambuPrinterMCPServer {
             const linuxEmergency = (native, mqtt) => async () => {
                 if (process.platform !== "linux")
                     return native();
+                // An unreachable printer makes the MQTT connect retry forever; bound each
+                // MQTT send so it cannot hold back a stop the native route already sent.
                 const [nativeResult, immediateResult, mqttResult] = await Promise.allSettled([
                     native(),
-                    mqtt(),
-                    interruptNativeOperations(bambuSerial).then(() => mqtt()),
+                    withEmergencyMqttTimeout(mqtt()),
+                    // Older helpers are SIGKILLed after 1 s, so only the send itself needs the bound.
+                    interruptNativeOperations(bambuSerial).then(() => withEmergencyMqttTimeout(mqtt())),
                 ]);
                 const reason = (result) => result.status === "rejected" ? (result.reason instanceof Error ? result.reason.message : String(result.reason)) : undefined;
                 if (nativeResult.status === "rejected" && mqttResult.status === "rejected") {

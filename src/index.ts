@@ -85,6 +85,17 @@ const DEFAULT_BAMBU_CONNECTION_MODE =
 const DEFAULT_BED_TYPE = process.env.BED_TYPE?.trim().toLowerCase() || "textured_plate";
 const DEFAULT_NOZZLE_DIAMETER = process.env.NOZZLE_DIAMETER?.trim() || "0.4";
 
+/** Bound for each Linux X2D emergency MQTT send (BAMBU_EMERGENCY_MQTT_TIMEOUT_MS, 1-60 s). */
+function withEmergencyMqttTimeout<T>(send: Promise<T>): Promise<T> {
+  const raw = Number(process.env.BAMBU_EMERGENCY_MQTT_TIMEOUT_MS?.trim() || 15_000);
+  const ms = Number.isInteger(raw) && raw >= 1 && raw <= 60_000 ? raw : 15_000;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`no MQTT confirmation within ${ms / 1000} s`)), ms);
+  });
+  return Promise.race([send, timeout]).finally(() => clearTimeout(timer));
+}
+
 function requestedPrintNozzles(args: Record<string, any>): number[] | undefined {
   if (args.nozzle_diameters !== undefined && args.nozzle_diameter !== undefined) {
     throw new Error("Supply nozzle_diameters or nozzle_diameter, not both.");
@@ -3210,10 +3221,13 @@ class BambuPrinterMCPServer {
       // stays native-only.
       const linuxEmergency = (native: () => Promise<any>, mqtt: () => Promise<any>) => async () => {
         if (process.platform !== "linux") return native();
+        // An unreachable printer makes the MQTT connect retry forever; bound each
+        // MQTT send so it cannot hold back a stop the native route already sent.
         const [nativeResult, immediateResult, mqttResult] = await Promise.allSettled([
           native(),
-          mqtt(),
-          interruptNativeOperations(bambuSerial).then(() => mqtt()),
+          withEmergencyMqttTimeout(mqtt()),
+          // Older helpers are SIGKILLed after 1 s, so only the send itself needs the bound.
+          interruptNativeOperations(bambuSerial).then(() => withEmergencyMqttTimeout(mqtt())),
         ]);
         const reason = (result: PromiseSettledResult<any>) =>
           result.status === "rejected" ? (result.reason instanceof Error ? result.reason.message : String(result.reason)) : undefined;
