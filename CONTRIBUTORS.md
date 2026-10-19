@@ -46,3 +46,5 @@ See the [full contribution history](https://github.com/DMontgomery40/bambu-print
 Special thanks to [FULU Foundation](https://www.fulu.org/), [Louis Rossmann](https://www.youtube.com/watch?v=1jhRqgHxEP8), and the [OrcaSlicer-bambulab contributors](https://github.com/FULU-Foundation/OrcaSlicer-bambulab) for their work supporting user control and interoperable tools. We support open-source software, repair rights, and a local print workflow that does not require Bambu Studio, Bambu Connect, or Bambu Cloud.
 
 This is community recognition, separate from code authorship in this repository. The optional FULU bridge uses Bambu's networking runtime; see the [FULU setup guide](./docs/FULU.md) for the direct LAN alternative and current validation limits.
+
+Thanks to the [MQTT.js contributors](https://github.com/mqttjs/MQTT.js/releases/tag/v5.16.1), [proxy-addr maintainers](https://github.com/jshttp/proxy-addr/releases/tag/v2.0.8), and [source-map-js maintainers](https://github.com/7rulnik/source-map-js) for the reconnect and security fixes incorporated in 1.1.31. This recognizes upstream dependency work separately from authorship in this repository.

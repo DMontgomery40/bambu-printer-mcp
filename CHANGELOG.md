@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.31] – 2026-10-19
+
+### Fixed
+- Refresh the locked MQTT client to 5.16.1, including its upstream fix for reconnecting when the previous stream is already destroyed. Keep emergency expiry and queued-command cancellation covered by the transport regressions.
+- Update locked `proxy-addr` to 2.0.8 for its IPv4-mapped IPv6 trust-subnet fix (GHSA-jqcg-44mw-7w3h), and the documentation build's `source-map-js` to 1.2.2 for indexed source-map offset denial of service (GHSA-68fv-2mgg-jv7q). These are dependency fixes; this does not claim that the default MCP server trusts proxy headers or that every remaining audit advisory is resolved.
+
 ## [1.1.30] – 2026-10-19
 
 ### Fixed
