@@ -438,6 +438,12 @@ class BambuClientStore {
     }
   }
 
+  forgetPrinter(printer: BambuClient): void {
+    for (const [key, cached] of this.printers) {
+      if (cached === printer) this.clearPrinterState(key);
+    }
+  }
+
   async disconnectAll(): Promise<void> {
     const disconnectPromises: Promise<void>[] = [];
 
@@ -964,18 +970,50 @@ export class BambuImplementation {
     }
   }
 
+  private async invokeEmergencyCommand(
+    printer: BambuClient,
+    command: { invoke(client: BambuClient): Promise<void> },
+    signal?: AbortSignal
+  ): Promise<void> {
+    if (!signal) return invokeWithoutAck(printer, command);
+    let onAbort: () => void;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        onAbort = () => {
+          // Force-close the actual transport: a raced publish may be queued
+          // inside MQTT.js and otherwise dispatch after a later reconnect.
+          this.printerStore.forgetPrinter(printer);
+          void printer.disconnect(true).catch(() => {
+            console.error("Failed to close an expired emergency MQTT client.");
+          });
+          reject(signal.reason);
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        if (signal.aborted) onAbort();
+        else command.invoke(printer).then(resolve, reject);
+      });
+    } finally {
+      signal.removeEventListener("abort", onAbort!);
+    }
+    await sleep(COMMAND_SETTLE_MS);
+  }
+
   /** Raw MQTT stop for routes that already ran the shared cancellation steps. */
-  async sendStopOverMqtt(host: string, serial: string, token: string): Promise<any> {
+  async sendStopOverMqtt(host: string, serial: string, token: string, signal?: AbortSignal): Promise<any> {
+    signal?.throwIfAborted();
     const printer = await this.getPrinter(host, serial, token);
-    await invokeWithoutAck(printer, new UpdateStateCommand({ state: "stop" }));
+    signal?.throwIfAborted();
+    await this.invokeEmergencyCommand(printer, new UpdateStateCommand({ state: "stop" }), signal);
     return { status: "success", message: "Cancel command sent over MQTT." };
   }
 
   /** Raw MQTT heater-off; switching off needs no material or model declaration. */
-  async sendHeaterOffOverMqtt(host: string, serial: string, token: string, heater: "bed" | "nozzle"): Promise<any> {
+  async sendHeaterOffOverMqtt(host: string, serial: string, token: string, heater: "bed" | "nozzle", signal?: AbortSignal): Promise<any> {
+    signal?.throwIfAborted();
     const printer = await this.getPrinter(host, serial, token);
+    signal?.throwIfAborted();
     const gcode = `${heater === "bed" ? "M140" : "M104"} S0`;
-    await invokeWithoutAck(printer, new GCodeLineCommand({ gcodes: [gcode] }));
+    await this.invokeEmergencyCommand(printer, new GCodeLineCommand({ gcodes: [gcode] }), signal);
     return { status: "success", message: `Heater-off sent over MQTT for ${heater}.`, command: gcode };
   }
 
