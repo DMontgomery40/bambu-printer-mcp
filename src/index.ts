@@ -3228,11 +3228,16 @@ class BambuPrinterMCPServer {
         if (process.platform !== "linux") return native();
         // An unreachable printer makes the MQTT connect retry forever; bound each
         // MQTT send so it cannot hold back a stop the native route already sent.
+        const immediate = withEmergencyMqttTimeout(mqtt);
         const [nativeResult, immediateResult, mqttResult] = await Promise.allSettled([
           native(),
-          withEmergencyMqttTimeout(mqtt),
-          // Older helpers are SIGKILLed after 1 s, so only the send itself needs the bound.
-          interruptNativeOperations(bambuSerial).then(() => withEmergencyMqttTimeout(mqtt)),
+          immediate,
+          // Finish the first attempt before reusing its cached publisher: its
+          // expiry must never close the later, counted send's transport.
+          Promise.allSettled([interruptNativeOperations(bambuSerial), immediate]).then(results => {
+            if (results[0].status === "rejected") throw results[0].reason;
+            return withEmergencyMqttTimeout(mqtt);
+          }),
         ]);
         const reason = (result: PromiseSettledResult<any>) =>
           result.status === "rejected" ? (result.reason instanceof Error ? result.reason.message : String(result.reason)) : undefined;
