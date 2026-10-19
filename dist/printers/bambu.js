@@ -356,6 +356,12 @@ class BambuClientStore {
             throw error;
         }
     }
+    forgetPrinter(printer) {
+        for (const [key, cached] of this.printers) {
+            if (cached === printer)
+                this.clearPrinterState(key);
+        }
+    }
     async disconnectAll() {
         const disconnectPromises = [];
         for (const printer of this.printers.values()) {
@@ -836,12 +842,39 @@ export class BambuImplementation {
             throw new Error(`Failed to cancel print: ${error.message}`);
         }
     }
+    async invokeEmergencyCommand(printer, command, signal) {
+        if (!signal)
+            return invokeWithoutAck(printer, command);
+        let onAbort;
+        try {
+            await new Promise((resolve, reject) => {
+                onAbort = () => {
+                    // Force-close the actual transport: a raced publish may be queued
+                    // inside MQTT.js and otherwise dispatch after a later reconnect.
+                    this.printerStore.forgetPrinter(printer);
+                    void printer.disconnect(true).catch(() => {
+                        console.error("Failed to close an expired emergency MQTT client.");
+                    });
+                    reject(signal.reason);
+                };
+                signal.addEventListener("abort", onAbort, { once: true });
+                if (signal.aborted)
+                    onAbort();
+                else
+                    command.invoke(printer).then(resolve, reject);
+            });
+        }
+        finally {
+            signal.removeEventListener("abort", onAbort);
+        }
+        await sleep(COMMAND_SETTLE_MS);
+    }
     /** Raw MQTT stop for routes that already ran the shared cancellation steps. */
     async sendStopOverMqtt(host, serial, token, signal) {
         signal?.throwIfAborted();
         const printer = await this.getPrinter(host, serial, token);
         signal?.throwIfAborted();
-        await invokeWithoutAck(printer, new UpdateStateCommand({ state: "stop" }));
+        await this.invokeEmergencyCommand(printer, new UpdateStateCommand({ state: "stop" }), signal);
         return { status: "success", message: "Cancel command sent over MQTT." };
     }
     /** Raw MQTT heater-off; switching off needs no material or model declaration. */
@@ -850,7 +883,7 @@ export class BambuImplementation {
         const printer = await this.getPrinter(host, serial, token);
         signal?.throwIfAborted();
         const gcode = `${heater === "bed" ? "M140" : "M104"} S0`;
-        await invokeWithoutAck(printer, new GCodeLineCommand({ gcodes: [gcode] }));
+        await this.invokeEmergencyCommand(printer, new GCodeLineCommand({ gcodes: [gcode] }), signal);
         return { status: "success", message: `Heater-off sent over MQTT for ${heater}.`, command: gcode };
     }
     async pauseJob(host, serial, token, dispatch) {

@@ -60,8 +60,9 @@ function withEmergencyMqttTimeout(send) {
     let timer;
     const timeout = new Promise((_, reject) => {
         timer = setTimeout(() => {
-            controller.abort();
-            reject(new Error(`no MQTT confirmation within ${ms / 1000} s`));
+            const error = new Error(`no MQTT confirmation within ${ms / 1000} s`);
+            controller.abort(error);
+            reject(error);
         }, ms);
     });
     return Promise.race([Promise.resolve().then(() => send(controller.signal)), timeout]).finally(() => clearTimeout(timer));

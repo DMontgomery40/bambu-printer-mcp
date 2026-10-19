@@ -60,6 +60,7 @@ export declare class BambuImplementation {
     print3mf(host: string, serial: string, token: string, options: BambuPrintOptionsInternal): Promise<any>;
     private print3mfPrepared;
     cancelJob(host: string, serial: string, token: string, dispatch?: () => Promise<any>): Promise<any>;
+    private invokeEmergencyCommand;
     /** Raw MQTT stop for routes that already ran the shared cancellation steps. */
     sendStopOverMqtt(host: string, serial: string, token: string, signal?: AbortSignal): Promise<any>;
     /** Raw MQTT heater-off; switching off needs no material or model declaration. */
