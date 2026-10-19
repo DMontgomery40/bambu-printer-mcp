@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.31] – 2026-10-19
+
+### Fixed
+- Raise the server's direct MQTT minimum to 5.16.1 and refresh the desktop/CI lock to that version, including its upstream fix for reconnecting when the previous stream is already destroyed. Keep emergency expiry and queued-command cancellation covered by the transport regressions.
+- Update the desktop/CI lock's `proxy-addr` to 2.0.8 for its IPv4-mapped IPv6 trust-subnet fix (GHSA-jqcg-44mw-7w3h), and the documentation build's `source-map-js` to 1.2.2 for indexed source-map offset denial of service (GHSA-68fv-2mgg-jv7q). npm omits this development lock from published packages: existing npm projects may retain older transitive MQTT/proxy versions and must update their own dependency locks to adopt those fixes. The direct MQTT minimum applies to the server's own resolution. This does not claim that the default MCP server trusts proxy headers or that all audit advisories are resolved.
+
 ## [1.1.30] – 2026-10-19
 
 ### Fixed

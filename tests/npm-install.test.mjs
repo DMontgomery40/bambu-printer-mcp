@@ -24,6 +24,7 @@ function assertPatchedParser(packageRoot) {
     import { pathToFileURL } from "node:url";
     const require = createRequire(process.argv[1] + "/package.json");
     try {
+      assert.ok(require("semver").satisfies(require("mqtt/package.json").version, ">=5.16.1 <6"), "the server's own MQTT minimum must survive parent deduplication");
       const { BambuClient, PrinterModel, GCodeFileCommand } = await import(pathToFileURL(require.resolve("bambu-node")));
       for (const [prefix, model] of [["31B", "H2C"], ["094", "H2D"], ["093", "H2S"], ["239", "H2DPRO"], ["22E", "P2S"], ["039", "A1"], ["030", "A1M"]]) {
         assert.equal(PrinterModel[model], model);
@@ -87,8 +88,12 @@ test("published tarball patches the resolved dependency in local, global, and np
   fs.mkdirSync(execCwd);
   fs.writeFileSync(path.join(execCwd, "user-config.json"), "DO_NOT_CHANGE");
 
-  await t.test("local dependency install with a hoisted bambu-node", () => {
+  await t.test("local dependency install with older parent dependencies and a hoisted bambu-node", () => {
+    npm(["install", "--prefix", local, "--no-audit", "--no-fund", "--save-exact", "mqtt@5.16.0", "proxy-addr@2.0.7"], fixture);
     npm(["install", "--prefix", local, "--no-audit", "--no-fund", tarball], fixture);
+    const parentRequire = createRequire(path.join(local, "package.json"));
+    assert.equal(parentRequire("mqtt/package.json").version, "5.16.0", "the consumer's explicit dependency remains unchanged");
+    assert.equal(parentRequire("proxy-addr/package.json").version, "2.0.7", "transitive upgrades remain the consumer's choice");
     const packageRoot = path.join(local, "node_modules/bambu-printer-mcp");
     const require = createRequire(path.join(packageRoot, "package.json"));
     assert.equal(fs.realpathSync(require.resolve("bambu-node/package.json")), fs.realpathSync(path.join(local, "node_modules/bambu-node/package.json")));
