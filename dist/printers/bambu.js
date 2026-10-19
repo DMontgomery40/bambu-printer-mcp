@@ -837,14 +837,18 @@ export class BambuImplementation {
         }
     }
     /** Raw MQTT stop for routes that already ran the shared cancellation steps. */
-    async sendStopOverMqtt(host, serial, token) {
+    async sendStopOverMqtt(host, serial, token, signal) {
+        signal?.throwIfAborted();
         const printer = await this.getPrinter(host, serial, token);
+        signal?.throwIfAborted();
         await invokeWithoutAck(printer, new UpdateStateCommand({ state: "stop" }));
         return { status: "success", message: "Cancel command sent over MQTT." };
     }
     /** Raw MQTT heater-off; switching off needs no material or model declaration. */
-    async sendHeaterOffOverMqtt(host, serial, token, heater) {
+    async sendHeaterOffOverMqtt(host, serial, token, heater, signal) {
+        signal?.throwIfAborted();
         const printer = await this.getPrinter(host, serial, token);
+        signal?.throwIfAborted();
         const gcode = `${heater === "bed" ? "M140" : "M104"} S0`;
         await invokeWithoutAck(printer, new GCodeLineCommand({ gcodes: [gcode] }));
         return { status: "success", message: `Heater-off sent over MQTT for ${heater}.`, command: gcode };

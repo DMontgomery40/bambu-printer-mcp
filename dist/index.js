@@ -52,15 +52,19 @@ const DEFAULT_BAMBU_MODEL = process.env.BAMBU_PRINTER_MODEL?.trim().toLowerCase(
 const DEFAULT_BAMBU_CONNECTION_MODE = process.env.BAMBU_DEFAULT_CONNECTION_MODE?.trim().toLowerCase() || "";
 const DEFAULT_BED_TYPE = process.env.BED_TYPE?.trim().toLowerCase() || "textured_plate";
 const DEFAULT_NOZZLE_DIAMETER = process.env.NOZZLE_DIAMETER?.trim() || "0.4";
-/** Bound for each Linux X2D emergency MQTT send (BAMBU_EMERGENCY_MQTT_TIMEOUT_MS, 1-60 s). */
+/** Bound for each Linux X2D emergency MQTT send (BAMBU_EMERGENCY_MQTT_TIMEOUT_MS, 1–60000 ms). */
 function withEmergencyMqttTimeout(send) {
     const raw = Number(process.env.BAMBU_EMERGENCY_MQTT_TIMEOUT_MS?.trim() || 15000);
     const ms = Number.isInteger(raw) && raw >= 1 && raw <= 60000 ? raw : 15000;
+    const controller = new AbortController();
     let timer;
     const timeout = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`no MQTT confirmation within ${ms / 1000} s`)), ms);
+        timer = setTimeout(() => {
+            controller.abort();
+            reject(new Error(`no MQTT confirmation within ${ms / 1000} s`));
+        }, ms);
     });
-    return Promise.race([send, timeout]).finally(() => clearTimeout(timer));
+    return Promise.race([Promise.resolve().then(() => send(controller.signal)), timeout]).finally(() => clearTimeout(timer));
 }
 function requestedPrintNozzles(args) {
     if (args.nozzle_diameters !== undefined && args.nozzle_diameter !== undefined) {
@@ -2690,9 +2694,9 @@ class BambuPrinterMCPServer {
                 // MQTT send so it cannot hold back a stop the native route already sent.
                 const [nativeResult, immediateResult, mqttResult] = await Promise.allSettled([
                     native(),
-                    withEmergencyMqttTimeout(mqtt()),
+                    withEmergencyMqttTimeout(mqtt),
                     // Older helpers are SIGKILLed after 1 s, so only the send itself needs the bound.
-                    interruptNativeOperations(bambuSerial).then(() => withEmergencyMqttTimeout(mqtt())),
+                    interruptNativeOperations(bambuSerial).then(() => withEmergencyMqttTimeout(mqtt)),
                 ]);
                 const reason = (result) => result.status === "rejected" ? (result.reason instanceof Error ? result.reason.message : String(result.reason)) : undefined;
                 if (nativeResult.status === "rejected" && mqttResult.status === "rejected") {
@@ -2909,7 +2913,7 @@ class BambuPrinterMCPServer {
                     case "cancel_print":
                         result = await this.bambu.cancelJob(host, bambuSerial, bambuToken, nativeControls()
                             ? linuxEmergency(() => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
-                                messageJson: JSON.stringify({ print: { command: "stop", param: "", sequence_id: String(Date.now()) } }), qos: 1 }), () => this.bambu.sendStopOverMqtt(host, bambuSerial, bambuToken))
+                                messageJson: JSON.stringify({ print: { command: "stop", param: "", sequence_id: String(Date.now()) } }), qos: 1 }), signal => this.bambu.sendStopOverMqtt(host, bambuSerial, bambuToken, signal))
                             : undefined);
                         break;
                     case "pause_print":
@@ -3049,7 +3053,7 @@ class BambuPrinterMCPServer {
                                 const native = () => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
                                     messageJson: buildBambuNativeTemperatureCommand(heater, target).messageJson }, { signal: extra.signal, assertActive, beforeDispatch });
                                 return target === 0
-                                    ? linuxEmergency(native, () => this.bambu.sendHeaterOffOverMqtt(host, bambuSerial, bambuToken, heater))()
+                                    ? linuxEmergency(native, signal => this.bambu.sendHeaterOffOverMqtt(host, bambuSerial, bambuToken, heater, signal))()
                                     : native();
                             }
                             : undefined);
