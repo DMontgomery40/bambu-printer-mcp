@@ -106,7 +106,8 @@ failure is resolved. Use a GUI-sliced project when a CLI combination fails.
 
 X2D has its own preset, status identification, and slicing support. On macOS and
 x86-64 Linux, `print_3mf` uses the optional native helper and Bambu's networking
-plug-in for the internal eMMC transport, after the shared print safety checks.
+plug-in, after the shared print safety checks. The job goes to a ready SD card or
+USB stick, otherwise to internal storage (eMMC).
 See native setup for [macOS](../README.md#x2d-native-transport-macos) and
 [Linux](../README.md#x2d-native-transport-linux). Other operating systems, and
 Linux without the helper, reject native print requests before slicing or connecting. Legacy
@@ -266,7 +267,7 @@ For the default direct LAN path, the MCP selects the upload location and command
 | Full-size A1 | SD root `/<file>` | `project_file`, `file:///sdcard/<file>` |
 | P2S | `/cache/<file>` | `project_file`, `ftp:///cache/<file>` |
 | H2S / H2D / H2C | SD root `/<file>` | `project_file`, `ftp:///<file>` |
-| X2D | Native eMMC on macOS or Linux | `print_3mf` uses a locally built helper and installed plug-in; legacy FTPS/remote-file starts are rejected |
+| X2D | Native, to the SD card/USB stick or eMMC, on macOS or Linux | `print_3mf` uses a locally built helper and installed plug-in; legacy FTPS/remote-file starts are rejected |
 
 The filename suffix is significant for the legacy route: the code recognizes `.gcode.3mf` for `gcode_file`, while other `.3mf` names use project-file handling. Keep the slicer's sliced-file export name when using the legacy path. Do not rename unsliced content to force routing.
 

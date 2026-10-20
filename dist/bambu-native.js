@@ -748,6 +748,7 @@ export async function printWithBambuNative(options, onUpdate, execution) {
         BAMBU_NATIVE_VIBRATION_CALIBRATION: boolEnv(options.vibrationCalibration, true),
         BAMBU_NATIVE_LAYER_INSPECT: boolEnv(options.layerInspect, false),
         BAMBU_NATIVE_TIMELAPSE: boolEnv(options.timelapse, false),
+        ...(options.externalStorage === undefined ? {} : { BAMBU_NATIVE_TRY_EMMC_PRINT: String(!options.externalStorage) }),
     }, 300000, onUpdate, execution);
     if (result.resultCode !== 0) {
         const explicitRejection = result.updates.some(line => /^native_print result=-?[1-9]\d*$/.test(line));
@@ -765,6 +766,7 @@ export async function printWithBambuNative(options, onUpdate, execution) {
     return {
         status: "success",
         route: "bambu:///local",
+        ...(options.externalStorage === undefined ? {} : { storage: options.externalStorage ? "external" : "internal" }),
         updates: result.updates,
     };
 }

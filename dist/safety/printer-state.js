@@ -451,3 +451,21 @@ export function manualHeatingRequirements(status, model, nozzleDiameter, materia
     }
     return requirements;
 }
+const EXTERNAL_STORAGE_STATES = ["none", "normal", "abnormal", "readonly"];
+/**
+ * The SD card or USB stick state, read as Bambu Studio does: the `sdcard`
+ * flag, then `home_flag` bits 8-9, then on firmware that reports cfg/fun/aux/stat
+ * the `aux` bits 12-13, each later source overriding the earlier one
+ * (DevStorage.cpp, DeviceManager.cpp parse_home_flag and parse_new_info).
+ */
+export function externalStorageState(raw) {
+    if (!object(raw))
+        return "none";
+    let state = raw.sdcard === true ? "normal" : "none";
+    if (Number.isInteger(raw.home_flag))
+        state = EXTERNAL_STORAGE_STATES[(raw.home_flag >> 8) & 3];
+    if (["cfg", "fun", "aux", "stat"].every(key => key in raw) && typeof raw.aux === "string" && /^[0-9a-f]+$/i.test(raw.aux)) {
+        state = EXTERNAL_STORAGE_STATES[Number((BigInt(`0x${raw.aux}`) >> 12n) & 3n)];
+    }
+    return state;
+}

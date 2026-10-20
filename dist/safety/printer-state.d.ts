@@ -51,4 +51,12 @@ export declare function hiddenHmsKeys(raw: unknown, serial: string, model: strin
 export declare function validatePrinterState(status: any, requirements: PrinterStateRequirements): ValidatedPrinterState;
 /** Manual M104 cannot remap filament slots. Validate the material already at the nozzle. */
 export declare function manualHeatingRequirements(status: any, model: string, nozzleDiameter: number, material: string): PrinterStateRequirements;
+export type ExternalStorageState = "none" | "normal" | "abnormal" | "readonly";
+/**
+ * The SD card or USB stick state, read as Bambu Studio does: the `sdcard`
+ * flag, then `home_flag` bits 8-9, then on firmware that reports cfg/fun/aux/stat
+ * the `aux` bits 12-13, each later source overriding the earlier one
+ * (DevStorage.cpp, DeviceManager.cpp parse_home_flag and parse_new_info).
+ */
+export declare function externalStorageState(raw: unknown): ExternalStorageState;
 export {};

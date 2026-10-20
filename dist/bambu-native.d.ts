@@ -19,6 +19,8 @@ export type BambuNativePrintOptions = {
     vibrationCalibration?: boolean;
     layerInspect?: boolean;
     timelapse?: boolean;
+    /** true: the SD card or USB stick; false: internal storage (eMMC); unset: BAMBU_NATIVE_TRY_EMMC_PRINT or internal. Reported as the requested storage. */
+    externalStorage?: boolean;
 };
 export type BambuNativeControlOptions = {
     host: string;

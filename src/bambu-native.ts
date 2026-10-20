@@ -26,6 +26,8 @@ export type BambuNativePrintOptions = {
   vibrationCalibration?: boolean;
   layerInspect?: boolean;
   timelapse?: boolean;
+  /** true: the SD card or USB stick; false: internal storage (eMMC); unset: BAMBU_NATIVE_TRY_EMMC_PRINT or internal. Reported as the requested storage. */
+  externalStorage?: boolean;
 };
 
 export type BambuNativeControlOptions = {
@@ -864,6 +866,7 @@ export async function printWithBambuNative(
       BAMBU_NATIVE_VIBRATION_CALIBRATION: boolEnv(options.vibrationCalibration, true),
       BAMBU_NATIVE_LAYER_INSPECT: boolEnv(options.layerInspect, false),
       BAMBU_NATIVE_TIMELAPSE: boolEnv(options.timelapse, false),
+      ...(options.externalStorage === undefined ? {} : { BAMBU_NATIVE_TRY_EMMC_PRINT: String(!options.externalStorage) }),
     },
     300_000,
     onUpdate,
@@ -885,6 +888,7 @@ export async function printWithBambuNative(
   return {
     status: "success",
     route: "bambu:///local",
+    ...(options.externalStorage === undefined ? {} : { storage: options.externalStorage ? "external" : "internal" }),
     updates: result.updates,
   };
 }

@@ -15,7 +15,7 @@ const printerModule = new URL("../dist/printers/bambu.js", import.meta.url).href
 
 // Exercise platform dispatch on every CI OS. Only the OS selector and transport
 // boundaries are mocked; file inspection, AMS validation and preflight are real.
-async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState, dispatchError, installedHelper = true, installedPlugin = true, tunnelLibrary = true, arch = "x64", unpinnedOptIn = true, helperFails = false, mqttFails = false, mqttHangs = false, mqttDelay = 0, mqttOfflineFor = 0, hms = [] } = {}) {
+async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState, dispatchError, installedHelper = true, installedPlugin = true, tunnelLibrary = true, arch = "x64", unpinnedOptIn = true, helperFails = false, mqttFails = false, mqttHangs = false, mqttDelay = 0, mqttFirstConnectionOffline = false, hms = [], storage = {}, dispatchStorage, env = {} } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-native-test-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const eventsFile = path.join(dir, "events.jsonl");
@@ -33,7 +33,7 @@ const event = { kind: 'helper', pid: process.pid, mode: process.argv[2], file: e
   projectName: e.BAMBU_NATIVE_PROJECT_NAME, presetName: e.BAMBU_NATIVE_PRESET_NAME,
   plateIndex: e.BAMBU_NATIVE_PLATE_INDEX, bedType: e.BAMBU_NATIVE_BED_TYPE,
   mapping: e.BAMBU_NATIVE_AMS_MAPPING, mapping2: e.BAMBU_NATIVE_AMS_MAPPING2,
-  plugin: e.BAMBU_NATIVE_PLUGIN, certDir: e.BAMBU_NATIVE_CERT_DIR, configDir: e.BAMBU_NATIVE_CONFIG_DIR,
+  tryEmmc: e.BAMBU_NATIVE_TRY_EMMC_PRINT, plugin: e.BAMBU_NATIVE_PLUGIN, certDir: e.BAMBU_NATIVE_CERT_DIR, configDir: e.BAMBU_NATIVE_CONFIG_DIR,
   command: JSON.parse(e.BAMBU_NATIVE_COMMAND_JSON || '{}') };
 event.olderAlive = readFileSync(${JSON.stringify(eventsFile)}, 'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse)
   .filter(old => old.mode === '--print-authorized' || old.command?.print?.temp > 0)
@@ -68,23 +68,24 @@ console.log('native_print result=0');
     Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} });
     Object.defineProperty(process, 'arch', { value: ${JSON.stringify(arch)} });
     const record = kind => appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({kind})+'\\n');
-    let offlineUntil;
     let offlineClient;
     BambuImplementation.prototype.getPrinter = async () => {
-      if (${mqttOfflineFor}) {
-        offlineUntil ??= Date.now() + ${mqttOfflineFor};
+      if (${mqttFirstConnectionOffline}) {
         if (!offlineClient || offlineClient.closed) {
+          // First connection stays offline until expiry closes it. A replacement
+          // is ready immediately: test connection ordering, not reconnect timing.
+          const offline = !offlineClient;
           const pending = new Set();
           offlineClient = {
             closed: false,
-            publish: () => new Promise((resolve, reject) => {
+            publish: () => {
+              if (!offline) { record('mqtt'); return Promise.resolve(); }
               record('mqtt-queued');
-              const waiter = { reject, timer: setTimeout(() => { pending.delete(waiter); record('mqtt'); resolve(); }, Math.max(0, offlineUntil - Date.now())) };
-              pending.add(waiter);
-            }),
+              return new Promise((_resolve, reject) => pending.add(reject));
+            },
             disconnect: async () => {
               offlineClient.closed = true;
-              for (const waiter of pending) { clearTimeout(waiter.timer); waiter.reject(new Error('transport closed')); }
+              for (const reject of pending) reject(new Error('transport closed'));
               pending.clear();
             },
           };
@@ -106,10 +107,12 @@ console.log('native_print result=0');
     BambuImplementation.prototype.disconnectAll = async () => { record('disconnect'); };
     BambuImplementation.prototype.getSafetyStatus = async (_host, serial) => {
       record('status');
-      const observedState = ${JSON.stringify(dispatchState)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchState)} : ${JSON.stringify(state)};
+      const helperStarted = readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper');
+      const observedState = ${JSON.stringify(dispatchState)} && helperStarted ? ${JSON.stringify(dispatchState)} : ${JSON.stringify(state)};
+      const storage = ${JSON.stringify(dispatchStorage)} && helperStarted ? ${JSON.stringify(dispatchStorage)} : ${JSON.stringify(storage)};
       return { connected:true, serial, model:'x2d', status:observedState,
         raw: {serial,model:'x2d',vir_slot:[{id:254,tray_type:'PLA'},{id:255,tray_type:'PLA'}],gcode_state:observedState,print_error:${JSON.stringify(dispatchError)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchError)} : 0,hms:${JSON.stringify(hms)},nozzle_diameter:['0.4','0.4'],
-          ams: { ams:[{id:'0',tray:[{id:'0',tray_type:'PLA'}]}, {id:'128',tray:[{id:'0',tray_type:'PLA'}]}] } },
+          ams: { ams:[{id:'0',tray:[{id:'0',tray_type:'PLA'}]}, {id:'128',tray:[{id:'0',tray_type:'PLA'}]}] }, ...storage },
         observation:{source:'mqtt',requestedAt:Date.now()-1,receivedAt:Date.now(),identitySource:'report'} };
     };
   `;
@@ -122,7 +125,7 @@ console.log('native_print result=0');
       BAMBU_NATIVE_HELPER: installedHelper ? helper : "",
       BAMBU_NATIVE_HOME: installedPlugin ? createFakeNativeHome(dir, { tunnelLibrary }) : path.join(dir, "empty-native-home"),
       ...(unpinnedOptIn ? UNPINNED_PLUGIN_ENV : { BAMBU_NATIVE_ALLOW_UNPINNED_PLUGIN: "" }),
-      BAMBU_DEFAULT_CONNECTION_MODE: "", BAMBU_REQUIRE_CONFIRMATION: "1", BAMBU_EMERGENCY_MQTT_TIMEOUT_MS: "500" }, stderr: "pipe",
+      BAMBU_DEFAULT_CONNECTION_MODE: "", BAMBU_REQUIRE_CONFIRMATION: "1", BAMBU_EMERGENCY_MQTT_TIMEOUT_MS: "500", BAMBU_NATIVE_TRY_EMMC_PRINT: undefined, ...env }, stderr: "pipe",
   });
   const client = new Client({ name: "native-regression", version: "0" }, { capabilities: { elicitation: { form: {} } } });
   const prompts = [];
@@ -209,6 +212,67 @@ for (const [label, options, transport] of [
     if (transport === "helper") assert.equal(events[0].command.print.command, "pause");
   });
 }
+
+// Status reported by the physical X2D with a ready 30 GB card: sdcard, home_flag
+// bits 8-9 and aux bits 12-13 all say "normal".
+const cardReady = { sdcard: true, home_flag: -1066969665, cfg: "4D10457D299", fun: "40029FD1930F9CB7", aux: "2801004", stat: "10010402180F0" };
+for (const [label, storage, tryEmmc, reported] of [
+  ["a ready card", cardReady, "false", "external"],
+  ["no card", { sdcard: false, home_flag: 0 }, "true", "internal"],
+  ["a read-only card", { ...cardReady, aux: "2803004" }, "true", "internal"],
+  ["an abnormal card", { sdcard: true, home_flag: 0x200 }, "true", "internal"],
+]) test(`native print with ${label} stores the job on ${reported} storage`, async t => {
+  const s = await server(t, { storage });
+  const result = await s.print({ ams_slots: [128] });
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  assert.equal(JSON.parse(result.content[0].text).storage, reported);
+  assert.equal((await s.events()).find(e => e.kind === "helper").tryEmmc, tryEmmc);
+});
+
+for (const [label, env, args] of [
+  ["BAMBU_NATIVE_TRY_EMMC_PRINT=1", { BAMBU_NATIVE_TRY_EMMC_PRINT: "1" }, {}],
+  ["try_emmc_print: true", {}, { try_emmc_print: true }],
+  ["try_emmc_print: true over BAMBU_NATIVE_TRY_EMMC_PRINT=0", { BAMBU_NATIVE_TRY_EMMC_PRINT: "0" }, { try_emmc_print: true }],
+]) test(`${label} keeps the job on internal storage despite a ready card`, async t => {
+  const s = await server(t, { storage: cardReady, env });
+  const result = await s.print({ ams_slots: [128], ...args });
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  assert.equal(JSON.parse(result.content[0].text).storage, "internal");
+  assert.equal((await s.events()).find(e => e.kind === "helper").tryEmmc, "true");
+});
+
+test("an empty BAMBU_NATIVE_TRY_EMMC_PRINT still detects the card", async t => {
+  const s = await server(t, { storage: cardReady, env: { BAMBU_NATIVE_TRY_EMMC_PRINT: " " } });
+  const result = await s.print({ ams_slots: [128] });
+  assert.equal(JSON.parse(result.content[0].text).storage, "external");
+});
+
+for (const [label, env, args] of [
+  ["try_emmc_print: false", {}, { try_emmc_print: false }],
+  ["BAMBU_NATIVE_TRY_EMMC_PRINT=0", { BAMBU_NATIVE_TRY_EMMC_PRINT: "0" }, {}],
+]) test(`${label} without a ready card is refused before the helper starts`, async t => {
+  const s = await server(t, { storage: { sdcard: false, home_flag: 0 }, env });
+  const result = await s.print({ ams_slots: [128], ...args });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /no ready SD card or USB stick/);
+  assert.equal((await s.events()).some(e => e.kind === "helper"), false);
+});
+
+test("a non-boolean try_emmc_print is refused before contacting the printer", async t => {
+  const s = await server(t, { storage: cardReady });
+  const result = await s.print({ ams_slots: [128], try_emmc_print: "false" });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /try_emmc_print must be true or false/);
+  assert.deepEqual(await s.events(), []);
+});
+
+test("a card that is removed before dispatch stops the print", async t => {
+  const s = await server(t, { storage: cardReady, dispatchStorage: { ...cardReady, aux: "2800004" } });
+  const result = await s.print({ ams_slots: [128] });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /SD card or USB stick is no longer ready/);
+  assert.equal((await s.events()).some(e => e.kind === "dispatched"), false);
+});
 
 test("Linux X2D print uses the installed native helper with the shared checks", async t => {
   const s = await server(t, { platform: "linux", model: "" });
@@ -564,7 +628,8 @@ for (const [name, args] of [["cancel_print", {}], ["set_temperature", { componen
   });
 
   test(`Linux ${name} gives the counted send its own window after the immediate queue expires`, async t => {
-    const s = await server(t, { platform: "linux", helperFails: true, mqttOfflineFor: 650 });
+    const s = await server(t, { platform: "linux", helperFails: true, mqttFirstConnectionOffline: true,
+      env: { BAMBU_EMERGENCY_MQTT_TIMEOUT_MS: "1500" } });
     const result = await s.client.callTool({ name, arguments: args });
     assert.notEqual(result.isError, true, JSON.stringify(result));
     assert.match(result.content[0].text, /"native":\s*"failed"[\s\S]*"mqtt":\s*"sent"[\s\S]*"mqtt_immediate":\s*"failed"/);

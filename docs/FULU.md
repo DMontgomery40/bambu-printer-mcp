@@ -43,7 +43,7 @@ BAMBU_MODEL=p1s
 
 For an external spool, follow the [no-AMS guidance](../README.md#printing-without-ams). H2 jobs with declared filaments still need the positional mapping described in [`print_3mf`](../README.md#print_3mf). Inspect printer status and HMS errors after submission; command acceptance and actual printing are different checks.
 
-**X2D:** status and slicing with its own preset are supported. On macOS and x86-64 Linux, `print_3mf` can use the optional native eMMC helper and installed compatible networking plug-in, with shared model/file/state/preflight checks. Windows native printing and legacy FTPS/remote-file starts remain unsupported. A successful FULU slice or bridge initialization alone does not demonstrate physical printing; do not substitute `h2d`. See the [slicing and transport guide](./SLICING.md).
+**X2D:** status and slicing with its own preset are supported. On macOS and x86-64 Linux, `print_3mf` can use the optional native helper and installed compatible networking plug-in, with shared model/file/state/preflight checks. Windows native printing and legacy FTPS/remote-file starts remain unsupported. A successful FULU slice or bridge initialization alone does not demonstrate physical printing; do not substitute `h2d`. See the [slicing and transport guide](./SLICING.md).
 
 <a id="optional-fulu-cli-slicing"></a>
 

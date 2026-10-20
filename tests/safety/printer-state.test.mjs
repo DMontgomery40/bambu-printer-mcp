@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import { BambuImplementation } from '../../dist/printers/bambu.js';
+import { externalStorageState } from '../../dist/safety/printer-state.js';
 
 // A raw MQTT transport boundary; never contacts hardware.
 test('safety status uses fresh printer report, not configured serial model', async () => {
@@ -333,4 +334,26 @@ test('hidden HMS notices and clear exclusions require the serial in the raw repo
     assert.deepEqual(safety.hiddenHmsNotices({ ...raw, ...reported }, '20PTEST', 'x2d'), ['HMS 0500-0600-0002-0070']);
     assert.deepEqual(safety.hiddenHmsKeys({ ...raw, ...reported }, '20PTEST', 'x2d'), ['hms:83887616:131184']);
   }
+});
+
+test('external storage state follows Bambu Studio: sdcard, then home_flag bits 8-9, then aux bits 12-13', () => {
+  const np = { cfg: '0', fun: '0', stat: '0' };
+  for (const [raw, expected] of [
+    [undefined, 'none'],
+    [{}, 'none'],
+    [{ sdcard: true }, 'normal'],
+    [{ sdcard: 'true' }, 'none'],
+    [{ sdcard: true, home_flag: 0 }, 'none'],
+    [{ sdcard: false, home_flag: 0x100 }, 'normal'],
+    [{ home_flag: 0x200 }, 'abnormal'],
+    [{ home_flag: 0x300 }, 'readonly'],
+    [{ home_flag: -1066969665 }, 'normal'],
+    [{ sdcard: true, home_flag: 1.5 }, 'normal'],
+    [{ home_flag: 0x100, aux: '3000' }, 'normal'],
+    [{ home_flag: 0x100, aux: '3000', ...np }, 'readonly'],
+    [{ home_flag: 0x100, aux: '0', ...np }, 'none'],
+    [{ home_flag: 0x100, aux: '', ...np }, 'normal'],
+    [{ home_flag: 0x100, aux: 'zz', ...np }, 'normal'],
+    [{ home_flag: 0, aux: 'FFFFFFFFFFFF1000', ...np }, 'normal'],
+  ]) assert.equal(externalStorageState(raw), expected, JSON.stringify(raw));
 });
