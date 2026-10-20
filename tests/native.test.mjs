@@ -15,7 +15,7 @@ const printerModule = new URL("../dist/printers/bambu.js", import.meta.url).href
 
 // Exercise platform dispatch on every CI OS. Only the OS selector and transport
 // boundaries are mocked; file inspection, AMS validation and preflight are real.
-async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState, dispatchError, installedHelper = true, installedPlugin = true, tunnelLibrary = true, arch = "x64", unpinnedOptIn = true, helperFails = false, mqttFails = false, mqttHangs = false, mqttDelay = 0, mqttOfflineFor = 0, hms = [], storage = {}, dispatchStorage, env = {} } = {}) {
+async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState, dispatchError, installedHelper = true, installedPlugin = true, tunnelLibrary = true, arch = "x64", unpinnedOptIn = true, helperFails = false, mqttFails = false, mqttHangs = false, mqttDelay = 0, mqttFirstConnectionOffline = false, hms = [], storage = {}, dispatchStorage, env = {} } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-native-test-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const eventsFile = path.join(dir, "events.jsonl");
@@ -68,23 +68,24 @@ console.log('native_print result=0');
     Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} });
     Object.defineProperty(process, 'arch', { value: ${JSON.stringify(arch)} });
     const record = kind => appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({kind})+'\\n');
-    let offlineUntil;
     let offlineClient;
     BambuImplementation.prototype.getPrinter = async () => {
-      if (${mqttOfflineFor}) {
-        offlineUntil ??= Date.now() + ${mqttOfflineFor};
+      if (${mqttFirstConnectionOffline}) {
         if (!offlineClient || offlineClient.closed) {
+          // First connection stays offline until expiry closes it. A replacement
+          // is ready immediately: test connection ordering, not reconnect timing.
+          const offline = !offlineClient;
           const pending = new Set();
           offlineClient = {
             closed: false,
-            publish: () => new Promise((resolve, reject) => {
+            publish: () => {
+              if (!offline) { record('mqtt'); return Promise.resolve(); }
               record('mqtt-queued');
-              const waiter = { reject, timer: setTimeout(() => { pending.delete(waiter); record('mqtt'); resolve(); }, Math.max(0, offlineUntil - Date.now())) };
-              pending.add(waiter);
-            }),
+              return new Promise((_resolve, reject) => pending.add(reject));
+            },
             disconnect: async () => {
               offlineClient.closed = true;
-              for (const waiter of pending) { clearTimeout(waiter.timer); waiter.reject(new Error('transport closed')); }
+              for (const reject of pending) reject(new Error('transport closed'));
               pending.clear();
             },
           };
@@ -627,7 +628,8 @@ for (const [name, args] of [["cancel_print", {}], ["set_temperature", { componen
   });
 
   test(`Linux ${name} gives the counted send its own window after the immediate queue expires`, async t => {
-    const s = await server(t, { platform: "linux", helperFails: true, mqttOfflineFor: 650 });
+    const s = await server(t, { platform: "linux", helperFails: true, mqttFirstConnectionOffline: true,
+      env: { BAMBU_EMERGENCY_MQTT_TIMEOUT_MS: "1500" } });
     const result = await s.client.callTool({ name, arguments: args });
     assert.notEqual(result.isError, true, JSON.stringify(result));
     assert.match(result.content[0].text, /"native":\s*"failed"[\s\S]*"mqtt":\s*"sent"[\s\S]*"mqtt_immediate":\s*"failed"/);

@@ -5,6 +5,9 @@
 ### Changed
 - Store X2D native print jobs on the printer's SD card or USB stick when it reports one ready, as OrcaSlicer does, instead of always on internal storage (eMMC) like Bambu Studio's Print button. The job can then be reprinted from the printer, and tools that read the card over FTPS (such as Bambuddy) archive it with its thumbnail and slicer metadata. The card state is read as Bambu Studio reads it (`sdcard`, `home_flag` bits 8-9, then `aux` bits 12-13); without a card, or with an abnormal or read-only one, jobs still go to internal storage. An explicit `try_emmc_print` argument (now also listed on `print_3mf`, and refused unless it is a boolean) or `BAMBU_NATIVE_TRY_EMMC_PRINT` still decides. External storage is refused before the helper starts when the printer reports no ready card, and a card that stops being ready before dispatch stops the print. The result reports the requested `storage` as `external` or `internal`. Contributed by [mygrexit](https://github.com/mygrexit) in [#64](https://github.com/DMontgomery40/bambu-printer-mcp/pull/64), who reports an external-storage print on Linux X2D firmware 01.01.01.00 with plug-in 02.08.02.54 and a Bambuddy thumbnail. Maintainer verification uses pinned upstream source and mocked native helpers; no maintainer physical print was run. Related upstream storage proposal: [maziggy’s Bambu Studio #12146](https://github.com/bambulab/BambuStudio/pull/12146), still unmerged.
 
+### Fixed
+- Make the emergency MQTT connection-order regression independent of simulated reconnect timing, so loaded macOS CI does not confuse its 50 ms scheduling margin with a routing failure. Production deadlines and conservative post-send timeout reporting are unchanged.
+
 ## [1.1.31] – 2026-10-19
 
 ### Fixed
