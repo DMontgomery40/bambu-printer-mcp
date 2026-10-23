@@ -11,6 +11,7 @@ import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { flattenForCli, detectProfilesRoot, resolveBblMachineProfile } from '../slicer/profile-flatten.js';
 import { profileJsonFiles } from '../slicer/profile-files.js';
+import { materializeOrcaProfilesRoot, stageOrcaCliProfiles } from '../slicer/orca-profile-cache.js';
 import { sliceWithOrcaApi, validateRemoteSliceOptions } from '../slicer/remote-slicer.js';
 
 const readFileAsync = promisify(fs.readFile);
@@ -291,7 +292,7 @@ export class STLManipulator extends EventEmitter {
     return value;
   }
 
-  private sanitizeProcessForOrca(processConfig: any, printerPreset?: string): any {
+  private sanitizeProcessForOrca(processConfig: any, printerPreset?: string, preserveExtrusionMode = false): any {
     const sanitized = { ...processConfig };
 
     sanitized.type = 'process';
@@ -312,7 +313,7 @@ export class STLManipulator extends EventEmitter {
       sanitized.prime_tower_brim_width = String(sanitized.prime_tower_brim_width);
     }
 
-    return this.useAbsoluteExtrusionForOrca(sanitized);
+    return preserveExtrusionMode ? sanitized : this.useAbsoluteExtrusionForOrca(sanitized);
   }
 
   /** Orca slices with absolute E distances; per-layer `G92 E0` resets would break them. */
@@ -344,7 +345,8 @@ export class STLManipulator extends EventEmitter {
     slicerProfile?: string,
     printerPreset?: string,
     bambuOptions?: BambuSliceOptions,
-    activeProfilesRoot?: string
+    activeProfilesRoot?: string,
+    preserveOrcaExtrusionMode = false
   ): Promise<BambuSettingsBundle> {
     const roots = activeProfilesRoot
       ? [path.join(activeProfilesRoot, 'BBL')]
@@ -417,7 +419,7 @@ export class STLManipulator extends EventEmitter {
         outputBase,
         slicerType === 'orcaslicer' ? 'process_orca' : 'process',
         slicerType === 'orcaslicer'
-          ? this.sanitizeProcessForOrca(mergedProcess, printerPreset)
+          ? this.sanitizeProcessForOrca(mergedProcess, printerPreset, preserveOrcaExtrusionMode)
           : mergedProcess
       );
 
@@ -460,7 +462,7 @@ export class STLManipulator extends EventEmitter {
             ? this.writeTempJson(
                 outputBase,
                 'process_default_orca',
-                this.sanitizeProcessForOrca(this.readJsonFile(defaultProcessPath), printerPreset)
+                this.sanitizeProcessForOrca(this.readJsonFile(defaultProcessPath), printerPreset, preserveOrcaExtrusionMode)
               )
             : defaultProcessPath;
       }
@@ -1660,14 +1662,18 @@ export class STLManipulator extends EventEmitter {
             const profileSlicerType = remote ? 'orcaslicer' : slicerType;
             const bambuOutputPath = path.join(this.tempDir, outputBase + (remote ? `_${operationId}` : '') + '_sliced.3mf');
             const outputDir = path.dirname(bambuOutputPath);
-            const profilesRoot = detectProfilesRoot(remote ? undefined : slicerPath, profileSlicerType);
+            const selectedProfilesRoot = detectProfilesRoot(remote ? undefined : slicerPath, profileSlicerType);
+            const profilesRoot = !remote && profileSlicerType === 'orcaslicer'
+              ? await materializeOrcaProfilesRoot(selectedProfilesRoot, this.tempDir)
+              : selectedProfilesRoot;
             const rawBundle = await this.resolveBambuLikeSettingsBundle(
               outputBase,
               profileSlicerType,
               slicerProfile,
               printerPreset,
               bambuOptions,
-              profilesRoot
+              profilesRoot,
+              profileSlicerType === 'orcaslicer' && profilesRoot !== selectedProfilesRoot
             );
             // Resolve every BBL dependency before launching the slicer.
             const settingsBundle = await this.maybeFlattenBundle(
@@ -1689,7 +1695,7 @@ export class STLManipulator extends EventEmitter {
             // absolute-extrusion normalization after resolving those ancestors.
             // The machine owns the extrusion mode and layer G-code once process
             // files lose machine keys, so normalize it there as well.
-            if (profileSlicerType === 'orcaslicer' && settingsBundle.settingsArg) {
+            if (profileSlicerType === 'orcaslicer' && settingsBundle.settingsArg && profilesRoot === selectedProfilesRoot) {
               const [machinePath, processPath] = settingsBundle.settingsArg.split(';');
               settingsBundle.settingsArg = [
                 this.writeTempJson(outputBase, 'machine_orca_resolved',
@@ -1698,7 +1704,13 @@ export class STLManipulator extends EventEmitter {
                   this.sanitizeProcessForOrca(this.readJsonFile(processPath), printerPreset)),
               ].join(';');
             }
-            const cliBundle = this.isolateMachineSettings(settingsBundle);
+            let cliBundle = this.isolateMachineSettings(settingsBundle);
+            let orcaExtraArgs: string[] = [];
+            if (!remote && profileSlicerType === 'orcaslicer' && profilesRoot !== selectedProfilesRoot) {
+              const staged = await stageOrcaCliProfiles(profilesRoot, this.tempDir, cliBundle);
+              cliBundle = { ...cliBundle, settingsArg: staged.settingsArg, filamentPaths: staged.filamentPaths };
+              orcaExtraArgs = staged.extraArgs;
+            }
             if (remote) {
               const [machinePath, processPath] = cliBundle.settingsArg?.split(';') ?? [];
               if (!machinePath || !processPath) throw new Error('Remote slicing requires complete prepared machine and process profiles.');
@@ -1710,6 +1722,7 @@ export class STLManipulator extends EventEmitter {
               break;
             }
             args = [
+              ...orcaExtraArgs,
               '--slice', String(bambuOptions?.slicePlate ?? 0),
               '--outputdir', outputDir,
               '--export-3mf', path.basename(bambuOutputPath),

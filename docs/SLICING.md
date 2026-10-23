@@ -80,6 +80,14 @@ beside the executable, set `BAMBU_PROFILES_ROOT` to the matching installation's
 directory containing `BBL`. An unavailable tree produces an error rather than
 using another installation's settings.
 
+## Orca cache-based installations
+
+Local Orca builds that ship a version-2 `BBL.opc` instead of machine/process/filament JSON can use the selected installation directly. Set `SLICER_TYPE=orcaslicer` and `SLICER_PATH` to that build. The package must also contain `BBL/cli_config.json`: earlier cache-only packages without it still stop before slicing. Unknown cache versions, corrupt data and unresolved model/nozzle or profile dependencies fail explicitly.
+
+The MCP validates and expands that installation's cache into its private temporary directory, then uses a separate private Orca data directory for generated User presets. It preserves custom settings and passes positional colours, bed selection and saved tower coordinates through Orca's project-level CLI options. Native extrusion mode stays enabled for these builds, allowing multi-colour wipe towers. Your installed profiles and running GUI are not changed. The remote `orca-slicer-api` route still requires its matching JSON profile mirror.
+
+Verified software: the [October 23 nightly](https://github.com/OrcaSlicer/OrcaSlicer/commit/14da40e3a7b82aa8fc88593c2cf880e66560028f), macOS universal asset `669077524`, SHA-256 `b7d0cc57d0ff5bc0663d48676939aa4ade6573301d25220d3476c3fe8f97406e`. Real isolated P1S 0.4 single- and two-colour slices preserve custom temperatures, ordered colours and tower coordinates, and their exact output passes independent file/plate inspection. Cache/profile tests also cover A1 mini, H2D, H2C, X2D and P1S 0.2. Those tests do not establish physical printing or Linux/Windows slicer behavior. Stable/alpha packages are separate artifacts; this is not a claim that every Orca version works.
+
 ## Multi-colour CLI support and version limits
 
 The CLI can crash when a project uses a filament after the first but its
@@ -139,9 +147,10 @@ Before BambuStudio, FULU, or Orca CLI slicing, the MCP:
 6. Removes every key the resolved machine preset defines, other than profile
    metadata such as `name`, `inherits`, and `compatible_printers`, from the
    process and filament configs, because the CLI applies every key in every
-   loaded file. For OrcaSlicer, the absolute-extrusion normalization
+   loaded file. For legacy JSON-based OrcaSlicer, absolute-extrusion normalization
    (`use_relative_e_distances = 0`, no per-layer `G92 E0`) is applied to the
-   machine config, which owns those keys.
+   machine config. Cache-based Orca builds preserve their native extrusion mode
+   and use the private preset-loading route described above.
 7. Writes flattened temp configs and passes those paths to
    `--load-settings` / `--load-filaments`.
 

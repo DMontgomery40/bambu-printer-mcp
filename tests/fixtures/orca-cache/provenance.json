@@ -1,0 +1,11 @@
+{
+  "upstream": "https://github.com/OrcaSlicer/OrcaSlicer",
+  "commit": "14da40e3a7b82aa8fc88593c2cf880e66560028f",
+  "asset_id": 669077524,
+  "asset_sha256": "b7d0cc57d0ff5bc0663d48676939aa4ade6573301d25220d3476c3fe8f97406e",
+  "BBL_opc_sha256": "b42a8c6f1f5300eee4933e41b13bb30493c707c3a15c7ac649481f4b8c9c2157",
+  "CLI_config_sha256": "002888d9e3692b7b4ac7fd5d574a0730717445bd0e5b26bc3d9ddf66f3eb546f",
+  "evidence": "Official Mac nightly mounted read-only. Cache compressed losslessly with gzip for tests. No user data or printer connection.",
+  "upstream_license": "AGPL-3.0",
+  "license_file": "LICENSE.txt"
+}

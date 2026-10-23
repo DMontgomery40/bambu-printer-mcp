@@ -69,7 +69,7 @@ When multiple Orca/OrcaStudio variants share one Linux install prefix, set `BAMB
 
 Before launching the CLI, the MCP resolves `inherits` and `include`, validates the selected model's CLI configuration, and prepares every filament slot. Missing references, cycles, malformed configuration, and incomplete slot mappings stop preparation. Failed auto-slicing stops before upload or print dispatch; the original unsliced project is never used as a fallback.
 
-The regression suite verifies these checks, alias routing, and generated CLI settings using isolated profile trees and fake executables. It does not establish live FULU/Orca slicing or physical printing across versions and platforms. Start with `slice_stl`, inspect the output in the slicer, and use GUI export if your build rejects CLI flags or lacks the required profiles. The existing [BambuStudio version evidence](./SLICING.md#multi-colour-cli-support-and-version-limits) remains specific to BambuStudio.
+The regression suite verifies these checks, alias routing, and generated CLI settings using isolated profile trees and fake executables. Local cache-based Orca builds also have [pinned macOS nightly software evidence and setup details](./SLICING.md#orca-cache-based-installations). That evidence does not establish live FULU slicing or physical printing across versions and platforms. Start with `slice_stl`, inspect the output in the slicer, and use GUI export if your build rejects CLI flags or lacks the required profiles. The existing [BambuStudio version evidence](./SLICING.md#multi-colour-cli-support-and-version-limits) remains specific to BambuStudio.
 
 ## Configure the bridge
 
