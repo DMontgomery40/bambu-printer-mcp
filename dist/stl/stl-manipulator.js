@@ -1241,6 +1241,7 @@ export class STLManipulator extends EventEmitter {
         const outputFileName = path.basename(stlFilePath, '.stl') + '.gcode';
         let outputFilePath = path.join(this.tempDir, outputFileName);
         let args = [];
+        const orcaTemporaryDirectories = [];
         try {
             if (progressCallback)
                 progressCallback(0, `Starting slicing with ${slicerType}...`);
@@ -1296,6 +1297,8 @@ export class STLManipulator extends EventEmitter {
                         const profilesRoot = !remote && profileSlicerType === 'orcaslicer'
                             ? await materializeOrcaProfilesRoot(selectedProfilesRoot, this.tempDir)
                             : selectedProfilesRoot;
+                        if (profilesRoot !== selectedProfilesRoot)
+                            orcaTemporaryDirectories.push(profilesRoot);
                         const rawBundle = await this.resolveBambuLikeSettingsBundle(outputBase, profileSlicerType, slicerProfile, printerPreset, bambuOptions, profilesRoot, profileSlicerType === 'orcaslicer' && profilesRoot !== selectedProfilesRoot);
                         // Resolve every BBL dependency before launching the slicer.
                         const settingsBundle = await this.maybeFlattenBundle(await this.expandProjectFilaments(stlFilePath, rawBundle), bambuOptions, profilesRoot);
@@ -1329,6 +1332,7 @@ export class STLManipulator extends EventEmitter {
                             const staged = await stageOrcaCliProfiles(profilesRoot, this.tempDir, cliBundle);
                             cliBundle = { ...cliBundle, settingsArg: staged.settingsArg, filamentPaths: staged.filamentPaths };
                             orcaExtraArgs = staged.extraArgs;
+                            orcaTemporaryDirectories.push(staged.dataDir);
                         }
                         if (remote) {
                             const [machinePath, processPath] = cliBundle.settingsArg?.split(';') ?? [];
@@ -1466,6 +1470,11 @@ export class STLManipulator extends EventEmitter {
         }
         finally {
             this.activeOperations.delete(operationId);
+            for (const directory of orcaTemporaryDirectories.reverse()) {
+                await fs.promises.rm(directory, { recursive: true, force: true }).catch(error => {
+                    console.error('Could not remove temporary Orca profiles:', error);
+                });
+            }
         }
     }
     /**

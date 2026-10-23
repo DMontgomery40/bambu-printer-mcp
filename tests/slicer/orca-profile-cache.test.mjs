@@ -79,7 +79,9 @@ const fs=require('node:fs'),path=require('node:path');
 const args=process.argv.slice(2),get=k=>args[args.indexOf(k)+1];
 const files=[...get('--load-settings').split(';'),...get('--load-filaments').split(';')];
 const configs=files.map(f=>JSON.parse(fs.readFileSync(f,'utf8')));
-fs.writeFileSync(${JSON.stringify(trace)},JSON.stringify({args,files,configs}));
+const cache=fs.readFileSync(path.join(get('--datadir'),'system/BBL.opc')).toString('base64');
+fs.writeFileSync(${JSON.stringify(trace)},JSON.stringify({args,files,configs,cache}));
+if(fs.existsSync(${JSON.stringify(path.join(root, 'fail-cli'))}))process.exit(2);
 fs.writeFileSync(path.join(get('--outputdir'),get('--export-3mf')),'fixture output');
 `, { mode: 0o755 });
   const input = path.join(root, 'cube.stl'); await fs.writeFile(input, 'solid cube\nendsolid cube');
@@ -90,7 +92,8 @@ fs.writeFileSync(path.join(get('--outputdir'),get('--export-3mf')),'fixture outp
   const previous = process.env.BAMBU_PROFILES_ROOT;
   process.env.BAMBU_PROFILES_ROOT = profiles;
   t.after(() => { if (previous === undefined) delete process.env.BAMBU_PROFILES_ROOT; else process.env.BAMBU_PROFILES_ROOT = previous; });
-  await new STLManipulator(path.join(root, 'out')).sliceSTL(input, 'orcaslicer', executable, processFile, undefined, 'Bambu Lab P1S 0.4 nozzle', {
+  const manipulator = new STLManipulator(path.join(root, 'out'));
+  await manipulator.sliceSTL(input, 'orcaslicer', executable, processFile, undefined, 'Bambu Lab P1S 0.4 nozzle', {
     bedType: 'textured_plate', loadFilaments: `${filament};${filament}`, filamentColours: ['#123456', '#abcdef'],
   });
   const result = JSON.parse(await fs.readFile(trace, 'utf8'));
@@ -100,7 +103,7 @@ fs.writeFileSync(path.join(get('--outputdir'),get('--export-3mf')),'fixture outp
   assert.equal(arg('--wipe-tower-x'), '180'); assert.equal(arg('--wipe-tower-y'), '181');
   const dataDir = arg('--datadir');
   assert.ok(dataDir.startsWith(path.join(root, 'out')));
-  assert.deepEqual(await fs.readFile(path.join(dataDir, 'system/BBL.opc')), gunzipSync(await fs.readFile(new URL('BBL.opc.gz', fixture))));
+  assert.deepEqual(Buffer.from(result.cache, 'base64'), gunzipSync(await fs.readFile(new URL('BBL.opc.gz', fixture))));
   assert.equal(result.configs[0].inherits, 'Bambu Lab P1S 0.4 nozzle');
   assert.equal(result.configs[1].use_relative_e_distances, '1');
   assert.equal(result.configs[1].layer_height, '0.16');
@@ -112,6 +115,19 @@ fs.writeFileSync(path.join(get('--outputdir'),get('--export-3mf')),'fixture outp
     assert.equal(config.from, 'User'); assert.match(config.version, /^\d+\.\d+\.\d+/);
     assert.ok(!Array.isArray(config.renamed_from));
   }
+  const assertClean = async () => assert.deepEqual(
+    (await fs.readdir(path.join(root, 'out'))).filter(name => /^orca-(?:profiles|cli)-/.test(name)), [],
+    'per-slice expanded cache and CLI data directory must not accumulate');
+  await assertClean();
+  await fs.writeFile(path.join(root, 'fail-cli'), 'fail');
+  await assert.rejects(manipulator.sliceSTL(input, 'orcaslicer', executable, undefined, undefined,
+    'Bambu Lab P1S 0.4 nozzle'), /Slicer failed/);
+  await assertClean();
+  await assert.rejects(manipulator.sliceSTL(input, 'orcaslicer', executable, undefined, undefined,
+    'Bambu Lab P1S 0.8 nonexistent'), /not found/);
+  await assertClean();
+  assert.deepEqual(await fs.readFile(path.join(profiles, 'BBL.opc')), Buffer.from(result.cache, 'base64'),
+    'cleanup must preserve the installed cache');
 });
 
 test('cached supported machines retain exact model/nozzle and per-model bed exclusions', async t => {

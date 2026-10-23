@@ -13,5 +13,6 @@ interface CliProfiles {
 /** Orca v2 cache builds resolve User presets by loaded file identity, not just inherits. */
 export declare function stageOrcaCliProfiles(profilesRoot: string, tempDir: string, bundle: CliProfiles): Promise<CliProfiles & {
     extraArgs: string[];
+    dataDir: string;
 }>;
 export {};

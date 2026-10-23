@@ -451,7 +451,7 @@ export async function stageOrcaCliProfiles(profilesRoot, tempDir, bundle) {
             output.push(staged);
         }
         return { settingsArg: output.slice(0, 2).join(';'), filamentPaths: output.slice(2),
-            extraArgs: ['--datadir', root, ...extras, '--filament-colour', colours.join(';')] };
+            extraArgs: ['--datadir', root, ...extras, '--filament-colour', colours.join(';')], dataDir: root };
     }
     catch (error) {
         await fs.rm(root, { recursive: true, force: true });

@@ -324,7 +324,7 @@ interface CliProfiles { settingsArg?: string; filamentPaths: string[]; }
 /** Orca v2 cache builds resolve User presets by loaded file identity, not just inherits. */
 export async function stageOrcaCliProfiles(
   profilesRoot: string, tempDir: string, bundle: CliProfiles
-): Promise<CliProfiles & { extraArgs: string[] }> {
+): Promise<CliProfiles & { extraArgs: string[]; dataDir: string }> {
   const settings = bundle.settingsArg?.split(';') ?? [];
   if (settings.length !== 2) fail('complete machine and process settings are required');
   const root = await fs.mkdtemp(path.join(tempDir, 'orca-cli-'));
@@ -371,7 +371,7 @@ export async function stageOrcaCliProfiles(
       output.push(staged);
     }
     return { settingsArg: output.slice(0, 2).join(';'), filamentPaths: output.slice(2),
-      extraArgs: ['--datadir', root, ...extras, '--filament-colour', colours.join(';')] };
+      extraArgs: ['--datadir', root, ...extras, '--filament-colour', colours.join(';')], dataDir: root };
   } catch (error) {
     await fs.rm(root, { recursive: true, force: true });
     throw error;
