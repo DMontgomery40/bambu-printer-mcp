@@ -836,7 +836,7 @@ export function detectProfilesRoot(slicerPath?: string, slicerType = 'bambustudi
             path.resolve(bin, '..', 'share', name, 'resources', 'profiles'),
           ]),
         ];
-    const found = candidates.find(root => existsSync(path.join(root, 'BBL', 'machine')));
+    const found = candidates.find(root => (existsSync(path.join(root, 'BBL', 'machine')) || existsSync(path.join(root, 'BBL.opc'))));
     // Do not select another installation if this executable has no profile tree.
     // flattenForCli reports the missing tree and asks for BAMBU_PROFILES_ROOT.
     return found ?? candidates[0];

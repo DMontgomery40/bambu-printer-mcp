@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.33] – 2026-10-23
+
+### Added
+- Prepare local OrcaSlicer builds that ship Bambu profiles only as version-2 `.opc` caches. Validate the exact selected cache's version, size, CRC, vendor and typed options, preserve inheritance/includes and model bed exclusions, and require that installation's retained `BBL/cli_config.json`. Expand profiles and stage canonical User preset identities in a private CLI data directory; never edit the installed slicer or use another installation's profiles. Preserve project colours, bed selection, custom settings and tower coordinates through explicit project-level CLI arguments. Keep native extrusion mode for these builds so multi-colour wipe towers work; legacy JSON-based Orca/FULU/BambuStudio preparation stays unchanged. Remote API cache mirrors remain unsupported. Remove per-slice expanded cache and CLI data directories after completion or failure.
+- Verify the official October 23 Orca nightly (`14da40e3a7b82aa8fc88593c2cf880e66560028f`, Mac asset `669077524`) with real isolated P1S 0.4 single- and two-colour slices, custom PLA temperatures, saved tower coordinates and independent selected-plate inspection. Other models have cache/profile regressions; no physical printing or other-platform runtime validation is claimed. Thanks to [bwees](https://github.com/bwees) for the upstream packaging report/fix, and the OrcaSlicer cache-format contributors credited in CONTRIBUTORS.md.
+
 ## [1.1.32] – 2026-10-20
 
 ### Changed
