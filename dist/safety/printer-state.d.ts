@@ -39,6 +39,8 @@ export interface ValidatedPrinterState {
     reportedNozzles: ReportedNozzle[];
     filaments: ReportedFilament[];
 }
+/** Nozzles whose reported diameter and type are configured settings rather than chip readings. */
+export declare function unchippedNozzles(raw: unknown): number[];
 /** The one key format for a reported entry, shared by the gate and clear_hms_errors. */
 export declare function reportedHmsKey(entry: unknown): string;
 /** Bambu's display form of a cleared-code key such as "hms:83887616:131184"; other keys unchanged. */

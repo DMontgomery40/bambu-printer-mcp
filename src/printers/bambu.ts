@@ -9,7 +9,7 @@ import { readSafe3mfArchive } from "../safety/archive.js";
 import { inspectPrintFile, type PrintFileInspection } from "../safety/print-file.js";
 import { isDualNozzleModel, normalizeModel, validateTemperature } from "../safety/limits.js";
 import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, describeAmsTrayRange } from "../ams-mapping.js";
-import { describeHmsKey, hiddenHmsKeys, hiddenHmsNotices, reportedHmsKey, validatePrinterState, manualHeatingRequirements, type PrinterStateRequirements } from "../safety/printer-state.js";
+import { describeHmsKey, hiddenHmsKeys, hiddenHmsNotices, reportedHmsKey, unchippedNozzles, validatePrinterState, manualHeatingRequirements, type PrinterStateRequirements } from "../safety/printer-state.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRemotePath, cancelPendingPrinterOperations } from "../safety/artifact.js";
 import { Client as FTPClient } from "basic-ftp";
 import { BambuPrinter } from "bambu-js";
@@ -482,8 +482,14 @@ export class BambuImplementation {
 
   async confirmHardwareAction(message: string, physicalCheck = false): Promise<void> {
     if (!physicalCheck && process.env.BAMBU_REQUIRE_CONFIRMATION === "0") return;
-    if (!this.confirm || !(await this.confirm(message))) {
-      throw new Error("Hardware safety confirmation was declined or unavailable. Use an MCP client with elicitation support. No command was sent.");
+    if (!this.confirm) {
+      throw new Error("Hardware safety confirmation is unavailable. Use an MCP client with elicitation support. No command was sent.");
+    }
+    if (!(await this.confirm(message))) {
+      throw new Error("Hardware safety confirmation was declined or cancelled in the MCP client. No command was sent. " + (physicalCheck
+        ? "This confirmation covers a physical check at the printer and always needs a person to accept it."
+        : "Some clients decline prompts automatically, for example in a non-interactive permission mode. " +
+          "A deliberately headless setup that approves jobs another way can set BAMBU_REQUIRE_CONFIRMATION=0 to skip ordinary print and heating prompts."));
     }
   }
 
@@ -500,6 +506,7 @@ export class BambuImplementation {
     const finishedJob = this.finishedJobIdentity(status);
     const cleared = this.clearedErrors.get(serial);
     const notices = hiddenHmsNotices(status?.raw, serial, inspection.model);
+    const unchipped = unchippedNozzles(status?.raw);
     await this.confirmHardwareAction(
       `Start a checked print on ${inspection.model.toUpperCase()} (${serial})? Nozzles: ${inspection.nozzleDiameters.join(", ")} mm. ` +
       `Materials: ${inspection.materials.join(", ")}. Peak targets: nozzle ${inspection.maxNozzleTemperature}°C, bed ${inspection.maxBedTemperature}°C, chamber ${inspection.maxChamberTemperature}°C. ` +
@@ -507,7 +514,9 @@ export class BambuImplementation {
       (finishedJob !== undefined ? " The printer reports FINISH: remove the previous part and debris before confirming." : "") +
       (cleared ? ` Previously cleared hardware codes: ${cleared.map(describeHmsKey).join(", ")}. Confirm their physical causes have been resolved.` : "") +
       (notices.length ? ` The printer also reports ${notices.join(", ")}, which Bambu lists for this model without text and never shows as a fault; ` +
-        `${notices.length === 1 ? "it does" : "they do"} not block printing.` : ""),
+        `${notices.length === 1 ? "it does" : "they do"} not block printing.` : "") +
+      (unchipped.length ? ` Printer ${unchipped.length === 1 ? `nozzle ${unchipped[0]} reports` : `nozzles ${unchipped.join(" and ")} report`} no identity chip, ` +
+        `so ${unchipped.length === 1 ? "its" : "their"} diameter and type are the printer's configured settings; confirm they match the installed ${unchipped.length === 1 ? "hotend" : "hotends"}.` : ""),
       finishedJob !== undefined || !!cleared
     );
     return { finishedJob, serial, model: inspection.model, notices };

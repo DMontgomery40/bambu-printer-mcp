@@ -107,6 +107,8 @@ BLENDER_MCP_TIMEOUT_MS=120000
 | `NOZZLE_DIAMETER` | `0.4` | No | Nozzle diameter in mm. Used to select the correct model/nozzle machine preset. |
 | `BAMBU_NOZZLE_TYPE` | model preset's stock nozzle | No | Installed nozzle for slicing: `stainless_steel`, `hardened_steel`, `tungsten_carbide`, or `brass`. Set it if you replaced the stock nozzle; printing requires the job's nozzle type to match the printer's report. |
 | `BAMBU_NOZZLE_VOLUME_TYPE` | `standard` | No | Installed nozzle flow type for slicing: `standard` or `high_flow`. Set `high_flow` if a High Flow nozzle is installed; printing requires the job's flow type to match the printer's report. |
+| `BAMBU_REQUIRE_CONFIRMATION` | prompts on | No | Print starts and positive heating ask a person to confirm through MCP elicitation. `0` skips those ordinary prompts for a deliberately headless setup that approves jobs another way. Clearing a finished bed and clearing hardware errors always need a person; stop and heater-off never ask. |
+| `BAMBU_CONFIRMATION_TIMEOUT_MS` | `600000` | No | How long a confirmation prompt waits for an answer (1000 to 3600000 ms). Nothing is sent to the printer when it expires. |
 | `BAMBU_DISPATCH_CHECK_MS` | `15000` | No | How long to watch the printer's reports after an MQTT print command to confirm it started or was refused (0 to 60000; 0 skips the check). |
 | `SLICER_TYPE` | `bambustudio` | No | `bambustudio`, `orcaslicer-bambulab` (FULU), `orcaslicer`, `prusaslicer`, `cura`, or `slic3r` |
 | `SLICER_PATH` | Platform default for the selected slicer | No | Full path to the slicer executable. `BAMBU_STUDIO_PATH` supplies the BambuStudio default only |
@@ -116,6 +118,8 @@ BLENDER_MCP_TIMEOUT_MS=120000
 | `BAMBU_NETWORK_BRIDGE_COMMAND` | | Bridge tools | Trusted shell command launching FULU's binary-protocol host or platform wrapper, not the slicer GUI |
 | `BAMBU_NETWORK_CONFIG_DIR` | `~/.config/bambu-printer-mcp/bambu-network` | No | Persistent bridge configuration/log directory |
 | `BAMBU_NETWORK_COUNTRY_CODE` | `US` | No | Bridge country/region setting |
+| `BAMBU_NETWORK_CERT_DIR` | `cert` inside `BAMBU_NETWORK_CONFIG_DIR` | No | Certificate folder passed to the networking plug-in. By default the server writes Bambu's public `printer.cer` and `slicer_base64.cer` there (pinned by SHA-256); LAN bridge printing needs `printer.cer`. See [FULU setup](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#configure-the-bridge) |
+| `PJARCZAK_BAMBU_PLUGIN_DIR` | | Linux bridge | Folder holding FULU's `libbambu_networking.so` and `libBambuSource.so`. On Linux the server passes their absolute paths as `PJARCZAK_BAMBU_NETWORK_SO` and `PJARCZAK_BAMBU_SOURCE_SO` unless those are set. See [FULU on Linux](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#linux) |
 | `BAMBU_NETWORK_USER_INFO` | | No | Sensitive runtime-compatible JSON for `net.change_user`; see [cloud authentication](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#cloud-authentication) |
 | `FFMPEG_PATH` | `ffmpeg` | No | Trusted executable for RTSP camera snapshots |
 | `MCP_ALLOW_EXECUTABLE_ARG` | disabled | No | Enables per-call executable overrides; normally configure executables in server environment instead |

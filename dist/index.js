@@ -573,6 +573,15 @@ function parseBooleanEnv(rawValue, fallback) {
 const DEFAULT_CONFIRMATION_TIMEOUT_MS = 600000;
 const MIN_CONFIRMATION_TIMEOUT_MS = 1000;
 const MAX_CONFIRMATION_TIMEOUT_MS = 3600000;
+// bambu_networking.hpp print errors that name a recoverable cause.
+const BAMBU_NETWORK_PRINT_ERRORS = {
+    [-4010]: "the file exceeds the 1 GB upload limit",
+    [-4020]: "FTPS upload to the printer failed",
+    [-4030]: "the networking plug-in could not send the print command to the printer over MQTT",
+};
+function describeBambuNetworkError(value) {
+    return BAMBU_NETWORK_PRINT_ERRORS[value] ? ` (${BAMBU_NETWORK_PRINT_ERRORS[value]})` : "";
+}
 /** Out-of-range values fall back to the default; Node clamps huge timer delays to 1 ms. */
 function parseConfirmationTimeout(value) {
     const parsed = Number(value?.trim() || NaN);
@@ -1234,7 +1243,11 @@ class BambuPrinterMCPServer {
                 // Firmware can report the task name instead of the uploaded filename.
                 // Bind either report to this inspected artifact for a later safe resume.
                 task_name: remoteFileName.replace(/(?:\.gcode)?\.3mf$/i, ""),
-                project_name: projectName,
+                // The plug-in names the uploaded file and the printer's job from
+                // project_name, so it carries the same unique checked name, as the
+                // native route already passes; a reused name would overwrite a stored
+                // job and break the resume binding.
+                project_name: remoteFileName.replace(/(?:\.gcode)?\.3mf$/i, ""),
                 preset_name: presetName,
                 filename: snapshot,
                 config_filename: snapshot,
@@ -1309,7 +1322,7 @@ class BambuPrinterMCPServer {
                 this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements);
                 return { ...nativeResult, autoSliced, projectName, plateIndex, useAMS, amsMapping: mapping };
             }
-            const bridgeResult = await this.bambuNetwork.callWithAgent(bridgeMethod, { client_job_id: clientJobId, params }, {
+            const bridgeOptions = {
                 ...this.bridgeOptionsFromArgs(args, "print_3mf_bambu_network"),
                 beforeDispatch: async (method) => {
                     if (method !== bridgeMethod)
@@ -1323,7 +1336,15 @@ class BambuPrinterMCPServer {
                     assertActive(); },
                 onDispatched: method => { if (method === bridgeMethod)
                     retainForDispatchedUpload(); },
-            });
+            };
+            let jobUpdates = [];
+            let bridgeResult;
+            if (isLocalBridgePrint) {
+                ({ result: bridgeResult, jobUpdates } = await this.bambuNetwork.startLocalPrint({ devId, devIp, username: String(params.username), password, useSsl: params.use_ssl_for_mqtt }, bridgeMethod, { client_job_id: clientJobId, params }, bridgeOptions, assertActive));
+            }
+            else {
+                bridgeResult = await this.bambuNetwork.callWithAgent(bridgeMethod, { client_job_id: clientJobId, params }, bridgeOptions);
+            }
             if (typeof bridgeResult === "object" && bridgeResult !== null && bridgeResult.ok === false) {
                 throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} failed: ${String(bridgeResult.error || "unknown bridge error")}`);
             }
@@ -1332,7 +1353,10 @@ class BambuPrinterMCPServer {
                 typeof bridgeResult.value === "number" &&
                 bridgeResult.value !== 0) {
                 const value = bridgeResult.value;
-                throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} returned non-zero result ${value}.`);
+                const reported = jobUpdates.filter(update => update.code !== 0 || update.msg).slice(-3)
+                    .map(update => `status ${update.status}, code ${update.code}${update.msg ? `: ${update.msg}` : ""}`).join("; ");
+                throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} returned non-zero result ${value}${describeBambuNetworkError(value)}.` +
+                    (reported ? ` Plug-in reported: ${reported}.` : ""));
             }
             assertActive();
             this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements);

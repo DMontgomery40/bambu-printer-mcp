@@ -112,6 +112,18 @@ const PROFILE_METADATA_KEYS = new Set([
     'name', 'type', 'from', 'inherits', 'instantiation', 'setting_id', 'version', 'is_custom_defined',
     'compatible_printers', 'compatible_printers_condition', 'compatible_prints', 'compatible_prints_condition',
 ]);
+/**
+ * Why the slicer process failed. A crash often leaves stderr empty (FULU
+ * OrcaSlicer-bambulab v1.0.0 segfaults with no output), so name the signal or
+ * exit code and fall back to the end of stdout.
+ */
+function describeSlicerFailure(error, stdout, stderr) {
+    const status = typeof error.signal === "string" && error.signal
+        ? `crashed with ${error.signal}`
+        : typeof error.code === "number" ? `exited with code ${error.code}` : "failed";
+    const output = (stderr.trim() || stdout.trim()).split("\n").slice(-20).join("\n");
+    return `Slicer failed: the slicer ${status}. ${error.message.trim()}${output ? `\nSlicer output: ${output}` : ""}`;
+}
 export class STLManipulator extends EventEmitter {
     constructor(tempDir = path.join(process.cwd(), 'temp')) {
         super();
@@ -1411,7 +1423,7 @@ export class STLManipulator extends EventEmitter {
                         if (error) {
                             console.error(`Slicer Error: ${error.message}`);
                             console.error(`Slicer Stderr: ${stderr}`);
-                            reject(new Error(`Slicer failed: ${error.message}. Stderr: ${stderr}`));
+                            reject(new Error(describeSlicerFailure(error, stdout, stderr)));
                         }
                         else {
                             console.error(`Slicer Stdout: ${stdout}`);

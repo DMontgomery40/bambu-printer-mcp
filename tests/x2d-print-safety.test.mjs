@@ -54,8 +54,10 @@ test("X2D MCP print requests stop before slicing, status, uploads, and connectio
   const { file: slicedFile } = await fixture(t);
   const effectsFile = path.join(dir, "effects.jsonl");
   const bridgeFile = path.join(dir, "bridge.jsonl");
+  const sessionFile = path.join(dir, "local-session.jsonl");
   await fs.writeFile(effectsFile, "");
   await fs.writeFile(bridgeFile, "");
+  await fs.writeFile(sessionFile, "");
   const preload = `
     import { appendFileSync } from 'node:fs';
     import { BambuImplementation } from ${JSON.stringify(new URL("../dist/printers/bambu.js", import.meta.url).href)};
@@ -74,6 +76,10 @@ test("X2D MCP print requests stop before slicing, status, uploads, and connectio
     BambuNetworkBridge.prototype.callWithAgent = async (method, payload) => {
       appendFileSync(${JSON.stringify(bridgeFile)}, JSON.stringify({ method, payload }) + '\\n');
       return { ok: true, value: 0 };
+    };
+    BambuNetworkBridge.prototype.startLocalPrint = async function (printer, method, payload, options) {
+      appendFileSync(${JSON.stringify(sessionFile)}, JSON.stringify({ ...printer, password: printer.password ? '[set]' : '' }) + '\\n');
+      return { result: await this.callWithAgent(method, payload, options), jobUpdates: [] };
     };
     BambuImplementation.prototype.getSafetyStatus = async (_host, serial) => ({
       connected:true, serial, model:'x2d', status:'IDLE',
@@ -133,6 +139,9 @@ test("X2D MCP print requests stop before slicing, status, uploads, and connectio
     assert.notEqual(call.payload.params.filename, slicedFile, "bridge must receive a checked private snapshot");
     assert.equal(path.basename(call.payload.params.filename), path.basename(slicedFile));
   }
+  const sessions = (await fs.readFile(sessionFile, "utf8")).trim().split("\n").map(JSON.parse);
+  assert.deepEqual(sessions, Array(2).fill({ devId: "20PTEST", devIp: "127.0.0.1", username: "bblp", password: "[set]", useSsl: true }),
+    "each LAN bridge print opens the plug-in's own session for the checked printer");
   assert.equal(await fs.readFile(effectsFile, "utf8"), "", "bridge routing must not use the direct printer transport");
 });
 
@@ -141,8 +150,10 @@ test("X2D MCP print requests stop before slicing, status, uploads, and connectio
 test("X2D bridge prints encode verified external spools using the official virtual-slot contract", async (t) => {
   const { dir, file: slicedFile } = await fixture(t);
   const bridgeFile = path.join(dir, "bridge.jsonl");
+  const sessionFile = path.join(dir, "local-session.jsonl");
   const virSlotFile = path.join(dir, "vir_slot.json");
   await fs.writeFile(bridgeFile, "");
+  await fs.writeFile(sessionFile, "");
   await fs.writeFile(virSlotFile, JSON.stringify([{ id: "254", tray_type: "PLA" }, { id: "255", tray_type: "PLA" }]));
   const preload = `
     import { appendFileSync, readFileSync } from 'node:fs';
@@ -154,6 +165,10 @@ test("X2D bridge prints encode verified external spools using the official virtu
     BambuNetworkBridge.prototype.callWithAgent = async (method, payload) => {
       appendFileSync(${JSON.stringify(bridgeFile)}, JSON.stringify({ method, payload }) + '\\n');
       return { ok: true, value: 0 };
+    };
+    BambuNetworkBridge.prototype.startLocalPrint = async function (printer, method, payload, options) {
+      appendFileSync(${JSON.stringify(sessionFile)}, JSON.stringify({ ...printer, password: printer.password ? '[set]' : '' }) + '\\n');
+      return { result: await this.callWithAgent(method, payload, options), jobUpdates: [] };
     };
     BambuImplementation.prototype.getSafetyStatus = async (_host, serial) => ({
       connected:true, serial, model:'x2d', status:'IDLE',

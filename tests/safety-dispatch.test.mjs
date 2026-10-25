@@ -721,7 +721,13 @@ test("bed clearance cannot authorize a different finished job", async (t) => {
 test("manual positive heating requires confirmation but heater-off does not", async () => {
   const { printer, events } = isolatedPrinter();
   printer.confirm = async () => false;
-  await assert.rejects(printer.setTemperature(host, serial, token, "nozzle", 220, "p1s", "PLA"), /confirmation.*declined/i);
+  await assert.rejects(printer.setTemperature(host, serial, token, "nozzle", 220, "p1s", "PLA"), error => {
+    // Issue #67: a client that supports elicitation can still decline; do not send people looking for another client.
+    assert.match(error.message, /confirmation was declined or cancelled/i);
+    assert.match(error.message, /BAMBU_REQUIRE_CONFIRMATION=0/);
+    assert.doesNotMatch(error.message, /Use an MCP client with elicitation support/);
+    return true;
+  });
   assertNoDispatch(events);
   await printer.setTemperature(host, serial, token, "nozzle", 0);
   assert.match(events.find(event => event.action === "publish").payload.print.param, /M104 S0/);
@@ -731,7 +737,12 @@ test("hardware errors cannot be cleared without human confirmation", async () =>
   const { printer, events } = isolatedPrinter(safetyStatus({ print_error: 123, hms: [{ attr: 1, code: 0x20001 }] }));
   const prompts = [];
   printer.confirm = async message => { prompts.push(message); return false; };
-  await assert.rejects(printer.clearHmsErrors(host, serial, token), /confirmation.*declined/i);
+  await assert.rejects(printer.clearHmsErrors(host, serial, token), error => {
+    assert.match(error.message, /confirmation was declined or cancelled/i);
+    assert.match(error.message, /always needs a person/);
+    assert.doesNotMatch(error.message, /BAMBU_REQUIRE_CONFIRMATION/, "the headless opt-out does not apply to physical checks");
+    return true;
+  });
   assert.match(prompts[0], /print_error:123.*HMS 0000-0001-0002-0001|HMS 0000-0001-0002-0001.*print_error:123/);
   assertNoDispatch(events);
 });
@@ -758,6 +769,13 @@ test("the print preflight names hidden HMS notices that do not block printing", 
   assert.match(prompts[0], /The printer also reports HMS 0500-0600-0002-0070, which Bambu lists for this model without text and never shows as a fault; it does not block printing/);
   await printer.confirmPrintPreflight("20PTEST", { raw: { gcode_state: "IDLE", hms: [] } }, inspection);
   assert.doesNotMatch(prompts[1], /also reports/);
+  assert.doesNotMatch(prompts[1], /identity chip/);
+  const unchipped = { device: { nozzle: { info: [{ id: 0, diameter: 0.4, type: "HS01", stat: 1, sn: "N/A" }, { id: 1, diameter: 0.4, type: "HS01", stat: 1, sn: "N/A" }] } } };
+  await printer.confirmPrintPreflight("094TEST", { raw: { gcode_state: "IDLE", hms: [], ...unchipped } }, { ...inspection, model: "h2d" });
+  assert.match(prompts[2], /Printer nozzles 0 and 1 report no identity chip, so their diameter and type are the printer's configured settings; confirm they match the installed hotends\./);
+  unchipped.device.nozzle.info[1].sn = "B01";
+  await printer.confirmPrintPreflight("094TEST", { raw: { gcode_state: "IDLE", hms: [], ...unchipped } }, { ...inspection, model: "h2d" });
+  assert.match(prompts[3], /Printer nozzle 0 reports no identity chip, so its diameter and type are the printer's configured settings; confirm they match the installed hotend\./);
 });
 
 for (const [stage, appearsOnRead] of [["confirmation recheck", 2], ["dispatch recheck", 3]]) {

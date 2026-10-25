@@ -25,6 +25,8 @@ import {
 import { UNPINNED_PLUGIN_ENV, createFakeNativeHome } from "./fixtures/native-home.mjs";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF } from "../dist/3mf_parser.js";
 import { BambuImplementation } from "../dist/printers/bambu.js";
+import { BambuNetworkBridge, LOCAL_PRINT_TIMING, linuxPluginLibraryEnv } from "../dist/bambu-network-bridge.js";
+import { BAMBU_NETWORK_CERTIFICATES } from "../dist/bambu-network-certs.js";
 import { STLManipulator } from "../dist/stl/stl-manipulator.js";
 
 // Mocked printers never report a started job; tests that cover it opt back in.
@@ -1364,6 +1366,186 @@ test("BambuNetwork print rejects invalid ams_slots values before bridge payload"
   const emptyMappingErrorText = emptyMappingResult.content?.[0]?.text || "";
   assert.match(emptyMappingErrorText, /ams_slots\[0\].*integer/i);
   assert.doesNotMatch(emptyMappingErrorText, /BAMBU_NETWORK_BRIDGE_COMMAND|FULU BambuNetwork bridge/i);
+});
+
+// FULU BambuNetwork bridge process behaviour, through a real child process.
+// The fake host reproduces what the real v1.0.0 host and plug-in did on a P1S;
+// the opt-in test below runs the real host when FULU_HOST_DIR is configured.
+const FAKE_FULU_HOST = path.join(__dirname, "fixtures", "fake-fulu-host.mjs");
+const FAST_LOCAL_PRINT = Object.freeze({ connectTimeoutMs: 2000, pollMs: 10, settleMs: 20, retryWaitMs: 20 });
+const LOCAL_PRINTER = Object.freeze({ devId: "01PTEST", devIp: "192.0.2.10", username: "bblp", password: "SECRET", useSsl: true });
+const shellQuoteArg = value => `'${String(value).replace(/'/g, "'\\''")}'`;
+
+async function fakeFuluBridge(t, env = {}, { wrapped = false } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-fulu-"));
+  const logPath = path.join(dir, "host.jsonl");
+  let command = `${shellQuoteArg(process.execPath)} ${shellQuoteArg(FAKE_FULU_HOST)}`;
+  if (wrapped) {
+    const wrapper = path.join(dir, "fulu-host-wrapper.sh");
+    fs.writeFileSync(wrapper, `#!/bin/sh\n${command} "$@" | cat\n`, { mode: 0o755 });
+    command = shellQuoteArg(wrapper);
+  }
+  const saved = {};
+  const vars = { BAMBU_NETWORK_BRIDGE_COMMAND: command, BAMBU_NETWORK_CONFIG_DIR: path.join(dir, "config"), FAKE_FULU_LOG: logPath, PJARCZAK_BAMBU_PLUGIN_DIR: path.join(dir, "plugins"), BAMBU_NETWORK_USER_INFO: undefined, BAMBU_NETWORK_CERT_DIR: undefined, PJARCZAK_BAMBU_NETWORK_SO: undefined, PJARCZAK_BAMBU_SOURCE_SO: undefined, ...env };
+  for (const [name, value] of Object.entries(vars)) {
+    saved[name] = process.env[name];
+    if (value === undefined) delete process.env[name]; else process.env[name] = value;
+  }
+  const bridge = new BambuNetworkBridge();
+  t.after(async () => {
+    await bridge.stop();
+    for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const calls = () => fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : [];
+  return { bridge, dir, calls, methods: () => calls().filter(entry => entry.method).map(entry => entry.method) };
+}
+
+test("FULU host plug-in library paths are named in PJARCZAK_BAMBU_PLUGIN_DIR on Linux only", () => {
+  assert.deepEqual(linuxPluginLibraryEnv({ PJARCZAK_BAMBU_PLUGIN_DIR: "/opt/fulu/plugins" }, "linux"), {
+    PJARCZAK_BAMBU_NETWORK_SO: path.resolve("/opt/fulu/plugins", "libbambu_networking.so"),
+    PJARCZAK_BAMBU_SOURCE_SO: path.resolve("/opt/fulu/plugins", "libBambuSource.so"),
+  });
+  assert.deepEqual(linuxPluginLibraryEnv({ PJARCZAK_BAMBU_PLUGIN_DIR: "plugins" }, "linux").PJARCZAK_BAMBU_NETWORK_SO, path.resolve("plugins", "libbambu_networking.so"));
+  assert.deepEqual(linuxPluginLibraryEnv({ PJARCZAK_BAMBU_PLUGIN_DIR: "/opt/fulu/plugins", PJARCZAK_BAMBU_NETWORK_SO: "/custom/net.so" }, "linux"), {
+    PJARCZAK_BAMBU_SOURCE_SO: path.resolve("/opt/fulu/plugins", "libBambuSource.so"),
+  });
+  // macOS wrappers run the host in a Linux guest that may not see host paths.
+  assert.deepEqual(linuxPluginLibraryEnv({ PJARCZAK_BAMBU_PLUGIN_DIR: "/opt/fulu/plugins" }, "darwin"), {});
+  assert.deepEqual(linuxPluginLibraryEnv({}, "linux"), {});
+});
+
+test("FULU host exit 101 names the socket-stdout bug and its wrapper", async (t) => {
+  const { bridge } = await fakeFuluBridge(t, { FAKE_FULU_EXIT_CODE: "101" });
+  await assert.rejects(bridge.ensureAgent(), error => {
+    assert.match(error.message, /exited \(code=101/);
+    assert.match(error.message, /could not reopen its stdout/);
+    assert.match(error.message, /OrcaSlicer-bambulab\/issues\/50/);
+    assert.match(error.message, /docs\/FULU\.md#linux/);
+    return true;
+  });
+});
+
+test("a FULU host that cannot open its networking library stops before agent creation with the fix", async (t) => {
+  const { bridge, methods } = await fakeFuluBridge(t, { PJARCZAK_BAMBU_PLUGIN_DIR: undefined });
+  await assert.rejects(bridge.ensureAgent(), /could not open its networking library \(validate failed: file open failed\)\. Set PJARCZAK_BAMBU_PLUGIN_DIR/);
+  assert.deepEqual(methods(), ["bridge.handshake"]);
+});
+
+test("FULU agent setup passes Bambu's pinned certificates, works through a cat wrapper and stops cleanly", async (t) => {
+  const { bridge, dir, calls } = await fakeFuluBridge(t, {}, { wrapped: true });
+  const { agent } = await bridge.ensureAgent();
+  assert.equal(agent, 1);
+  const entries = calls();
+  const methods = entries.filter(entry => entry.method).map(entry => entry.method);
+  assert.ok(methods.indexOf("net.set_cert_file") > methods.indexOf("net.init_log"));
+  assert.ok(methods.indexOf("net.set_cert_file") < methods.indexOf("net.start"));
+  for (const callback of ["net.set_queue_on_main_fn", "net.set_on_local_connect_fn"]) assert.ok(methods.includes(callback), callback);
+  const certFolder = entries.find(entry => entry.method === "net.set_cert_file").payload;
+  assert.deepEqual({ folder: certFolder.folder, filename: certFolder.filename }, { folder: path.join(dir, "config", "cert"), filename: "slicer_base64.cer" });
+  for (const [name, { sha256 }] of Object.entries(BAMBU_NETWORK_CERTIFICATES)) {
+    assert.equal(createHash("sha256").update(fs.readFileSync(path.join(certFolder.folder, name))).digest("hex"), sha256, name);
+  }
+  if (process.platform === "linux") {
+    assert.deepEqual(entries[0].env, {
+      PJARCZAK_BAMBU_PLUGIN_DIR: path.join(dir, "plugins"),
+      PJARCZAK_BAMBU_NETWORK_SO: path.join(dir, "plugins", "libbambu_networking.so"),
+      PJARCZAK_BAMBU_SOURCE_SO: path.join(dir, "plugins", "libBambuSource.so"),
+    });
+  }
+  const pid = bridge.getStatus().pid;
+  const started = Date.now();
+  await bridge.stop();
+  assert.ok(Date.now() - started < 1500, "stop must not wait for the SIGKILL fallback");
+  await sleep(100);
+  assert.equal(fs.readFileSync(path.join(dir, "host.jsonl"), "utf8").includes('"start":true'), true);
+  assert.throws(() => process.kill(pid, 0), /ESRCH/, "the wrapper shell must not outlive stop()");
+});
+
+test("bridge status reports the certificate folder and keeps macOS discovery hints on macOS", async (t) => {
+  const { bridge, dir } = await fakeFuluBridge(t);
+  const status = bridge.getStatus();
+  assert.equal(status.runtime.certDir, path.join(dir, "config", "cert"));
+  if (process.platform === "darwin") assert.equal(typeof status.runtime.macosRuntimeDir, "string");
+  else assert.equal(status.runtime.macosRuntimeDir, undefined, "macOS paths are not Linux or Windows requirements");
+  if (process.platform === "linux") assert.equal(status.runtime.pluginLibraries.PJARCZAK_BAMBU_NETWORK_SO, path.join(dir, "plugins", "libbambu_networking.so"));
+  assert.equal(status.runtime.suggestedMacCommand, undefined, "a wrapper command is only suggested when the wrapper exists");
+});
+
+test("FULU LAN prints open the plug-in's own session and install the printer certificate before printing", async (t) => {
+  const { bridge, methods } = await fakeFuluBridge(t);
+  const { result, jobUpdates } = await bridge.startLocalPrint(LOCAL_PRINTER, "net.start_local_print", { client_job_id: 7, params: { dev_id: "01PTEST" } }, {}, () => {}, FAST_LOCAL_PRINT);
+  assert.deepEqual(result, { ok: true, value: 0, job_id: 7 });
+  assert.deepEqual(jobUpdates, [{ status: 1, code: 100, msg: "0.0M/0.0M" }]);
+  const order = methods();
+  const at = method => order.indexOf(method);
+  assert.ok(at("net.set_cert_file") < at("net.connect_printer"));
+  assert.ok(at("net.connect_printer") < at("net.install_device_cert"));
+  assert.ok(at("net.install_device_cert") < order.indexOf("net.send_message_to_printer"));
+  assert.ok(order.indexOf("net.send_message_to_printer") < at("net.start_local_print"));
+  assert.equal(order.filter(method => method === "net.start_local_print").length, 1);
+  assert.equal(order.at(-2), "net.disconnect_printer", "the session closes after the print");
+});
+
+test("a synchronous -4030 is retried once after the certificate exchange and then reported", async (t) => {
+  const once = await fakeFuluBridge(t, { FAKE_FULU_PUBLISH_FAILURES: "1" });
+  const recovered = await once.bridge.startLocalPrint(LOCAL_PRINTER, "net.start_local_print", { client_job_id: 8, params: {} }, {}, () => {}, FAST_LOCAL_PRINT);
+  assert.equal(recovered.result.value, 0);
+  assert.equal(once.methods().filter(method => method === "net.start_local_print").length, 2);
+
+  const twice = await fakeFuluBridge(t, { FAKE_FULU_PUBLISH_FAILURES: "2" });
+  const dispatched = [];
+  const failed = await twice.bridge.startLocalPrint(LOCAL_PRINTER, "net.start_local_print", { client_job_id: 9, params: {} }, {
+    beforeDispatch: async method => { if (method === "net.start_local_print") dispatched.push(method); },
+  }, () => {}, FAST_LOCAL_PRINT);
+  assert.equal(failed.result.value, -4030);
+  assert.equal(twice.methods().filter(method => method === "net.start_local_print").length, 2, "never more than one retry");
+  assert.equal(dispatched.length, 2, "each attempt passes the caller's fresh pre-dispatch check");
+  assert.deepEqual(failed.jobUpdates.filter(update => update.code === -4030).map(update => update.msg), ["send msg failed", "send msg failed"]);
+});
+
+test("a LAN printer the plug-in cannot verify stops before any print or disconnect", async (t) => {
+  const emptyCertDir = fs.mkdtempSync(path.join(os.tmpdir(), "fulu-no-printer-cert-"));
+  t.after(() => fs.rmSync(emptyCertDir, { recursive: true, force: true }));
+  const { bridge, methods } = await fakeFuluBridge(t, { BAMBU_NETWORK_CERT_DIR: emptyCertDir });
+  await assert.rejects(
+    bridge.startLocalPrint(LOCAL_PRINTER, "net.start_local_print", { client_job_id: 10, params: {} }, {}, () => {}, FAST_LOCAL_PRINT),
+    /LAN connection to printer 01PTEST at 192\.0\.2\.10 failed\. .*No print command was sent/
+  );
+  assert.equal(methods().includes("net.start_local_print"), false);
+  assert.equal(methods().includes("net.disconnect_printer"), false, "the real host crashes when disconnecting a session that never connected");
+});
+
+test("cancellation during a LAN session stops before the print command", async (t) => {
+  const { bridge, methods } = await fakeFuluBridge(t);
+  let active = true;
+  await assert.rejects(bridge.startLocalPrint(LOCAL_PRINTER, "net.start_local_print", { client_job_id: 11, params: {} }, {
+    beforeDispatch: async method => { if (method === "net.send_message_to_printer") active = false; },
+  }, () => { if (!active) throw new Error("cancelled by stop"); }, FAST_LOCAL_PRINT), /cancelled by stop/);
+  assert.equal(methods().includes("net.start_local_print"), false);
+  assert.ok(methods().includes("net.disconnect_printer"), "an established session is still closed");
+});
+
+// Opt-in: the real FULU host and plug-in. FULU_HOST_DIR holds pjarczak_bambu_linux_host
+// (x86-64 Linux), FULU_PLUGIN_DIR the 02.05.02.5x plug-in. With FULU_TEST_PRINTER_HOST,
+// FULU_TEST_PRINTER_SERIAL and FULU_TEST_PRINTER_ACCESS_CODE it also opens and closes a
+// real LAN session. It never prints.
+const realFulu = process.env.FULU_HOST_DIR && process.env.FULU_PLUGIN_DIR && process.platform === "linux" && process.arch === "x64";
+test("real FULU host: agent setup and LAN session through the documented cat wrapper", { skip: !realFulu && "set FULU_HOST_DIR and FULU_PLUGIN_DIR on x86-64 Linux" }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "real-fulu-"));
+  const wrapper = path.join(dir, "fulu-host-wrapper.sh");
+  fs.writeFileSync(wrapper, `#!/bin/sh\n${shellQuoteArg(path.join(process.env.FULU_HOST_DIR, "pjarczak_bambu_linux_host"))} "$@" | cat\n`, { mode: 0o755 });
+  const { bridge } = await fakeFuluBridge(t, {
+    BAMBU_NETWORK_BRIDGE_COMMAND: shellQuoteArg(wrapper), PJARCZAK_BAMBU_PLUGIN_DIR: process.env.FULU_PLUGIN_DIR,
+    BAMBU_NETWORK_CONFIG_DIR: path.join(dir, "config"), FAKE_FULU_LOG: undefined,
+  });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const { handshake } = await bridge.ensureAgent();
+  assert.equal(handshake.network_loaded, true, JSON.stringify(handshake));
+  const { FULU_TEST_PRINTER_HOST: devIp, FULU_TEST_PRINTER_SERIAL: devId, FULU_TEST_PRINTER_ACCESS_CODE: password } = process.env;
+  if (!devIp || !devId || !password) return t.diagnostic("no FULU_TEST_PRINTER_* configured; skipped the LAN session");
+  const connected = await bridge.withLocalSession({ devId, devIp, username: "bblp", password, useSsl: true }, {}, () => {}, LOCAL_PRINT_TIMING, async () => "connected");
+  assert.equal(connected, "connected");
 });
 
 test("sliceSTL allows slicer executables resolved from PATH", async (t) => {
