@@ -1115,6 +1115,8 @@ Slice an STL or 3MF file using an external slicer and return the path to the out
 
 **FULU/Orca CLI safety:** from 1.1.11, these backends require the exact model/nozzle preset from the selected installation and stop on profile preparation failures. A process override cannot bypass that gate. See [configuration and validation limits](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#fulu-and-orca-cli-safety-limit).
 
+**OrcaSlicer CLI transforms:** OrcaSlicer 2.4.2's CLI segfaults when `scale` or `rotate_x`/`rotate_y` moves an object below the bed while arranging, which is the default for STL input. For STL input with `orcaslicer` or `orcaslicer-bambulab`, the server applies `scale` and the rotations to a copy of the mesh in the CLI's order and leaves those flags out. For 3MF input it refuses `scale` above 1, `rotate_x` or `rotate_y` together with `arrange: true`. `repetitions` copies an STL with Orca's `--clone-objects`. `clone_objects` takes one total count, because the CLI counts copies per loaded file. With `arrange: false`, an STL that is not already on the plate fails to slice. A failure names the slicer's own reason.
+
 `slicer_path` and `slicer_profile` fall back to the `SLICER_PATH` and `SLICER_PROFILE` environment variables when omitted. Per-call `slicer_path` overrides require `MCP_ALLOW_EXECUTABLE_ARG=1`.
 
 You can provide either `template_3mf_path` or `template_name` when you want to slice from a saved template. `template_name` resolves through the local template registry directory configured for the server.

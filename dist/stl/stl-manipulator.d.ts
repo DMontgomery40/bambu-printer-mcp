@@ -115,6 +115,12 @@ export declare class STLManipulator extends EventEmitter {
      */
     scaleSTL(stlFilePath: string, scaleFactors: number | [number, number, number], progressCallback?: ProgressCallback): Promise<string>;
     /**
+     * Apply slice_stl's scale and rotations to a copy of the mesh, in the order
+     * the Bambu-style CLIs apply --scale, --rotate, --rotate-x and --rotate-y,
+     * about the model's centre. The slicer then places the result on the plate.
+     */
+    private transformMeshForCli;
+    /**
      * Rotate an STL model around specific axes
      */
     rotateSTL(stlFilePath: string, rotationAngles: [number, number, number], // [x, y, z] in degrees

@@ -745,3 +745,91 @@ test('multi-nozzle machines get a prime tower every nozzle can reach', async t =
   const noTower = await flattenForCli({ ...opts, sourceProfiles: { process: { name: 'No tower', inherits: 'SAFETY process', enable_prime_tower: '0' } } });
   assert.deepEqual(await tower(noTower), [undefined, undefined]);
 });
+
+// OrcaSlicer 2.4.2's CLI segfaults (PartPlate::check_outside needs the GUI Plater) when
+// --scale or --rotate-x/-y sink an object below the bed while arranging, and rejects
+// --repetitions for one STL; matrix-tested on Linux and macOS builds.
+const SAMPLE_CUBE = new URL('../../test/sample_cube.stl', import.meta.url);
+function stlBounds(buffer) {
+  const points = [];
+  if (buffer.subarray(0, 5).toString('ascii').toLowerCase() === 'solid' && buffer.includes('facet')) {
+    for (const match of buffer.toString('ascii').matchAll(/vertex\s+(\S+)\s+(\S+)\s+(\S+)/g)) points.push(match.slice(1, 4).map(Number));
+  } else {
+    for (let i = 0, count = buffer.readUInt32LE(80); i < count; i++) {
+      for (let v = 0; v < 3; v++) points.push([0, 1, 2].map(axis => buffer.readFloatLE(84 + i * 50 + 12 + v * 12 + axis * 4)));
+    }
+  }
+  return [0, 1, 2].map(axis => Math.max(...points.map(p => p[axis])) - Math.min(...points.map(p => p[axis])));
+}
+
+for (const slicerType of ['orcaslicer', 'orcaslicer-bambulab']) {
+  test(`${slicerType} applies STL scale and tilts to the mesh instead of the crashing CLI flags`, async t => {
+    const f = await fixture(t, slicerType);
+    await fs.copyFile(SAMPLE_CUBE, f.stl);
+    await f.slice({ scale: 4, rotate: 90, rotateX: 90, arrange: true, repetitions: 3 });
+    const args = await f.args();
+    for (const flag of ['--scale', '--rotate', '--rotate-x', '--rotate-y', '--repetitions']) assert.equal(args.includes(flag), false, flag);
+    assert.deepEqual(args.slice(args.indexOf('--clone-objects'), args.indexOf('--clone-objects') + 2), ['--clone-objects', '3']);
+    const input = args.at(-1);
+    assert.notEqual(input, f.stl, 'the original STL is not modified');
+    assert.deepEqual(stlBounds(await fs.readFile(input)).map(size => Math.round(size * 1000) / 1000), [40, 40, 40]);
+    assert.deepEqual(stlBounds(await fs.readFile(f.stl)).map(size => Math.round(size)), [10, 10, 10]);
+
+    // A Z rotation alone is safe and keeps its flag.
+    await f.slice({ rotate: 45 });
+    const zOnly = await f.args();
+    assert.equal(zOnly.at(-1), f.stl);
+    assert.deepEqual(zOnly.slice(zOnly.indexOf('--rotate'), zOnly.indexOf('--rotate') + 2), ['--rotate', '45']);
+  });
+
+  test(`${slicerType} refuses 3MF transforms that crash its CLI while arranging and conflicting STL copies`, async t => {
+    const f = await fixture(t, slicerType);
+    const project = await f.project(1);
+    for (const options of [{ scale: 2, arrange: true }, { rotateX: 45, arrange: true }, { rotateY: 30, arrange: true }]) {
+      await assert.rejects(f.slice(options, undefined, project), /OrcaSlicer's CLI crashes when scale above 1, rotate_x or rotate_y moves a 3MF object below the bed while arranging/);
+      await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+    }
+    await fs.copyFile(SAMPLE_CUBE, f.stl);
+    await assert.rejects(f.slice({ repetitions: 2, cloneObjects: '2' }), /either repetitions or clone_objects/);
+    await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+    // Without arrange the 3MF keeps the CLI flags and its own --repetitions.
+    await f.slice({ scale: 2, arrange: false, repetitions: 2 }, undefined, project);
+    const args = await f.args();
+    assert.deepEqual(args.slice(args.indexOf('--scale'), args.indexOf('--scale') + 2), ['--scale', '2']);
+    assert.deepEqual(args.slice(args.indexOf('--repetitions'), args.indexOf('--repetitions') + 2), ['--repetitions', '2']);
+  });
+}
+
+test('BambuStudio keeps its transform and repetition flags unchanged', async t => {
+  const f = await fixture(t, 'bambustudio');
+  await f.slice({ scale: 4, rotate: 90, rotateX: 90, rotateY: 30, arrange: true, repetitions: 3 });
+  const args = await f.args();
+  for (const [flag, value] of [['--scale', '4'], ['--rotate', '90'], ['--rotate-x', '90'], ['--rotate-y', '30'], ['--repetitions', '3']]) {
+    assert.deepEqual(args.slice(args.indexOf(flag), args.indexOf(flag) + 2), [flag, value]);
+  }
+  assert.equal(args.at(-1), f.stl);
+});
+
+test('a Bambu-style CLI failure names its reason from a fresh result.json or its exit code', async t => {
+  const f = await fixture(t, 'orcaslicer');
+  await fs.copyFile(SAMPLE_CUBE, f.stl);
+  const failing = path.join(f.root, 'failing-orca');
+  await fs.writeFile(failing, `#!${process.execPath}
+const fs = require('fs'); const path = require('path'); const args = process.argv.slice(2);
+if (process.env.FAKE_RESULT_JSON) fs.writeFileSync(path.join(args[args.indexOf('--outputdir') + 1], 'result.json'), process.env.FAKE_RESULT_JSON);
+console.error('Errors'); process.exit(206);
+`, { mode: 0o755 });
+  const manipulator = new STLManipulator(path.join(f.root, 'out'));
+  const slice = () => manipulator.sliceSTL(f.stl, 'orcaslicer', failing, undefined, undefined, 'Bambu Lab SAFETY 0.4 nozzle', {});
+  t.after(() => { delete process.env.FAKE_RESULT_JSON; });
+
+  process.env.FAKE_RESULT_JSON = JSON.stringify({ return_code: -52, error_string: 'Some objects are located over the boundary of the heated bed.' });
+  await assert.rejects(slice(), /the slicer exited with code 206 \(Some objects are located over the boundary of the heated bed\. \[-52\]\)/);
+
+  // macOS writes no result.json; an old one from an earlier run must not be reused.
+  delete process.env.FAKE_RESULT_JSON;
+  const stale = path.join(f.root, 'out', 'result.json');
+  const old = new Date(Date.now() - 60_000);
+  await fs.utimes(stale, old, old);
+  await assert.rejects(slice(), /the slicer exited with code 206 \(a plate is empty or has no object fully inside it; arrange the model or place it on the plate \[-50\]\)/);
+});
