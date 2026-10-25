@@ -184,6 +184,11 @@ export class BambuNetworkBridge {
         this.recentLogs = [];
         /** Whether the host accepted the certificate folder and callbacks a LAN session needs. */
         this.localSessionReady = false;
+        /**
+         * The plug-in holds one LAN printer connection and the host one event queue,
+         * so LAN sessions run one at a time, as Bambu Studio connects one printer.
+         */
+        this.localSessionTail = Promise.resolve();
     }
     resolveBridgeCommand(override) {
         return (trimEnv(override) ||
@@ -349,6 +354,18 @@ export class BambuNetworkBridge {
      * after `run`, so printer reports stop accumulating in the host's queue.
      */
     async withLocalSession(printer, options, assertActive, timing, run) {
+        const previous = this.localSessionTail;
+        let release;
+        this.localSessionTail = new Promise(resolve => { release = resolve; });
+        try {
+            await previous;
+            return await this.runLocalSession(printer, options, assertActive, timing, run);
+        }
+        finally {
+            release();
+        }
+    }
+    async runLocalSession(printer, options, assertActive, timing, run) {
         const jobUpdates = [];
         const installCertificate = async () => {
             await this.callWithAgent("net.install_device_cert", { dev_id: printer.devId, lan_only: true }, options);

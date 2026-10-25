@@ -1376,6 +1376,13 @@ const FAST_LOCAL_PRINT = Object.freeze({ connectTimeoutMs: 2000, pollMs: 10, set
 const LOCAL_PRINTER = Object.freeze({ devId: "01PTEST", devIp: "192.0.2.10", username: "bblp", password: "SECRET", useSsl: true });
 const shellQuoteArg = value => `'${String(value).replace(/'/g, "'\\''")}'`;
 
+// Every variable the fake bridge touches, restored once per test so several bridges in one test
+// cannot restore each other's values out of order.
+const FAKE_FULU_ENV = ["BAMBU_NETWORK_BRIDGE_COMMAND", "BAMBU_NETWORK_CONFIG_DIR", "FAKE_FULU_LOG", "PJARCZAK_BAMBU_PLUGIN_DIR",
+  "BAMBU_NETWORK_USER_INFO", "BAMBU_NETWORK_CERT_DIR", "PJARCZAK_BAMBU_NETWORK_SO", "PJARCZAK_BAMBU_SOURCE_SO",
+  "FAKE_FULU_EXIT_CODE", "FAKE_FULU_PUBLISH_FAILURES", "FAKE_FULU_UNSUPPORTED", "FAKE_FULU_CONNECT_STATUS"];
+const fakeFuluEnvSnapshots = new WeakSet();
+
 async function fakeFuluBridge(t, env = {}, { wrapped = false } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-fulu-"));
   const logPath = path.join(dir, "host.jsonl");
@@ -1385,16 +1392,19 @@ async function fakeFuluBridge(t, env = {}, { wrapped = false } = {}) {
     fs.writeFileSync(wrapper, `#!/bin/sh\n${command} "$@" | cat\n`, { mode: 0o755 });
     command = shellQuoteArg(wrapper);
   }
-  const saved = {};
-  const vars = { BAMBU_NETWORK_BRIDGE_COMMAND: command, BAMBU_NETWORK_CONFIG_DIR: path.join(dir, "config"), FAKE_FULU_LOG: logPath, PJARCZAK_BAMBU_PLUGIN_DIR: path.join(dir, "plugins"), BAMBU_NETWORK_USER_INFO: undefined, BAMBU_NETWORK_CERT_DIR: undefined, PJARCZAK_BAMBU_NETWORK_SO: undefined, PJARCZAK_BAMBU_SOURCE_SO: undefined, ...env };
+  if (!fakeFuluEnvSnapshots.has(t)) {
+    fakeFuluEnvSnapshots.add(t);
+    const saved = Object.fromEntries(FAKE_FULU_ENV.map(name => [name, process.env[name]]));
+    t.after(() => { for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; } });
+  }
+  const vars = { ...Object.fromEntries(FAKE_FULU_ENV.map(name => [name, undefined])),
+    BAMBU_NETWORK_BRIDGE_COMMAND: command, BAMBU_NETWORK_CONFIG_DIR: path.join(dir, "config"), FAKE_FULU_LOG: logPath, PJARCZAK_BAMBU_PLUGIN_DIR: path.join(dir, "plugins"), ...env };
   for (const [name, value] of Object.entries(vars)) {
-    saved[name] = process.env[name];
     if (value === undefined) delete process.env[name]; else process.env[name] = value;
   }
   const bridge = new BambuNetworkBridge();
   t.after(async () => {
     await bridge.stop();
-    for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
     fs.rmSync(dir, { recursive: true, force: true });
   });
   const calls = () => fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : [];
@@ -1502,6 +1512,22 @@ test("a synchronous -4030 is retried once after the certificate exchange and the
   assert.equal(twice.methods().filter(method => method === "net.start_local_print").length, 2, "never more than one retry");
   assert.equal(dispatched.length, 2, "each attempt passes the caller's fresh pre-dispatch check");
   assert.deepEqual(failed.jobUpdates.filter(update => update.code === -4030).map(update => update.msg), ["send msg failed", "send msg failed"]);
+});
+
+// Codex review on #69: the plug-in has one LAN connection and the host one event queue,
+// so concurrent sessions for different printers must not consume each other's reports.
+test("concurrent LAN prints to different printers run one session at a time on a shared bridge", async (t) => {
+  const { bridge, calls } = await fakeFuluBridge(t);
+  const printers = ["01PFIRST", "01PSECOND"].map(devId => ({ ...LOCAL_PRINTER, devId }));
+  const results = await Promise.all(printers.map((printer, index) =>
+    bridge.startLocalPrint(printer, "net.start_local_print", { client_job_id: 20 + index, params: { dev_id: printer.devId } }, {}, () => {}, FAST_LOCAL_PRINT)));
+  assert.deepEqual(results.map(({ result }) => result.value), [0, 0]);
+  const sequence = calls().filter(entry => ["net.connect_printer", "net.start_local_print", "net.disconnect_printer"].includes(entry.method))
+    .map(entry => `${entry.method}:${entry.payload.dev_id ?? entry.payload.params?.dev_id ?? ""}`);
+  assert.deepEqual(sequence, [
+    "net.connect_printer:01PFIRST", "net.start_local_print:01PFIRST", "net.disconnect_printer:",
+    "net.connect_printer:01PSECOND", "net.start_local_print:01PSECOND", "net.disconnect_printer:",
+  ]);
 });
 
 test("a LAN printer the plug-in cannot verify stops before any print or disconnect", async (t) => {

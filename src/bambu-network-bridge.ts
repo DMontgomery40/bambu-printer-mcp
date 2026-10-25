@@ -265,6 +265,11 @@ export class BambuNetworkBridge {
   private inferredExpectedNetworkVersion?: string;
   /** Whether the host accepted the certificate folder and callbacks a LAN session needs. */
   private localSessionReady = false;
+  /**
+   * The plug-in holds one LAN printer connection and the host one event queue,
+   * so LAN sessions run one at a time, as Bambu Studio connects one printer.
+   */
+  private localSessionTail: Promise<void> = Promise.resolve();
 
   resolveBridgeCommand(override?: string): string {
     return (
@@ -458,6 +463,24 @@ export class BambuNetworkBridge {
    * after `run`, so printer reports stop accumulating in the host's queue.
    */
   async withLocalSession<T>(
+    printer: LocalPrinter,
+    options: BambuNetworkBridgeOptions,
+    assertActive: () => void,
+    timing: typeof LOCAL_PRINT_TIMING,
+    run: (session: LocalSession) => Promise<T>
+  ): Promise<T> {
+    const previous = this.localSessionTail;
+    let release!: () => void;
+    this.localSessionTail = new Promise<void>(resolve => { release = resolve; });
+    try {
+      await previous;
+      return await this.runLocalSession(printer, options, assertActive, timing, run);
+    } finally {
+      release();
+    }
+  }
+
+  private async runLocalSession<T>(
     printer: LocalPrinter,
     options: BambuNetworkBridgeOptions,
     assertActive: () => void,
