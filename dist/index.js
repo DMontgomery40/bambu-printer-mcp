@@ -10,7 +10,7 @@ import path from "path";
 import { createServer as createHttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { STLManipulator, SLICER_TYPES, normalizeSlicerType, } from "./stl/stl-manipulator.js";
-import { BambuNetworkBridge } from "./bambu-network-bridge.js";
+import { BambuNetworkBridge, describeBambuNetworkPrintError } from "./bambu-network-bridge.js";
 import { assertBambuNativeAvailable, bambuNativeControlsAvailable, bambuNativeUnavailableReason, interruptNativeOperations, validateBambuNativeMetadata, buildBambuNativeFanCommand, buildBambuNativeTemperatureCommand, printWithBambuNative, sendCommandWithBambuNative, uploadWithBambuNative, } from "./bambu-native.js";
 import { importFileViaBambuConnect } from "./bambu-connect.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
@@ -1229,12 +1229,17 @@ class BambuPrinterMCPServer {
             this.bambu.assertBedClearance(confirmedStatus, bedClearance);
             const amsMapping = stringifyBridgeJson(mapping?.map(value => bridgeAmsMappingValue(value, isDualNozzleModel(printModel))));
             const remoteFileName = uniquePrintName(threeMFPath);
+            const checkedName = remoteFileName.replace(/(?:\.gcode)?\.3mf$/i, "");
             const params = {
                 dev_id: devId,
                 // Firmware can report the task name instead of the uploaded filename.
                 // Bind either report to this inspected artifact for a later safe resume.
-                task_name: remoteFileName.replace(/(?:\.gcode)?\.3mf$/i, ""),
-                project_name: projectName,
+                task_name: checkedName,
+                // The plug-in names the uploaded file and the printer's job from
+                // project_name, so it carries the same unique checked name, as the
+                // native route already passes; a reused name would overwrite a stored
+                // job and break the resume binding.
+                project_name: checkedName,
                 preset_name: presetName,
                 filename: snapshot,
                 config_filename: snapshot,
@@ -1309,7 +1314,7 @@ class BambuPrinterMCPServer {
                 this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements);
                 return { ...nativeResult, autoSliced, projectName, plateIndex, useAMS, amsMapping: mapping };
             }
-            const bridgeResult = await this.bambuNetwork.callWithAgent(bridgeMethod, { client_job_id: clientJobId, params }, {
+            const bridgeOptions = {
                 ...this.bridgeOptionsFromArgs(args, "print_3mf_bambu_network"),
                 beforeDispatch: async (method) => {
                     if (method !== bridgeMethod)
@@ -1323,7 +1328,15 @@ class BambuPrinterMCPServer {
                     assertActive(); },
                 onDispatched: method => { if (method === bridgeMethod)
                     retainForDispatchedUpload(); },
-            });
+            };
+            let jobUpdates = [];
+            let bridgeResult;
+            if (isLocalBridgePrint) {
+                ({ result: bridgeResult, jobUpdates } = await this.bambuNetwork.startLocalPrint({ devId, devIp, username: String(params.username), password, useSsl: params.use_ssl_for_mqtt }, bridgeMethod, { client_job_id: clientJobId, params }, bridgeOptions, assertActive));
+            }
+            else {
+                bridgeResult = await this.bambuNetwork.callWithAgent(bridgeMethod, { client_job_id: clientJobId, params }, bridgeOptions);
+            }
             if (typeof bridgeResult === "object" && bridgeResult !== null && bridgeResult.ok === false) {
                 throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} failed: ${String(bridgeResult.error || "unknown bridge error")}`);
             }
@@ -1332,7 +1345,10 @@ class BambuPrinterMCPServer {
                 typeof bridgeResult.value === "number" &&
                 bridgeResult.value !== 0) {
                 const value = bridgeResult.value;
-                throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} returned non-zero result ${value}.`);
+                const reported = jobUpdates.filter(update => update.code !== 0 || update.msg).slice(-3)
+                    .map(update => `status ${update.status}, code ${update.code}${update.msg ? `: ${update.msg}` : ""}`).join("; ");
+                throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} returned non-zero result ${value}${describeBambuNetworkPrintError(value)}.` +
+                    (reported ? ` Plug-in reported: ${reported}.` : ""));
             }
             assertActive();
             this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements);
@@ -1346,6 +1362,7 @@ class BambuPrinterMCPServer {
                 projectName,
                 plateIndex,
                 bridgePlateIndex: plateIndex + 1,
+                printerJobName: checkedName,
                 useAMS,
                 amsMapping: mapping,
                 params: redactPrintParams(params),
@@ -1972,11 +1989,11 @@ class BambuPrinterMCPServer {
                                 },
                                 use_printer_filaments: { type: "boolean", description: "When true, and no explicit slicer profile or load_filaments override is provided, use the printer's current or first loaded AMS filament as the slicer filament profile. Template 3MF process settings can still be used at the same time." },
                                 uptodate: { type: "boolean", description: "Refresh 3MF preset configs to match the latest BambuStudio version. Use when slicing downloaded or older 3MF files to prevent stale-config failures." },
-                                repetitions: { type: "number", description: "Print N identical copies of the model. Each copy gets its own plate placement. Example: 3 prints three copies." },
+                                repetitions: { type: "number", description: "Print N identical copies of the model. Each copy gets its own plate placement. Example: 3 prints three copies. OrcaSlicer copies an STL with --clone-objects; do not combine with clone_objects." },
                                 orient: { type: "boolean", description: "Auto-orient the model for optimal printability (minimize supports, maximize bed adhesion). Recommended for raw STL imports that lack a pre-set orientation." },
-                                arrange: { type: "boolean", description: "Auto-arrange all objects on the build plate with optimal spacing. Recommended when importing STLs or adding multiple objects. Set false to preserve existing plate layout." },
+                                arrange: { type: "boolean", description: "Auto-arrange all objects on the build plate with optimal spacing; STL input is arranged by default. Set false only to keep a 3MF's existing layout: an STL that is not already on the plate then fails to slice." },
                                 ensure_on_bed: { type: "boolean", description: "Detect models floating above the bed and lower them onto the build surface. Safety net for imported models with incorrect Z origins." },
-                                clone_objects: { type: "string", description: "Duplicate specific objects on the plate. Comma-separated clone counts per object index, e.g. '1,3,1,10' clones object 0 once, object 1 three times, etc." },
+                                clone_objects: { type: "string", description: "Clone the loaded model: total copies as a single integer, e.g. '3'. The Bambu-style CLIs count copies per input file and this tool loads one file, so a comma-separated list is rejected by the slicer." },
                                 skip_objects: { type: "string", description: "Skip specific objects during slicing by index. Comma-separated, e.g. '3,5,10'. Useful for multi-object 3MFs where you only want to print some parts." },
                                 load_filaments: { type: "string", description: "Override filament profiles. Semicolon-separated paths to filament JSON configs, e.g. 'pla_basic.json;petg_cf.json'." },
                                 filament_profile: { type: "string", description: "Compatibility alias for load_filaments. Semicolon-separated Orca/Bambu filament profile JSON paths." },
@@ -2078,7 +2095,7 @@ class BambuPrinterMCPServer {
                                 nozzle_type: { type: "string", enum: [...VALID_NOZZLE_TYPES], description: "Installed nozzle material, used when the 3MF must be auto-sliced (default: BAMBU_NOZZLE_TYPE, else the preset's stock nozzle)." },
                                 nozzle_volume_type: { type: "string", enum: [...VALID_NOZZLE_VOLUME_TYPES], description: "Installed nozzle flow type, used when the 3MF must be auto-sliced (default: BAMBU_NOZZLE_VOLUME_TYPE, else standard)." },
                                 plate_index: { type: "number", description: "Zero-based plate index to print from the sliced 3MF; converted to FULU's one-based PrintParams plate_index." },
-                                project_name: { type: "string", description: "Optional project name sent in FULU PrintParams; defaults to the 3MF filename without extension." },
+                                project_name: { type: "string", description: "Optional project name returned in the result; defaults to the 3MF filename without extension. The printer job and stored file use the server's unique checked name so resume_print can bind to the inspected file." },
                                 preset_name: { type: "string", description: "Optional preset name sent in FULU PrintParams; defaults to project plus one-based plate index." },
                                 task_name: { type: "string", description: "Optional project label when project_name is omitted. The submitted task name uses a unique inspected-job identity for safe resume." },
                                 config_filename: { type: "string", description: "Optional config 3MF path for cloud print; defaults to the same 3MF path." },
@@ -2122,7 +2139,7 @@ class BambuPrinterMCPServer {
                             type: "object",
                             properties: {
                                 save_path: { type: "string", description: "Optional absolute path to write the JPEG to disk. If omitted, only the base64 payload is returned." },
-                                timeout_ms: { type: "number", description: "Max ms to wait for a full frame (default 8000). Camera may take a few seconds on cold start." },
+                                timeout_ms: { type: "number", description: "Max ms to wait for a live frame (default 8000). A1/P1 cameras first replay a buffered frame, which is skipped, so a live frame takes about 3 s, longer on cold start." },
                                 bambu_model: { type: "string", description: "Printer model. Used to route to the correct protocol or fail fast on unsupported models. Defaults to BAMBU_MODEL." },
                                 experimental: { type: "boolean", description: "Deprecated and ignored. Earlier this flag let callers probe H2 series via the A1/P1 TCP-on-6000 path; live testing on an H2S confirmed H2 uses RTSP instead, so the flag has no effect now." },
                                 ffmpeg_path: { type: "string", description: "Override path to the ffmpeg binary used by the RTSP path. Defaults to FFMPEG_PATH or ffmpeg via $PATH. Per-call overrides require MCP_ALLOW_EXECUTABLE_ARG=1. Required only for the RTSP transport (X1, P2S, H2 series, X2D)." },

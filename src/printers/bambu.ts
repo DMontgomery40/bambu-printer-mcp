@@ -9,7 +9,7 @@ import { readSafe3mfArchive } from "../safety/archive.js";
 import { inspectPrintFile, type PrintFileInspection } from "../safety/print-file.js";
 import { isDualNozzleModel, normalizeModel, validateTemperature } from "../safety/limits.js";
 import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, describeAmsTrayRange } from "../ams-mapping.js";
-import { describeHmsKey, hiddenHmsKeys, hiddenHmsNotices, reportedHmsKey, validatePrinterState, manualHeatingRequirements, type PrinterStateRequirements } from "../safety/printer-state.js";
+import { describeHmsKey, hiddenHmsKeys, hiddenHmsNotices, reportedHmsKey, unchippedNozzles, validatePrinterState, manualHeatingRequirements, type PrinterStateRequirements } from "../safety/printer-state.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRemotePath, cancelPendingPrinterOperations } from "../safety/artifact.js";
 import { Client as FTPClient } from "basic-ftp";
 import { BambuPrinter } from "bambu-js";
@@ -348,6 +348,7 @@ class BambuClientStore {
     timeoutMs = 4000
   ): Promise<Record<string, any> | null> {
     const key = getPrinterKey(host, serial, token);
+    const deadline = Date.now() + timeoutMs + 500;
     const existing = this.reportSnapshots.get(key);
 
     if (!existing || Object.keys(existing).length === 0) {
@@ -370,8 +371,11 @@ class BambuClientStore {
     // (gcode_state, ams, hms, temperatures, fans, etc.) arrives afterward
     // and gets merged into reportSnapshots via incremental update.
     // This settle runs regardless of whether data arrived before or during
-    // the promise race above, so the merge has time to complete.
+    // the promise race above, so the merge has time to complete. A busy host
+    // can take longer, which returned the sparse report as status UNKNOWN,
+    // so keep waiting for the full status within the same bound.
     await sleep(500);
+    while (typeof this.reportSnapshots.get(key)?.gcode_state !== "string" && Date.now() < deadline) await sleep(50);
     return this.reportSnapshots.get(key) || null;
   }
 
@@ -471,6 +475,36 @@ class BambuClientStore {
 /** What the human confirmed in confirmPrintPreflight, checked again before dispatch. */
 export type PrintPreflight = { finishedJob?: string; serial: string; model: string; notices: string[] };
 
+/**
+ * Split the A1/P1 camera stream on port 6000 into JPEG frames. Each frame is
+ * a 16-byte header (payload size LE, itrack, flags, reserved) and the JPEG.
+ */
+export function cameraFrameParser(onFrame: (jpeg: Buffer) => void, onError: (error: Error) => void): (chunk: Buffer) => void {
+  let buffered = Buffer.alloc(0);
+  let failed = false;
+  return chunk => {
+    if (failed) return;
+    buffered = Buffer.concat([buffered, chunk]);
+    while (buffered.length >= 16) {
+      const payloadSize = buffered.readUInt32LE(0);
+      if (payloadSize <= 0 || payloadSize > 5_000_000) {
+        failed = true;
+        onError(new Error(`camera_snapshot: unreasonable payload size ${payloadSize} from header; auth likely failed.`));
+        return;
+      }
+      if (buffered.length < 16 + payloadSize) return;
+      const jpeg = buffered.subarray(16, 16 + payloadSize);
+      buffered = buffered.subarray(16 + payloadSize);
+      if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) {
+        failed = true;
+        onError(new Error(`camera_snapshot: payload does not start with JPEG SOI (FF D8); got ${jpeg[0].toString(16)} ${jpeg[1].toString(16)}.`));
+        return;
+      }
+      onFrame(Buffer.from(jpeg));
+    }
+  };
+}
+
 export class BambuImplementation {
   private printerStore: BambuClientStore;
   private checkedJobs = new Map<string, { remotePath: string; requirements: PrinterStateRequirements }>();
@@ -482,8 +516,14 @@ export class BambuImplementation {
 
   async confirmHardwareAction(message: string, physicalCheck = false): Promise<void> {
     if (!physicalCheck && process.env.BAMBU_REQUIRE_CONFIRMATION === "0") return;
-    if (!this.confirm || !(await this.confirm(message))) {
-      throw new Error("Hardware safety confirmation was declined or unavailable. Use an MCP client with elicitation support. No command was sent.");
+    if (!this.confirm) {
+      throw new Error("Hardware safety confirmation is unavailable. Use an MCP client with elicitation support. No command was sent.");
+    }
+    if (!(await this.confirm(message))) {
+      throw new Error("Hardware safety confirmation was declined or cancelled in the MCP client. No command was sent. " + (physicalCheck
+        ? "This confirmation covers a physical check at the printer and always needs a person to accept it."
+        : "Some clients decline prompts automatically, for example in a non-interactive permission mode. " +
+          "A deliberately headless setup that approves jobs another way can set BAMBU_REQUIRE_CONFIRMATION=0 to skip ordinary print and heating prompts."));
     }
   }
 
@@ -500,6 +540,7 @@ export class BambuImplementation {
     const finishedJob = this.finishedJobIdentity(status);
     const cleared = this.clearedErrors.get(serial);
     const notices = hiddenHmsNotices(status?.raw, serial, inspection.model);
+    const unchipped = unchippedNozzles(status?.raw);
     await this.confirmHardwareAction(
       `Start a checked print on ${inspection.model.toUpperCase()} (${serial})? Nozzles: ${inspection.nozzleDiameters.join(", ")} mm. ` +
       `Materials: ${inspection.materials.join(", ")}. Peak targets: nozzle ${inspection.maxNozzleTemperature}°C, bed ${inspection.maxBedTemperature}°C, chamber ${inspection.maxChamberTemperature}°C. ` +
@@ -507,7 +548,9 @@ export class BambuImplementation {
       (finishedJob !== undefined ? " The printer reports FINISH: remove the previous part and debris before confirming." : "") +
       (cleared ? ` Previously cleared hardware codes: ${cleared.map(describeHmsKey).join(", ")}. Confirm their physical causes have been resolved.` : "") +
       (notices.length ? ` The printer also reports ${notices.join(", ")}, which Bambu lists for this model without text and never shows as a fault; ` +
-        `${notices.length === 1 ? "it does" : "they do"} not block printing.` : ""),
+        `${notices.length === 1 ? "it does" : "they do"} not block printing.` : "") +
+      (unchipped.length ? ` Printer ${unchipped.length === 1 ? `nozzle ${unchipped[0]} reports` : `nozzles ${unchipped.join(" and ")} report`} no identity chip, ` +
+        `so ${unchipped.length === 1 ? "its" : "their"} diameter and type are the printer's configured settings; confirm they match the installed ${unchipped.length === 1 ? "hotend" : "hotends"}.` : ""),
       finishedJob !== undefined || !!cleared
     );
     return { finishedJob, serial, model: inspection.model, notices };
@@ -1828,13 +1871,19 @@ export class BambuImplementation {
   }
 
   /**
-   * Open the TLS-on-6000 socket, send the 80-byte auth packet, and read
-   * a single complete JPEG frame. Returns the JPEG bytes.
+   * Open the TLS-on-6000 socket, send the 80-byte auth packet, and return
+   * a live JPEG frame. The printer first replays the last frame it buffered,
+   * which after an idle period can show the chamber as it was long ago (a
+   * finished part still on the bed), so that frame and any byte-identical
+   * repeat of it are discarded and the next frame returned; live frames always
+   * differ by sensor noise. If no live frame arrives in time, this fails rather
+   * than return a possibly stale image.
    */
   private async fetchTcpCameraFrame(
     host: string,
     token: string,
-    timeoutMs: number
+    timeoutMs: number,
+    port = 6000
   ): Promise<Buffer> {
     const tls = await import("node:tls");
 
@@ -1846,11 +1895,9 @@ export class BambuImplementation {
     auth.write(token, 48, Math.min(32, Buffer.byteLength(token, "ascii")), "ascii");
 
     return new Promise((resolve, reject) => {
-      const chunks: Buffer[] = [];
-      let totalLen = 0;
-      const FRAME_HEADER_BYTES = 16;
-      let payloadSize: number | null = null;
       let settled = false;
+      let frames = 0;
+      let buffered: Buffer | undefined;
 
       const finish = (err: Error | null, jpeg?: Buffer) => {
         if (settled) return;
@@ -1861,16 +1908,25 @@ export class BambuImplementation {
         else if (jpeg) resolve(jpeg);
         else reject(new Error("camera_snapshot: ended without jpeg payload"));
       };
+      const unfinished = (reason: string) => new Error(frames
+        ? `camera_snapshot: ${reason} after only the printer's buffered frame, which may be stale; no live frame arrived. Retry, or raise timeout_ms.`
+        : `camera_snapshot: ${reason} before a full JPEG frame arrived`);
 
-      const timer = setTimeout(
-        () => finish(new Error(`camera_snapshot: timed out after ${timeoutMs}ms`)),
-        timeoutMs
+      const timer = setTimeout(() => finish(unfinished(`timed out after ${timeoutMs}ms`)), timeoutMs);
+
+      const parse = cameraFrameParser(
+        jpeg => {
+          frames++;
+          if (!buffered) buffered = jpeg;
+          else if (!jpeg.equals(buffered)) finish(null, jpeg);
+        },
+        error => finish(error)
       );
 
       const socket = tls.connect(
         {
           host,
-          port: 6000,
+          port,
           rejectUnauthorized: false,
           // The printer uses TLS for confidentiality but presents a self-signed cert.
           // Same trust posture as the FTPS path (basic-ftp with rejectUnauthorized: false).
@@ -1880,49 +1936,9 @@ export class BambuImplementation {
         }
       );
 
-      socket.on("data", (data: Buffer) => {
-        chunks.push(data);
-        totalLen += data.length;
-
-        if (payloadSize === null && totalLen >= FRAME_HEADER_BYTES) {
-          const merged = Buffer.concat(chunks, totalLen);
-          payloadSize = merged.readUInt32LE(0);
-          if (payloadSize <= 0 || payloadSize > 5_000_000) {
-            finish(
-              new Error(
-                `camera_snapshot: unreasonable payload size ${payloadSize} from header; auth likely failed.`
-              )
-            );
-            return;
-          }
-          // Reset chunk list to remaining bytes after the header.
-          const remainder = merged.subarray(FRAME_HEADER_BYTES);
-          chunks.length = 0;
-          chunks.push(remainder);
-          totalLen = remainder.length;
-        }
-
-        if (payloadSize !== null && totalLen >= payloadSize) {
-          const merged = Buffer.concat(chunks, totalLen);
-          const jpeg = merged.subarray(0, payloadSize);
-          if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) {
-            finish(
-              new Error(
-                `camera_snapshot: payload does not start with JPEG SOI (FF D8); got ${jpeg[0].toString(16)} ${jpeg[1].toString(16)}.`
-              )
-            );
-            return;
-          }
-          finish(null, jpeg);
-        }
-      });
-
+      socket.on("data", parse);
       socket.on("error", (err) => finish(err));
-      socket.on("end", () =>
-        finish(
-          new Error("camera_snapshot: connection ended before a full JPEG frame arrived")
-        )
-      );
+      socket.on("end", () => finish(unfinished("connection ended")));
     });
   }
 

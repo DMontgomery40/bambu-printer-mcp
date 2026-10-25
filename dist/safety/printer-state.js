@@ -128,6 +128,41 @@ function nozzleTypeAndFlow(value) {
     const type = token(value);
     return { type: ["stainlesssteel", "hardenedsteel", "tungstencarbide", "brass"].includes(type) ? type : undefined };
 }
+/**
+ * A nozzle without an identity chip reports serial "N/A" and keeps the
+ * unreliable bit set permanently (stock H2D HS01 nozzles), so its diameter
+ * and type are configured settings, as on single-nozzle printers.
+ */
+function hasNoIdentityChip(entry) {
+    return typeof entry?.sn === "string" && entry.sn.trim().toUpperCase() === "N/A";
+}
+/** Bit 0 (information unreliable) is accepted only from a nozzle without an identity chip. */
+function unreliableWithoutChip(entry, stat) {
+    return (stat & 1) !== 0 && hasNoIdentityChip(entry);
+}
+/** Nozzles whose reported diameter and type are configured settings rather than chip readings. */
+export function unchippedNozzles(raw) {
+    const info = raw?.device?.nozzle?.info;
+    if (!Array.isArray(info))
+        return [];
+    return info.flatMap(entry => {
+        const index = finiteNumber(entry?.id);
+        const stat = finiteNumber(entry?.stat);
+        return index !== undefined && Number.isInteger(index) && index >= 0 && index < 16 &&
+            stat !== undefined && Number.isInteger(stat) && unreliableWithoutChip(entry, stat) ? [index] : [];
+    });
+}
+const loggedUnchippedNozzles = new Set();
+/** Name each unchipped nozzle a check accepted once per printer on stderr, so headless runs still record it. */
+function logUnchippedNozzles(raw, serial) {
+    for (const index of unchippedNozzles(raw)) {
+        const key = `${serial}:${index}`;
+        if (loggedUnchippedNozzles.has(key))
+            continue;
+        loggedUnchippedNozzles.add(key);
+        console.error(`Printer ${serial || "(unknown serial)"} nozzle ${index} reports no identity chip; its diameter and type are the printer's configured settings.`);
+    }
+}
 function reportedNozzles(raw) {
     const info = raw.device?.nozzle?.info;
     const output = [];
@@ -141,9 +176,13 @@ function reportedNozzles(raw) {
             if (index === undefined || !Number.isInteger(index) || index < 0 || diameter === undefined || diameter <= 0)
                 throw new Error("Printer reported malformed nozzle identity or diameter.");
             if (entry.stat !== undefined) {
+                // BambuStudio DevNozzle: bit 0 set means the information is unreliable;
+                // bits 1-2 are 0 normal, 1 abnormal, 2 unknown.
                 const stat = finiteNumber(entry.stat);
-                if (stat === undefined || !Number.isInteger(stat) || stat < 0 || (stat & 7) !== 0)
+                if (stat === undefined || !Number.isInteger(stat) || stat < 0 || (stat & 6) !== 0)
                     throw new Error(`Printer nozzle ${index} information is unreliable, abnormal or unknown.`);
+                if ((stat & 1) !== 0 && !unreliableWithoutChip(entry, stat))
+                    throw new Error(`Printer nozzle ${index} information is unreliable; refresh the nozzle information on the printer.`);
             }
             if (output.some(nozzle => nozzle.index === index))
                 throw new Error("Printer reported ambiguous duplicate nozzle indices.");
@@ -420,6 +459,8 @@ export function validatePrinterState(status, requirements) {
             filaments.push({ position, material, trayIndex, nozzleMin, nozzleMax });
         }
     }
+    if (nozzles.length)
+        logUnchippedNozzles(raw, identity.observedSerial ?? String(status.serial ?? ""));
     return { model, reportedNozzles: nozzles, filaments };
 }
 /** Manual M104 cannot remap filament slots. Validate the material already at the nozzle. */

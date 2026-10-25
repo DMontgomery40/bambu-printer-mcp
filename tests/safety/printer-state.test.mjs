@@ -85,6 +85,29 @@ test('reported type, flow, absent or abnormal multi nozzle state cannot contradi
   assert.throws(() => check(fresh({nozzle_type:'HH01'}),req({nozzleFlows:['Standard']})), /flow/i);
   for(const stat of [1,2,4]) assert.throws(() => check(fresh({device:{nozzle:{info:[{id:0,diameter:0.4,type:'HH01',stat}]}}})), /nozzle|reliable|abnormal/i);
 });
+// Issue #67: a stock H2D reports stat 1 (Bambu Studio DevNozzle: information
+// unreliable) on both HS01 nozzles, which have no identity chip (sn "N/A").
+test('stock nozzles without an identity chip pass bit 0 while abnormal, unknown and chipped unreliable nozzles still block', () => {
+  const h2dReport = (overrides = {}) => fresh({model_id:'O1D', nozzle_diameter:undefined, device:{nozzle:{exist:3, hc:0, src_id:0, state:4096, tar_id:0, info:[
+    {id:0, diameter:0.4, type:'HS01', stat:1, sn:'N/A', color_m:'00000000', fila_id:'', p_t:0, tm:0, wear:0, ...overrides},
+    {id:1, diameter:0.4, type:'HS01', stat:1, sn:'N/A', color_m:'00000000', fila_id:'', p_t:0, tm:0, wear:0},
+  ]}}});
+  const job = req({model:'h2d', nozzleDiameters:[0.4,0.4], nozzleTypes:['hardened_steel','hardened_steel'], nozzleFlows:['standard','standard'], verifyMaterials:false});
+  assert.doesNotThrow(() => check(h2dReport(), job));
+  assert.deepEqual(safety.unchippedNozzles(h2dReport().raw), [0, 1]);
+  // The file-to-hardware comparison is unchanged.
+  assert.throws(() => check(h2dReport({diameter:0.6}), job), /nozzle 0 diameter/i);
+  assert.throws(() => check(h2dReport({type:'HS00'}), job), /nozzle 0 type/i);
+  // Bits 1-2 are abnormal or unknown regardless of the chip.
+  for (const stat of [2, 3, 4, 5, 6, 7]) assert.throws(() => check(h2dReport({stat}), job), /unreliable, abnormal or unknown/, `stat ${stat}`);
+  // A chipped nozzle whose information is unreliable must be refreshed first.
+  for (const sn of ['B0123456789', '', undefined]) {
+    assert.throws(() => check(h2dReport({sn}), job), /nozzle 0 information is unreliable; refresh/, `sn ${sn}`);
+    assert.deepEqual(safety.unchippedNozzles(h2dReport({sn}).raw), [1]);
+  }
+  assert.deepEqual(safety.unchippedNozzles(h2dReport({stat:0}).raw), [1]);
+  assert.deepEqual(safety.unchippedNozzles({}), []);
+});
 test('rejects busy, failed, missing or unknown states while allowing IDLE and FINISH', () => {
   for(const gcode_state of ['RUNNING','PAUSE','PREPARE','SLICING','FAILED','OFFLINE','UNKNOWN',undefined]) assert.throws(() => check(fresh({gcode_state})), /state|idle/i);
   assert.doesNotThrow(() => check(fresh({gcode_state:'FINISH'})));

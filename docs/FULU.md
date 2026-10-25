@@ -65,6 +65,8 @@ export NOZZLE_DIAMETER=0.4           # your installed nozzle diameter
 
 `BAMBU_PROFILES_ROOT` is the directory containing `BBL`, including the machine, process, filament, and `cli_config.json` files from that same slicer installation. It is optional when the tree is discoverable beside the executable. For AppImage or custom installations, point it to the matching extracted resources. The server does not borrow a missing machine from another installation. Configured user-profile directories remain available for custom process and filament dependencies, but cannot supply machine ancestors.
 
+**FULU v1.0.0's CLI crashes before slicing.** Every `--slice` run, and even `--help`, ends with a segmentation fault in `PartPlate::invalidate_plate_name_texture`. That function asks the GUI application whether it is closing, and no GUI application exists in CLI mode. This was confirmed on the macOS arm64 build, and the same code is in every platform's source. The server reports `the slicer crashed with SIGSEGV`. Until FULU ships a fix, slice in the FULU GUI and export, or use upstream OrcaSlicer's CLI (`SLICER_TYPE=orcaslicer`).
+
 When multiple Orca/OrcaStudio variants share one Linux install prefix, set `BAMBU_PROFILES_ROOT` explicitly: automatic discovery does not distinguish those co-installed variants.
 
 Before launching the CLI, the MCP resolves `inherits` and `include`, validates the selected model's CLI configuration, and prepares every filament slot. Missing references, cycles, malformed configuration, and incomplete slot mappings stop preparation. Failed auto-slicing stops before upload or print dispatch; the original unsliced project is never used as a fallback.
@@ -83,26 +85,40 @@ This is an optional, advanced connection path. The MCP implements the framed std
 | `BAMBU_NETWORK_CONFIG_DIR` | Persistent writable agent config/log directory. Default: `~/.config/bambu-printer-mcp/bambu-network`. |
 | `BAMBU_NETWORK_COUNTRY_CODE` | Region/country passed to the runtime, default `US`; use the appropriate setting for your account. |
 | `BAMBU_NETWORK_USER_INFO` | Optional sensitive JSON passed to `net.change_user`; see [cloud authentication](#cloud-authentication). |
-| `PJARCZAK_BAMBU_PLUGIN_DIR` | Upstream runtime's library directory, containing the matching network/source libraries. |
+| `PJARCZAK_BAMBU_PLUGIN_DIR` | Directory holding the networking plug-in (`libbambu_networking.so`, `libBambuSource.so`). On Linux the server also passes their absolute paths as `PJARCZAK_BAMBU_NETWORK_SO` and `PJARCZAK_BAMBU_SOURCE_SO` unless you set those. |
+| `BAMBU_NETWORK_CERT_DIR` | Optional certificate folder for the plug-in. By default the server writes Bambu's public `printer.cer` and `slicer_base64.cer` (pinned by SHA-256) to `cert` inside the config directory. LAN printing needs `printer.cer`. |
 
 Set these where your MCP client launches the server. Desktop applications may not inherit variables exported in a terminal. Restart the server after changes. Keep the command in trusted client configuration; do not enable per-call `bridge_command` overrides just to follow this guide.
 
 ### Linux
 
-Use a FULU runtime built for your CPU architecture. It must include the bridge executable and matching libraries such as `libbambu_networking.so` and `libBambuSource.so`. The [upstream host sources and packaging script](https://github.com/FULU-Foundation/OrcaSlicer-bambulab/tree/main/tools/pjarczak_bambu_linux_host) describe that component; installing upstream OrcaSlicer alone does not establish that the FULU host is present.
+Use FULU's x86-64 Linux host runtime (`linux_host_runtime_<commit>.tar.gz` from the [FULU release](https://github.com/FULU-Foundation/OrcaSlicer-bambulab/releases)). It contains `pjarczak_bambu_linux_host` and its ABI variants. The host also needs the 02.05.02.5x networking plug-in (`libbambu_networking.so` and `libBambuSource.so`) that FULU OrcaSlicer downloads to `~/.config/OrcaSlicer/plugins`. A contributor reports that Bambu Studio 2.3.1's plug-in in `~/.config/BambuStudio/plugins` is too old for this host. The [upstream host sources](https://github.com/FULU-Foundation/OrcaSlicer-bambulab/tree/main/tools/pjarczak_bambu_linux_host) describe the component; installing upstream OrcaSlicer alone does not provide it.
 
-For a shell-launched MCP, this is the configuration shape; replace both paths with your actual installation:
+The v1.0.0 host has two upstream bugs that affect every Node.js client, including this server:
+
+1. **Exit code 101.** The host reopens its stdout through `/proc/self/fd`, which fails for the socket Node.js gives a child process ([FULU #50](https://github.com/FULU-Foundation/OrcaSlicer-bambulab/issues/50)). The server's error names this exit code. Launch the host through a wrapper that gives it a real pipe:
+
+   ```sh
+   #!/bin/sh
+   # /opt/fulu-runtime/fulu-host-wrapper.sh
+   "/opt/fulu-runtime/pjarczak_bambu_linux_host" "$@" | cat
+   ```
+
+   Through the wrapper the bridge's exit status is `cat`'s. A host crash then shows in `lastStderr`, for example `Segmentation fault`, instead of in the exit code.
+2. **`validate failed: file open failed`.** The host opens the plug-in libraries from its working directory instead of `PJARCZAK_BAMBU_PLUGIN_DIR` ([FULU #51](https://github.com/FULU-Foundation/OrcaSlicer-bambulab/issues/51)). From 1.1.34 the server passes their absolute paths inside `PJARCZAK_BAMBU_PLUGIN_DIR` on Linux. Without that directory it stops before creating an agent and says which setting is missing.
+
+For a shell-launched MCP, this is the configuration shape; replace the paths with your installation:
 
 ```bash
-export BAMBU_NETWORK_BRIDGE_COMMAND="'/opt/fulu-runtime/pjarczak_bambu_linux_host'"
-export PJARCZAK_BAMBU_PLUGIN_DIR=/opt/fulu-runtime
+export BAMBU_NETWORK_BRIDGE_COMMAND="'/opt/fulu-runtime/fulu-host-wrapper.sh'"
+export PJARCZAK_BAMBU_PLUGIN_DIR="$HOME/.config/OrcaSlicer/plugins"
 export BAMBU_NETWORK_COUNTRY_CODE=US
 export BAMBU_DEV_ID=YOUR_DEVICE_ID
 export BAMBU_MODEL=p1s
 npx -y bambu-printer-mcp
 ```
 
-Use the same variable values in a desktop client's `env` object. Quote paths containing spaces inside the bridge command. Proceed to the probes below before attempting a print.
+Use the same variable values in a desktop client's `env` object. Quote paths containing spaces inside the bridge command. The runtime folder ships only `slicer_base64.cer`. The plug-in also needs Bambu's `printer.cer` to verify a printer's LAN certificate, so the server supplies both certificates (see `BAMBU_NETWORK_CERT_DIR` above). Without `printer.cer` the LAN connection fails, and the v1.0.0 host crashes when a printer connection is opened before any certificate folder is set. Proceed to the probes below before attempting a print.
 
 ### Windows / WSL 2
 
@@ -123,7 +139,7 @@ Start with `bambu_network_bridge_status` and `{}`. It inspects these conventiona
 ~/Library/Application Support/OrcaSlicer/macos-bridge/runtime/
 ```
 
-When it finds the wrapper, the response includes `runtime.suggestedMacCommand`. Copy it to `BAMBU_NETWORK_BRIDGE_COMMAND` only after confirming the paths exist. A typical installed Lima-wrapper command has this shape:
+When it finds the wrapper, the response includes `runtime.suggestedMacCommand`; these discovery hints appear only on macOS. Copy the command to `BAMBU_NETWORK_BRIDGE_COMMAND` only after confirming the paths exist. A typical installed Lima-wrapper command has this shape:
 
 ```bash
 export BAMBU_NETWORK_BRIDGE_COMMAND="PJARCZAK_BAMBU_PLUGIN_DIR='$HOME/Library/Application Support/OrcaSlicer/macos-bridge/runtime' '$HOME/Library/Application Support/OrcaSlicer/plugins/pjarczak-bambu-linux-host-wrapper' '$HOME/Library/Application Support/OrcaSlicer/macos-bridge/runtime/pjarczak_bambu_linux_host'"
@@ -141,7 +157,7 @@ Use these MCP calls in order:
 2. **`bambu_network_bridge_status` with `{"connect": true}`** launches the host, performs `bridge.handshake`, and initializes the network agent. It creates/uses the config directory and contacts the network service, but does not submit a print.
 3. **`bambu_network_call` with `{"method": "net.is_user_login", "payload": {}}`** checks the runtime's login state before a cloud job.
 
-Check the returned handshake, `agentReady`, and any errors. The macOS file hints are not Linux/Windows requirements. Agent initialization alone does not establish cloud login, printer reachability, or print success. The MCP can retry the handshake using the reported network ABI version when the runtime reports an expected-version mismatch; avoid hard-coding an old ABI version from a sample.
+Check the returned handshake, `agentReady`, and any errors. `runtime.certDir` names the certificate folder passed to the plug-in. On Linux, `runtime.pluginLibraries` lists the library paths passed to the host; macOS discovery hints appear only on macOS. Agent initialization alone does not establish cloud login, printer reachability, or print success. The MCP can retry the handshake using the reported network ABI version when the runtime reports an expected-version mismatch; avoid hard-coding an old ABI version from a sample.
 
 For raw `bridge.handshake`, call `bambu_network_call` with `with_agent: false`. Other raw methods can change state; consult your installed FULU bridge's method contract.
 
@@ -150,6 +166,8 @@ For raw `bridge.handshake`, call `bambu_network_call` with `with_agent: false`. 
 The bridge's default config directory is separate from the slicer's. Logging into the FULU GUI does **not** automatically prove that this MCP's bridge agent is logged in.
 
 Use the authentication/session configuration supported by your installed runtime and verify it with `net.is_user_login`. If that runtime supplies a compatible `user_info` JSON value, `BAMBU_NETWORK_USER_INFO` passes it to `net.change_user` after agent initialization. It is not your plain account password, and this project does not define a universal token schema or automatically copy the GUI's session. Use an authenticated config directory only when supported by your runtime, with the correct region and filesystem access.
+
+On Linux, a contributor reports that copying the FULU GUI's own `BambuNetworkEngine.conf` from FULU OrcaSlicer's configuration folder into `BAMBU_NETWORK_CONFIG_DIR` makes `net.is_user_login` return `true` without `BAMBU_NETWORK_USER_INFO`. That file holds your account session: keep it private and out of issue reports. The server never copies it for you. This uses FULU's login, not Bambu Studio's.
 
 If login cannot be established, stop at the probe and use direct LAN where supported, or use FULU's own UI. Cloud bridge jobs still require Bambu services; they are not the cloud-free workflow described at the top of this guide. Keep tokens, access codes, account JSON, and unredacted logs out of public issues.
 
@@ -187,6 +205,8 @@ For a LAN bridge job, use the same tool and explicitly select LAN:
 }
 ```
 
+For LAN methods the server first opens the networking plug-in's own LAN session, as Bambu Studio does. It connects with the access code, installs the printer's application certificate and waits for the connection. Then it requests the printer's state, lets the key exchange settle, and closes the session after the print command. Without that session the plug-in uploads the job but reports `-4030` ("send msg failed") because it cannot encrypt the print command. A `-4030` returned for the first attempt means nothing was published, so the server retries once after another certificate exchange, with the same fresh safety checks; the native X2D helper does the same. Because the plug-in signs and encrypts the command as Bambu Studio does, this route printed on the maintainer's P1S with Developer Mode off. The direct LAN path still needs LAN Only Mode and Developer Mode on firmware with authorization control. The trade-off is that this route depends on Bambu's closed networking plug-in. The job appears on the printer under the server's unique `checked-…` name, which binds a later `resume_print` to the inspected file and never overwrites a stored job of the same project name.
+
 For the equivalent `print_3mf` calls, add `connection_mode: "bambu_network"`. Its default remains direct LAN; the dedicated bridge tool defaults to `connection_type: "cloud"`. Every bridge print requires a reachable printer IP, LAN access code, and matching serial/device ID for fresh local MQTT safety verification, including cloud submission through an authenticated runtime. A cloud-only connection without local safety telemetry cannot authorize a print.
 
 `plate_index` is zero-based in MCP calls and converted to one-based for FULU. `ams_mapping` is positional across project filaments; `[0]` above is only for a one-filament project. `ams_slots` expands into those project positions before verification. Raw mapping, nozzle, configuration-file and extra-option overrides are refused so they cannot replace the checked job. Use the structured model, nozzle, plate, and AMS arguments. The raw `bambu_network_call` tool permits only named read-only probes.
@@ -201,12 +221,30 @@ For the equivalent `print_3mf` calls, add `connection_mode: "bambu_network"`. It
 
 Non-zero numeric bridge results are errors. A successful submission does not prove that the printer starts or finishes the job. For LAN, inspect `get_printer_status` and HMS diagnostics; for a cloud-only connection, check the runtime/slicer UI and printer. Ordinary MCP status, camera, pause/resume, and file tools still use the direct local connection.
 
+## Upstream bugs and workarounds
+
+These failures come from upstream software, not from this server. The server works around them where it can and names them in its errors; the fixes themselves belong upstream.
+
+| Upstream component | Bug | What you see | What this server does | Upstream status |
+|---|---|---|---|---|
+| FULU Linux host v1.0.0 | Reopens stdout through `/proc/self/fd`, which fails for a socket ([FULU #50](https://github.com/FULU-Foundation/OrcaSlicer-bambulab/issues/50)) | `exited (code=101…)` from every Node.js client | Explains exit 101; document the [`cat` wrapper](#linux) | Open |
+| FULU Linux host v1.0.0 | Opens the plug-in libraries from its working directory, ignoring `PJARCZAK_BAMBU_PLUGIN_DIR` ([FULU #51](https://github.com/FULU-Foundation/OrcaSlicer-bambulab/issues/51)) | `validate failed: file open failed` | Passes absolute library paths on Linux | Open |
+| FULU Linux host runtime | Ships `slicer_base64.cer` without Bambu's `printer.cer`, and crashes on `connect_printer`/`disconnect_printer` before any certificate folder is set | LAN connections fail or the host segfaults | Supplies Bambu's pinned certificates and sets the folder first | Not yet reported |
+| FULU OrcaSlicer-bambulab v1.0.0 CLI | Asks the GUI application whether it is closing in `PartPlate::invalidate_plate_name_texture`, then lacks upstream Orca's filament-variant guards | Every CLI run segfaults | Reports `the slicer crashed with SIGSEGV`; export from the GUI or use upstream Orca's CLI | Fixes being proposed upstream |
+| OrcaSlicer 2.4.2 CLI | `PartPlate::check_outside` calls the GUI's Plater when scale or a tilt moves an object below the bed while arranging; related to the closed [OrcaSlicer #13328](https://github.com/OrcaSlicer/OrcaSlicer/issues/13328) | `slice_stl` segfaults for those transforms | Applies STL transforms to the mesh and refuses the 3MF case | Not yet reported |
+| Bambu networking plug-in | Needs its own LAN session and the printer's application certificate before it can encrypt a print command | `start_local_print` returns `-4030` after uploading | Follows Bambu Studio's connect and certificate sequence | Plug-in design |
+
 ## Troubleshooting and evidence to report
 
 | Symptom | Next check |
 |---|---|
 | `configured: false` | Set `BAMBU_NETWORK_BRIDGE_COMMAND` in the MCP process environment and restart it. |
 | Invalid frame magic or immediate exit | Confirm the command starts the binary-protocol host, not the GUI; wrapper stdout must contain only protocol frames. |
+| `exited (code=101…)` on Linux | Use the [`cat` wrapper](#linux) for FULU's socket-stdout bug ([FULU #50](https://github.com/FULU-Foundation/OrcaSlicer-bambulab/issues/50)). |
+| `could not open its networking library (validate failed: file open failed)` | Set `PJARCZAK_BAMBU_PLUGIN_DIR` to the folder with the 02.05.02.5x plug-in, or `PJARCZAK_BAMBU_NETWORK_SO` and `PJARCZAK_BAMBU_SOURCE_SO` to absolute paths. |
+| `LAN connection to printer … failed` | Check the printer IP, LAN access code and LAN mode. A custom `BAMBU_NETWORK_CERT_DIR` must contain Bambu's `printer.cer`. |
+| `start_local_print returned non-zero result -4030` | The plug-in uploaded the job but could not send the print command. The error lists the plug-in's own reports; check the printer's LAN connection and status before retrying. |
+| `Segmentation fault` in `lastStderr` | The host crashed. Report the method, host runtime and plug-in versions; restart the server before retrying. |
 | Missing library / architecture / VM error | Check the matching upstream runtime, CPU architecture, library directory, and platform wrapper. |
 | Handshake works, file upload fails | Verify the project and config paths inside the host/VM/WSL process, including read/write permissions. |
 | Agent ready, cloud print rejected | Verify login, region, and device ID; `agentReady` is not an authenticated-session guarantee. |
@@ -214,6 +252,8 @@ Non-zero numeric bridge results are errors. A successful submission does not pro
 | FULU/Orca CLI slicing requested | Use 1.1.11+ with the matching installed profile tree and exact model/nozzle; see the CLI checks above. Use GUI export if preparation or slicing fails. |
 | X2D native transport unavailable | Native printing requires macOS or x86-64 Linux, the optional built helper, and a compatible installed networking plug-in. On Linux, run `bambu-printer-mcp-native-setup` and check it with `--verify`. Legacy FTPS/remote-file starts remain unsupported; keep the X2D model and preset. |
 
-The repository's automated tests exercise mocked bridge framing, initialization, method/parameter handling, and failure responses. They do not certify live FULU printing on Linux, Windows, or macOS. Earlier macOS experiments reached a handshake but encountered print-start failures; they are not current physical-print validation. No physical print is performed as part of this documentation sweep.
+The repository's automated tests exercise bridge framing, initialization, method/parameter handling and failure responses. They use a stand-in host that reproduces the real host's exit codes, certificate needs and `-4030` behaviour. An opt-in test runs the real host and plug-in when `FULU_HOST_DIR` and `FULU_PLUGIN_DIR` point at them on x86-64 Linux. With `FULU_TEST_PRINTER_HOST`, `FULU_TEST_PRINTER_SERIAL` and `FULU_TEST_PRINTER_ACCESS_CODE` it also opens and closes a real LAN session. It never prints.
+
+Hardware evidence (2026-10-25, maintainer): the FULU v1.0.0 host and plug-in 02.05.02.58 ran in an x86-64 Ubuntu 24.04 container under emulation on Apple silicon. Through the `cat` wrapper, `print_3mf_bambu_network` over LAN printed a 10 mm PLA cube on a P1S from AMS tray 3. The printer reported `FINISH` at 100% with no print error or HMS entries. The 1.1.34 bridge code then printed a 40 mm cube the same way, which the printer ran under the server's checked job name, and passed the opt-in real-host LAN-session test against that printer. The cube was sliced with OrcaSlicer 2.4.2, because the FULU v1.0.0 CLI crashes (see [CLI safety checks](#fulu-and-orca-cli-safety-limit)). This does not cover cloud printing, Windows/WSL, macOS Lima wrappers or other printer models. A contributor reports cloud printing on two P1S printers with 1.1.33 and the same Linux workarounds.
 
 For a useful [issue report](https://github.com/DMontgomery40/bambu-printer-mcp/issues), include MCP version, OS/CPU, printer model and firmware, slicer/runtime version, direct-LAN versus bridge/cloud selection, method used, redacted error, and whether the printer actually started. Credit both working and failing hardware evidence so future compatibility claims remain specific.

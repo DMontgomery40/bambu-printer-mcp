@@ -112,6 +112,54 @@ const PROFILE_METADATA_KEYS = new Set([
     'name', 'type', 'from', 'inherits', 'instantiation', 'setting_id', 'version', 'is_custom_defined',
     'compatible_printers', 'compatible_printers_condition', 'compatible_prints', 'compatible_prints_condition',
 ]);
+function describeSlicerFailure(error, stdout, stderr, cli) {
+    const status = typeof error.signal === "string" && error.signal
+        ? `crashed with ${error.signal}`
+        : typeof error.code === "number" ? `exited with code ${error.code}` : "failed";
+    const reason = cli ? bambuCliFailureReason(error.code, cli) : undefined;
+    const output = stderr.trim() ? "" : stdout.trim().split("\n").slice(-20).join("\n");
+    return `Slicer failed: the slicer ${status}${reason ? ` (${reason})` : ""}. ${error.message.trim()}${output ? `\nSlicer output: ${output}` : ""}`;
+}
+// Bambu Studio and OrcaSlicer CLI errors (libslic3r/Utils.hpp). The process
+// exits with the low byte of the code; on Linux result.json names the error.
+const BAMBU_CLI_ERRORS = {
+    [-2]: "invalid parameters to the slicer",
+    [-3]: "input files not found",
+    [-5]: "preset file cannot be parsed",
+    [-6]: "model file cannot be parsed",
+    [-9]: "copying objects failed",
+    [-17]: "printer is not compatible with the process preset",
+    [-21]: "auto-arranging objects failed",
+    [-22]: "auto-orienting objects failed",
+    [-50]: "a plate is empty or has no object fully inside it; arrange the model or place it on the plate",
+    [-51]: "incorrect slicing parameters",
+    [-52]: "objects extend over the bed boundary",
+    [-60]: "no printable objects remain after skipping",
+    [-61]: "filaments are not compatible with the plate type",
+    [-62]: "the filaments' temperatures differ too much",
+    [-63]: "objects collide in print-by-object mode",
+    [-64]: "objects collide",
+    [-100]: "slicing the model failed",
+    [-101]: "G-code conflicts after slicing",
+    [-102]: "G-code in an unprintable area",
+};
+function bambuCliFailureReason(exitCode, cli) {
+    try {
+        if (fs.statSync(cli.resultPath).mtimeMs >= cli.startedAt) {
+            const result = JSON.parse(fs.readFileSync(cli.resultPath, "utf8"));
+            if (typeof result.error_string === "string" && result.error_string.trim()) {
+                return `${result.error_string.trim()} [${result.return_code}]`;
+            }
+        }
+    }
+    catch {
+        // result.json is written only on Linux and only for handled errors.
+    }
+    if (typeof exitCode !== "number")
+        return undefined;
+    const code = Object.keys(BAMBU_CLI_ERRORS).map(Number).find(value => (value & 0xff) === exitCode);
+    return code === undefined ? undefined : `${BAMBU_CLI_ERRORS[code]} [${code}]`;
+}
 export class STLManipulator extends EventEmitter {
     constructor(tempDir = path.join(process.cwd(), 'temp')) {
         super();
@@ -746,6 +794,32 @@ export class STLManipulator extends EventEmitter {
         }
     }
     /**
+     * Apply slice_stl's scale and rotations to a copy of the mesh as OrcaSlicer's
+     * CLI would, about the model's centre. Orca adds each --rotate* to the
+     * object's Euler angles (ModelVolume::rotate), so the result rotates about X,
+     * then Y, then Z whatever the argument order, after scaling. The slicer then
+     * places the result on the plate.
+     */
+    async transformMeshForCli(stlFilePath, options) {
+        const { geometry, boundingBox } = await this.loadSTL(stlFilePath);
+        const center = new THREE.Vector3();
+        boundingBox.getCenter(center);
+        const radians = (degrees) => degrees * Math.PI / 180;
+        geometry.applyMatrix4(new THREE.Matrix4().makeTranslation(-center.x, -center.y, -center.z));
+        if (options.scale !== undefined)
+            geometry.applyMatrix4(new THREE.Matrix4().makeScale(options.scale, options.scale, options.scale));
+        if (options.rotateX)
+            geometry.applyMatrix4(new THREE.Matrix4().makeRotationX(radians(options.rotateX)));
+        if (options.rotateY)
+            geometry.applyMatrix4(new THREE.Matrix4().makeRotationY(radians(options.rotateY)));
+        if (options.rotate)
+            geometry.applyMatrix4(new THREE.Matrix4().makeRotationZ(radians(options.rotate)));
+        geometry.applyMatrix4(new THREE.Matrix4().makeTranslation(center.x, center.y, center.z));
+        const outputFilePath = path.join(this.tempDir, `${path.basename(stlFilePath, path.extname(stlFilePath))}_transformed_${this.generateOperationId()}.stl`);
+        await this.saveSTL(geometry, outputFilePath);
+        return outputFilePath;
+    }
+    /**
      * Rotate an STL model around specific axes
      */
     async rotateSTL(stlFilePath, rotationAngles, // [x, y, z] in degrees
@@ -1241,7 +1315,9 @@ export class STLManipulator extends EventEmitter {
         const outputFileName = path.basename(stlFilePath, '.stl') + '.gcode';
         let outputFilePath = path.join(this.tempDir, outputFileName);
         let args = [];
+        let cliResult;
         const orcaTemporaryDirectories = [];
+        const temporaryFiles = [];
         try {
             if (progressCallback)
                 progressCallback(0, `Starting slicing with ${slicerType}...`);
@@ -1345,6 +1421,27 @@ export class STLManipulator extends EventEmitter {
                             });
                             break;
                         }
+                        // OrcaSlicer's CLI crashes (SIGSEGV in PartPlate::check_outside,
+                        // which needs the GUI's Plater) when --scale or --rotate-x/-y move an
+                        // object below the bed and it arranges, the default for STL; it also
+                        // rejects --repetitions for one STL. Apply STL transforms to the mesh
+                        // in the CLI's order instead, and refuse the 3MF case it cannot fix.
+                        const orcaCli = slicerType === 'orcaslicer' || slicerType === 'orcaslicer-bambulab';
+                        const tilts = !!bambuOptions?.rotateX || !!bambuOptions?.rotateY;
+                        const meshTransform = orcaCli && !is3mf && (bambuOptions?.scale !== undefined || tilts);
+                        if (orcaCli && is3mf && bambuOptions?.arrange === true && ((bambuOptions.scale ?? 1) > 1 || tilts)) {
+                            throw new Error("OrcaSlicer's CLI crashes when scale above 1, rotate_x or rotate_y moves a 3MF object below the bed while arranging. " +
+                                "Set arrange to false, or apply the transform in the slicer and export the project.");
+                        }
+                        if (orcaCli && !is3mf && bambuOptions?.repetitions !== undefined && bambuOptions.cloneObjects) {
+                            throw new Error("Use either repetitions or clone_objects for an STL with OrcaSlicer, not both.");
+                        }
+                        const inputPath = meshTransform ? await this.transformMeshForCli(stlFilePath, bambuOptions) : stlFilePath;
+                        if (inputPath !== stlFilePath)
+                            temporaryFiles.push(inputPath);
+                        cliResult = { resultPath: path.join(outputDir, 'result.json'), startedAt: Date.now() };
+                        // A result.json left by an earlier run must not explain this one.
+                        await fs.promises.rm(cliResult.resultPath, { force: true });
                         args = [
                             ...orcaExtraArgs,
                             '--slice', String(bambuOptions?.slicePlate ?? 0),
@@ -1373,16 +1470,23 @@ export class STLManipulator extends EventEmitter {
                             args.push('--orient', bambuOptions.orient ? '1' : '0');
                         if (bambuOptions?.arrange !== undefined)
                             args.push('--arrange', bambuOptions.arrange ? '1' : '0');
-                        if (bambuOptions?.repetitions !== undefined)
-                            args.push('--repetitions', String(bambuOptions.repetitions));
-                        if (bambuOptions?.scale !== undefined)
-                            args.push('--scale', String(bambuOptions.scale));
-                        if (bambuOptions?.rotate !== undefined)
-                            args.push('--rotate', String(bambuOptions.rotate));
-                        if (bambuOptions?.rotateX !== undefined)
-                            args.push('--rotate-x', String(bambuOptions.rotateX));
-                        if (bambuOptions?.rotateY !== undefined)
-                            args.push('--rotate-y', String(bambuOptions.rotateY));
+                        if (bambuOptions?.repetitions !== undefined) {
+                            // OrcaSlicer counts copies of a single loaded STL with --clone-objects.
+                            if (orcaCli && !is3mf)
+                                args.push('--clone-objects', String(bambuOptions.repetitions));
+                            else
+                                args.push('--repetitions', String(bambuOptions.repetitions));
+                        }
+                        if (!meshTransform) {
+                            if (bambuOptions?.scale !== undefined)
+                                args.push('--scale', String(bambuOptions.scale));
+                            if (bambuOptions?.rotate !== undefined)
+                                args.push('--rotate', String(bambuOptions.rotate));
+                            if (bambuOptions?.rotateX !== undefined)
+                                args.push('--rotate-x', String(bambuOptions.rotateX));
+                            if (bambuOptions?.rotateY !== undefined)
+                                args.push('--rotate-y', String(bambuOptions.rotateY));
+                        }
                         if (bambuOptions?.cloneObjects)
                             args.push('--clone-objects', bambuOptions.cloneObjects);
                         if (bambuOptions?.skipObjects)
@@ -1393,7 +1497,7 @@ export class STLManipulator extends EventEmitter {
                         }
                         if (bambuOptions?.loadFilamentIds)
                             args.push('--load-filament-ids', bambuOptions.loadFilamentIds);
-                        args.push(stlFilePath);
+                        args.push(inputPath);
                         // Override outputFilePath for bambustudio since it produces 3MF, not gcode
                         outputFilePath = bambuOutputPath;
                     }
@@ -1411,7 +1515,7 @@ export class STLManipulator extends EventEmitter {
                         if (error) {
                             console.error(`Slicer Error: ${error.message}`);
                             console.error(`Slicer Stderr: ${stderr}`);
-                            reject(new Error(`Slicer failed: ${error.message}. Stderr: ${stderr}`));
+                            reject(new Error(describeSlicerFailure(error, stdout, stderr, cliResult)));
                         }
                         else {
                             console.error(`Slicer Stdout: ${stdout}`);
@@ -1470,6 +1574,9 @@ export class STLManipulator extends EventEmitter {
         }
         finally {
             this.activeOperations.delete(operationId);
+            for (const file of temporaryFiles) {
+                await fs.promises.rm(file, { force: true }).catch(error => console.error('Could not remove a temporary mesh:', error));
+            }
             for (const directory of orcaTemporaryDirectories.reverse()) {
                 await fs.promises.rm(directory, { recursive: true, force: true }).catch(error => {
                     console.error('Could not remove temporary Orca profiles:', error);

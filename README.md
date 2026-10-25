@@ -179,7 +179,7 @@ See the [changelog](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main
 
 [FULU OrcaSlicer-bambulab](https://github.com/FULU-Foundation/OrcaSlicer-bambulab) is a supported slicer target (`SLICER_TYPE=orcaslicer-bambulab`; aliases include `fulu-orca` and `orca-studio`). Use its GUI to export a sliced project for direct LAN printing, or configure its CLI with matching installed profiles. From 1.1.11, FULU/Orca share the [machine-preset gate and profile safety checks](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#fulu-and-orca-cli-safety-limit).
 
-The optional FULU **BambuNetwork bridge** exposes `bambu_network_bridge_status`, `bambu_network_call`, and `print_3mf_bambu_network`, also reachable through `print_3mf` with `connection_mode: "bambu_network"`. Slicer selection does not enable the bridge. It needs a separately installed FULU runtime and an explicit launch command; cloud printing also needs an authenticated BambuNetwork session.
+The optional FULU **BambuNetwork bridge** exposes `bambu_network_bridge_status`, `bambu_network_call`, and `print_3mf_bambu_network`, also reachable through `print_3mf` with `connection_mode: "bambu_network"`. Slicer selection does not enable the bridge. It needs a separately installed FULU runtime and an explicit launch command; cloud printing also needs an authenticated BambuNetwork session. On Linux, FULU's v1.0.0 host needs a small `cat` wrapper and the 02.05.02.5x plug-in; the guide covers both. LAN bridge prints open the plug-in's own LAN session with Bambu's printer certificate, which the server supplies.
 
 **[Follow the FULU setup guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md)** for the direct LAN recipe, Linux/Windows/macOS bridge setup, connection probes, authentication, and troubleshooting. Bridge protocol tests and a successful handshake do not establish a successful physical print.
 
@@ -623,7 +623,7 @@ Capture a single JPEG frame from the printer's chamber camera. Read-only.
 
 Two transports are wired in, picked by `bambu_model`:
 
-- **TCP-on-6000** for **A1, A1 mini, P1S, P1P**. Native protocol per [OpenBambuAPI/video.md](https://github.com/Doridian/OpenBambuAPI/blob/main/video.md): TLS on port 6000, 80-byte auth packet (`bblp` + access token), repeating 16-byte frame header + JPEG payload.
+- **TCP-on-6000** for **A1, A1 mini, P1S, P1P**. Native protocol per [OpenBambuAPI/video.md](https://github.com/Doridian/OpenBambuAPI/blob/main/video.md): TLS on port 6000, 80-byte auth packet (`bblp` + access token), repeating 16-byte frame header + JPEG payload. The printer first replays the last frame it buffered, which after an idle period can show the chamber as it was long ago, so the tool skips that frame and returns the next live one (about 3 s). If no live frame follows within `timeout_ms`, it fails instead of returning a possibly stale image.
 - **RTSP** for **X1, X1 Carbon, X1E, P2S, X2D** and **H2, H2S, H2D, H2C, H2D Pro**. Shells out to ffmpeg with `rtsps://bblp:<token>@<host>:322/streaming/live/1 -frames:v 1`. The H2 series wasn't documented in OpenBambuAPI's `video.md` but its firmware uses the same RTSP endpoint as X1 (verified live against an H2S, 2026-04-27).
 
 **Requires ffmpeg in PATH** for the RTSP path. Install with `brew install ffmpeg` on macOS. Configure a trusted custom binary with the server-side `FFMPEG_PATH` environment variable, or set `MCP_ALLOW_EXECUTABLE_ARG=1` before using the `ffmpeg_path` tool argument. The TCP-on-6000 path uses native Node TLS and does not require ffmpeg.
@@ -1114,6 +1114,8 @@ Slice an STL or 3MF file using an external slicer and return the path to the out
 `slicer_type` options: `bambustudio`, `orcaslicer`, `orcaslicer-bambulab` (FULU), `prusaslicer`, `cura`, `slic3r`. Aliases include `fulu-orca` and `orca-studio`. When omitted, the value from the `SLICER_TYPE` environment variable is used (default: `bambustudio`).
 
 **FULU/Orca CLI safety:** from 1.1.11, these backends require the exact model/nozzle preset from the selected installation and stop on profile preparation failures. A process override cannot bypass that gate. See [configuration and validation limits](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md#fulu-and-orca-cli-safety-limit).
+
+**OrcaSlicer CLI transforms:** OrcaSlicer 2.4.2's CLI segfaults when `scale` or `rotate_x`/`rotate_y` moves an object below the bed while arranging, which is the default for STL input. For STL input with `orcaslicer` or `orcaslicer-bambulab`, the server applies `scale` and the rotations to a copy of the mesh in the CLI's order and leaves those flags out. For 3MF input it refuses `scale` above 1, `rotate_x` or `rotate_y` together with `arrange: true`. `repetitions` copies an STL with Orca's `--clone-objects`. `clone_objects` takes one total count, because the CLI counts copies per loaded file. With `arrange: false`, an STL that is not already on the plate fails to slice. A failure names the slicer's own reason.
 
 `slicer_path` and `slicer_profile` fall back to the `SLICER_PATH` and `SLICER_PROFILE` environment variables when omitted. Per-call `slicer_path` overrides require `MCP_ALLOW_EXECUTABLE_ARG=1`.
 
