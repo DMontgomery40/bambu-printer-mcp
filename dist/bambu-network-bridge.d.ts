@@ -1,3 +1,5 @@
+/** A parenthesized explanation of a plug-in print result, or "" when it names no known cause. */
+export declare function describeBambuNetworkPrintError(value: number): string;
 /** Waits from native/bambu-native-print.cpp, which prints through the same plug-in calls. */
 export declare const LOCAL_PRINT_TIMING: Readonly<{
     connectTimeoutMs: 30000;
@@ -89,6 +91,8 @@ export declare class BambuNetworkBridge {
     private lastStderr;
     private recentLogs;
     private inferredExpectedNetworkVersion?;
+    /** Whether the host accepted the certificate folder and callbacks a LAN session needs. */
+    private localSessionReady;
     resolveBridgeCommand(override?: string): string;
     resolveConfigDir(override?: string): string;
     resolveCountryCode(override?: string): string;

@@ -25,8 +25,11 @@ const state = { certFolder: undefined, connected: false, certInstalled: false, e
 const crash = () => { process.stderr.write("Segmentation fault (core dumped)\n"); process.exit(139); };
 const queue = (name, payload) => state.events.push({ agent: 1, name, payload });
 
+const unsupported = new Set((process.env.FAKE_FULU_UNSUPPORTED ?? "").split(",").filter(Boolean));
+
 function handle(method, payload) {
   const ok = (value = 0, extra = {}) => ({ ok: true, value, ...extra });
+  if (unsupported.has(method)) return { ok: false, error: `${method} unsupported in host` };
   switch (method) {
     case "bridge.handshake": {
       const loaded = Boolean(process.env.PJARCZAK_BAMBU_PLUGIN_DIR || process.env.PJARCZAK_BAMBU_NETWORK_SO);

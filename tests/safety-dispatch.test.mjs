@@ -322,7 +322,7 @@ for (const [name, changes, error] of [
   });
 }
 
-async function interceptedMcp(t, { blockBridgeInitialization = false, realBridgeRequest = false, model = "p1s", nozzleDiameters = [0.4], ams, bridgeResponse = { ok: true, value: 0 } } = {}) {
+async function interceptedMcp(t, { blockBridgeInitialization = false, realBridgeRequest = false, model = "p1s", nozzleDiameters = [0.4], ams, bridgeResponse = { ok: true, value: 0 }, localPrint } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-bridge-safety-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const eventsPath = path.join(dir, "events.jsonl");
@@ -346,6 +346,10 @@ async function interceptedMcp(t, { blockBridgeInitialization = false, realBridge
         raw:{model:${JSON.stringify(model)},...${JSON.stringify(['h2d','h2dpro','h2c','x2d'].includes(model) ? {vir_slot:[{id:254,tray_type:'PLA'},{id:255,tray_type:'PLA'}]} : {})},gcode_state:'IDLE',nozzle_diameter:${JSON.stringify(String(nozzleDiameters[0]))},device:{nozzle:{info:${JSON.stringify(nozzleDiameters.map((diameter, id) => ({ id, diameter, type: "HH01", stat: 0 })))}}},print_error:0,hms:[],...${JSON.stringify(ams ? { ams } : {})},...reported},
         observation:{source:'mqtt',requestedAt:now,receivedAt:now,identitySource:'report'}};
     };
+    ${localPrint ? `BambuNetworkBridge.prototype.startLocalPrint = async (printer, method, payload) => {
+      log({ action:'local-print', printer: { ...printer, password: '[set]' }, method, payload });
+      return ${JSON.stringify(localPrint)};
+    };` : ""}
     BambuNetworkBridge.prototype.ensureAgent = async () => {
       ${blockBridgeInitialization ? `log({action:'agent-wait'}); while (!fs.existsSync(${JSON.stringify(releasePath)})) await new Promise(resolve => setTimeout(resolve,10));` : ""}
       return { agent: 0, handshake: { ok: true } };
@@ -372,6 +376,22 @@ async function interceptedMcp(t, { blockBridgeInitialization = false, realBridge
   await client.connect(transport);
   return { client, eventsPath, releaseAgent: () => fs.writeFile(releasePath, "release"), setReportedStatus: reported => fs.writeFile(statusPath, JSON.stringify(reported)) };
 }
+
+test("a LAN bridge print that the plug-in cannot publish reports the cause and the plug-in's own job reports", async (t) => {
+  const { client, eventsPath } = await interceptedMcp(t, { localPrint: { result: { ok: true, value: -4030, job_id: 1 }, jobUpdates: [
+    { status: 1, code: 100, msg: "0.0M/0.0M" }, { status: 3, code: -4030, msg: "send msg failed" },
+  ] } });
+  const file = await fixture(t);
+  const result = await client.callTool({ name: "print_3mf_bambu_network", arguments: { three_mf_path: file, bambu_model: "p1s", nozzle_diameter: "0.4", bed_type: "textured_plate", use_ams: false, connection_type: "lan" } });
+  assert.equal(result.isError, true);
+  assert.match(result.content.map(item => item.text ?? "").join(" "),
+    /start_local_print returned non-zero result -4030 \(the networking plug-in could not send the print command to the printer over MQTT\)\. Plug-in reported: status 1, code 100: 0\.0M\/0\.0M; status 3, code -4030: send msg failed\./);
+  const events = (await fs.readFile(eventsPath, "utf8")).trim().split("\n").map(JSON.parse);
+  const local = events.filter(event => event.action === "local-print");
+  assert.equal(local.length, 1);
+  assert.equal(local[0].method, "net.start_local_print");
+  assert.deepEqual(local[0].printer, { devId: serial, devIp: host, username: "bblp", password: "[set]", useSsl: true });
+});
 
 test("raw BambuNetwork start_print cannot bypass the inspected print handler", async (t) => {
   const { client, eventsPath } = await interceptedMcp(t);

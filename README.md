@@ -623,7 +623,7 @@ Capture a single JPEG frame from the printer's chamber camera. Read-only.
 
 Two transports are wired in, picked by `bambu_model`:
 
-- **TCP-on-6000** for **A1, A1 mini, P1S, P1P**. Native protocol per [OpenBambuAPI/video.md](https://github.com/Doridian/OpenBambuAPI/blob/main/video.md): TLS on port 6000, 80-byte auth packet (`bblp` + access token), repeating 16-byte frame header + JPEG payload.
+- **TCP-on-6000** for **A1, A1 mini, P1S, P1P**. Native protocol per [OpenBambuAPI/video.md](https://github.com/Doridian/OpenBambuAPI/blob/main/video.md): TLS on port 6000, 80-byte auth packet (`bblp` + access token), repeating 16-byte frame header + JPEG payload. The printer first replays the last frame it buffered, which after an idle period can show the chamber as it was long ago, so the tool skips that frame and returns the next live one (about 3 s). If no live frame follows within `timeout_ms`, it fails instead of returning a possibly stale image.
 - **RTSP** for **X1, X1 Carbon, X1E, P2S, X2D** and **H2, H2S, H2D, H2C, H2D Pro**. Shells out to ffmpeg with `rtsps://bblp:<token>@<host>:322/streaming/live/1 -frames:v 1`. The H2 series wasn't documented in OpenBambuAPI's `video.md` but its firmware uses the same RTSP endpoint as X1 (verified live against an H2S, 2026-04-27).
 
 **Requires ffmpeg in PATH** for the RTSP path. Install with `brew install ffmpeg` on macOS. Configure a trusted custom binary with the server-side `FFMPEG_PATH` environment variable, or set `MCP_ALLOW_EXECUTABLE_ARG=1` before using the `ffmpeg_path` tool argument. The TCP-on-6000 path uses native Node TLS and does not require ffmpeg.

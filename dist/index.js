@@ -10,7 +10,7 @@ import path from "path";
 import { createServer as createHttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { STLManipulator, SLICER_TYPES, normalizeSlicerType, } from "./stl/stl-manipulator.js";
-import { BambuNetworkBridge } from "./bambu-network-bridge.js";
+import { BambuNetworkBridge, describeBambuNetworkPrintError } from "./bambu-network-bridge.js";
 import { assertBambuNativeAvailable, bambuNativeControlsAvailable, bambuNativeUnavailableReason, interruptNativeOperations, validateBambuNativeMetadata, buildBambuNativeFanCommand, buildBambuNativeTemperatureCommand, printWithBambuNative, sendCommandWithBambuNative, uploadWithBambuNative, } from "./bambu-native.js";
 import { importFileViaBambuConnect } from "./bambu-connect.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
@@ -573,15 +573,6 @@ function parseBooleanEnv(rawValue, fallback) {
 const DEFAULT_CONFIRMATION_TIMEOUT_MS = 600000;
 const MIN_CONFIRMATION_TIMEOUT_MS = 1000;
 const MAX_CONFIRMATION_TIMEOUT_MS = 3600000;
-// bambu_networking.hpp print errors that name a recoverable cause.
-const BAMBU_NETWORK_PRINT_ERRORS = {
-    [-4010]: "the file exceeds the 1 GB upload limit",
-    [-4020]: "FTPS upload to the printer failed",
-    [-4030]: "the networking plug-in could not send the print command to the printer over MQTT",
-};
-function describeBambuNetworkError(value) {
-    return BAMBU_NETWORK_PRINT_ERRORS[value] ? ` (${BAMBU_NETWORK_PRINT_ERRORS[value]})` : "";
-}
 /** Out-of-range values fall back to the default; Node clamps huge timer delays to 1 ms. */
 function parseConfirmationTimeout(value) {
     const parsed = Number(value?.trim() || NaN);
@@ -1238,16 +1229,17 @@ class BambuPrinterMCPServer {
             this.bambu.assertBedClearance(confirmedStatus, bedClearance);
             const amsMapping = stringifyBridgeJson(mapping?.map(value => bridgeAmsMappingValue(value, isDualNozzleModel(printModel))));
             const remoteFileName = uniquePrintName(threeMFPath);
+            const checkedName = remoteFileName.replace(/(?:\.gcode)?\.3mf$/i, "");
             const params = {
                 dev_id: devId,
                 // Firmware can report the task name instead of the uploaded filename.
                 // Bind either report to this inspected artifact for a later safe resume.
-                task_name: remoteFileName.replace(/(?:\.gcode)?\.3mf$/i, ""),
+                task_name: checkedName,
                 // The plug-in names the uploaded file and the printer's job from
                 // project_name, so it carries the same unique checked name, as the
                 // native route already passes; a reused name would overwrite a stored
                 // job and break the resume binding.
-                project_name: remoteFileName.replace(/(?:\.gcode)?\.3mf$/i, ""),
+                project_name: checkedName,
                 preset_name: presetName,
                 filename: snapshot,
                 config_filename: snapshot,
@@ -1355,7 +1347,7 @@ class BambuPrinterMCPServer {
                 const value = bridgeResult.value;
                 const reported = jobUpdates.filter(update => update.code !== 0 || update.msg).slice(-3)
                     .map(update => `status ${update.status}, code ${update.code}${update.msg ? `: ${update.msg}` : ""}`).join("; ");
-                throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} returned non-zero result ${value}${describeBambuNetworkError(value)}.` +
+                throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} returned non-zero result ${value}${describeBambuNetworkPrintError(value)}.` +
                     (reported ? ` Plug-in reported: ${reported}.` : ""));
             }
             assertActive();
@@ -1370,6 +1362,7 @@ class BambuPrinterMCPServer {
                 projectName,
                 plateIndex,
                 bridgePlateIndex: plateIndex + 1,
+                printerJobName: checkedName,
                 useAMS,
                 amsMapping: mapping,
                 params: redactPrintParams(params),
@@ -2102,7 +2095,7 @@ class BambuPrinterMCPServer {
                                 nozzle_type: { type: "string", enum: [...VALID_NOZZLE_TYPES], description: "Installed nozzle material, used when the 3MF must be auto-sliced (default: BAMBU_NOZZLE_TYPE, else the preset's stock nozzle)." },
                                 nozzle_volume_type: { type: "string", enum: [...VALID_NOZZLE_VOLUME_TYPES], description: "Installed nozzle flow type, used when the 3MF must be auto-sliced (default: BAMBU_NOZZLE_VOLUME_TYPE, else standard)." },
                                 plate_index: { type: "number", description: "Zero-based plate index to print from the sliced 3MF; converted to FULU's one-based PrintParams plate_index." },
-                                project_name: { type: "string", description: "Optional project name sent in FULU PrintParams; defaults to the 3MF filename without extension." },
+                                project_name: { type: "string", description: "Optional project name returned in the result; defaults to the 3MF filename without extension. The printer job and stored file use the server's unique checked name so resume_print can bind to the inspected file." },
                                 preset_name: { type: "string", description: "Optional preset name sent in FULU PrintParams; defaults to project plus one-based plate index." },
                                 task_name: { type: "string", description: "Optional project label when project_name is omitted. The submitted task name uses a unique inspected-job identity for safe resume." },
                                 config_filename: { type: "string", description: "Optional config 3MF path for cloud print; defaults to the same 3MF path." },

@@ -298,8 +298,13 @@ class BambuClientStore {
         // (gcode_state, ams, hms, temperatures, fans, etc.) arrives afterward
         // and gets merged into reportSnapshots via incremental update.
         // This settle runs regardless of whether data arrived before or during
-        // the promise race above, so the merge has time to complete.
+        // the promise race above, so the merge has time to complete. A busy host
+        // can take longer, which returned the sparse report as status UNKNOWN,
+        // so keep waiting for the full status within the same bound.
         await sleep(500);
+        const deadline = Date.now() + timeoutMs;
+        while (typeof this.reportSnapshots.get(key)?.gcode_state !== "string" && Date.now() < deadline)
+            await sleep(50);
         return this.reportSnapshots.get(key) || null;
     }
     async getPrinter(host, serial, token) {
@@ -381,6 +386,37 @@ class BambuClientStore {
         this.initialReportPromises.clear();
         this.initialReportResolvers.clear();
     }
+}
+/**
+ * Split the A1/P1 camera stream on port 6000 into JPEG frames. Each frame is
+ * a 16-byte header (payload size LE, itrack, flags, reserved) and the JPEG.
+ */
+export function cameraFrameParser(onFrame, onError) {
+    let buffered = Buffer.alloc(0);
+    let failed = false;
+    return chunk => {
+        if (failed)
+            return;
+        buffered = Buffer.concat([buffered, chunk]);
+        while (buffered.length >= 16) {
+            const payloadSize = buffered.readUInt32LE(0);
+            if (payloadSize <= 0 || payloadSize > 5000000) {
+                failed = true;
+                onError(new Error(`camera_snapshot: unreasonable payload size ${payloadSize} from header; auth likely failed.`));
+                return;
+            }
+            if (buffered.length < 16 + payloadSize)
+                return;
+            const jpeg = buffered.subarray(16, 16 + payloadSize);
+            buffered = buffered.subarray(16 + payloadSize);
+            if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) {
+                failed = true;
+                onError(new Error(`camera_snapshot: payload does not start with JPEG SOI (FF D8); got ${jpeg[0].toString(16)} ${jpeg[1].toString(16)}.`));
+                return;
+            }
+            onFrame(Buffer.from(jpeg));
+        }
+    };
 }
 export class BambuImplementation {
     constructor(confirm) {
@@ -1618,10 +1654,14 @@ export class BambuImplementation {
         });
     }
     /**
-     * Open the TLS-on-6000 socket, send the 80-byte auth packet, and read
-     * a single complete JPEG frame. Returns the JPEG bytes.
+     * Open the TLS-on-6000 socket, send the 80-byte auth packet, and return
+     * a live JPEG frame. The printer first replays the last frame it buffered,
+     * which after an idle period can show the chamber as it was long ago (a
+     * finished part still on the bed), so that frame is discarded and the next
+     * one returned. If only the buffered frame arrives in time, this fails
+     * rather than return a possibly stale image.
      */
-    async fetchTcpCameraFrame(host, token, timeoutMs) {
+    async fetchTcpCameraFrame(host, token, timeoutMs, port = 6000) {
         const tls = await import("node:tls");
         const auth = Buffer.alloc(80, 0);
         auth.writeUInt32LE(0x40, 0); // payload size
@@ -1630,11 +1670,8 @@ export class BambuImplementation {
         auth.write("bblp", 16, 4, "ascii");
         auth.write(token, 48, Math.min(32, Buffer.byteLength(token, "ascii")), "ascii");
         return new Promise((resolve, reject) => {
-            const chunks = [];
-            let totalLen = 0;
-            const FRAME_HEADER_BYTES = 16;
-            let payloadSize = null;
             let settled = false;
+            let frames = 0;
             const finish = (err, jpeg) => {
                 if (settled)
                     return;
@@ -1648,44 +1685,24 @@ export class BambuImplementation {
                 else
                     reject(new Error("camera_snapshot: ended without jpeg payload"));
             };
-            const timer = setTimeout(() => finish(new Error(`camera_snapshot: timed out after ${timeoutMs}ms`)), timeoutMs);
+            const unfinished = (reason) => new Error(frames
+                ? `camera_snapshot: ${reason} after only the printer's buffered frame, which may be stale; no live frame arrived. Retry, or raise timeout_ms.`
+                : `camera_snapshot: ${reason} before a full JPEG frame arrived`);
+            const timer = setTimeout(() => finish(unfinished(`timed out after ${timeoutMs}ms`)), timeoutMs);
+            const parse = cameraFrameParser(jpeg => { if (++frames === 2)
+                finish(null, jpeg); }, error => finish(error));
             const socket = tls.connect({
                 host,
-                port: 6000,
+                port,
                 rejectUnauthorized: false,
                 // The printer uses TLS for confidentiality but presents a self-signed cert.
                 // Same trust posture as the FTPS path (basic-ftp with rejectUnauthorized: false).
             }, () => {
                 socket.write(auth);
             });
-            socket.on("data", (data) => {
-                chunks.push(data);
-                totalLen += data.length;
-                if (payloadSize === null && totalLen >= FRAME_HEADER_BYTES) {
-                    const merged = Buffer.concat(chunks, totalLen);
-                    payloadSize = merged.readUInt32LE(0);
-                    if (payloadSize <= 0 || payloadSize > 5000000) {
-                        finish(new Error(`camera_snapshot: unreasonable payload size ${payloadSize} from header; auth likely failed.`));
-                        return;
-                    }
-                    // Reset chunk list to remaining bytes after the header.
-                    const remainder = merged.subarray(FRAME_HEADER_BYTES);
-                    chunks.length = 0;
-                    chunks.push(remainder);
-                    totalLen = remainder.length;
-                }
-                if (payloadSize !== null && totalLen >= payloadSize) {
-                    const merged = Buffer.concat(chunks, totalLen);
-                    const jpeg = merged.subarray(0, payloadSize);
-                    if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) {
-                        finish(new Error(`camera_snapshot: payload does not start with JPEG SOI (FF D8); got ${jpeg[0].toString(16)} ${jpeg[1].toString(16)}.`));
-                        return;
-                    }
-                    finish(null, jpeg);
-                }
-            });
+            socket.on("data", parse);
             socket.on("error", (err) => finish(err));
-            socket.on("end", () => finish(new Error("camera_snapshot: connection ended before a full JPEG frame arrived")));
+            socket.on("end", () => finish(unfinished("connection ended")));
         });
     }
     /**

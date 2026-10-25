@@ -15,6 +15,16 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 120000;
 const LOCAL_CONNECT_STATUS = ["ok", "failed", "lost"];
 // bambu_networking.hpp BAMBU_NETWORK_ERR_PRINT_LP_PUBLISH_MSG_FAILED.
 const LOCAL_PRINT_PUBLISH_FAILED = -4030;
+// bambu_networking.hpp print errors that name a recoverable cause.
+const BAMBU_NETWORK_PRINT_ERRORS = {
+    [-4010]: "the file exceeds the 1 GB upload limit",
+    [-4020]: "FTPS upload to the printer failed",
+    [LOCAL_PRINT_PUBLISH_FAILED]: "the networking plug-in could not send the print command to the printer over MQTT",
+};
+/** A parenthesized explanation of a plug-in print result, or "" when it names no known cause. */
+export function describeBambuNetworkPrintError(value) {
+    return BAMBU_NETWORK_PRINT_ERRORS[value] ? ` (${BAMBU_NETWORK_PRINT_ERRORS[value]})` : "";
+}
 /** Waits from native/bambu-native-print.cpp, which prints through the same plug-in calls. */
 export const LOCAL_PRINT_TIMING = Object.freeze({ connectTimeoutMs: 30000, pollMs: 250, settleMs: 3000, retryWaitMs: 8000 });
 /**
@@ -172,6 +182,8 @@ export class BambuNetworkBridge {
         this.nextRequestId = 1;
         this.lastStderr = "";
         this.recentLogs = [];
+        /** Whether the host accepted the certificate folder and callbacks a LAN session needs. */
+        this.localSessionReady = false;
     }
     resolveBridgeCommand(override) {
         return (trimEnv(override) ||
@@ -309,19 +321,22 @@ export class BambuNetworkBridge {
         // Bambu Studio and FULU's GUI set this before starting the agent. The
         // plug-in verifies a LAN printer with printer.cer from this folder, and
         // FULU's host crashes on connect_printer when no folder was ever set.
-        await withAgent("net.set_cert_file", { folder: certDir, filename: "slicer_base64.cer" });
+        const certificates = await withAgent("net.set_cert_file", { folder: certDir, filename: "slicer_base64.cer" }, false);
         await withAgent("net.set_country_code", { country_code: countryCode });
         await withAgent("net.start");
         // The plug-in runs callbacks through queue_on_main; FULU's host executes
         // them on its own dispatcher and queues on_local_connect for poll_events.
-        await withAgent("net.set_queue_on_main_fn");
-        await withAgent("net.set_on_local_connect_fn");
+        // Cloud jobs and probes do not depend on these, so a host without them
+        // still starts; a LAN session refuses before connecting instead.
+        const callbacks = [await withAgent("net.set_queue_on_main_fn", {}, false), await withAgent("net.set_on_local_connect_fn", {}, false)];
+        const localSessionReady = ![certificates, ...callbacks].some(isBridgeFailure);
         await withAgent("net.connect_server", {}, false);
         if (userInfo) {
             await withAgent("net.change_user", { user_info: userInfo });
         }
         this.agentId = agent;
         this.agentKey = key;
+        this.localSessionReady = localSessionReady;
         return { agent, handshake: this.handshake };
     }
     /**
@@ -370,6 +385,9 @@ export class BambuNetworkBridge {
         };
         await this.ensureAgent(options);
         assertActive();
+        if (!this.localSessionReady) {
+            throw new Error("FULU BambuNetwork bridge host did not accept the certificate folder or local-connection callbacks a LAN print needs. Update the FULU runtime; no print command was sent.");
+        }
         for (const callback of ["net.set_on_printer_connected_fn", "net.set_on_local_message_fn"]) {
             assertBridgeOk(await this.callWithAgent(callback, {}, options), callback);
         }
@@ -420,9 +438,10 @@ export class BambuNetworkBridge {
             return result;
         }
         finally {
+            const cleanupFailed = (step) => (error) => console.error(`FULU BambuNetwork bridge ${step} after the LAN session failed: ${error instanceof Error ? error.message : error}`);
             if (connected)
-                await this.callWithAgent("net.disconnect_printer", {}, options).catch(() => undefined);
-            await this.request("bridge.poll_events", { limit: 4096 }, options).catch(() => undefined);
+                await this.callWithAgent("net.disconnect_printer", {}, options).catch(cleanupFailed("disconnect"));
+            await this.request("bridge.poll_events", { limit: 4096 }, options).catch(cleanupFailed("event cleanup"));
         }
     }
     /**

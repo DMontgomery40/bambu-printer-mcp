@@ -138,6 +138,9 @@ test("X2D MCP print requests stop before slicing, status, uploads, and connectio
     assert.equal(call.payload.params.dev_id, "20PTEST");
     assert.notEqual(call.payload.params.filename, slicedFile, "bridge must receive a checked private snapshot");
     assert.equal(path.basename(call.payload.params.filename), path.basename(slicedFile));
+    // The plug-in names the stored file and printer job from project_name; resume binds to this checked name.
+    assert.match(call.payload.params.project_name, /^checked-[0-9a-f-]{36}-/);
+    assert.equal(call.payload.params.project_name, call.payload.params.task_name);
   }
   const sessions = (await fs.readFile(sessionFile, "utf8")).trim().split("\n").map(JSON.parse);
   assert.deepEqual(sessions, Array(2).fill({ devId: "20PTEST", devIp: "127.0.0.1", username: "bblp", password: "[set]", useSsl: true }),

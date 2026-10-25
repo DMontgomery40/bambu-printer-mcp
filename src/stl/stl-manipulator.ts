@@ -202,15 +202,16 @@ const PROFILE_METADATA_KEYS = new Set([
 ]);
 
 /**
- * Why the slicer process failed. A crash often leaves stderr empty (FULU
- * OrcaSlicer-bambulab v1.0.0 segfaults with no output), so name the signal or
- * exit code and fall back to the end of stdout.
+ * Why the slicer process failed. execFile's message already carries stderr;
+ * a crash often leaves stderr empty (FULU OrcaSlicer-bambulab v1.0.0
+ * segfaults with no output), so name the signal or exit code and add the end
+ * of stdout instead.
  */
 function describeSlicerFailure(error: { message: string; code?: unknown; signal?: unknown }, stdout: string, stderr: string): string {
   const status = typeof error.signal === "string" && error.signal
     ? `crashed with ${error.signal}`
     : typeof error.code === "number" ? `exited with code ${error.code}` : "failed";
-  const output = (stderr.trim() || stdout.trim()).split("\n").slice(-20).join("\n");
+  const output = stderr.trim() ? "" : stdout.trim().split("\n").slice(-20).join("\n");
   return `Slicer failed: the slicer ${status}. ${error.message.trim()}${output ? `\nSlicer output: ${output}` : ""}`;
 }
 

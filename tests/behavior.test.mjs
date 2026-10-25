@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
 import net from "node:net";
@@ -24,7 +24,7 @@ import {
 } from "../dist/bambu-native.js";
 import { UNPINNED_PLUGIN_ENV, createFakeNativeHome } from "./fixtures/native-home.mjs";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF } from "../dist/3mf_parser.js";
-import { BambuImplementation } from "../dist/printers/bambu.js";
+import { BambuImplementation, cameraFrameParser } from "../dist/printers/bambu.js";
 import { BambuNetworkBridge, LOCAL_PRINT_TIMING, linuxPluginLibraryEnv } from "../dist/bambu-network-bridge.js";
 import { BAMBU_NETWORK_CERTIFICATES } from "../dist/bambu-network-certs.js";
 import { STLManipulator } from "../dist/stl/stl-manipulator.js";
@@ -1526,6 +1526,17 @@ test("cancellation during a LAN session stops before the print command", async (
   assert.ok(methods().includes("net.disconnect_printer"), "an established session is still closed");
 });
 
+test("a host without the LAN-session calls still serves cloud and probes, and refuses LAN prints before connecting", async (t) => {
+  const { bridge, methods } = await fakeFuluBridge(t, { FAKE_FULU_UNSUPPORTED: "net.set_cert_file" });
+  const { agent } = await bridge.ensureAgent();
+  assert.equal(agent, 1, "cloud jobs and status probes keep working");
+  await assert.rejects(
+    bridge.startLocalPrint(LOCAL_PRINTER, "net.start_local_print", { client_job_id: 12, params: {} }, {}, () => {}, FAST_LOCAL_PRINT),
+    /did not accept the certificate folder or local-connection callbacks a LAN print needs\. .*no print command was sent/
+  );
+  assert.equal(methods().includes("net.connect_printer"), false, "the real host crashes connecting without a certificate folder");
+});
+
 // Opt-in: the real FULU host and plug-in. FULU_HOST_DIR holds pjarczak_bambu_linux_host
 // (x86-64 Linux), FULU_PLUGIN_DIR the 02.05.02.5x plug-in. With FULU_TEST_PRINTER_HOST,
 // FULU_TEST_PRINTER_SERIAL and FULU_TEST_PRINTER_ACCESS_CODE it also opens and closes a
@@ -1589,6 +1600,30 @@ test("sliceSTL allows slicer executables resolved from PATH", async (t) => {
 
   assert.equal(outputPath, path.join(tempRoot, "sample_cube.gcode"));
   assert.equal(fs.readFileSync(outputPath, "utf8"), "G1 X0\n");
+});
+
+test("sliceSTL names a slicer crash signal or exit code and keeps the end of its output", { skip: process.platform === "win32" }, async (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "crashing-slicer-"));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  const slicer = (name, body) => {
+    const file = path.join(tempRoot, name);
+    fs.writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    return file;
+  };
+  const manipulator = new STLManipulator(tempRoot);
+  // FULU OrcaSlicer-bambulab v1.0.0 prints nothing to stderr and segfaults.
+  await assert.rejects(manipulator.sliceSTL(SAMPLE_STL, "prusaslicer", slicer("segfaulting-slicer", 'echo "loading model"\nkill -SEGV $$')),
+    error => {
+      assert.match(error.message, /Slicer failed: the slicer crashed with SIGSEGV\./);
+      assert.match(error.message, /Slicer output: loading model$/);
+      return true;
+    });
+  await assert.rejects(manipulator.sliceSTL(SAMPLE_STL, "prusaslicer", slicer("refusing-slicer", 'echo "Some objects are located over the boundary of the heated bed." >&2\nexit 206')),
+    error => {
+      assert.match(error.message, /Slicer failed: the slicer exited with code 206\./);
+      assert.equal(error.message.split("located over the boundary of the heated bed").length, 2, "stderr appears once");
+      return true;
+    });
 });
 
 test("camera_snapshot routes H2 series through RTSP (verified live on Parker H2S)", async () => {
@@ -1662,6 +1697,69 @@ test("camera_snapshot supported models reach the wire path (mocked) and decode a
     assert.equal(out.sizeBytes, fakeJpeg.length);
     assert.equal(out.base64, fakeJpeg.toString("base64"));
   }
+});
+
+// The A1/P1 camera stream on port 6000: 16-byte header (payload size LE) + JPEG.
+const cameraFrame = (marker, size = 64) => {
+  const jpeg = Buffer.alloc(size, marker);
+  jpeg[0] = 0xff; jpeg[1] = 0xd8; jpeg[size - 2] = 0xff; jpeg[size - 1] = 0xd9;
+  const header = Buffer.alloc(16);
+  header.writeUInt32LE(size, 0);
+  header.writeUInt32LE(1, 8);
+  return { jpeg, wire: Buffer.concat([header, jpeg]) };
+};
+
+test("camera frame parser splits frames across arbitrary chunk boundaries and rejects bad headers", () => {
+  const first = cameraFrame(0x11, 70);
+  const second = cameraFrame(0x22, 90);
+  const stream = Buffer.concat([first.wire, second.wire]);
+  const frames = [];
+  const parse = cameraFrameParser(jpeg => frames.push(jpeg), error => assert.fail(error.message));
+  for (let offset = 0; offset < stream.length; offset += 7) parse(stream.subarray(offset, offset + 7));
+  assert.deepEqual(frames, [first.jpeg, second.jpeg]);
+
+  const errors = [];
+  const bad = cameraFrameParser(() => assert.fail("no frame"), error => errors.push(error.message));
+  bad(Buffer.alloc(16));
+  bad(cameraFrame(0x33).wire);
+  assert.deepEqual(errors, ["camera_snapshot: unreasonable payload size 0 from header; auth likely failed."]);
+});
+
+// Issue reported by the maintainer on a P1S: the first frame after connecting is the
+// printer's buffered frame and can show a finished part that was removed long ago.
+test("camera_snapshot over TCP skips the printer's buffered first frame and refuses when no live frame follows", { skip: process.platform === "win32" }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "camera-tls-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const created = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=printer", "-days", "1",
+    "-keyout", path.join(dir, "key.pem"), "-out", path.join(dir, "cert.pem")], { encoding: "utf8" });
+  if (created.status !== 0) return t.skip(`openssl unavailable: ${created.stderr || created.error}`);
+  const tls = await import("node:tls");
+  const buffered = cameraFrame(0x0b, 80);
+  const live = cameraFrame(0x1e, 80);
+  const auths = [];
+  let sendLive = true;
+  const server = tls.createServer({ key: fs.readFileSync(path.join(dir, "key.pem")), cert: fs.readFileSync(path.join(dir, "cert.pem")) }, socket => {
+    socket.once("data", auth => {
+      auths.push(auth);
+      socket.write(buffered.wire);
+      if (sendLive) setTimeout(() => socket.writable && socket.write(live.wire), 50);
+    });
+    socket.on("error", () => {});
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const { port } = server.address();
+  const bambu = new BambuImplementation(async () => true);
+
+  const frame = await bambu.fetchTcpCameraFrame("127.0.0.1", "ACCESS01", 3000, port);
+  assert.deepEqual(frame, live.jpeg, "the buffered frame must not be returned");
+  assert.equal(auths[0].length, 80);
+  assert.equal(auths[0].subarray(16, 20).toString("ascii"), "bblp");
+  assert.equal(auths[0].subarray(48, 56).toString("ascii"), "ACCESS01");
+
+  sendLive = false;
+  await assert.rejects(bambu.fetchTcpCameraFrame("127.0.0.1", "ACCESS01", 400, port),
+    /timed out after 400ms after only the printer's buffered frame, which may be stale; no live frame arrived/);
 });
 
 test("camera_snapshot RTSP path: ffmpeg ENOENT yields a clear, actionable error", async () => {

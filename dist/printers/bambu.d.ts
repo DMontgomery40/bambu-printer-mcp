@@ -33,6 +33,11 @@ export type PrintPreflight = {
     model: string;
     notices: string[];
 };
+/**
+ * Split the A1/P1 camera stream on port 6000 into JPEG frames. Each frame is
+ * a 16-byte header (payload size LE, itrack, flags, reserved) and the JPEG.
+ */
+export declare function cameraFrameParser(onFrame: (jpeg: Buffer) => void, onError: (error: Error) => void): (chunk: Buffer) => void;
 export declare class BambuImplementation {
     private readonly confirm?;
     private printerStore;
@@ -218,8 +223,12 @@ export declare class BambuImplementation {
      */
     private fetchRtspCameraFrame;
     /**
-     * Open the TLS-on-6000 socket, send the 80-byte auth packet, and read
-     * a single complete JPEG frame. Returns the JPEG bytes.
+     * Open the TLS-on-6000 socket, send the 80-byte auth packet, and return
+     * a live JPEG frame. The printer first replays the last frame it buffered,
+     * which after an idle period can show the chamber as it was long ago (a
+     * finished part still on the bed), so that frame is discarded and the next
+     * one returned. If only the buffered frame arrives in time, this fails
+     * rather than return a possibly stale image.
      */
     private fetchTcpCameraFrame;
     /**
