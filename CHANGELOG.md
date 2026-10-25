@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.1.34] – 2026-10-25
 
 ### Fixed
 - Let H2D printers with stock nozzles print. Every print stopped with `Printer nozzle 0 information is unreliable, abnormal or unknown` because the HS01 nozzles report `stat: 1` permanently. Bambu Studio reads bit 0 of `stat` as "information unreliable" and bits 1-2 as abnormal or unknown, and uses the unreliable bit only as a dismissible warning for H2C rack nozzles. Nozzles that report no identity chip (`sn: "N/A"`) now pass bit 0. Their configured diameter and type are still compared with the job. The print prompt names them so a person confirms they match the installed hotends, and checks log them once per printer on stderr, so a headless setup with `BAMBU_REQUIRE_CONFIRMATION=0` still records them. Abnormal or unknown nozzles still block, and a chipped nozzle with unreliable information asks for a refresh on the printer. Reported by [MorganFreeeman](https://github.com/MorganFreeeman) in [#67](https://github.com/DMontgomery40/bambu-printer-mcp/issues/67) with idle and mid-print H2D firmware 01.04.00.00 reports; maintainer validation uses that report in regressions, with no H2D hardware available.
