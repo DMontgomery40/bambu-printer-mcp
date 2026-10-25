@@ -393,6 +393,19 @@ test("a LAN bridge print that the plug-in cannot publish reports the cause and t
   assert.deepEqual(local[0].printer, { devId: serial, devIp: host, username: "bblp", password: "[set]", useSsl: true });
 });
 
+test("a LAN bridge job runs under the checked name while the result keeps the caller's project name", async (t) => {
+  const { client, eventsPath } = await interceptedMcp(t, { localPrint: { result: { ok: true, value: 0, job_id: 1 }, jobUpdates: [] } });
+  const file = await fixture(t);
+  const result = await client.callTool({ name: "print_3mf_bambu_network", arguments: { three_mf_path: file, bambu_model: "p1s", nozzle_diameter: "0.4", bed_type: "textured_plate", use_ams: false, connection_type: "lan", project_name: "My cube" } });
+  assert.notEqual(result.isError, true, result.content?.[0]?.text);
+  const body = JSON.parse(result.content[0].text);
+  assert.equal(body.projectName, "My cube");
+  assert.match(body.printerJobName, /^checked-[0-9a-f-]{36}-/);
+  const local = (await fs.readFile(eventsPath, "utf8")).trim().split("\n").map(JSON.parse).find(event => event.action === "local-print");
+  assert.equal(local.payload.params.project_name, body.printerJobName, "the plug-in names the stored file and printer job from project_name");
+  assert.equal(local.payload.params.task_name, body.printerJobName);
+});
+
 test("raw BambuNetwork start_print cannot bypass the inspected print handler", async (t) => {
   const { client, eventsPath } = await interceptedMcp(t);
   const result = await client.callTool({ name: "bambu_network_call", arguments: { method: "net.start_print", with_agent: false, payload: { client_job_id: 0, params: { filename: "uninspected.gcode" } } } });

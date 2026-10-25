@@ -39,7 +39,7 @@ Thank you to everyone who builds, tests, reports problems, and shares real print
 
 Thank you also to the existing contributors whose work the project builds on:
 
-- [David Montgomery (DMontgomery40)](https://github.com/DMontgomery40) — project maintainer; contributes the printer-profile, temperature, and hardware-safety reports informing the shared slicing and print checks.
+- [David Montgomery (DMontgomery40)](https://github.com/DMontgomery40) — project maintainer; contributes the printer-profile, temperature, and hardware-safety reports informing the shared slicing and print checks. For 1.1.34, reports the stale A1/P1 camera snapshots and that FULU bridge LAN printing needs no Developer Mode, asks which OrcaSlicer CLI option combinations crash, and supplies the P1S used for the real FULU bridge prints.
 - [rowbotik](https://github.com/rowbotik) — printer, AMS, slicing, and operational work across the existing release history.
 - [len-foss](https://github.com/len-foss) — project code contribution.
 - [thebitrock](https://github.com/thebitrock) — project code contribution.

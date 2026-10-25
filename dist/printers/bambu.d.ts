@@ -226,9 +226,10 @@ export declare class BambuImplementation {
      * Open the TLS-on-6000 socket, send the 80-byte auth packet, and return
      * a live JPEG frame. The printer first replays the last frame it buffered,
      * which after an idle period can show the chamber as it was long ago (a
-     * finished part still on the bed), so that frame is discarded and the next
-     * one returned. If only the buffered frame arrives in time, this fails
-     * rather than return a possibly stale image.
+     * finished part still on the bed), so that frame and any byte-identical
+     * repeat of it are discarded and the next frame returned; live frames always
+     * differ by sensor noise. If no live frame arrives in time, this fails rather
+     * than return a possibly stale image.
      */
     private fetchTcpCameraFrame;
     /**

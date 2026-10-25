@@ -34,7 +34,7 @@ async function fixture(t, slicerType = 'bambustudio') {
   const executable = path.join(root, 'BambuStudio.app', 'Contents', 'MacOS', 'BambuStudio');
   const capture = path.join(root, 'args.json');
   await fs.mkdir(path.dirname(executable), { recursive: true });
-  await fs.writeFile(executable, `#!${process.execPath}\nconst fs = require('fs'); const path = require('path'); const args = process.argv.slice(2); fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify(args)); fs.writeFileSync(path.join(args[args.indexOf('--outputdir') + 1], args[args.indexOf('--export-3mf') + 1]), 'fixture output');\n`, { mode: 0o755 });
+  await fs.writeFile(executable, `#!${process.execPath}\nconst fs = require('fs'); const path = require('path'); const args = process.argv.slice(2); fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify(args)); fs.copyFileSync(args[args.length - 1], ${JSON.stringify(capture)} + '.input'); fs.writeFileSync(path.join(args[args.indexOf('--outputdir') + 1], args[args.indexOf('--export-3mf') + 1]), 'fixture output');\n`, { mode: 0o755 });
   const saved = Object.fromEntries(['BAMBU_PROFILES_ROOT', 'BAMBU_SLICER_PROFILE_DIRS', 'BAMBU_CLI_FLATTEN'].map(k => [k, process.env[k]]));
   t.after(() => { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } });
   process.env.BAMBU_PROFILES_ROOT = profiles;
@@ -748,7 +748,7 @@ test('multi-nozzle machines get a prime tower every nozzle can reach', async t =
 
 // OrcaSlicer 2.4.2's CLI segfaults (PartPlate::check_outside needs the GUI Plater) when
 // --scale or --rotate-x/-y sink an object below the bed while arranging, and rejects
-// --repetitions for one STL; matrix-tested on Linux and macOS builds.
+// --repetitions for one STL; matrix-tested on the Linux build, crash also seen on macOS.
 const SAMPLE_CUBE = new URL('../../test/sample_cube.stl', import.meta.url);
 function stlBounds(buffer) {
   const points = [];
@@ -762,7 +762,30 @@ function stlBounds(buffer) {
   return [0, 1, 2].map(axis => Math.max(...points.map(p => p[axis])) - Math.min(...points.map(p => p[axis])));
 }
 
+// A binary STL box from (0,0,0) to the given size, so orientation is visible in its bounds.
+function boxStl([x, y, z]) {
+  const v = [[0,0,0],[x,0,0],[x,y,0],[0,y,0],[0,0,z],[x,0,z],[x,y,z],[0,y,z]];
+  const faces = [[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[1,2,6],[1,6,5],[2,3,7],[2,7,6],[3,0,4],[3,4,7]];
+  const buffer = Buffer.alloc(84 + faces.length * 50);
+  buffer.writeUInt32LE(faces.length, 80);
+  faces.forEach((face, i) => face.forEach((corner, k) => v[corner].forEach((value, axis) => buffer.writeFloatLE(value, 84 + i * 50 + 12 + k * 12 + axis * 4))));
+  return buffer;
+}
+
 for (const slicerType of ['orcaslicer', 'orcaslicer-bambulab']) {
+  // Orca adds each --rotate* to the object's Euler angles, so it rotates about X, then Y, then Z
+  // regardless of argument order; a 10x20x30 box tells the orders apart.
+  test(`${slicerType} rotates an STL mesh in OrcaSlicer's X, Y, Z order`, async t => {
+    const f = await fixture(t, slicerType);
+    await fs.writeFile(f.stl, boxStl([10, 20, 30]));
+    for (const [options, bounds] of [[{ rotate: 90, rotateX: 90 }, [30, 10, 20]], [{ rotateX: 90, rotateY: 90 }, [20, 30, 10]], [{ scale: 2, rotateY: 90 }, [60, 40, 20]]]) {
+      await f.slice({ ...options, arrange: true });
+      const args = await f.args();
+      assert.deepEqual(stlBounds(await fs.readFile(f.capture + '.input')).map(size => Math.round(size * 1000) / 1000), bounds, JSON.stringify(options));
+      await assert.rejects(fs.access(args.at(-1)), { code: 'ENOENT' }, 'the temporary mesh is removed after slicing');
+    }
+  });
+
   test(`${slicerType} applies STL scale and tilts to the mesh instead of the crashing CLI flags`, async t => {
     const f = await fixture(t, slicerType);
     await fs.copyFile(SAMPLE_CUBE, f.stl);
@@ -772,7 +795,7 @@ for (const slicerType of ['orcaslicer', 'orcaslicer-bambulab']) {
     assert.deepEqual(args.slice(args.indexOf('--clone-objects'), args.indexOf('--clone-objects') + 2), ['--clone-objects', '3']);
     const input = args.at(-1);
     assert.notEqual(input, f.stl, 'the original STL is not modified');
-    assert.deepEqual(stlBounds(await fs.readFile(input)).map(size => Math.round(size * 1000) / 1000), [40, 40, 40]);
+    assert.deepEqual(stlBounds(await fs.readFile(f.capture + '.input')).map(size => Math.round(size * 1000) / 1000), [40, 40, 40]);
     assert.deepEqual(stlBounds(await fs.readFile(f.stl)).map(size => Math.round(size)), [10, 10, 10]);
 
     // A Z rotation alone is safe and keeps its flag.

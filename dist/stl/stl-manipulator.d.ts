@@ -115,9 +115,11 @@ export declare class STLManipulator extends EventEmitter {
      */
     scaleSTL(stlFilePath: string, scaleFactors: number | [number, number, number], progressCallback?: ProgressCallback): Promise<string>;
     /**
-     * Apply slice_stl's scale and rotations to a copy of the mesh, in the order
-     * the Bambu-style CLIs apply --scale, --rotate, --rotate-x and --rotate-y,
-     * about the model's centre. The slicer then places the result on the plate.
+     * Apply slice_stl's scale and rotations to a copy of the mesh as OrcaSlicer's
+     * CLI would, about the model's centre. Orca adds each --rotate* to the
+     * object's Euler angles (ModelVolume::rotate), so the result rotates about X,
+     * then Y, then Z whatever the argument order, after scaling. The slicer then
+     * places the result on the plate.
      */
     private transformMeshForCli;
     /**

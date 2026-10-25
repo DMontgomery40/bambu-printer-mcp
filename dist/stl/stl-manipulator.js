@@ -112,12 +112,6 @@ const PROFILE_METADATA_KEYS = new Set([
     'name', 'type', 'from', 'inherits', 'instantiation', 'setting_id', 'version', 'is_custom_defined',
     'compatible_printers', 'compatible_printers_condition', 'compatible_prints', 'compatible_prints_condition',
 ]);
-/**
- * Why the slicer process failed. execFile's message already carries stderr;
- * a crash often leaves stderr empty (FULU OrcaSlicer-bambulab v1.0.0
- * segfaults with no output), so name the signal or exit code and add the end
- * of stdout instead.
- */
 function describeSlicerFailure(error, stdout, stderr, cli) {
     const status = typeof error.signal === "string" && error.signal
         ? `crashed with ${error.signal}`
@@ -800,9 +794,11 @@ export class STLManipulator extends EventEmitter {
         }
     }
     /**
-     * Apply slice_stl's scale and rotations to a copy of the mesh, in the order
-     * the Bambu-style CLIs apply --scale, --rotate, --rotate-x and --rotate-y,
-     * about the model's centre. The slicer then places the result on the plate.
+     * Apply slice_stl's scale and rotations to a copy of the mesh as OrcaSlicer's
+     * CLI would, about the model's centre. Orca adds each --rotate* to the
+     * object's Euler angles (ModelVolume::rotate), so the result rotates about X,
+     * then Y, then Z whatever the argument order, after scaling. The slicer then
+     * places the result on the plate.
      */
     async transformMeshForCli(stlFilePath, options) {
         const { geometry, boundingBox } = await this.loadSTL(stlFilePath);
@@ -812,12 +808,12 @@ export class STLManipulator extends EventEmitter {
         geometry.applyMatrix4(new THREE.Matrix4().makeTranslation(-center.x, -center.y, -center.z));
         if (options.scale !== undefined)
             geometry.applyMatrix4(new THREE.Matrix4().makeScale(options.scale, options.scale, options.scale));
-        if (options.rotate)
-            geometry.applyMatrix4(new THREE.Matrix4().makeRotationZ(radians(options.rotate)));
         if (options.rotateX)
             geometry.applyMatrix4(new THREE.Matrix4().makeRotationX(radians(options.rotateX)));
         if (options.rotateY)
             geometry.applyMatrix4(new THREE.Matrix4().makeRotationY(radians(options.rotateY)));
+        if (options.rotate)
+            geometry.applyMatrix4(new THREE.Matrix4().makeRotationZ(radians(options.rotate)));
         geometry.applyMatrix4(new THREE.Matrix4().makeTranslation(center.x, center.y, center.z));
         const outputFilePath = path.join(this.tempDir, `${path.basename(stlFilePath, path.extname(stlFilePath))}_transformed_${this.generateOperationId()}.stl`);
         await this.saveSTL(geometry, outputFilePath);
@@ -1319,9 +1315,9 @@ export class STLManipulator extends EventEmitter {
         const outputFileName = path.basename(stlFilePath, '.stl') + '.gcode';
         let outputFilePath = path.join(this.tempDir, outputFileName);
         let args = [];
-        // Where a Bambu-style CLI records its error on Linux, for the failure message.
         let cliResult;
         const orcaTemporaryDirectories = [];
+        const temporaryFiles = [];
         try {
             if (progressCallback)
                 progressCallback(0, `Starting slicing with ${slicerType}...`);
@@ -1441,7 +1437,11 @@ export class STLManipulator extends EventEmitter {
                             throw new Error("Use either repetitions or clone_objects for an STL with OrcaSlicer, not both.");
                         }
                         const inputPath = meshTransform ? await this.transformMeshForCli(stlFilePath, bambuOptions) : stlFilePath;
+                        if (inputPath !== stlFilePath)
+                            temporaryFiles.push(inputPath);
                         cliResult = { resultPath: path.join(outputDir, 'result.json'), startedAt: Date.now() };
+                        // A result.json left by an earlier run must not explain this one.
+                        await fs.promises.rm(cliResult.resultPath, { force: true });
                         args = [
                             ...orcaExtraArgs,
                             '--slice', String(bambuOptions?.slicePlate ?? 0),
@@ -1574,6 +1574,9 @@ export class STLManipulator extends EventEmitter {
         }
         finally {
             this.activeOperations.delete(operationId);
+            for (const file of temporaryFiles) {
+                await fs.promises.rm(file, { force: true }).catch(error => console.error('Could not remove a temporary mesh:', error));
+            }
             for (const directory of orcaTemporaryDirectories.reverse()) {
                 await fs.promises.rm(directory, { recursive: true, force: true }).catch(error => {
                     console.error('Could not remove temporary Orca profiles:', error);

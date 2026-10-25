@@ -393,8 +393,6 @@ export function validatePrinterState(status, requirements) {
         }
     }
     const nozzles = requirements.nozzleDiameters.length ? reportedNozzles(raw) : [];
-    if (nozzles.length)
-        logUnchippedNozzles(raw, identity.observedSerial ?? "");
     if (requirements.nozzleDiameters.length && isDualNozzleModel(model) &&
         !Array.isArray(raw.device?.nozzle?.info) && !Array.isArray(raw.nozzle_diameter)) {
         throw new Error("A scalar legacy nozzle report is ambiguous for this multi-nozzle printer; fresh per-nozzle configuration is required.");
@@ -461,6 +459,8 @@ export function validatePrinterState(status, requirements) {
             filaments.push({ position, material, trayIndex, nozzleMin, nozzleMax });
         }
     }
+    if (nozzles.length)
+        logUnchippedNozzles(raw, identity.observedSerial ?? String(status.serial ?? ""));
     return { model, reportedNozzles: nozzles, filaments };
 }
 /** Manual M104 cannot remap filament slots. Validate the material already at the nozzle. */

@@ -1738,11 +1738,13 @@ test("camera_snapshot over TCP skips the printer's buffered first frame and refu
   const live = cameraFrame(0x1e, 80);
   const auths = [];
   let sendLive = true;
+  // A stalled camera can replay the buffered frame more than once.
   const server = tls.createServer({ key: fs.readFileSync(path.join(dir, "key.pem")), cert: fs.readFileSync(path.join(dir, "cert.pem")) }, socket => {
     socket.once("data", auth => {
       auths.push(auth);
       socket.write(buffered.wire);
-      if (sendLive) setTimeout(() => socket.writable && socket.write(live.wire), 50);
+      setTimeout(() => socket.writable && socket.write(buffered.wire), 20);
+      if (sendLive) setTimeout(() => socket.writable && socket.write(live.wire), 60);
     });
     socket.on("error", () => {});
   });

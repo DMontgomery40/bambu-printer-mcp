@@ -277,6 +277,7 @@ class BambuClientStore {
     }
     async waitForInitialReport(host, serial, token, timeoutMs = 4000) {
         const key = getPrinterKey(host, serial, token);
+        const deadline = Date.now() + timeoutMs + 500;
         const existing = this.reportSnapshots.get(key);
         if (!existing || Object.keys(existing).length === 0) {
             // No MQTT data yet — wait for the first push.
@@ -302,7 +303,6 @@ class BambuClientStore {
         // can take longer, which returned the sparse report as status UNKNOWN,
         // so keep waiting for the full status within the same bound.
         await sleep(500);
-        const deadline = Date.now() + timeoutMs;
         while (typeof this.reportSnapshots.get(key)?.gcode_state !== "string" && Date.now() < deadline)
             await sleep(50);
         return this.reportSnapshots.get(key) || null;
@@ -1657,9 +1657,10 @@ export class BambuImplementation {
      * Open the TLS-on-6000 socket, send the 80-byte auth packet, and return
      * a live JPEG frame. The printer first replays the last frame it buffered,
      * which after an idle period can show the chamber as it was long ago (a
-     * finished part still on the bed), so that frame is discarded and the next
-     * one returned. If only the buffered frame arrives in time, this fails
-     * rather than return a possibly stale image.
+     * finished part still on the bed), so that frame and any byte-identical
+     * repeat of it are discarded and the next frame returned; live frames always
+     * differ by sensor noise. If no live frame arrives in time, this fails rather
+     * than return a possibly stale image.
      */
     async fetchTcpCameraFrame(host, token, timeoutMs, port = 6000) {
         const tls = await import("node:tls");
@@ -1672,6 +1673,7 @@ export class BambuImplementation {
         return new Promise((resolve, reject) => {
             let settled = false;
             let frames = 0;
+            let buffered;
             const finish = (err, jpeg) => {
                 if (settled)
                     return;
@@ -1689,8 +1691,13 @@ export class BambuImplementation {
                 ? `camera_snapshot: ${reason} after only the printer's buffered frame, which may be stale; no live frame arrived. Retry, or raise timeout_ms.`
                 : `camera_snapshot: ${reason} before a full JPEG frame arrived`);
             const timer = setTimeout(() => finish(unfinished(`timed out after ${timeoutMs}ms`)), timeoutMs);
-            const parse = cameraFrameParser(jpeg => { if (++frames === 2)
-                finish(null, jpeg); }, error => finish(error));
+            const parse = cameraFrameParser(jpeg => {
+                frames++;
+                if (!buffered)
+                    buffered = jpeg;
+                else if (!jpeg.equals(buffered))
+                    finish(null, jpeg);
+            }, error => finish(error));
             const socket = tls.connect({
                 host,
                 port,
