@@ -1,5 +1,7 @@
 # bambu-printer-mcp
 
+[![bambu-printer-mcp — Print from a conversation. Browse the documentation site.](https://dmontgomery40.github.io/bambu-printer-mcp/social-card.png)](https://dmontgomery40.github.io/bambu-printer-mcp/)
+
 > **Thank you, [FULU Foundation](https://www.fulu.org/), [Louis Rossmann](https://www.youtube.com/watch?v=1jhRqgHxEP8), and the [OrcaSlicer-bambulab contributors](https://github.com/FULU-Foundation/OrcaSlicer-bambulab).** We stand with open-source developers, the right to repair, and your right to control hardware you own. You should be able to choose your software and print without a vendor cloud standing in the way.
 >
 > **Want to skip Bambu's software and cloud?** Use FULU OrcaSlicer-bambulab to slice and export, then this MCP's direct LAN path on supported printers and firmware. That workflow does not require Bambu Studio, Bambu Connect, or Bambu Cloud. Start with the [FULU setup guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/FULU.md). The optional BambuNetwork bridge is a separate path that still uses Bambu's networking runtime; cloud jobs still use Bambu's services.
