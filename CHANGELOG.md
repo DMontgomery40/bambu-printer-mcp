@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.35] – 2026-10-26
+
+### Fixed
+- Remove the unused `bambu-js` dependency and its last caller, a file-lookup method no tool used. It bundled basic-ftp 5.3.1, which carries the advisories basic-ftp 6.2.3 fixed for rejected control-character commands and password handling; every file transfer and listing already uses basic-ftp 6.2.3 directly, and printer commands use bambu-node.
+- Update the desktop/CI lock for new production-dependency advisories: zod 4.6.7 ([GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5), memory exhaustion validating oversized constrained collections; every zod 3 release is affected, and the MCP SDK accepts zod 4), body-parser 2.4.0 ([GHSA-27r3-jxmh-p828](https://github.com/advisories/GHSA-27r3-jxmh-p828)), fast-uri 3.1.9, hono 4.13.14 and ip-address 10.7.5. `npm audit --omit=dev` reports no vulnerabilities. npm omits the lock from published packages, so existing projects pick these up when they refresh their own locks. The documentation site's VitePress development server still pulls vite and esbuild versions with one high and two moderate advisories that have no VitePress 1.x fix; they affect only `vitepress dev`, not the published static site.
+
 ## [1.1.34] – 2026-10-25
 
 ### Fixed

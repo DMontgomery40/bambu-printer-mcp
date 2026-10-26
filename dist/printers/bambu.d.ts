@@ -113,10 +113,6 @@ export declare class BambuImplementation {
         files: string[];
         directories: Record<string, string[]>;
     }>;
-    getFile(host: string, serial: string, token: string, filename: string): Promise<{
-        name: string;
-        exists: boolean;
-    }>;
     uploadFile(host: string, serial: string, token: string, filePath: string, filename: string, print: boolean, bambuModel?: string, upload?: (snapshot: string, destination: string, assertActive: () => void) => Promise<void>): Promise<{
         status: string;
         uploaded: boolean;
