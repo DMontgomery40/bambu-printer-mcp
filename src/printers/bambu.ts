@@ -12,7 +12,6 @@ import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, d
 import { describeHmsKey, hiddenHmsKeys, hiddenHmsNotices, reportedHmsKey, unchippedNozzles, validatePrinterState, manualHeatingRequirements, type PrinterStateRequirements } from "../safety/printer-state.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRemotePath, cancelPendingPrinterOperations } from "../safety/artifact.js";
 import { Client as FTPClient } from "basic-ftp";
-import { BambuPrinter } from "bambu-js";
 import * as mqtt from "mqtt";
 import {
   BambuClient,
@@ -1450,26 +1449,6 @@ export class BambuImplementation {
     return {
       files,
       directories: filesByDirectory,
-    };
-  }
-
-  async getFile(host: string, serial: string, token: string, filename: string) {
-    const printer = new BambuPrinter(host, serial, token);
-
-    const normalized = filename.replace(/^\/+/, "");
-    const directory = path.posix.dirname(normalized) === "." ? "cache" : path.posix.dirname(normalized);
-    const baseName = path.posix.basename(normalized);
-
-    let exists = false;
-
-    await printer.manipulateFiles(async (context) => {
-      const entries = await context.readDir(directory);
-      exists = entries.includes(baseName);
-    });
-
-    return {
-      name: `${directory}/${baseName}`,
-      exists,
     };
   }
 

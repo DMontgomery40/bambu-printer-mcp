@@ -326,7 +326,7 @@ Bambu Lab printers do not use a conventional REST API. Instead, they expose two 
 
 ### What this fork fixes
 
-This package works around two protocol-level issues in the underlying `bambu-js` library.
+This package works around two protocol-level issues in the `bambu-js` library it was forked from. From 1.1.35 it no longer depends on `bambu-js` at all: file transfers and listings use `basic-ftp` directly, and printer commands use `bambu-node`.
 
 **Bug 1: FTP double-path error in bambu-js.**
 
