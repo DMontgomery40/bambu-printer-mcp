@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.36] – 2026-10-26
+
+### Documentation
+- Link the upstream reports for FULU's Linux host, each reproduced against its v1.0.0 runtime:
+  - the runtime omits Bambu's `printer.cer`, so LAN connections fail ([FULU #52](https://github.com/FULU-Foundation/OrcaSlicer-bambulab/issues/52); a connect-only P1S test failed as shipped and connected with `printer.cer` added);
+  - it segfaults on `connect_printer`, `disconnect_printer` or `destroy_agent` before a certificate folder is set ([FULU #53](https://github.com/FULU-Foundation/OrcaSlicer-bambulab/issues/53));
+  - it aborts when `create_agent` gets a log folder that doesn't exist ([FULU #54](https://github.com/FULU-Foundation/OrcaSlicer-bambulab/issues/54));
+  - it aborts when its input closes after an agent exists ([FULU #55](https://github.com/FULU-Foundation/OrcaSlicer-bambulab/issues/55)).
+  The server already works around the first three; the fourth can only follow an abrupt server exit and doesn't affect prints.
+- Link the proposed fixes for FULU's CLI crash, [FULU #56](https://github.com/FULU-Foundation/OrcaSlicer-bambulab/pull/56) and [FULU #57](https://github.com/FULU-Foundation/OrcaSlicer-bambulab/pull/57). With both, a patched macOS arm64 build answers `--help` and slices a P1S cube; FULU v1.0.0 crashes on both.
+- Credit OrcaSlicer's fix for the 2.4.2 `PartPlate::check_outside` CLI crash: [OrcaSlicer #14415](https://github.com/OrcaSlicer/OrcaSlicer/pull/14415) by packerlschupfer, released in 2.5.0-alpha. The STL transform workaround stays while 2.4.2 is the latest stable release; FULU's CLI has the same crash until it takes that fix.
+
 ## [1.1.35] – 2026-10-26
 
 ### Fixed
