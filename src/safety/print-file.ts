@@ -462,8 +462,8 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
         const args=parameters(argumentsText);
         if(!args.has('S') || !args.has('L') || !args.has('T') || !Number.isInteger(args.get('T')) || args.get('T')!<0 || args.get('T')!>=nozzleDiameters.length) fail('unsupported M620.17 nozzle/material temperature mapping');
         for(const key of args.keys()) if(!'SLT'.includes(key)) fail(`unsupported M620.17 parameter ${key}`);
-        if(args.get('L')===-1 && model==='x2d') {
-          // OrcaSlicer's X2D start G-code preheats a nozzle with no assigned
+        if(args.get('L')===-1 && ['x2d','h2d','h2dpro'].includes(model)) {
+          // OrcaSlicer's X2D/H2D/H2D Pro start G-code preheats a nozzle with no assigned
           // filament (L-1) for toolhead-offset calibration; Bambu Studio writes
           // L0 there. No project filament is selected, so check the target
           // against the hardware limit and every declared material, like other

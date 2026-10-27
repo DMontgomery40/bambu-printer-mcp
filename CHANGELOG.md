@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.1.38] – 2026-10-27
+
+### Fixed
+- Accept OrcaSlicer's `M620.17 T0|1 S<target> L-1` preheat for an unused H2D or H2D Pro nozzle. Single-filament H2D jobs previously stopped with "position -1 has no declared material". As for X2D, check the target against the model's hardware limit and every declared material without selecting a fictitious filament; invalid nozzle indices, other negative positions and extra parameters still reject. Reported and diagnosed by [ZombieLurker](https://github.com/ZombieLurker) in [#73](https://github.com/DMontgomery40/bambu-printer-mcp/issues/73), and verified against the pinned official OrcaSlicer 2.4.2 H2D/H2D Pro machine profiles and offline regressions. No physical printer test is claimed.
+
 ## [1.1.37] – 2026-10-26
 
 ### Documentation
