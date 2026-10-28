@@ -81,3 +81,36 @@ test('error-clear guard rejects a changed job at the native helper dispatch boun
   }), /job changed/);
   assert.equal(sent, false);
 });
+
+for (const model of ['p1s', 'x2d']) for (const change of ['job', 'errors', 'unchanged']) {
+  test(`MQTT error clearing rechecks ${change} after connection acquisition (${model})`, async () => {
+    const report = {
+      gcode_state: 'PAUSE', gcode_file: 'cache/previous.3mf', subtask_name: 'previous',
+      task_id: '1', subtask_id: '0', job_id: '0', print_error: 123, hms: [],
+    };
+    const sent = [];
+    const connecting = Promise.withResolvers();
+    const connected = Promise.withResolvers();
+    const implementation = new BambuImplementation(async () => true);
+    implementation.getSafetyStatus = async () => ({ model, raw: structuredClone(report) });
+    implementation.getPrinter = async () => {
+      connecting.resolve();
+      await connected.promise;
+      return { publish: async message => sent.push(message) };
+    };
+    const clearing = implementation.clearHmsErrors('127.0.0.1', serial, 'DUMMY');
+    await connecting.promise;
+    if (change === 'job') {
+      report.task_id = '2';
+      report.subtask_name = 'other-job';
+    } else if (change === 'errors') report.print_error = 456;
+    connected.resolve();
+    if (change === 'unchanged') {
+      assert.equal((await clearing).status, 'success');
+      assert.deepEqual(sent, [{ print: { command: 'clean_print_error', sequence_id: '0' } }]);
+    } else {
+      await assert.rejects(clearing, change === 'job' ? /job changed/ : /errors changed/);
+      assert.deepEqual(sent, []);
+    }
+  });
+}

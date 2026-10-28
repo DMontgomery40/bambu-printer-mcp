@@ -3,6 +3,7 @@
 ## [1.1.39] – 2026-10-28
 
 ### Fixed
+- Recheck the confirmed job and hardware-error codes after acquiring the MQTT connection, immediately before clearing errors on any printer model. Refuse dispatch if either changes during the connection wait; retain unchanged-job clearing and the native helper's dispatch checks.
 - Let a freshly observed X2D task canceled with `fail_reason: 0300400C`, `print_error: 0`, and a reported job name/file reach checked print preparation. Keep other failures and active HMS errors blocked. Treat this terminal job like `FINISH`: require a person to confirm removal of the previous parts and debris, even when ordinary headless prompts are disabled, then recheck the same job after confirmation and at native dispatch. Do not send speculative error-dialog reset commands. Bind hardware-error clearing to the job observed before its confirmation so a different job cannot reuse approval. Reported with read-only X2D telemetry by [JackCA](https://github.com/JackCA), with mocked printer/native-helper regressions; physical print delivery after this change remains unverified.
 
 ## [1.1.38] – 2026-10-27

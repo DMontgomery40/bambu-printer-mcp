@@ -1009,8 +1009,10 @@ export class BambuImplementation {
             assertActive();
             if (dispatch)
                 await dispatch(assertActive, beforeDispatch);
-            else
+            else {
+                await beforeDispatch();
                 await printer.publish({ print: { command: "clean_print_error", sequence_id: "0" } });
+            }
             this.clearedErrors.set(serial, codes);
             await sleep(COMMAND_SETTLE_MS);
             return { status: "success", message: "Confirmed HMS clear command sent. The next print requires acknowledgment of these cleared codes.", cleared_codes: codes };
