@@ -39,6 +39,16 @@ export interface ValidatedPrinterState {
     reportedNozzles: ReportedNozzle[];
     filaments: ReportedFilament[];
 }
+/**
+ * X2D retains FAILED after a canceled job even with no active print error.
+ * Bambu Studio classifies FAILED as a finished job; its v02.08.02.61
+ * hms_en_20P table (926a7192574bcb9b3a732e1ec59a46d79cb45466)
+ * calls 0300400C "The task was canceled."
+ * Only this observed terminal condition qualifies, never an arbitrary failure.
+ * Callers still validate HMS, identity, hardware and material configuration,
+ * and print dispatch must obtain job-bound physical bed-clearance confirmation.
+ */
+export declare function isCancelledX2DJob(raw: Record<string, any>, model: string): boolean;
 /** Nozzles whose reported diameter and type are configured settings rather than chip readings. */
 export declare function unchippedNozzles(raw: unknown): number[];
 /** The one key format for a reported entry, shared by the gate and clear_hms_errors. */

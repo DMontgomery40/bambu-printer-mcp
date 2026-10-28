@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFreshPrinterStatus } from "../safety/printer-state.js";
+import { isCancelledX2DJob, readFreshPrinterStatus } from "../safety/printer-state.js";
 import fs from "node:fs/promises";
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
@@ -438,7 +438,10 @@ export class BambuImplementation {
         }
     }
     finishedJobIdentity(status) {
-        return status.raw.gcode_state === "FINISH" ? JSON.stringify([status.raw.gcode_file, status.raw.subtask_name, status.raw.task_id, status.raw.subtask_id]) : undefined;
+        const raw = status.raw;
+        return raw.gcode_state === "FINISH" || isCancelledX2DJob(raw, String(status.model ?? ""))
+            ? JSON.stringify([raw.gcode_state, raw.gcode_file, raw.subtask_name, raw.task_id, raw.subtask_id, raw.job_id])
+            : undefined;
     }
     /**
      * The human print confirmation. Its result goes to assertBedClearance at
@@ -453,7 +456,9 @@ export class BambuImplementation {
         await this.confirmHardwareAction(`Start a checked print on ${inspection.model.toUpperCase()} (${serial})? Nozzles: ${inspection.nozzleDiameters.join(", ")} mm. ` +
             `Materials: ${inspection.materials.join(", ")}. Peak targets: nozzle ${inspection.maxNozzleTemperature}°C, bed ${inspection.maxBedTemperature}°C, chamber ${inspection.maxChamberTemperature}°C. ` +
             `File SHA-256: ${inspection.sha256}. Confirm the physical spool labels and that the build plate is clear.` +
-            (finishedJob !== undefined ? " The printer reports FINISH: remove the previous part and debris before confirming." : "") +
+            (finishedJob !== undefined ? (status.raw.gcode_state === "FAILED"
+                ? " The previous X2D task was canceled (0300400C): remove every detached part, support and strand from the plate and nozzle before confirming. FAILED is the previous job's terminal state; no error-reset command is sent."
+                : " The printer reports FINISH: remove the previous part and debris before confirming.") : "") +
             (cleared ? ` Previously cleared hardware codes: ${cleared.map(describeHmsKey).join(", ")}. Confirm their physical causes have been resolved.` : "") +
             (notices.length ? ` The printer also reports ${notices.join(", ")}, which Bambu lists for this model without text and never shows as a fault; ` +
                 `${notices.length === 1 ? "it does" : "they do"} not block printing.` : "") +
@@ -979,11 +984,22 @@ export class BambuImplementation {
                 const hidden = new Set(hiddenHmsKeys(status.raw, serial, String(status.model ?? "")));
                 return [`print_error:${status.raw.print_error}`, ...status.raw.hms.map(reportedHmsKey).filter((key) => !hidden.has(key))].sort();
             };
-            const codes = codesFor(await this.getSafetyStatus(host, serial, token));
-            await this.confirmHardwareAction(`Clear reported hardware errors on ${serial}: ${codes.map(describeHmsKey).join(", ")}? Inspect the printer and resolve the physical cause first. Confirm only after removing obstructions and correcting the fault.`, true);
+            const initialStatus = await this.getSafetyStatus(host, serial, token);
+            const codes = codesFor(initialStatus);
+            // Bind the physical inspection to the job observed before asking the
+            // person. Identical error codes alone cannot identify a different job.
+            const jobIdentity = (raw) => JSON.stringify([
+                raw.gcode_file, raw.subtask_name, raw.task_id, raw.subtask_id, raw.job_id,
+            ]);
+            const confirmedJob = jobIdentity(initialStatus.raw);
+            const jobName = initialStatus.raw.subtask_name || initialStatus.raw.gcode_file;
+            await this.confirmHardwareAction(`Clear reported hardware errors on ${serial}: ${codes.map(describeHmsKey).join(", ")}?${jobName ? ` Current job: ${String(jobName)}.` : ""} Inspect the printer and resolve the physical cause first. Confirm only after removing obstructions and correcting the fault.`, true);
             const beforeDispatch = async () => {
                 assertActive();
-                const current = codesFor(await this.getSafetyStatus(host, serial, token));
+                const currentStatus = await this.getSafetyStatus(host, serial, token);
+                if (jobIdentity(currentStatus.raw) !== confirmedJob)
+                    throw new Error("Printer job changed before clearing hardware errors. Inspect the current job and confirm again; nothing further sent.");
+                const current = codesFor(currentStatus);
                 if (JSON.stringify(current) !== JSON.stringify(codes))
                     throw new Error("Hardware errors changed before clearing. Inspect the new report before retrying.");
                 assertActive();
