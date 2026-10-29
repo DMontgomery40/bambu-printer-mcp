@@ -83,7 +83,7 @@
     "p_photogrammetry": 0.10,
     "template": {"p_success": 0.85, "p_escalate_on_fail": 0.6, "p_fit_key": 0.35, "p_llm_revision": 0.30},
     "freeform": {"p_success": 0.65, "p_fit_key": 0.50, "p_llm_revision": 0.40},
-    "remix":    {"p_fit_key": 0.15}
+    "remix":    {"p_success": 0.97, "p_fit_key": 0.15}
   },
   "mix": {"remix": 0.35, "template": 0.45, "freeform": 0.20, "_comment": "ESTIMATE of hosted project mix after the community library exists"},
   "channels": {

@@ -69,9 +69,11 @@ class Model:
             usd = s * (j["cores"] * r["modal_function_core_s"] + j["gib"] * r["modal_function_gib_s"])
         elif j["kind"] == "sandbox":
             usd = s * (j["cores"] * r["modal_sandbox_core_s"] + j["gib"] * r["modal_sandbox_gib_s"])
-        else:
+        elif j["kind"] == "gpu":
             usd = s * (r["modal_l4_s"] + j["cores"] * r["modal_function_core_s"]
                        + j["gib"] * r["modal_function_gib_s"])
+        else:
+            raise ValueError(f"unknown compute job kind: {j['kind']!r}")
         return usd * r["modal_broad_region_multiplier"]
 
     def storage(self):
@@ -114,7 +116,7 @@ class Model:
         if cls == "remix":
             cost = add(cost, (0.0, self.job("template_build") + self.job("validate")))
             cost = add(cost, self.finish("remix"))
-            deliver = w["remix"].get("p_success", 0.97)
+            deliver = w["remix"]["p_success"]
         elif cls == "template":
             t = w["template"]
             ps, esc = t["p_success"], t["p_escalate_on_fail"]
