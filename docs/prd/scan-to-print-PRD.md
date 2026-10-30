@@ -4,7 +4,7 @@
 
 **Evidence rules.** Every number carries a source link, a repository path, or the label **(est.)**. Numbers produced by the cost model are labelled **(model)**; their inputs are themselves cited or estimated in [`cost-model/inputs.json`](cost-model/inputs.json), and anyone can rerun them with `python3 docs/prd/cost-model/fit_cost_model.py`. Vendor benchmark claims are marked vendor-reported. Where a fact could not be verified it is stated as unknown, not filled in.
 
-**Repository baseline.** Branch `cursor/scan-to-print-prd-f892` on top of release 1.1.26 (commit `c732b70`). Facts about the existing MCP server cite files in this repository.
+**Repository baseline.** Branch `cursor/scan-to-print-prd-f892` on top of release 1.1.26 (commit `c732b70`). Facts about the existing MCP server cite files in this repository. This is the historical research baseline, not the current support matrix. By release 1.1.39, X2D also has a pinned Linux native route and H2D Pro is selectable across tools and slicer profiles. Use the current README and setup guide for supported routes; the baseline-specific counts and gaps below need revalidation before implementing this proposal.
 
 ---
 

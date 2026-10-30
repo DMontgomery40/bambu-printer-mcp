@@ -1,9 +1,17 @@
 # Changelog
 
-## [1.1.39] – 2026-10-30
+## [1.1.40] – 2026-10-30
+
+### Tests
+- Check native upload progress in MCP wire order, avoiding the client SDK callback race when progress and the final response arrive in one read.
 
 ### Documentation
 - Add the Made to Fit scan-to-print proposal and reproducible cost model. Make remix delivery probability explicit, reject unknown compute kinds, and require Fit Key coverage of the full measurement interval before reducing uncertainty.
+
+## [1.1.39] – 2026-10-30
+
+### Fixed
+- Accept `h2dpro` as a selectable printer model. The safety, identity and file-inspection layers already distinguished the H2D Pro (serial prefix `239`, model id `O1E`) from the H2D and reject an `h2d` request against a fresh H2D Pro identity, but every tool schema, model elicitation list and preset table omitted `h2dpro`, so an H2D Pro could not be selected for inspection, slicing, heating or printing at all. Tool schemas and elicitation now offer `h2dpro`, slicing resolves the exact `Bambu Lab H2D Pro <nozzle> nozzle` machine preset, filament lookup prefers the `@BBL H2DP` presets, and the H2 print branch includes it. Offline regressions cover MCP inspection, exact machine-preset selection, missing-preset rejection and mocked external-spool dispatch; no physical H2D Pro print is claimed.
 
 ## [1.1.38] – 2026-10-27
 
