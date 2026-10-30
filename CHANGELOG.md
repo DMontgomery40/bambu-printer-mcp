@@ -1,10 +1,15 @@
 # Changelog
 
-## [1.1.39] – 2026-10-28
+## Unreleased
 
 ### Fixed
 - Recheck the confirmed job and hardware-error codes after acquiring the MQTT connection, immediately before clearing errors on any printer model. Refuse dispatch if either changes during the connection wait; retain unchanged-job clearing and the native helper's dispatch checks.
 - Let a freshly observed X2D task canceled with `fail_reason: 0300400C`, `print_error: 0`, and a reported job name/file reach checked print preparation. Keep other failures and active HMS errors blocked. Treat this terminal job like `FINISH`: require a person to confirm removal of the previous parts and debris, even when ordinary headless prompts are disabled, then recheck the same job after confirmation and at native dispatch. Do not send speculative error-dialog reset commands. Bind hardware-error clearing to the job observed before its confirmation so a different job cannot reuse approval. Reported with read-only X2D telemetry by [JackCA](https://github.com/JackCA), with mocked printer/native-helper regressions; physical print delivery after this change remains unverified.
+
+## [1.1.39] – 2026-10-30
+
+### Fixed
+- Accept `h2dpro` as a selectable printer model. The safety, identity and file-inspection layers already distinguished the H2D Pro (serial prefix `239`, model id `O1E`) from the H2D and reject an `h2d` request against a fresh H2D Pro identity, but every tool schema, model elicitation list and preset table omitted `h2dpro`, so an H2D Pro could not be selected for inspection, slicing, heating or printing at all. Tool schemas and elicitation now offer `h2dpro`, slicing resolves the exact `Bambu Lab H2D Pro <nozzle> nozzle` machine preset, filament lookup prefers the `@BBL H2DP` presets, and the H2 print branch includes it. Offline regressions cover MCP inspection, exact machine-preset selection, missing-preset rejection and mocked external-spool dispatch; no physical H2D Pro print is claimed.
 
 ## [1.1.38] – 2026-10-27
 

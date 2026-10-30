@@ -456,7 +456,7 @@ function buildToolGroups() {
 
 const MODEL_LABELS = {
   a1: 'A1', a1mini: 'A1 mini', p1p: 'P1P', p1s: 'P1S', p2s: 'P2S', x1c: 'X1C', x1e: 'X1E',
-  h2s: 'H2S', h2d: 'H2D', h2c: 'H2C', x2d: 'X2D',
+  h2s: 'H2S', h2d: 'H2D', h2dpro: 'H2D Pro', h2c: 'H2C', x2d: 'X2D',
 };
 // Keep these notes in step with docs/SETUP.md and docs/SLICING.md whenever
 // model support changes.

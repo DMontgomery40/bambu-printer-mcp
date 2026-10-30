@@ -2,6 +2,8 @@
 
 [Back to README](../README.md) · [Agent setup](../README.md#set-up-with-your-agent) · [FULU setup](./FULU.md)
 
+H2D Pro uses `BAMBU_MODEL=h2dpro` and requires the selected slicer installation’s exact `Bambu Lab H2D Pro <nozzle> nozzle` preset. Offline tests cover model selection, preset preparation and mocked external-spool dispatch; physical H2D Pro printing is not verified. Do not substitute `h2d`.
+
 ## TL;DR
 
 For offline prepared-file evidence, call `inspect_print_file` with `file_path`, explicit `bambu_model`, and optional zero-based `plate_index`, `nozzle_diameters` and `bed_type`. It inspects a private read-only snapshot using the existing safety engine and returns a versioned SHA/byte-length/plate receipt, declarations and checked temperature peaks. It neither contacts a printer nor slices input. `evidence: "file-only"` and `dispatch_authorized: false` mean the result cannot replace fresh printer preflight or human authorization; actual printing independently checks its final dispatched snapshot.
