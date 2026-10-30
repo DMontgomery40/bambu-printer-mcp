@@ -61,7 +61,7 @@ BAMBU_TOKEN=your_access_token     # LAN access token from printer touchscreen
 # BAMBU_PRINTER_HOST / BAMBU_PRINTER_SERIAL / BAMBU_PRINTER_ACCESS_TOKEN
 
 # --- Printer model (CRITICAL for safe operation) ---
-BAMBU_MODEL=p1s                   # Your printer model: p1s, p1p, p2s, x1c, x1e, a1, a1mini, h2d, h2s, h2c, x2d
+BAMBU_MODEL=p1s                   # Your printer model: p1s, p1p, p2s, x1c, x1e, a1, a1mini, h2d, h2dpro, h2s, h2c, x2d
 # Alias also accepted: BAMBU_PRINTER_MODEL
 BED_TYPE=textured_plate           # Bed plate type: textured_plate, cool_plate, engineering_plate, hot_plate, supertack_plate
 NOZZLE_DIAMETER=0.4               # Nozzle diameter in mm (default: 0.4)
@@ -102,7 +102,7 @@ BLENDER_MCP_TIMEOUT_MS=120000
 | `PRINTER_HOST` | `localhost` | Direct LAN | IP address of the Bambu printer. Alias: `BAMBU_PRINTER_HOST` |
 | `BAMBU_SERIAL` | | Direct LAN | Printer serial number. Alias: `BAMBU_PRINTER_SERIAL` |
 | `BAMBU_TOKEN` | | Direct LAN | LAN access token. Alias: `BAMBU_PRINTER_ACCESS_TOKEN` |
-| `BAMBU_MODEL` | | **Slicing and printing** | Printer model: `p1s`, `p1p`, `p2s`, `x1c`, `x1e`, `a1`, `a1mini`, `h2d`, `h2s`, `h2c`, `x2d`. **Required** for model-specific routing and preset selection; it does not itself validate a pre-sliced file or prove a successful physical print. X2D supports status and slicing; `print_3mf` can use the optional checked native eMMC helper on macOS or x86-64 Linux ([Linux setup](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/README.md#x2d-native-transport-linux)). Windows native printing and legacy X2D FTPS/remote-file starts remain unsupported. Alias: `BAMBU_PRINTER_MODEL`. If omitted and the MCP client supports elicitation, the server will ask you interactively. Use `h2c` for H2C and `x2d` for X2D; do not use `h2d` as a fallback. |
+| `BAMBU_MODEL` | | **Slicing and printing** | Printer model: `p1s`, `p1p`, `p2s`, `x1c`, `x1e`, `a1`, `a1mini`, `h2d`, `h2dpro`, `h2s`, `h2c`, `x2d`. **Required** for model-specific routing and preset selection; it does not itself validate a pre-sliced file or prove a successful physical print. X2D supports status and slicing; `print_3mf` can use the optional checked native eMMC helper on macOS or x86-64 Linux ([Linux setup](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/README.md#x2d-native-transport-linux)). Windows native printing and legacy X2D FTPS/remote-file starts remain unsupported. Alias: `BAMBU_PRINTER_MODEL`. If omitted and the MCP client supports elicitation, the server will ask you interactively. Use `h2dpro` for H2D Pro, `h2c` for H2C and `x2d` for X2D; do not use `h2d` as a fallback. |
 | `BED_TYPE` | `textured_plate` | No | Bed plate type: `textured_plate`, `cool_plate`, `engineering_plate`, `hot_plate`, `supertack_plate` |
 | `NOZZLE_DIAMETER` | `0.4` | No | Nozzle diameter in mm. Used to select the correct model/nozzle machine preset. |
 | `BAMBU_NOZZLE_TYPE` | model preset's stock nozzle | No | Installed nozzle for slicing: `stainless_steel`, `hardened_steel`, `tungsten_carbide`, or `brass`. Set it if you replaced the stock nozzle; printing requires the job's nozzle type to match the printer's report. |

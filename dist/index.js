@@ -103,11 +103,11 @@ function assertUniformCliNozzles(args) {
         throw new Error("Mixed nozzle diameters require a pre-sliced 3MF with complete per-nozzle metadata. Export it from the slicer GUI before printing.");
     }
 }
-const VALID_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2s", "h2c", "x2d"];
+const VALID_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2dpro", "h2s", "h2c", "x2d"];
 // X2D uses the same project_file/ams_mapping2 family of LAN print fields as
 // the dual-nozzle H2 path. Keep it in this gate so pre-sliced multi-filament
 // jobs take the correct branch instead of the legacy 5-slot mapping.
-const H2_BAMBU_MODELS = new Set(["h2d", "h2s", "h2c", "x2d"]);
+const H2_BAMBU_MODELS = new Set(["h2d", "h2dpro", "h2s", "h2c", "x2d"]);
 const VALID_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"];
 const VALID_NOZZLE_TYPES = ["stainless_steel", "hardened_steel", "tungsten_carbide", "brass"];
 /** The installed hotend material. Bambu machine presets assume the stock nozzle; the print gate compares this with the printer. */
@@ -146,6 +146,7 @@ const BAMBU_MODEL_PRESETS = {
     a1: (n) => `Bambu Lab A1 ${n} nozzle`,
     a1mini: (n) => `Bambu Lab A1 mini ${n} nozzle`,
     h2d: (n) => `Bambu Lab H2D ${n} nozzle`,
+    h2dpro: (n) => `Bambu Lab H2D Pro ${n} nozzle`,
     h2s: (n) => `Bambu Lab H2S ${n} nozzle`,
     h2c: (n) => `Bambu Lab H2C ${n} nozzle`,
     x2d: (n) => `Bambu Lab X2D ${n} nozzle`,
@@ -159,6 +160,7 @@ const FILAMENT_MODEL_CODES = {
     a1: "A1",
     a1mini: "A1M",
     h2d: "H2D",
+    h2dpro: "H2DP",
     h2s: "H2S",
     h2c: "H2C",
     x2d: "X2D",
@@ -991,6 +993,7 @@ class BambuPrinterMCPServer {
                                 { const: "a1", title: "A1" },
                                 { const: "a1mini", title: "A1 Mini" },
                                 { const: "h2d", title: "H2D" },
+                                { const: "h2dpro", title: "H2D Pro" },
                                 { const: "h2s", title: "H2S" },
                                 { const: "h2c", title: "H2C" },
                                 { const: "x2d", title: "X2D" },

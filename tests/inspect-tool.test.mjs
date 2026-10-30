@@ -113,3 +113,20 @@ test('unsliced/checksum/case-colliding archives never return inspection evidence
   assert.equal((await s.call({ file_path: duplicate.path, bambu_model: 'p1s' })).isError, true);
   await assert.rejects(access(s.networkLog), { code: 'ENOENT' });
 });
+
+test('H2D Pro is selectable and inspects as its own model, distinct from H2D', async t => {
+  const s = await server(t); const tools = (await s.client.listTools()).tools;
+  for (const name of ['inspect_print_file', 'print_3mf']) {
+    const tool = tools.find(x => x.name === name); assert.ok(tool, name);
+    assert.ok(tool.inputSchema.properties.bambu_model.enum.includes('h2dpro'), `${name} must accept h2dpro`);
+  }
+  const text = '; printer_model = Bambu Lab H2D Pro\n; nozzle_diameter = 0.4;0.4\n; filament_type = PLA\n; curr_bed_type = Textured PEI Plate\nM104 S230\nM140 S60\nG1 X20 Y20 E1\n';
+  const f = await raw(s, text, 'h2dpro.gcode');
+  const result = await s.call({ file_path: f.path, bambu_model: 'h2dpro', nozzle_diameters: [0.4, 0.4], plate_index: 0 });
+  assert.equal(result.isError, undefined, JSON.stringify(result.content)); const r = s.decode(result);
+  assert.equal(r.selection.bambu_model, 'h2dpro');
+  assert.deepEqual(r.inspection.nozzleDiameters, [0.4, 0.4]);
+  // H2D remains a different model identity for the same file.
+  assert.equal((await s.call({ file_path: f.path, bambu_model: 'h2d', nozzle_diameters: [0.4, 0.4] })).isError, true);
+  await assert.rejects(access(s.networkLog), { code: 'ENOENT' });
+});
