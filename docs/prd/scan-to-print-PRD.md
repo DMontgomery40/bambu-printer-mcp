@@ -271,8 +271,10 @@ Uncertainties are combined linearly (worst case), not root-sum-square, because i
 | Badge | Condition | Action shown |
 |---|---|---|
 | **Green** | *U_m + U_p ≤ 0.8 · (W + K)/2* | Print |
-| **Yellow** | Green would hold if *U_m* were replaced by the Fit Key resolution (±0.05 mm step half-width, est.) | "Print the Fit Key first (about 8 min, est.)" |
+| **Yellow** | The Fit Key tested size range covers the complete measurement interval, and Green would hold using its validated residual uncertainty (±0.05 mm step half-width, est.) | "Print the Fit Key first (about 8 min, est.)" |
 | **Red** | Neither holds, or a feature is unmeasured | Ask for the cheapest better measurement, or switch to a more compliant architecture |
+
+A five-size coupon spaced 0.1 mm around nominal covers only ±0.2 mm. It cannot resolve a ±1 mm tape measurement: request a better measurement or design a wider coupon that covers the complete interval before offering Yellow. After testing, require a confirmed fitting size and retain process uncertainty; no fitting size or a boundary-only result requires a wider coupon or new measurement, never an automatic Green badge.
 
 The selector tries architectures from stiffest to most compliant and picks the first one that yields Green or Yellow and also satisfies the use class (for example, rigid for Gridfinity bins, flex fins for cup bases, split collet plus TPU for handlebars).
 

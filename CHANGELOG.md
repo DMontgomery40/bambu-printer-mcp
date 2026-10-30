@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.1.39] – 2026-10-30
+
+### Documentation
+- Add the Made to Fit scan-to-print proposal and reproducible cost model. Make remix delivery probability explicit, reject unknown compute kinds, and require Fit Key coverage of the full measurement interval before reducing uncertainty.
+
 ## [1.1.38] – 2026-10-27
 
 ### Fixed
