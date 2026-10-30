@@ -31,6 +31,14 @@ test('only the exact clean X2D cancellation qualifies as terminal', () => {
   assert.throws(() => validatePrinterState(stale, requirements), /fresh|stale/);
 });
 
+test('the same canceled report from a matching non-X2D printer stays blocked', () => {
+  for (const [model, prefix, nozzles] of [['h2d', '094', ['0.4', '0.4']], ['h2dpro', '239', ['0.4', '0.4']], ['p1s', '01P', ['0.4']]]) {
+    const status = { ...fresh(canceled({ model, nozzle_diameter: nozzles })), serial: `${prefix}CANCELTEST` };
+    const required = { ...requirements, model, nozzleDiameters: nozzles.map(Number) };
+    assert.throws(() => validatePrinterState(status, required), /Printer state FAILED is not safely idle/, model);
+  }
+});
+
 test('a canceled job still requires a person to confirm bed clearance in headless mode', async t => {
   const previous = process.env.BAMBU_REQUIRE_CONFIRMATION;
   process.env.BAMBU_REQUIRE_CONFIRMATION = '0';
