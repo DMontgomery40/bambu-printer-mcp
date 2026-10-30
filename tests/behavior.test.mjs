@@ -49,7 +49,7 @@ async function writeSliced3mfFixture({
   plateFilamentIds = [1],
 } = {}) {
   const zip = new JSZip();
-  const nozzleDiameters = ["h2d", "h2c"].includes(bambuModel) ? ["0.4", "0.4"] : ["0.4"];
+  const nozzleDiameters = ["h2d", "h2dpro", "h2c"].includes(bambuModel) ? ["0.4", "0.4"] : ["0.4"];
   const gcode = [
     `; printer_model = ${bambuModel}`,
     `; nozzle_diameter = ${nozzleDiameters.join(";")}`,
@@ -87,7 +87,7 @@ function stubFreshSafetyStatus(bambu, model) {
     const now = Date.now();
     return {
       connected: true, model, status: "IDLE",
-      raw: { model, gcode_state: "IDLE", nozzle_diameter: "0.4", nozzle_type: "hardened_steel", device: { nozzle: { info: ["h2d", "h2c"].includes(model) ? [{ id: 0, diameter: 0.4, type: "HH01", stat: 0 }, { id: 1, diameter: 0.4, type: "HH01", stat: 0 }] : [{ id: 0, diameter: 0.4, type: "HH01", stat: 0 }] } }, print_error: 0, hms: [],
+      raw: { model, gcode_state: "IDLE", nozzle_diameter: "0.4", nozzle_type: "hardened_steel", device: { nozzle: { info: ["h2d", "h2dpro", "h2c"].includes(model) ? [{ id: 0, diameter: 0.4, type: "HH01", stat: 0 }, { id: 1, diameter: 0.4, type: "HH01", stat: 0 }] : [{ id: 0, diameter: 0.4, type: "HH01", stat: 0 }] } }, print_error: 0, hms: [],
         ams: { tray_now: "254", ams: [
           { id: "0", tray: [{ id: "1", tray_type: "PETG", nozzle_temp_min: "220", nozzle_temp_max: "260" }, { id: "2", tray_type: "PETG", nozzle_temp_min: "220", nozzle_temp_max: "260" }] },
           { id: "3", tray: [{ id: "3", tray_type: "PLA", nozzle_temp_min: "190", nozzle_temp_max: "240" }] },
@@ -944,7 +944,7 @@ test("H2 family print_3mf rejects pre-sliced filament jobs without explicit AMS 
   t.after(async () => { await closeTransport(transport); });
 
   await client.connect(transport);
-  for (const bambuModel of ["h2s", "h2d", "h2c"]) {
+  for (const bambuModel of ["h2s", "h2d", "h2dpro", "h2c"]) {
     const result = await client.callTool({
       name: "print_3mf",
       arguments: {
@@ -1248,10 +1248,10 @@ test("dual-nozzle tray values admit 255 as the right/main external spool; single
   assert.deepEqual(bridgeAmsMapping2Entry(131, true), { ams_id: 128, slot_id: 3 });
 });
 
-test("H2D project_file uses official virtual-spool wire mapping and validates nozzle binding", async () => {
-  const threeMfPath = await writeSliced3mfFixture({ name: "h2d-dual-external", bambuModel: "h2d", bedType: "Textured PEI Plate", projectFilamentTypes: ["PLA", "PLA", "PLA", "PLA"], plateFilamentIds: [0, 1] });
+for (const model of ["h2d", "h2dpro"]) test(`${model} project_file uses official virtual-spool wire mapping and validates nozzle binding`, async () => {
+  const threeMfPath = await writeSliced3mfFixture({ name: "h2d-dual-external", bambuModel: model, bedType: "Textured PEI Plate", projectFilamentTypes: ["PLA", "PLA", "PLA", "PLA"], plateFilamentIds: [0, 1] });
   const bambu = new BambuImplementation(async () => true);
-  stubFreshSafetyStatus(bambu, "h2d");
+  stubFreshSafetyStatus(bambu, model);
   const baseStatus = bambu.getSafetyStatus;
   let virSlot = [{ id: "254", tray_type: "PLA" }, { id: "255", tray_type: "PLA" }];
   bambu.getSafetyStatus = async (...args) => { const status = await baseStatus(...args); status.raw.vir_slot = virSlot; return status; };
@@ -1259,7 +1259,7 @@ test("H2D project_file uses official virtual-spool wire mapping and validates no
   bambu.ftpUpload = async () => {};
   bambu.getPrinter = async () => ({ publish: async (payload) => { publishedPayload = payload; } });
   try {
-    await bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsMapping: [254, 255, -1, -1], bedType: "Textured PEI Plate" });
+    await bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external", bambuModel: model, filePath: threeMfPath, plateIndex: 0, useAMS: true, amsMapping: [254, 255, -1, -1], bedType: "Textured PEI Plate" });
     assert.deepEqual(publishedPayload.print.ams_mapping, [-1, -1, -1, -1]);
     assert.deepEqual(publishedPayload.print.ams_mapping2, [
       { ams_id: 254, slot_id: 0 },
@@ -1268,16 +1268,16 @@ test("H2D project_file uses official virtual-spool wire mapping and validates no
       { ams_id: 255, slot_id: 255 },
     ]);
     publishedPayload = null;
-    await bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external-slots", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsSlots: [254, 255], bedType: "Textured PEI Plate" });
+    await bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external-slots", bambuModel: model, filePath: threeMfPath, plateIndex: 0, useAMS: false, amsSlots: [254, 255], bedType: "Textured PEI Plate" });
     assert.deepEqual(publishedPayload.print.ams_mapping, [-1, -1, -1, -1]);
     publishedPayload = null;
-    await assert.rejects(bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "wrong-nozzle", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: false, amsSlots: [255, 254], bedType: "Textured PEI Plate" }), /nozzle|binding/i);
+    await assert.rejects(bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "wrong-nozzle", bambuModel: model, filePath: threeMfPath, plateIndex: 0, useAMS: false, amsSlots: [255, 254], bedType: "Textured PEI Plate" }), /nozzle|binding/i);
     assert.equal(publishedPayload, null);
     publishedPayload = null;
     virSlot = [{ id: "254", tray_type: "PLA" }, { id: "255", tray_type: "PETG" }];
-    await assert.rejects(bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external-bad", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsMapping: [254, 255, -1, -1], bedType: "Textured PEI Plate" }), /PETG|material/i);
+    await assert.rejects(bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external-bad", bambuModel: model, filePath: threeMfPath, plateIndex: 0, useAMS: true, amsMapping: [254, 255, -1, -1], bedType: "Textured PEI Plate" }), /PETG|material/i);
     assert.equal(publishedPayload, null, "a contradicted main external spool must not publish");
-    await assert.rejects(bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external-range", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsMapping: [254, 256, -1, -1], bedType: "Textured PEI Plate" }), /255/);
+    await assert.rejects(bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external-range", bambuModel: model, filePath: threeMfPath, plateIndex: 0, useAMS: true, amsMapping: [254, 256, -1, -1], bedType: "Textured PEI Plate" }), /255/);
   } finally {
     fs.rmSync(threeMfPath, { force: true });
   }
@@ -2950,4 +2950,46 @@ test("tool schema invariant: input schemas use Codex-compatible root objects", a
       );
     }
   }
+});
+
+test("H2D Pro slicing selects its exact installed preset and refuses an H2D substitute", async (t) => {
+  const fixture = await createFakeBambuSlicer();
+  t.after(() => fs.rmSync(fixture.tempDir, { recursive: true, force: true }));
+  const preset = "Bambu Lab H2D Pro 0.4 nozzle";
+  const machinePath = path.join(fixture.profilesRoot, "BBL", "machine", `${preset}.json`);
+  fs.writeFileSync(machinePath, JSON.stringify({
+    name: preset, printer_model: "Bambu Lab H2D Pro", nozzle_diameter: ["0.4", "0.4"],
+    default_print_profile: "Behavior process", default_filament_profile: ["Behavior filament"],
+    machine_start_gcode: "H2D Pro fixture start",
+  }));
+  fs.writeFileSync(path.join(fixture.profilesRoot, "BBL", "cli_config.json"), JSON.stringify({ printer: {
+    "Bambu Lab H2D Pro": { downward_check: { [preset]: [] } },
+  } }));
+  const transport = new StdioClientTransport({
+    command: process.execPath, args: [SERVER_ENTRY], stderr: "pipe",
+    env: { ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "h2dpro", BAMBU_SERIAL: "", BAMBU_TOKEN: "",
+      BAMBU_SLICER_PROFILE: "", BAMBU_TEMPLATE_3MF_PATH: "", BAMBU_PROFILES_ROOT: fixture.profilesRoot,
+      BAMBU_SLICER_PROFILE_DIRS: "", BAMBU_NOZZLE_TYPE: "", BAMBU_NOZZLE_VOLUME_TYPE: "", MCP_ALLOW_EXECUTABLE_ARG: "1" },
+  });
+  const client = createClient();
+  t.after(async () => { await closeTransport(transport); });
+  await client.connect(transport);
+  const slice = () => client.callTool({ name: "slice_stl", arguments: {
+    stl_path: SAMPLE_STL, bambu_model: "h2dpro", slicer_path: fixture.fakeSlicerPath, use_printer_filaments: false,
+  } });
+  const result = await slice();
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  const args = JSON.parse(fs.readFileSync(fixture.argsOutPath, "utf8"));
+  const machine = JSON.parse(fs.readFileSync(args[args.indexOf("--load-settings") + 1].split(";")[0], "utf8"));
+  assert.equal(machine.machine_start_gcode, "H2D Pro fixture start");
+  assert.deepEqual(machine.nozzle_diameter, ["0.4", "0.4"]);
+  fs.rmSync(machinePath);
+  fs.writeFileSync(path.join(fixture.profilesRoot, "BBL", "machine", "Bambu Lab H2D 0.4 nozzle.json"), JSON.stringify({
+    name: "Bambu Lab H2D 0.4 nozzle", printer_model: "Bambu Lab H2D", nozzle_diameter: ["0.4", "0.4"],
+    default_print_profile: "Behavior process", default_filament_profile: ["Behavior filament"],
+  }));
+  fs.rmSync(fixture.argsOutPath);
+  const missing = await slice();
+  assert.equal(missing.isError, true, JSON.stringify(missing.content));
+  assert.equal(fs.existsSync(fixture.argsOutPath), false, "missing exact preset must stop before CLI execution");
 });
