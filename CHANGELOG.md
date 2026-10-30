@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.1.40] – 2026-10-30
 
 ### Fixed
 - Recheck the confirmed job and hardware-error codes after acquiring the MQTT connection, immediately before clearing errors on any printer model. Refuse dispatch if either changes during the connection wait; retain unchanged-job clearing and the native helper's dispatch checks. Contributed by [JackCA](https://github.com/JackCA) in [#76](https://github.com/DMontgomery40/bambu-printer-mcp/pull/76), with mocked P1S and X2D regressions.
