@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readBoundedPrintFile, loadSafe3mfArchive } from './archive.js';
-import { MACHINE_LIMITS, normalizeMaterial, normalizeModel, validateStartupPurgeTemperature, validateTemperature } from './limits.js';
+import { MACHINE_LIMITS, isDualNozzleModel, normalizeMaterial, normalizeModel, validateStartupPurgeTemperature, validateTemperature } from './limits.js';
 const NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 const fail = (message) => { throw new Error(`Print safety: ${message}`); };
 function list(value) {
@@ -62,6 +62,11 @@ function stripComments(line) {
 /** A deliberately narrow parameter lexer for commands affecting heat/material selection.
  * Unknown nonthermal vendor commands do not require a global G-code allowlist.
  */
+/** True when the parameter is present, finite and within [low, high]. */
+function inRange(args, key, low, high) {
+    const value = args.get(key);
+    return value !== undefined && Number.isFinite(value) && value >= low && value <= high;
+}
 function parameters(text, flags = '') {
     const result = new Map();
     let rest = text.trim();
@@ -163,6 +168,7 @@ export async function inspectPrintFile(filePath, options) {
     const model = normalizeModel(options.model);
     if (!model)
         return fail(`unknown or missing printer model '${options.model}'`);
+    const dualNozzle = isDualNozzleModel(model);
     const plateIndex = options.plateIndex ?? 0;
     if (!Number.isInteger(plateIndex) || plateIndex < 0)
         return fail('selected plate index must be a nonnegative integer');
@@ -303,6 +309,24 @@ export async function inspectPrintFile(filePath, options) {
         const values = list(value);
         return values.length && values.every(v => !!normalizeMaterial(v)) ? values.map(v => normalizeMaterial(v)) : undefined;
     }, 'filament material');
+    // GCode.cpp uses 1-based filament_map logical extruders and then indexes
+    // physical_extruder_map to select the physical nozzle. Only this selected
+    // plate's headers establish that binding; unsliced project defaults do not.
+    const headerMap = (key, count, low, high) => {
+        const values = metadataValues(headers, [key]);
+        if (!values.length)
+            return undefined;
+        return consistent(values, value => {
+            const entries = list(value);
+            return entries.length === count && entries.every(v => NUMBER.test(v) && Number.isInteger(Number(v)) && Number(v) >= low && Number(v) <= high)
+                ? entries.map(Number) : undefined;
+        }, key.replace(/_/g, ' '));
+    };
+    const physicalExtruderMap = headerMap('physical_extruder_map', nozzleDiameters.length, 0, dualNozzle ? Math.min(nozzleDiameters.length, 2) - 1 : nozzleDiameters.length - 1);
+    if (physicalExtruderMap && new Set(physicalExtruderMap).size !== physicalExtruderMap.length)
+        fail('physical extruder map must be a complete permutation');
+    const filamentMap = headerMap('filament_map', materials.length, 1, nozzleDiameters.length);
+    const filamentNozzleIndices = filamentMap && physicalExtruderMap ? filamentMap.map(logical => physicalExtruderMap[logical - 1]) : undefined;
     const bedValues = metadataValues([...metadata, plate], ['curr_bed_type', 'bed_type']);
     const bedType = bedValues.length ? consistent(bedValues, normalizeBed, 'bed type') : undefined;
     if (options.bedType && (!bedType || normalizeBed(options.bedType) !== bedType))
@@ -365,17 +389,25 @@ export async function inspectPrintFile(filePath, options) {
             let line = stripComments(lines[index]);
             if (!line || line === '%')
                 continue;
-            // The official H2C template emits this literal separator without a semicolon.
+            // Accept only the exact vendor banners in their documented model/scope.
+            // X2D emits its filament-change banner throughout a print; H2C's record
+            // separator stays inside its explicitly bounded startup block.
+            if (line === '======== X2D filament_change gcode ==========' && model === 'x2d')
+                continue;
             if (line === '========== record data ==========' && h2cStartup(index))
                 continue;
             line = line.replace(/^N\d+\s*/i, '').replace(/\*\d+\s*$/, '');
             if (/[{}\[\]#]/.test(line))
                 fail('unresolved dynamic command syntax');
             if (/^SYNC(?=$|\s)/i.test(line)) {
-                // H2D change_filament_gcode emits SYNC T{ceil(flush_length / 125) * 5}.
-                // T is a synchronization duration here, not a nozzle temperature. The
-                // vendor template establishes no independent maximum duration.
+                // Vendor SYNC T is a duration, not a heater target. X2D and P2S
+                // startup templates additionally emit R0; no other R form is supported.
                 const args = parameters(line.slice(4));
+                if (args.has('R')) {
+                    if (!['x2d', 'p2s'].includes(model) || args.get('R') !== 0)
+                        fail('unsupported SYNC reset parameters');
+                    args.delete('R');
+                }
                 if (args.size !== 1 || !args.has('T') || !Number.isFinite(args.get('T')) || args.get('T') < 0)
                     fail('unsupported SYNC duration parameters');
                 commandCount++;
@@ -388,6 +420,33 @@ export async function inspectPrintFile(filePath, options) {
             const code = command[1].toUpperCase() + String(Number(base)) + (subcode === undefined ? '' : '.' + subcode);
             const argumentsText = line.slice(command[0].length).trim();
             commandCount++;
+            if (code === 'M9711') {
+                // Official X2D and H2D time-lapse capture (Bambu Studio and OrcaSlicer
+                // templates), emitted on every layer: M is the time-lapse mode and E the
+                // physical extruder, not a second command; T is a duration, not a heater.
+                // It sets no temperature. Positions stay inside the machine volume.
+                const invalid = () => fail('unsupported M9711 time-lapse parameters');
+                if (!['x2d', 'h2d'].includes(model))
+                    invalid();
+                let args;
+                try {
+                    args = parameters(argumentsText);
+                }
+                catch {
+                    return invalid();
+                }
+                const [width, depth, height] = MACHINE_LIMITS[model].volume;
+                const position = ['X', 'Y', 'U', 'V'].filter(key => args.has(key)).join('');
+                const limit = { X: width, U: width, Y: depth, V: depth };
+                if ([...args.keys()].some(key => !'MEXYUVZSCOT'.includes(key)) ||
+                    // X2D and H2D have two physical extruders, whatever the file declares.
+                    ![0, 1].includes(args.get('M')) || !Number.isInteger(args.get('E')) || !inRange(args, 'E', 0, Math.min(nozzleDiameters.length, 2) - 1) ||
+                    args.get('S') !== 11 || args.get('C') !== 10 || args.get('O') !== 0 || !inRange(args, 'T', 0, 600000) ||
+                    !inRange(args, 'Z', 0, height) ||
+                    !['', 'XY', 'UV'].includes(position) || [...position].some(key => !inRange(args, key, 0, limit[key])))
+                    invalid();
+                continue;
+            }
             if (!['M117', 'M118', 'M1002', 'M1006', 'M900', 'M970', 'M983.1', 'G383'].includes(code) && /[GM]\s*\d/i.test(argumentsText))
                 fail('multiple commands on one line are unsupported');
             // Coordinated extrusion closes the startup-only allowance even when the
@@ -441,9 +500,16 @@ export async function inspectPrintFile(filePath, options) {
                     continue;
                 }
                 const vendorWait = code === 'M109' && ['a1', 'a1mini'].includes(model);
+                // Bambu Studio addresses a physical nozzle on dual-nozzle machines with N<index>
+                // (X2D `M104 T1 S25 N0` multi-extruder pre-cooling and wipe-tower reheats).
+                // N selects a nozzle, never a target, so it is accepted only on those models,
+                // only for nozzle heaters, and only within the declared nozzle count.
+                const nozzleIndex = ['M104', 'M109'].includes(code) && dualNozzle;
                 for (const key of args.keys())
-                    if (!'SRTA'.includes(key) && !(key === 'H' && vendorWait))
+                    if (!'SRTA'.includes(key) && !(key === 'H' && vendorWait) && !(key === 'N' && nozzleIndex))
                         fail(`unsupported ${code} temperature parameter ${key}`);
+                if (args.has('N') && (!Number.isInteger(args.get('N')) || args.get('N') < 0 || args.get('N') >= Math.min(nozzleDiameters.length, 2)))
+                    fail(`unsupported ${code} nozzle index N`);
                 if (args.has('H') && (!Number.isFinite(args.get('H')) || args.get('H') < 0 || args.get('H') > 300))
                     fail(`unsupported ${code} wait parameter H`);
                 if (!args.has('S') && !args.has('R'))
@@ -453,13 +519,13 @@ export async function inspectPrintFile(filePath, options) {
                 // Without a verified per-filament nozzle map, apply all possible materials.
                 if (args.has('T') && (!Number.isInteger(args.get('T')) || args.get('T') < 0 || args.get('T') >= nozzleDiameters.length))
                     fail('physical heater target has no declared nozzle');
-                const position = args.has('T') ? undefined : active;
+                const position = args.has('T') || args.has('N') ? undefined : active;
                 const commonFlush = code === 'M109' && args.size === 1 && args.get('S') === 290 && model === 'x1e' && !depositionStarted && !commonFlushUsed && boundedX1ePurge(lines, index);
                 if (commonFlush)
                     commonFlushUsed = true;
                 for (const key of ['S', 'R'])
                     if (args.has(key))
-                        heat(component, args.get(key), position, args.has('T') || args.has('A'), commonFlush);
+                        heat(component, args.get(key), position, args.has('T') || args.has('N') || args.has('A'), commonFlush);
             }
             else if (code === 'M620' || code === 'M621') {
                 const args = parameters(argumentsText, model === 'x2d' ? 'MAB' : model === 'h2c' ? 'MAN' : 'MA');
@@ -574,7 +640,21 @@ export async function inspectPrintFile(filePath, options) {
                 for (const key of args.keys())
                     if (!'SLT'.includes(key))
                         fail(`unsupported M620.17 parameter ${key}`);
-                heat('nozzle', args.get('S'), requirePosition(args.get('L')));
+                if (args.get('L') === -1 && ['x2d', 'h2d', 'h2dpro'].includes(model)) {
+                    // OrcaSlicer's X2D/H2D/H2D Pro start G-code preheats a nozzle with no assigned
+                    // filament (L-1) for toolhead-offset calibration; Bambu Studio writes
+                    // L0 there. No project filament is selected, so check the target
+                    // against the hardware limit and every declared material, like other
+                    // heater commands without a verified filament. That is never looser
+                    // than an accepted L<position> form. Material left in the nozzle from
+                    // an earlier job is live state that no file can declare. T names one
+                    // of the two physical nozzles, whatever the file declares.
+                    if (args.get('T') > 1)
+                        fail('unsupported M620.17 nozzle/material temperature mapping');
+                    heat('nozzle', args.get('S'), undefined, true);
+                }
+                else
+                    heat('nozzle', args.get('S'), requirePosition(args.get('L')));
             }
             else if ((/^M620\./.test(code) && !['M620.3', 'M620.6', 'M620.11'].includes(code)) || /^M621\./.test(code)) {
                 fail(`unsupported thermal-affecting filament command ${code}`);
@@ -606,5 +686,5 @@ export async function inspectPrintFile(filePath, options) {
         return fail('selected G-code contains no printable commands');
     if (!used.size)
         materials.forEach((_, index) => used.add(index));
-    return { model, nozzleDiameters, materials, usedFilamentPositions: [...used].sort((a, b) => a - b), plateInternalPath, sha256, maxNozzleTemperature, maxBedTemperature, maxChamberTemperature, bedType, selectsAms, nozzleTypes, nozzleFlows };
+    return { model, nozzleDiameters, materials, usedFilamentPositions: [...used].sort((a, b) => a - b), plateInternalPath, sha256, maxNozzleTemperature, maxBedTemperature, maxChamberTemperature, bedType, selectsAms, nozzleTypes, nozzleFlows, filamentNozzleIndices };
 }

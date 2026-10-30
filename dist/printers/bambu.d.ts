@@ -26,6 +26,18 @@ interface BambuPrintOptionsInternal {
     amsSlots?: number[];
     md5?: string;
 }
+/** What the human confirmed in confirmPrintPreflight, checked again before dispatch. */
+export type PrintPreflight = {
+    finishedJob?: string;
+    serial: string;
+    model: string;
+    notices: string[];
+};
+/**
+ * Split the A1/P1 camera stream on port 6000 into JPEG frames. Each frame is
+ * a 16-byte header (payload size LE, itrack, flags, reserved) and the JPEG.
+ */
+export declare function cameraFrameParser(onFrame: (jpeg: Buffer) => void, onError: (error: Error) => void): (chunk: Buffer) => void;
 export declare class BambuImplementation {
     private readonly confirm?;
     private printerStore;
@@ -34,8 +46,14 @@ export declare class BambuImplementation {
     constructor(confirm?: ((message: string) => Promise<boolean>) | undefined);
     confirmHardwareAction(message: string, physicalCheck?: boolean): Promise<void>;
     private finishedJobIdentity;
-    confirmPrintPreflight(serial: string, status: any, inspection: Awaited<ReturnType<typeof inspectPrintFile>>): Promise<string | undefined>;
-    assertBedClearance(status: any, confirmedFinishedJob: string | undefined): void;
+    /**
+     * The human print confirmation. Its result goes to assertBedClearance at
+     * every later state check of the same print, which stops the print if the
+     * situation the human confirmed has changed.
+     */
+    confirmPrintPreflight(serial: string, status: any, inspection: Awaited<ReturnType<typeof inspectPrintFile>>): Promise<PrintPreflight>;
+    /** Stop a print whose confirmed situation changed: a newly finished job, or a hidden HMS notice the preflight did not name. */
+    assertBedClearance(status: any, preflight: PrintPreflight): void;
     private getPrinter;
     /** Internal handoff from a successful inspected transport; never exposed as an MCP tool. */
     recordCheckedJob(host: string, serial: string, remotePath: string, requirements: PrinterStateRequirements): void;
@@ -47,6 +65,11 @@ export declare class BambuImplementation {
     print3mf(host: string, serial: string, token: string, options: BambuPrintOptionsInternal): Promise<any>;
     private print3mfPrepared;
     cancelJob(host: string, serial: string, token: string, dispatch?: () => Promise<any>): Promise<any>;
+    private invokeEmergencyCommand;
+    /** Raw MQTT stop for routes that already ran the shared cancellation steps. */
+    sendStopOverMqtt(host: string, serial: string, token: string, signal?: AbortSignal): Promise<any>;
+    /** Raw MQTT heater-off; switching off needs no material or model declaration. */
+    sendHeaterOffOverMqtt(host: string, serial: string, token: string, heater: "bed" | "nozzle", signal?: AbortSignal): Promise<any>;
     pauseJob(host: string, serial: string, token: string, dispatch?: () => Promise<any>): Promise<any>;
     resumeJob(host: string, serial: string, token: string, dispatch?: (assertActive: () => void, beforeDispatch: () => Promise<void>) => Promise<any>): Promise<any>;
     clearHmsErrors(host: string, serial: string, token: string, dispatch?: (assertActive: () => void, beforeDispatch: () => Promise<void>) => Promise<any>): Promise<any>;
@@ -54,6 +77,16 @@ export declare class BambuImplementation {
     setAirductMode(host: string, serial: string, token: string, mode: string): Promise<any>;
     rereadAmsRfid(host: string, serial: string, token: string, amsId: number, slotId: number): Promise<any>;
     setTemperature(host: string, serial: string, token: string, component: string, temperature: unknown, bambuModel?: string, material?: string, nozzleDiameter?: number, dispatch?: (heater: "bed" | "nozzle", target: number, assertActive: () => void, beforeDispatch?: () => Promise<void>) => Promise<any>): Promise<{
+        routes: any;
+        native_error: any;
+        mqtt_error: any;
+        status: string;
+        message: string;
+        command: string;
+    } | {
+        routes?: undefined;
+        native_error?: undefined;
+        mqtt_error?: undefined;
         status: string;
         message: string;
         command: string;
@@ -79,10 +112,6 @@ export declare class BambuImplementation {
     getFiles(host: string, serial: string, token: string): Promise<{
         files: string[];
         directories: Record<string, string[]>;
-    }>;
-    getFile(host: string, serial: string, token: string, filename: string): Promise<{
-        name: string;
-        exists: boolean;
     }>;
     uploadFile(host: string, serial: string, token: string, filePath: string, filename: string, print: boolean, bambuModel?: string, upload?: (snapshot: string, destination: string, assertActive: () => void) => Promise<void>): Promise<{
         status: string;
@@ -190,8 +219,13 @@ export declare class BambuImplementation {
      */
     private fetchRtspCameraFrame;
     /**
-     * Open the TLS-on-6000 socket, send the 80-byte auth packet, and read
-     * a single complete JPEG frame. Returns the JPEG bytes.
+     * Open the TLS-on-6000 socket, send the 80-byte auth packet, and return
+     * a live JPEG frame. The printer first replays the last frame it buffered,
+     * which after an idle period can show the chamber as it was long ago (a
+     * finished part still on the bed), so that frame and any byte-identical
+     * repeat of it are discarded and the next frame returned; live frames always
+     * differ by sensor noise. If no live frame arrives in time, this fails rather
+     * than return a possibly stale image.
      */
     private fetchTcpCameraFrame;
     /**

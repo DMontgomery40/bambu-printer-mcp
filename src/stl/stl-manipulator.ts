@@ -10,6 +10,9 @@ import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { flattenForCli, detectProfilesRoot, resolveBblMachineProfile } from '../slicer/profile-flatten.js';
+import { profileJsonFiles } from '../slicer/profile-files.js';
+import { materializeOrcaProfilesRoot, stageOrcaCliProfiles } from '../slicer/orca-profile-cache.js';
+import { sliceWithOrcaApi, validateRemoteSliceOptions } from '../slicer/remote-slicer.js';
 
 const readFileAsync = promisify(fs.readFile);
 const writeFileAsync = promisify(fs.writeFile);
@@ -56,6 +59,7 @@ export const SLICER_TYPES = [
   'bambustudio',
   'orcaslicer',
   'orcaslicer-bambulab',
+  'orca-slicer-api',
   'prusaslicer',
   'cura',
   'slic3r',
@@ -80,6 +84,8 @@ const SLICER_TYPE_ALIASES: Record<string, SlicerType> = {
   orcastudio: 'orcaslicer-bambulab',
   'orcaslicer-bmcu': 'orcaslicer-bambulab',
   'orca-bmcu': 'orcaslicer-bambulab',
+  'orca-slicer-api': 'orca-slicer-api',
+  'orcaslicer-api': 'orca-slicer-api',
   prusaslicer: 'prusaslicer',
   'prusa-slicer': 'prusaslicer',
   cura: 'cura',
@@ -104,7 +110,8 @@ export function isBambuCompatibleSlicer(slicerType: SlicerType): boolean {
   return (
     slicerType === 'bambustudio' ||
     slicerType === 'orcaslicer' ||
-    slicerType === 'orcaslicer-bambulab'
+    slicerType === 'orcaslicer-bambulab' ||
+    slicerType === 'orca-slicer-api'
   );
 }
 
@@ -165,6 +172,7 @@ export interface BambuSliceOptions {
   filamentColours?: string[];  // positional #RRGGBB per loaded filament slot
   bedType?: string;            // Bambu bed type, e.g. textured_plate or cool_plate
   nozzleType?: string;         // installed hotend material written into the machine preset
+  nozzleVolumeType?: 'Standard' | 'High Flow'; // installed nozzle flow, the machine preset's nozzle_volume_type
   enableTimelapse?: boolean;   // --enable-timelapse: timelapse-aware slicing
   allowMixTemp?: boolean;      // --allow-mix-temp: allow mixed-temp filaments
   scale?: number;              // --scale factor: uniform scale
@@ -192,6 +200,69 @@ const PROFILE_METADATA_KEYS = new Set([
   'name', 'type', 'from', 'inherits', 'instantiation', 'setting_id', 'version', 'is_custom_defined',
   'compatible_printers', 'compatible_printers_condition', 'compatible_prints', 'compatible_prints_condition',
 ]);
+
+/**
+ * Why the slicer process failed. execFile's message already carries stderr;
+ * a crash often leaves stderr empty (FULU OrcaSlicer-bambulab v1.0.0
+ * segfaults with no output), so name the signal or exit code and add the end
+ * of stdout instead.
+ */
+/** Where a Bambu-style CLI records its error on Linux, and when this run started. */
+type CliResultSource = { resultPath: string; startedAt: number };
+
+function describeSlicerFailure(
+  error: { message: string; code?: unknown; signal?: unknown },
+  stdout: string,
+  stderr: string,
+  cli?: CliResultSource
+): string {
+  const status = typeof error.signal === "string" && error.signal
+    ? `crashed with ${error.signal}`
+    : typeof error.code === "number" ? `exited with code ${error.code}` : "failed";
+  const reason = cli ? bambuCliFailureReason(error.code, cli) : undefined;
+  const output = stderr.trim() ? "" : stdout.trim().split("\n").slice(-20).join("\n");
+  return `Slicer failed: the slicer ${status}${reason ? ` (${reason})` : ""}. ${error.message.trim()}${output ? `\nSlicer output: ${output}` : ""}`;
+}
+
+// Bambu Studio and OrcaSlicer CLI errors (libslic3r/Utils.hpp). The process
+// exits with the low byte of the code; on Linux result.json names the error.
+const BAMBU_CLI_ERRORS: Record<number, string> = {
+  [-2]: "invalid parameters to the slicer",
+  [-3]: "input files not found",
+  [-5]: "preset file cannot be parsed",
+  [-6]: "model file cannot be parsed",
+  [-9]: "copying objects failed",
+  [-17]: "printer is not compatible with the process preset",
+  [-21]: "auto-arranging objects failed",
+  [-22]: "auto-orienting objects failed",
+  [-50]: "a plate is empty or has no object fully inside it; arrange the model or place it on the plate",
+  [-51]: "incorrect slicing parameters",
+  [-52]: "objects extend over the bed boundary",
+  [-60]: "no printable objects remain after skipping",
+  [-61]: "filaments are not compatible with the plate type",
+  [-62]: "the filaments' temperatures differ too much",
+  [-63]: "objects collide in print-by-object mode",
+  [-64]: "objects collide",
+  [-100]: "slicing the model failed",
+  [-101]: "G-code conflicts after slicing",
+  [-102]: "G-code in an unprintable area",
+};
+
+function bambuCliFailureReason(exitCode: unknown, cli: CliResultSource): string | undefined {
+  try {
+    if (fs.statSync(cli.resultPath).mtimeMs >= cli.startedAt) {
+      const result = JSON.parse(fs.readFileSync(cli.resultPath, "utf8"));
+      if (typeof result.error_string === "string" && result.error_string.trim()) {
+        return `${result.error_string.trim()} [${result.return_code}]`;
+      }
+    }
+  } catch {
+    // result.json is written only on Linux and only for handled errors.
+  }
+  if (typeof exitCode !== "number") return undefined;
+  const code = Object.keys(BAMBU_CLI_ERRORS).map(Number).find(value => (value & 0xff) === exitCode);
+  return code === undefined ? undefined : `${BAMBU_CLI_ERRORS[code]} [${code}]`;
+}
 
 export class STLManipulator extends EventEmitter {
   private tempDir: string;
@@ -232,10 +303,9 @@ export class STLManipulator extends EventEmitter {
     }
 
     for (const root of roots) {
-      const candidate = path.join(root, category, `${profileName}.json`);
-      if (fs.existsSync(candidate)) {
-        return candidate;
-      }
+      const candidate = profileJsonFiles(path.join(root, category))
+        .find(file => path.basename(file) === `${profileName}.json`);
+      if (candidate) return candidate;
     }
 
     return undefined;
@@ -250,12 +320,7 @@ export class STLManipulator extends EventEmitter {
         continue;
       }
 
-      for (const entry of fs.readdirSync(filamentDir)) {
-        if (!entry.endsWith('.json')) {
-          continue;
-        }
-
-        const filePath = path.join(filamentDir, entry);
+      for (const filePath of profileJsonFiles(filamentDir)) {
         try {
           const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
           const filamentId = typeof parsed?.filament_id === 'string' ? parsed.filament_id.trim() : '';
@@ -290,7 +355,7 @@ export class STLManipulator extends EventEmitter {
     return value;
   }
 
-  private sanitizeProcessForOrca(processConfig: any, printerPreset?: string): any {
+  private sanitizeProcessForOrca(processConfig: any, printerPreset?: string, preserveExtrusionMode = false): any {
     const sanitized = { ...processConfig };
 
     sanitized.type = 'process';
@@ -311,7 +376,7 @@ export class STLManipulator extends EventEmitter {
       sanitized.prime_tower_brim_width = String(sanitized.prime_tower_brim_width);
     }
 
-    return this.useAbsoluteExtrusionForOrca(sanitized);
+    return preserveExtrusionMode ? sanitized : this.useAbsoluteExtrusionForOrca(sanitized);
   }
 
   /** Orca slices with absolute E distances; per-layer `G92 E0` resets would break them. */
@@ -343,7 +408,8 @@ export class STLManipulator extends EventEmitter {
     slicerProfile?: string,
     printerPreset?: string,
     bambuOptions?: BambuSliceOptions,
-    activeProfilesRoot?: string
+    activeProfilesRoot?: string,
+    preserveOrcaExtrusionMode = false
   ): Promise<BambuSettingsBundle> {
     const roots = activeProfilesRoot
       ? [path.join(activeProfilesRoot, 'BBL')]
@@ -416,7 +482,7 @@ export class STLManipulator extends EventEmitter {
         outputBase,
         slicerType === 'orcaslicer' ? 'process_orca' : 'process',
         slicerType === 'orcaslicer'
-          ? this.sanitizeProcessForOrca(mergedProcess, printerPreset)
+          ? this.sanitizeProcessForOrca(mergedProcess, printerPreset, preserveOrcaExtrusionMode)
           : mergedProcess
       );
 
@@ -459,7 +525,7 @@ export class STLManipulator extends EventEmitter {
             ? this.writeTempJson(
                 outputBase,
                 'process_default_orca',
-                this.sanitizeProcessForOrca(this.readJsonFile(defaultProcessPath), printerPreset)
+                this.sanitizeProcessForOrca(this.readJsonFile(defaultProcessPath), printerPreset, preserveOrcaExtrusionMode)
               )
             : defaultProcessPath;
       }
@@ -568,6 +634,7 @@ export class STLManipulator extends EventEmitter {
       userProfileRoots: configuredBambuProfileDirs(),
       tempDir: this.tempDir,
       bedType: this.resolveBambuStudioBedType(bambuOptions?.bedType),
+      nozzleVolumeType: bambuOptions?.nozzleVolumeType,
       filamentColours: bambuOptions?.filamentColours ?? bundle.filamentColours,
       projectTowerPosition: bundle.projectTowerPosition,
       sourceProfiles: {
@@ -972,6 +1039,29 @@ export class STLManipulator extends EventEmitter {
     } finally {
       this.activeOperations.delete(operationId);
     }
+  }
+
+  /**
+   * Apply slice_stl's scale and rotations to a copy of the mesh as OrcaSlicer's
+   * CLI would, about the model's centre. Orca adds each --rotate* to the
+   * object's Euler angles (ModelVolume::rotate), so the result rotates about X,
+   * then Y, then Z whatever the argument order, after scaling. The slicer then
+   * places the result on the plate.
+   */
+  private async transformMeshForCli(stlFilePath: string, options: BambuSliceOptions): Promise<string> {
+    const { geometry, boundingBox } = await this.loadSTL(stlFilePath);
+    const center = new THREE.Vector3();
+    boundingBox.getCenter(center);
+    const radians = (degrees: number) => degrees * Math.PI / 180;
+    geometry.applyMatrix4(new THREE.Matrix4().makeTranslation(-center.x, -center.y, -center.z));
+    if (options.scale !== undefined) geometry.applyMatrix4(new THREE.Matrix4().makeScale(options.scale, options.scale, options.scale));
+    if (options.rotateX) geometry.applyMatrix4(new THREE.Matrix4().makeRotationX(radians(options.rotateX)));
+    if (options.rotateY) geometry.applyMatrix4(new THREE.Matrix4().makeRotationY(radians(options.rotateY)));
+    if (options.rotate) geometry.applyMatrix4(new THREE.Matrix4().makeRotationZ(radians(options.rotate)));
+    geometry.applyMatrix4(new THREE.Matrix4().makeTranslation(center.x, center.y, center.z));
+    const outputFilePath = path.join(this.tempDir, `${path.basename(stlFilePath, path.extname(stlFilePath))}_transformed_${this.generateOperationId()}.stl`);
+    await this.saveSTL(geometry, outputFilePath);
+    return outputFilePath;
   }
 
   /**
@@ -1594,7 +1684,7 @@ export class STLManipulator extends EventEmitter {
     const operationId = this.generateOperationId();
     this.activeOperations.set(operationId, true);
 
-    if (isPathLikeExecutable(slicerPath) && !fs.existsSync(slicerPath)) {
+    if (slicerType !== 'orca-slicer-api' && isPathLikeExecutable(slicerPath) && !fs.existsSync(slicerPath)) {
       throw new Error(`Slicer executable not found at: ${slicerPath}`);
     }
     if (slicerProfile && !fs.existsSync(slicerProfile)) {
@@ -1606,6 +1696,9 @@ export class STLManipulator extends EventEmitter {
     let outputFilePath = path.join(this.tempDir, outputFileName);
 
     let args: string[] = [];
+    let cliResult: CliResultSource | undefined;
+    const orcaTemporaryDirectories: string[] = [];
+    const temporaryFiles: string[] = [];
 
     try {
       if (progressCallback) progressCallback(0, `Starting slicing with ${slicerType}...`);
@@ -1641,6 +1734,7 @@ export class STLManipulator extends EventEmitter {
         case 'bambustudio':
         case 'orcaslicer':
         case 'orcaslicer-bambulab':
+        case 'orca-slicer-api':
           // Bambu-compatible CLI: slice and export as 3MF with embedded gcode.
           // FULU's OrcaSlicer-bambulab fork keeps this Bambu-style path.
           // For 3MF input: slice in place and export sliced 3MF
@@ -1648,16 +1742,28 @@ export class STLManipulator extends EventEmitter {
           {
             const is3mf = stlFilePath.toLowerCase().endsWith('.3mf');
             const outputBase = path.basename(stlFilePath, is3mf ? '.3mf' : '.stl');
-            const bambuOutputPath = path.join(this.tempDir, outputBase + '_sliced.3mf');
+            const remote = slicerType === 'orca-slicer-api';
+            if (remote) {
+              validateRemoteSliceOptions(bambuOptions);
+              if (!process.env.BAMBU_PROFILES_ROOT) throw new Error('Remote slicing requires BAMBU_PROFILES_ROOT pointing to the matching Orca profile tree (a read-only mount is sufficient).');
+              if (slicerProfile && !fs.existsSync(slicerProfile)) throw new Error('Remote slicing process profile does not exist.');
+            }
+            const profileSlicerType = remote ? 'orcaslicer' : slicerType;
+            const bambuOutputPath = path.join(this.tempDir, outputBase + (remote ? `_${operationId}` : '') + '_sliced.3mf');
             const outputDir = path.dirname(bambuOutputPath);
-            const profilesRoot = detectProfilesRoot(slicerPath, slicerType);
+            const selectedProfilesRoot = detectProfilesRoot(remote ? undefined : slicerPath, profileSlicerType);
+            const profilesRoot = !remote && profileSlicerType === 'orcaslicer'
+              ? await materializeOrcaProfilesRoot(selectedProfilesRoot, this.tempDir)
+              : selectedProfilesRoot;
+            if (profilesRoot !== selectedProfilesRoot) orcaTemporaryDirectories.push(profilesRoot);
             const rawBundle = await this.resolveBambuLikeSettingsBundle(
               outputBase,
-              slicerType,
+              profileSlicerType,
               slicerProfile,
               printerPreset,
               bambuOptions,
-              profilesRoot
+              profilesRoot,
+              profileSlicerType === 'orcaslicer' && profilesRoot !== selectedProfilesRoot
             );
             // Resolve every BBL dependency before launching the slicer.
             const settingsBundle = await this.maybeFlattenBundle(
@@ -1679,7 +1785,7 @@ export class STLManipulator extends EventEmitter {
             // absolute-extrusion normalization after resolving those ancestors.
             // The machine owns the extrusion mode and layer G-code once process
             // files lose machine keys, so normalize it there as well.
-            if (slicerType === 'orcaslicer' && settingsBundle.settingsArg) {
+            if (profileSlicerType === 'orcaslicer' && settingsBundle.settingsArg && profilesRoot === selectedProfilesRoot) {
               const [machinePath, processPath] = settingsBundle.settingsArg.split(';');
               settingsBundle.settingsArg = [
                 this.writeTempJson(outputBase, 'machine_orca_resolved',
@@ -1688,8 +1794,48 @@ export class STLManipulator extends EventEmitter {
                   this.sanitizeProcessForOrca(this.readJsonFile(processPath), printerPreset)),
               ].join(';');
             }
-            const cliBundle = this.isolateMachineSettings(settingsBundle);
+            let cliBundle = this.isolateMachineSettings(settingsBundle);
+            let orcaExtraArgs: string[] = [];
+            if (!remote && profileSlicerType === 'orcaslicer' && profilesRoot !== selectedProfilesRoot) {
+              const staged = await stageOrcaCliProfiles(profilesRoot, this.tempDir, cliBundle);
+              cliBundle = { ...cliBundle, settingsArg: staged.settingsArg, filamentPaths: staged.filamentPaths };
+              orcaExtraArgs = staged.extraArgs;
+              orcaTemporaryDirectories.push(staged.dataDir);
+            }
+            if (remote) {
+              const [machinePath, processPath] = cliBundle.settingsArg?.split(';') ?? [];
+              if (!machinePath || !processPath) throw new Error('Remote slicing requires complete prepared machine and process profiles.');
+              outputFilePath = await sliceWithOrcaApi({
+                inputPath: stlFilePath, machinePath, processPath,
+                filamentPaths: cliBundle.filamentPaths, outputPath: bambuOutputPath,
+                options: bambuOptions, isCancelled: () => !this.activeOperations.get(operationId),
+              });
+              break;
+            }
+            // OrcaSlicer's CLI crashes (SIGSEGV in PartPlate::check_outside,
+            // which needs the GUI's Plater) when --scale or --rotate-x/-y move an
+            // object below the bed and it arranges, the default for STL; it also
+            // rejects --repetitions for one STL. Apply STL transforms to the mesh
+            // in the CLI's order instead, and refuse the 3MF case it cannot fix.
+            const orcaCli = slicerType === 'orcaslicer' || slicerType === 'orcaslicer-bambulab';
+            const tilts = !!bambuOptions?.rotateX || !!bambuOptions?.rotateY;
+            const meshTransform = orcaCli && !is3mf && (bambuOptions?.scale !== undefined || tilts);
+            if (orcaCli && is3mf && bambuOptions?.arrange === true && ((bambuOptions.scale ?? 1) > 1 || tilts)) {
+              throw new Error(
+                "OrcaSlicer's CLI crashes when scale above 1, rotate_x or rotate_y moves a 3MF object below the bed while arranging. " +
+                "Set arrange to false, or apply the transform in the slicer and export the project."
+              );
+            }
+            if (orcaCli && !is3mf && bambuOptions?.repetitions !== undefined && bambuOptions.cloneObjects) {
+              throw new Error("Use either repetitions or clone_objects for an STL with OrcaSlicer, not both.");
+            }
+            const inputPath = meshTransform ? await this.transformMeshForCli(stlFilePath, bambuOptions!) : stlFilePath;
+            if (inputPath !== stlFilePath) temporaryFiles.push(inputPath);
+            cliResult = { resultPath: path.join(outputDir, 'result.json'), startedAt: Date.now() };
+            // A result.json left by an earlier run must not explain this one.
+            await fs.promises.rm(cliResult.resultPath, { force: true });
             args = [
+              ...orcaExtraArgs,
               '--slice', String(bambuOptions?.slicePlate ?? 0),
               '--outputdir', outputDir,
               '--export-3mf', path.basename(bambuOutputPath),
@@ -1709,11 +1855,17 @@ export class STLManipulator extends EventEmitter {
             if (bambuOptions?.skipModifiedGcodes) args.push('--skip-modified-gcodes');
             if (bambuOptions?.orient !== undefined) args.push('--orient', bambuOptions.orient ? '1' : '0');
             if (bambuOptions?.arrange !== undefined) args.push('--arrange', bambuOptions.arrange ? '1' : '0');
-            if (bambuOptions?.repetitions !== undefined) args.push('--repetitions', String(bambuOptions.repetitions));
-            if (bambuOptions?.scale !== undefined) args.push('--scale', String(bambuOptions.scale));
-            if (bambuOptions?.rotate !== undefined) args.push('--rotate', String(bambuOptions.rotate));
-            if (bambuOptions?.rotateX !== undefined) args.push('--rotate-x', String(bambuOptions.rotateX));
-            if (bambuOptions?.rotateY !== undefined) args.push('--rotate-y', String(bambuOptions.rotateY));
+            if (bambuOptions?.repetitions !== undefined) {
+              // OrcaSlicer counts copies of a single loaded STL with --clone-objects.
+              if (orcaCli && !is3mf) args.push('--clone-objects', String(bambuOptions.repetitions));
+              else args.push('--repetitions', String(bambuOptions.repetitions));
+            }
+            if (!meshTransform) {
+              if (bambuOptions?.scale !== undefined) args.push('--scale', String(bambuOptions.scale));
+              if (bambuOptions?.rotate !== undefined) args.push('--rotate', String(bambuOptions.rotate));
+              if (bambuOptions?.rotateX !== undefined) args.push('--rotate-x', String(bambuOptions.rotateX));
+              if (bambuOptions?.rotateY !== undefined) args.push('--rotate-y', String(bambuOptions.rotateY));
+            }
             if (bambuOptions?.cloneObjects) args.push('--clone-objects', bambuOptions.cloneObjects);
             if (bambuOptions?.skipObjects) args.push('--skip-objects', bambuOptions.skipObjects);
             if (cliBundle.filamentPaths.length > 0) {
@@ -1722,7 +1874,7 @@ export class STLManipulator extends EventEmitter {
             }
             if (bambuOptions?.loadFilamentIds) args.push('--load-filament-ids', bambuOptions.loadFilamentIds);
 
-            args.push(stlFilePath);
+            args.push(inputPath);
             // Override outputFilePath for bambustudio since it produces 3MF, not gcode
             outputFilePath = bambuOutputPath;
           }
@@ -1732,47 +1884,49 @@ export class STLManipulator extends EventEmitter {
           throw new Error(`Unsupported slicer type: ${slicerType}`);
       }
 
-      if (progressCallback) progressCallback(20, `Executing slicer: ${slicerPath} ${args.join(' ')}`);
-      console.error(`Executing: ${slicerPath} ${args.join(' ')}`);
+      if (slicerType !== 'orca-slicer-api') {
+        if (progressCallback) progressCallback(20, `Executing slicer: ${slicerPath} ${args.join(' ')}`);
+        console.error(`Executing: ${slicerPath} ${args.join(' ')}`);
 
-      // Execute the slicer
-      await new Promise<void>((resolve, reject) => {
-        const process = execFile(slicerPath, args, (error, stdout, stderr) => {
-          if (error) {
-            console.error(`Slicer Error: ${error.message}`);
-            console.error(`Slicer Stderr: ${stderr}`);
-            reject(new Error(`Slicer failed: ${error.message}. Stderr: ${stderr}`));
-          } else {
-            console.error(`Slicer Stdout: ${stdout}`);
-             if (stderr) {
-                 console.warn(`Slicer Stderr: ${stderr}`); // Log stderr even on success
-             }
-            resolve();
-          }
-        });
-
-        // Optional: Add listeners for stdout/stderr for real-time progress if slicer provides it
-        // process.stdout?.on('data', (data) => { console.error(`Slicer stdout: ${data}`); });
-        // process.stderr?.on('data', (data) => { console.error(`Slicer stderr: ${data}`); });
-        
-        // Check for cancellation periodically
-        const checkCancel = setInterval(() => {
-           if (!this.activeOperations.get(operationId)) {
-               clearInterval(checkCancel);
-               try {
-                   process.kill(); // Attempt to kill the slicer process
-                   reject(new Error("Slicing operation cancelled"));
-               } catch (killError) {
-                   console.error("Error attempting to kill slicer process:", killError);
-                   reject(new Error("Slicing operation cancelled, but failed to kill process."));
+        // Execute the slicer
+        await new Promise<void>((resolve, reject) => {
+          const process = execFile(slicerPath, args, (error, stdout, stderr) => {
+            if (error) {
+              console.error(`Slicer Error: ${error.message}`);
+              console.error(`Slicer Stderr: ${stderr}`);
+              reject(new Error(describeSlicerFailure(error, stdout, stderr, cliResult)));
+            } else {
+              console.error(`Slicer Stdout: ${stdout}`);
+               if (stderr) {
+                   console.warn(`Slicer Stderr: ${stderr}`); // Log stderr even on success
                }
-           }
-       }, 500); 
+              resolve();
+            }
+          });
 
-       process.on('exit', () => clearInterval(checkCancel));
-       process.on('error', () => clearInterval(checkCancel)); // Ensure interval cleared on process error too
+          // Optional: Add listeners for stdout/stderr for real-time progress if slicer provides it
+          // process.stdout?.on('data', (data) => { console.error(`Slicer stdout: ${data}`); });
+          // process.stderr?.on('data', (data) => { console.error(`Slicer stderr: ${data}`); });
+        
+          // Check for cancellation periodically
+          const checkCancel = setInterval(() => {
+             if (!this.activeOperations.get(operationId)) {
+                 clearInterval(checkCancel);
+                 try {
+                     process.kill(); // Attempt to kill the slicer process
+                     reject(new Error("Slicing operation cancelled"));
+                 } catch (killError) {
+                     console.error("Error attempting to kill slicer process:", killError);
+                     reject(new Error("Slicing operation cancelled, but failed to kill process."));
+                 }
+             }
+         }, 500);
 
-      });
+         process.on('exit', () => clearInterval(checkCancel));
+         process.on('error', () => clearInterval(checkCancel)); // Ensure interval cleared on process error too
+
+        });
+      }
 
       if (!this.activeOperations.get(operationId)) {
         // This check might be redundant if the promise rejected on kill, but good safety
@@ -1803,6 +1957,14 @@ export class STLManipulator extends EventEmitter {
       throw error; 
     } finally {
       this.activeOperations.delete(operationId);
+      for (const file of temporaryFiles) {
+        await fs.promises.rm(file, { force: true }).catch(error => console.error('Could not remove a temporary mesh:', error));
+      }
+      for (const directory of orcaTemporaryDirectories.reverse()) {
+        await fs.promises.rm(directory, { recursive: true, force: true }).catch(error => {
+          console.error('Could not remove temporary Orca profiles:', error);
+        });
+      }
     }
   }
 

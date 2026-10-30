@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
 import net from "node:net";
@@ -13,16 +13,20 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import JSZip from "jszip";
-import { hasAmsMappingInput, normalizeAmsMappingObject } from "../dist/ams-mapping.js";
+import { bridgeAmsMapping2Entry, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue } from "../dist/ams-mapping.js";
 import { buildBambuConnectImportUrl } from "../dist/bambu-connect.js";
 import {
   buildBambuNativeFanCommand,
   buildBambuNativeTemperatureCommand,
+  isBambuNativePlatform,
   uploadWithBambuNative,
   validateBambuNativeControlMessage,
 } from "../dist/bambu-native.js";
+import { UNPINNED_PLUGIN_ENV, createFakeNativeHome } from "./fixtures/native-home.mjs";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF } from "../dist/3mf_parser.js";
-import { BambuImplementation } from "../dist/printers/bambu.js";
+import { BambuImplementation, cameraFrameParser } from "../dist/printers/bambu.js";
+import { BambuNetworkBridge, LOCAL_PRINT_TIMING, linuxPluginLibraryEnv } from "../dist/bambu-network-bridge.js";
+import { BAMBU_NETWORK_CERTIFICATES } from "../dist/bambu-network-certs.js";
 import { STLManipulator } from "../dist/stl/stl-manipulator.js";
 
 // Mocked printers never report a started job; tests that cover it opt back in.
@@ -53,6 +57,7 @@ async function writeSliced3mfFixture({
     `; filament_ids = ${projectFilamentIds.join(";")}`,
     `; filament_colour = ${projectFilamentColors.join(";")}`,
     `; filament_type = ${projectFilamentTypes.join(";")}`,
+    ...(nozzleDiameters.length === 2 ? [`; filament_map = ${projectFilamentTypes.map((_, i) => i === 1 ? 2 : 1).join(",")}`, "; physical_extruder_map = 1,0"] : []),
     "G1 X0 Y0",
     "",
   ].join("\n");
@@ -275,7 +280,7 @@ test("X2D native control accepts Studio device commands but rejects unrelated de
   );
 });
 
-test("X2D public task and AMS tools dispatch through the native helper, including AMS-HT id 128", { skip: process.platform !== "darwin" }, async (t) => {
+test("X2D public task and AMS tools dispatch through the native helper, including AMS-HT id 128", { skip: !isBambuNativePlatform() }, async (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-native-control-"));
   const helperPath = path.join(tempDir, "fake-native-helper.mjs");
   fs.writeFileSync(
@@ -299,6 +304,8 @@ test("X2D public task and AMS tools dispatch through the native helper, includin
       BAMBU_TOKEN: "TEST_TOKEN",
       BAMBU_MODEL: "x2d",
       BAMBU_NATIVE_HELPER: helperPath,
+      BAMBU_NATIVE_HOME: createFakeNativeHome(tempDir),
+      ...UNPINNED_PLUGIN_ENV,
     },
     stderr: "pipe",
   });
@@ -381,7 +388,7 @@ test("X2D public task and AMS tools dispatch through the native helper, includin
   assert.equal(rfidMessage.slot_id, 0);
 });
 
-test("native upload forwards helper progress before returning the final result", { skip: process.platform !== "darwin" }, async (t) => {
+test("native upload forwards helper progress before returning the final result", { skip: !isBambuNativePlatform() }, async (t) => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-native-progress-"));
   const helperPath = path.join(tempDir, "fake-native-helper.mjs");
   fs.writeFileSync(
@@ -397,10 +404,16 @@ test("native upload forwards helper progress before returning the final result",
   fs.chmodSync(helperPath, 0o755);
 
   const previousHelper = process.env.BAMBU_NATIVE_HELPER;
+  const previousHome = process.env.BAMBU_NATIVE_HOME;
   process.env.BAMBU_NATIVE_HELPER = helperPath;
+  process.env.BAMBU_NATIVE_HOME = createFakeNativeHome(tempDir);
+  process.env.BAMBU_NATIVE_ALLOW_UNPINNED_PLUGIN = "1";
   t.after(() => {
+    delete process.env.BAMBU_NATIVE_ALLOW_UNPINNED_PLUGIN;
     if (previousHelper === undefined) delete process.env.BAMBU_NATIVE_HELPER;
     else process.env.BAMBU_NATIVE_HELPER = previousHelper;
+    if (previousHome === undefined) delete process.env.BAMBU_NATIVE_HOME;
+    else process.env.BAMBU_NATIVE_HOME = previousHome;
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
@@ -440,6 +453,8 @@ test("native upload forwards helper progress before returning the final result",
       BAMBU_TOKEN: "TEST_TOKEN",
       BAMBU_MODEL: "x2d",
       BAMBU_NATIVE_HELPER: helperPath,
+      BAMBU_NATIVE_HOME: createFakeNativeHome(tempDir),
+      ...UNPINNED_PLUGIN_ENV,
     },
     stderr: "pipe",
   });
@@ -575,6 +590,7 @@ test("printer model safety: schema requires bambu_model, rejects missing/invalid
     toolsWithModel,
     [
       "get_printer_filaments",
+      "inspect_print_file",
       "print_3mf",
       "print_3mf_bambu_network",
       "print_collar_charm",
@@ -1216,6 +1232,73 @@ test("ams_mapping object preserves filament-position order instead of tray sorti
   );
 });
 
+test("dual-nozzle tray values admit 255 as the right/main external spool; single-nozzle values do not", () => {
+  assert.equal(normalizeBridgeAmsTrayValue(255, "ams_slots[0]", { dualNozzle: true }), 255);
+  assert.equal(normalizeBridgeAmsTrayValue("254", "ams_slots[0]", { dualNozzle: true }), 254);
+  assert.throws(() => normalizeBridgeAmsTrayValue(255, "ams_slots[0]"), /128-254/);
+  assert.throws(() => normalizeBridgeAmsTrayValue(255, "ams_slots[0]", {}), /128-254/);
+  assert.throws(() => normalizeBridgeAmsTrayValue(256, "ams_slots[0]", { dualNozzle: true }), /255/);
+  assert.deepEqual(normalizeAmsMappingObject({ 0: 255, 1: 0 }, "ams_mapping", { dualNozzle: true }), [255, 0]);
+  assert.throws(() => normalizeAmsMappingObject({ 0: 255, 1: 0 }), /128-254/);
+  // Bambu Studio sends virtual trays as ams_id 254/255 with slot_id 0; unused stays {255,255}.
+  assert.deepEqual(bridgeAmsMapping2Entry(255, true), { ams_id: 255, slot_id: 0 });
+  assert.deepEqual(bridgeAmsMapping2Entry(255, false), { ams_id: 255, slot_id: 255 });
+  assert.deepEqual(bridgeAmsMapping2Entry(254, true), { ams_id: 254, slot_id: 0 });
+  assert.deepEqual(bridgeAmsMapping2Entry(-1, true), { ams_id: 255, slot_id: 255 });
+  assert.deepEqual(bridgeAmsMapping2Entry(131, true), { ams_id: 128, slot_id: 3 });
+});
+
+test("H2D project_file uses official virtual-spool wire mapping and validates nozzle binding", async () => {
+  const threeMfPath = await writeSliced3mfFixture({ name: "h2d-dual-external", bambuModel: "h2d", bedType: "Textured PEI Plate", projectFilamentTypes: ["PLA", "PLA", "PLA", "PLA"], plateFilamentIds: [0, 1] });
+  const bambu = new BambuImplementation(async () => true);
+  stubFreshSafetyStatus(bambu, "h2d");
+  const baseStatus = bambu.getSafetyStatus;
+  let virSlot = [{ id: "254", tray_type: "PLA" }, { id: "255", tray_type: "PLA" }];
+  bambu.getSafetyStatus = async (...args) => { const status = await baseStatus(...args); status.raw.vir_slot = virSlot; return status; };
+  let publishedPayload = null;
+  bambu.ftpUpload = async () => {};
+  bambu.getPrinter = async () => ({ publish: async (payload) => { publishedPayload = payload; } });
+  try {
+    await bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsMapping: [254, 255, -1, -1], bedType: "Textured PEI Plate" });
+    assert.deepEqual(publishedPayload.print.ams_mapping, [-1, -1, -1, -1]);
+    assert.deepEqual(publishedPayload.print.ams_mapping2, [
+      { ams_id: 254, slot_id: 0 },
+      { ams_id: 255, slot_id: 0 },
+      { ams_id: 255, slot_id: 255 },
+      { ams_id: 255, slot_id: 255 },
+    ]);
+    publishedPayload = null;
+    await bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external-slots", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsSlots: [254, 255], bedType: "Textured PEI Plate" });
+    assert.deepEqual(publishedPayload.print.ams_mapping, [-1, -1, -1, -1]);
+    publishedPayload = null;
+    await assert.rejects(bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "wrong-nozzle", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: false, amsSlots: [255, 254], bedType: "Textured PEI Plate" }), /nozzle|binding/i);
+    assert.equal(publishedPayload, null);
+    publishedPayload = null;
+    virSlot = [{ id: "254", tray_type: "PLA" }, { id: "255", tray_type: "PETG" }];
+    await assert.rejects(bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external-bad", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsMapping: [254, 255, -1, -1], bedType: "Textured PEI Plate" }), /PETG|material/i);
+    assert.equal(publishedPayload, null, "a contradicted main external spool must not publish");
+    await assert.rejects(bambu.print3mf("127.0.0.1", "0948TEST0000000", "TEST_TOKEN", { projectName: "dual-external-range", bambuModel: "h2d", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsMapping: [254, 256, -1, -1], bedType: "Textured PEI Plate" }), /255/);
+  } finally {
+    fs.rmSync(threeMfPath, { force: true });
+  }
+});
+
+test("single-nozzle H2S project_file keeps rejecting tray 255", async () => {
+  const threeMfPath = await writeSliced3mfFixture({ name: "h2s-255" });
+  const bambu = new BambuImplementation(async () => true);
+  stubFreshSafetyStatus(bambu, "h2s");
+  let published = false;
+  bambu.ftpUpload = async () => {};
+  bambu.getPrinter = async () => ({ publish: async () => { published = true; } });
+  try {
+    await assert.rejects(bambu.print3mf("127.0.0.1", "0938TEST0000000", "TEST_TOKEN", { projectName: "h2s-255", bambuModel: "h2s", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsMapping: [-1, 255, -1, -1], bedType: "supertack_plate" }), /128-254/);
+    await assert.rejects(bambu.print3mf("127.0.0.1", "0938TEST0000000", "TEST_TOKEN", { projectName: "h2s-255-slots", bambuModel: "h2s", filePath: threeMfPath, plateIndex: 0, useAMS: true, amsSlots: [255], bedType: "supertack_plate" }), /128-254/);
+    assert.equal(published, false);
+  } finally {
+    fs.rmSync(threeMfPath, { force: true });
+  }
+});
+
 test("ams_mapping input treats empty arrays and objects as absent", () => {
   assert.equal(hasAmsMappingInput(undefined), false);
   assert.equal(hasAmsMappingInput(null), false);
@@ -1285,6 +1368,223 @@ test("BambuNetwork print rejects invalid ams_slots values before bridge payload"
   assert.doesNotMatch(emptyMappingErrorText, /BAMBU_NETWORK_BRIDGE_COMMAND|FULU BambuNetwork bridge/i);
 });
 
+// FULU BambuNetwork bridge process behaviour, through a real child process.
+// The fake host reproduces what the real v1.0.0 host and plug-in did on a P1S;
+// the opt-in test below runs the real host when FULU_HOST_DIR is configured.
+const FAKE_FULU_HOST = path.join(__dirname, "fixtures", "fake-fulu-host.mjs");
+const FAST_LOCAL_PRINT = Object.freeze({ connectTimeoutMs: 2000, pollMs: 10, settleMs: 20, retryWaitMs: 20 });
+const LOCAL_PRINTER = Object.freeze({ devId: "01PTEST", devIp: "192.0.2.10", username: "bblp", password: "SECRET", useSsl: true });
+const shellQuoteArg = value => `'${String(value).replace(/'/g, "'\\''")}'`;
+
+// Every variable the fake bridge touches, restored once per test so several bridges in one test
+// cannot restore each other's values out of order.
+const FAKE_FULU_ENV = ["BAMBU_NETWORK_BRIDGE_COMMAND", "BAMBU_NETWORK_CONFIG_DIR", "FAKE_FULU_LOG", "PJARCZAK_BAMBU_PLUGIN_DIR",
+  "BAMBU_NETWORK_USER_INFO", "BAMBU_NETWORK_CERT_DIR", "PJARCZAK_BAMBU_NETWORK_SO", "PJARCZAK_BAMBU_SOURCE_SO",
+  "FAKE_FULU_EXIT_CODE", "FAKE_FULU_PUBLISH_FAILURES", "FAKE_FULU_UNSUPPORTED", "FAKE_FULU_CONNECT_STATUS"];
+const fakeFuluEnvSnapshots = new WeakSet();
+
+async function fakeFuluBridge(t, env = {}, { wrapped = false } = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-fulu-"));
+  const logPath = path.join(dir, "host.jsonl");
+  let command = `${shellQuoteArg(process.execPath)} ${shellQuoteArg(FAKE_FULU_HOST)}`;
+  if (wrapped) {
+    const wrapper = path.join(dir, "fulu-host-wrapper.sh");
+    fs.writeFileSync(wrapper, `#!/bin/sh\n${command} "$@" | cat\n`, { mode: 0o755 });
+    command = shellQuoteArg(wrapper);
+  }
+  if (!fakeFuluEnvSnapshots.has(t)) {
+    fakeFuluEnvSnapshots.add(t);
+    const saved = Object.fromEntries(FAKE_FULU_ENV.map(name => [name, process.env[name]]));
+    t.after(() => { for (const [name, value] of Object.entries(saved)) { if (value === undefined) delete process.env[name]; else process.env[name] = value; } });
+  }
+  const vars = { ...Object.fromEntries(FAKE_FULU_ENV.map(name => [name, undefined])),
+    BAMBU_NETWORK_BRIDGE_COMMAND: command, BAMBU_NETWORK_CONFIG_DIR: path.join(dir, "config"), FAKE_FULU_LOG: logPath, PJARCZAK_BAMBU_PLUGIN_DIR: path.join(dir, "plugins"), ...env };
+  for (const [name, value] of Object.entries(vars)) {
+    if (value === undefined) delete process.env[name]; else process.env[name] = value;
+  }
+  const bridge = new BambuNetworkBridge();
+  t.after(async () => {
+    await bridge.stop();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  const calls = () => fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : [];
+  return { bridge, dir, calls, methods: () => calls().filter(entry => entry.method).map(entry => entry.method) };
+}
+
+test("FULU host plug-in library paths are named in PJARCZAK_BAMBU_PLUGIN_DIR on Linux only", () => {
+  assert.deepEqual(linuxPluginLibraryEnv({ PJARCZAK_BAMBU_PLUGIN_DIR: "/opt/fulu/plugins" }, "linux"), {
+    PJARCZAK_BAMBU_NETWORK_SO: path.resolve("/opt/fulu/plugins", "libbambu_networking.so"),
+    PJARCZAK_BAMBU_SOURCE_SO: path.resolve("/opt/fulu/plugins", "libBambuSource.so"),
+  });
+  assert.deepEqual(linuxPluginLibraryEnv({ PJARCZAK_BAMBU_PLUGIN_DIR: "plugins" }, "linux").PJARCZAK_BAMBU_NETWORK_SO, path.resolve("plugins", "libbambu_networking.so"));
+  assert.deepEqual(linuxPluginLibraryEnv({ PJARCZAK_BAMBU_PLUGIN_DIR: "/opt/fulu/plugins", PJARCZAK_BAMBU_NETWORK_SO: "/custom/net.so" }, "linux"), {
+    PJARCZAK_BAMBU_SOURCE_SO: path.resolve("/opt/fulu/plugins", "libBambuSource.so"),
+  });
+  // macOS wrappers run the host in a Linux guest that may not see host paths.
+  assert.deepEqual(linuxPluginLibraryEnv({ PJARCZAK_BAMBU_PLUGIN_DIR: "/opt/fulu/plugins" }, "darwin"), {});
+  assert.deepEqual(linuxPluginLibraryEnv({}, "linux"), {});
+});
+
+test("FULU host exit 101 names the socket-stdout bug and its wrapper", async (t) => {
+  const { bridge } = await fakeFuluBridge(t, { FAKE_FULU_EXIT_CODE: "101" });
+  await assert.rejects(bridge.ensureAgent(), error => {
+    assert.match(error.message, /exited \(code=101/);
+    assert.match(error.message, /could not reopen its stdout/);
+    assert.match(error.message, /OrcaSlicer-bambulab\/issues\/50/);
+    assert.match(error.message, /docs\/FULU\.md#linux/);
+    return true;
+  });
+});
+
+test("a FULU host that cannot open its networking library stops before agent creation with the fix", async (t) => {
+  const { bridge, methods } = await fakeFuluBridge(t, { PJARCZAK_BAMBU_PLUGIN_DIR: undefined });
+  await assert.rejects(bridge.ensureAgent(), /could not open its networking library \(validate failed: file open failed\)\. Set PJARCZAK_BAMBU_PLUGIN_DIR/);
+  assert.deepEqual(methods(), ["bridge.handshake"]);
+});
+
+test("FULU agent setup passes Bambu's pinned certificates, works through a cat wrapper and stops cleanly", async (t) => {
+  const { bridge, dir, calls } = await fakeFuluBridge(t, {}, { wrapped: true });
+  const { agent } = await bridge.ensureAgent();
+  assert.equal(agent, 1);
+  const entries = calls();
+  const methods = entries.filter(entry => entry.method).map(entry => entry.method);
+  assert.ok(methods.indexOf("net.set_cert_file") > methods.indexOf("net.init_log"));
+  assert.ok(methods.indexOf("net.set_cert_file") < methods.indexOf("net.start"));
+  for (const callback of ["net.set_queue_on_main_fn", "net.set_on_local_connect_fn"]) assert.ok(methods.includes(callback), callback);
+  const certFolder = entries.find(entry => entry.method === "net.set_cert_file").payload;
+  assert.deepEqual({ folder: certFolder.folder, filename: certFolder.filename }, { folder: path.join(dir, "config", "cert"), filename: "slicer_base64.cer" });
+  for (const [name, { sha256 }] of Object.entries(BAMBU_NETWORK_CERTIFICATES)) {
+    assert.equal(createHash("sha256").update(fs.readFileSync(path.join(certFolder.folder, name))).digest("hex"), sha256, name);
+  }
+  if (process.platform === "linux") {
+    assert.deepEqual(entries[0].env, {
+      PJARCZAK_BAMBU_PLUGIN_DIR: path.join(dir, "plugins"),
+      PJARCZAK_BAMBU_NETWORK_SO: path.join(dir, "plugins", "libbambu_networking.so"),
+      PJARCZAK_BAMBU_SOURCE_SO: path.join(dir, "plugins", "libBambuSource.so"),
+    });
+  }
+  const pid = bridge.getStatus().pid;
+  const started = Date.now();
+  await bridge.stop();
+  assert.ok(Date.now() - started < 1500, "stop must not wait for the SIGKILL fallback");
+  await sleep(100);
+  assert.equal(fs.readFileSync(path.join(dir, "host.jsonl"), "utf8").includes('"start":true'), true);
+  assert.throws(() => process.kill(pid, 0), /ESRCH/, "the wrapper shell must not outlive stop()");
+});
+
+test("bridge status reports the certificate folder and keeps macOS discovery hints on macOS", async (t) => {
+  const { bridge, dir } = await fakeFuluBridge(t);
+  const status = bridge.getStatus();
+  assert.equal(status.runtime.certDir, path.join(dir, "config", "cert"));
+  if (process.platform === "darwin") assert.equal(typeof status.runtime.macosRuntimeDir, "string");
+  else assert.equal(status.runtime.macosRuntimeDir, undefined, "macOS paths are not Linux or Windows requirements");
+  if (process.platform === "linux") assert.equal(status.runtime.pluginLibraries.PJARCZAK_BAMBU_NETWORK_SO, path.join(dir, "plugins", "libbambu_networking.so"));
+  assert.equal(status.runtime.suggestedMacCommand, undefined, "a wrapper command is only suggested when the wrapper exists");
+});
+
+test("FULU LAN prints open the plug-in's own session and install the printer certificate before printing", async (t) => {
+  const { bridge, methods } = await fakeFuluBridge(t);
+  const { result, jobUpdates } = await bridge.startLocalPrint(LOCAL_PRINTER, "net.start_local_print", { client_job_id: 7, params: { dev_id: "01PTEST" } }, {}, () => {}, FAST_LOCAL_PRINT);
+  assert.deepEqual(result, { ok: true, value: 0, job_id: 7 });
+  assert.deepEqual(jobUpdates, [{ status: 1, code: 100, msg: "0.0M/0.0M" }]);
+  const order = methods();
+  const at = method => order.indexOf(method);
+  assert.ok(at("net.set_cert_file") < at("net.connect_printer"));
+  assert.ok(at("net.connect_printer") < at("net.install_device_cert"));
+  assert.ok(at("net.install_device_cert") < order.indexOf("net.send_message_to_printer"));
+  assert.ok(order.indexOf("net.send_message_to_printer") < at("net.start_local_print"));
+  assert.equal(order.filter(method => method === "net.start_local_print").length, 1);
+  assert.equal(order.at(-2), "net.disconnect_printer", "the session closes after the print");
+});
+
+test("a synchronous -4030 is retried once after the certificate exchange and then reported", async (t) => {
+  const once = await fakeFuluBridge(t, { FAKE_FULU_PUBLISH_FAILURES: "1" });
+  const recovered = await once.bridge.startLocalPrint(LOCAL_PRINTER, "net.start_local_print", { client_job_id: 8, params: {} }, {}, () => {}, FAST_LOCAL_PRINT);
+  assert.equal(recovered.result.value, 0);
+  assert.equal(once.methods().filter(method => method === "net.start_local_print").length, 2);
+
+  const twice = await fakeFuluBridge(t, { FAKE_FULU_PUBLISH_FAILURES: "2" });
+  const dispatched = [];
+  const failed = await twice.bridge.startLocalPrint(LOCAL_PRINTER, "net.start_local_print", { client_job_id: 9, params: {} }, {
+    beforeDispatch: async method => { if (method === "net.start_local_print") dispatched.push(method); },
+  }, () => {}, FAST_LOCAL_PRINT);
+  assert.equal(failed.result.value, -4030);
+  assert.equal(twice.methods().filter(method => method === "net.start_local_print").length, 2, "never more than one retry");
+  assert.equal(dispatched.length, 2, "each attempt passes the caller's fresh pre-dispatch check");
+  assert.deepEqual(failed.jobUpdates.filter(update => update.code === -4030).map(update => update.msg), ["send msg failed", "send msg failed"]);
+});
+
+// Codex review on #69: the plug-in has one LAN connection and the host one event queue,
+// so concurrent sessions for different printers must not consume each other's reports.
+test("concurrent LAN prints to different printers run one session at a time on a shared bridge", async (t) => {
+  const { bridge, calls } = await fakeFuluBridge(t);
+  const printers = ["01PFIRST", "01PSECOND"].map(devId => ({ ...LOCAL_PRINTER, devId }));
+  const results = await Promise.all(printers.map((printer, index) =>
+    bridge.startLocalPrint(printer, "net.start_local_print", { client_job_id: 20 + index, params: { dev_id: printer.devId } }, {}, () => {}, FAST_LOCAL_PRINT)));
+  assert.deepEqual(results.map(({ result }) => result.value), [0, 0]);
+  const sequence = calls().filter(entry => ["net.connect_printer", "net.start_local_print", "net.disconnect_printer"].includes(entry.method))
+    .map(entry => `${entry.method}:${entry.payload.dev_id ?? entry.payload.params?.dev_id ?? ""}`);
+  assert.deepEqual(sequence, [
+    "net.connect_printer:01PFIRST", "net.start_local_print:01PFIRST", "net.disconnect_printer:",
+    "net.connect_printer:01PSECOND", "net.start_local_print:01PSECOND", "net.disconnect_printer:",
+  ]);
+});
+
+test("a LAN printer the plug-in cannot verify stops before any print or disconnect", async (t) => {
+  const emptyCertDir = fs.mkdtempSync(path.join(os.tmpdir(), "fulu-no-printer-cert-"));
+  t.after(() => fs.rmSync(emptyCertDir, { recursive: true, force: true }));
+  const { bridge, methods } = await fakeFuluBridge(t, { BAMBU_NETWORK_CERT_DIR: emptyCertDir });
+  await assert.rejects(
+    bridge.startLocalPrint(LOCAL_PRINTER, "net.start_local_print", { client_job_id: 10, params: {} }, {}, () => {}, FAST_LOCAL_PRINT),
+    /LAN connection to printer 01PTEST at 192\.0\.2\.10 failed\. .*No print command was sent/
+  );
+  assert.equal(methods().includes("net.start_local_print"), false);
+  assert.equal(methods().includes("net.disconnect_printer"), false, "the real host crashes when disconnecting a session that never connected");
+});
+
+test("cancellation during a LAN session stops before the print command", async (t) => {
+  const { bridge, methods } = await fakeFuluBridge(t);
+  let active = true;
+  await assert.rejects(bridge.startLocalPrint(LOCAL_PRINTER, "net.start_local_print", { client_job_id: 11, params: {} }, {
+    beforeDispatch: async method => { if (method === "net.send_message_to_printer") active = false; },
+  }, () => { if (!active) throw new Error("cancelled by stop"); }, FAST_LOCAL_PRINT), /cancelled by stop/);
+  assert.equal(methods().includes("net.start_local_print"), false);
+  assert.ok(methods().includes("net.disconnect_printer"), "an established session is still closed");
+});
+
+test("a host without the LAN-session calls still serves cloud and probes, and refuses LAN prints before connecting", async (t) => {
+  const { bridge, methods } = await fakeFuluBridge(t, { FAKE_FULU_UNSUPPORTED: "net.set_cert_file" });
+  const { agent } = await bridge.ensureAgent();
+  assert.equal(agent, 1, "cloud jobs and status probes keep working");
+  await assert.rejects(
+    bridge.startLocalPrint(LOCAL_PRINTER, "net.start_local_print", { client_job_id: 12, params: {} }, {}, () => {}, FAST_LOCAL_PRINT),
+    /did not accept the certificate folder or local-connection callbacks a LAN print needs\. .*no print command was sent/
+  );
+  assert.equal(methods().includes("net.connect_printer"), false, "the real host crashes connecting without a certificate folder");
+});
+
+// Opt-in: the real FULU host and plug-in. FULU_HOST_DIR holds pjarczak_bambu_linux_host
+// (x86-64 Linux), FULU_PLUGIN_DIR the 02.05.02.5x plug-in. With FULU_TEST_PRINTER_HOST,
+// FULU_TEST_PRINTER_SERIAL and FULU_TEST_PRINTER_ACCESS_CODE it also opens and closes a
+// real LAN session. It never prints.
+const realFulu = process.env.FULU_HOST_DIR && process.env.FULU_PLUGIN_DIR && process.platform === "linux" && process.arch === "x64";
+test("real FULU host: agent setup and LAN session through the documented cat wrapper", { skip: !realFulu && "set FULU_HOST_DIR and FULU_PLUGIN_DIR on x86-64 Linux" }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "real-fulu-"));
+  const wrapper = path.join(dir, "fulu-host-wrapper.sh");
+  fs.writeFileSync(wrapper, `#!/bin/sh\n${shellQuoteArg(path.join(process.env.FULU_HOST_DIR, "pjarczak_bambu_linux_host"))} "$@" | cat\n`, { mode: 0o755 });
+  const { bridge } = await fakeFuluBridge(t, {
+    BAMBU_NETWORK_BRIDGE_COMMAND: shellQuoteArg(wrapper), PJARCZAK_BAMBU_PLUGIN_DIR: process.env.FULU_PLUGIN_DIR,
+    BAMBU_NETWORK_CONFIG_DIR: path.join(dir, "config"), FAKE_FULU_LOG: undefined,
+  });
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const { handshake } = await bridge.ensureAgent();
+  assert.equal(handshake.network_loaded, true, JSON.stringify(handshake));
+  const { FULU_TEST_PRINTER_HOST: devIp, FULU_TEST_PRINTER_SERIAL: devId, FULU_TEST_PRINTER_ACCESS_CODE: password } = process.env;
+  if (!devIp || !devId || !password) return t.diagnostic("no FULU_TEST_PRINTER_* configured; skipped the LAN session");
+  const connected = await bridge.withLocalSession({ devId, devIp, username: "bblp", password, useSsl: true }, {}, () => {}, LOCAL_PRINT_TIMING, async () => "connected");
+  assert.equal(connected, "connected");
+});
+
 test("sliceSTL allows slicer executables resolved from PATH", async (t) => {
   if (process.platform === "win32") {
     t.skip("PATH executable resolution test uses a POSIX executable shim");
@@ -1326,6 +1626,30 @@ test("sliceSTL allows slicer executables resolved from PATH", async (t) => {
 
   assert.equal(outputPath, path.join(tempRoot, "sample_cube.gcode"));
   assert.equal(fs.readFileSync(outputPath, "utf8"), "G1 X0\n");
+});
+
+test("sliceSTL names a slicer crash signal or exit code and keeps the end of its output", { skip: process.platform === "win32" }, async (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "crashing-slicer-"));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  const slicer = (name, body) => {
+    const file = path.join(tempRoot, name);
+    fs.writeFileSync(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    return file;
+  };
+  const manipulator = new STLManipulator(tempRoot);
+  // FULU OrcaSlicer-bambulab v1.0.0 prints nothing to stderr and segfaults.
+  await assert.rejects(manipulator.sliceSTL(SAMPLE_STL, "prusaslicer", slicer("segfaulting-slicer", 'echo "loading model"\nkill -SEGV $$')),
+    error => {
+      assert.match(error.message, /Slicer failed: the slicer crashed with SIGSEGV\./);
+      assert.match(error.message, /Slicer output: loading model$/);
+      return true;
+    });
+  await assert.rejects(manipulator.sliceSTL(SAMPLE_STL, "prusaslicer", slicer("refusing-slicer", 'echo "Some objects are located over the boundary of the heated bed." >&2\nexit 206')),
+    error => {
+      assert.match(error.message, /Slicer failed: the slicer exited with code 206\./);
+      assert.equal(error.message.split("located over the boundary of the heated bed").length, 2, "stderr appears once");
+      return true;
+    });
 });
 
 test("camera_snapshot routes H2 series through RTSP (verified live on Parker H2S)", async () => {
@@ -1399,6 +1723,71 @@ test("camera_snapshot supported models reach the wire path (mocked) and decode a
     assert.equal(out.sizeBytes, fakeJpeg.length);
     assert.equal(out.base64, fakeJpeg.toString("base64"));
   }
+});
+
+// The A1/P1 camera stream on port 6000: 16-byte header (payload size LE) + JPEG.
+const cameraFrame = (marker, size = 64) => {
+  const jpeg = Buffer.alloc(size, marker);
+  jpeg[0] = 0xff; jpeg[1] = 0xd8; jpeg[size - 2] = 0xff; jpeg[size - 1] = 0xd9;
+  const header = Buffer.alloc(16);
+  header.writeUInt32LE(size, 0);
+  header.writeUInt32LE(1, 8);
+  return { jpeg, wire: Buffer.concat([header, jpeg]) };
+};
+
+test("camera frame parser splits frames across arbitrary chunk boundaries and rejects bad headers", () => {
+  const first = cameraFrame(0x11, 70);
+  const second = cameraFrame(0x22, 90);
+  const stream = Buffer.concat([first.wire, second.wire]);
+  const frames = [];
+  const parse = cameraFrameParser(jpeg => frames.push(jpeg), error => assert.fail(error.message));
+  for (let offset = 0; offset < stream.length; offset += 7) parse(stream.subarray(offset, offset + 7));
+  assert.deepEqual(frames, [first.jpeg, second.jpeg]);
+
+  const errors = [];
+  const bad = cameraFrameParser(() => assert.fail("no frame"), error => errors.push(error.message));
+  bad(Buffer.alloc(16));
+  bad(cameraFrame(0x33).wire);
+  assert.deepEqual(errors, ["camera_snapshot: unreasonable payload size 0 from header; auth likely failed."]);
+});
+
+// Issue reported by the maintainer on a P1S: the first frame after connecting is the
+// printer's buffered frame and can show a finished part that was removed long ago.
+test("camera_snapshot over TCP skips the printer's buffered first frame and refuses when no live frame follows", { skip: process.platform === "win32" }, async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "camera-tls-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const created = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=printer", "-days", "1",
+    "-keyout", path.join(dir, "key.pem"), "-out", path.join(dir, "cert.pem")], { encoding: "utf8" });
+  if (created.status !== 0) return t.skip(`openssl unavailable: ${created.stderr || created.error}`);
+  const tls = await import("node:tls");
+  const buffered = cameraFrame(0x0b, 80);
+  const live = cameraFrame(0x1e, 80);
+  const auths = [];
+  let sendLive = true;
+  // A stalled camera can replay the buffered frame more than once.
+  const server = tls.createServer({ key: fs.readFileSync(path.join(dir, "key.pem")), cert: fs.readFileSync(path.join(dir, "cert.pem")) }, socket => {
+    socket.once("data", auth => {
+      auths.push(auth);
+      socket.write(buffered.wire);
+      setTimeout(() => socket.writable && socket.write(buffered.wire), 20);
+      if (sendLive) setTimeout(() => socket.writable && socket.write(live.wire), 60);
+    });
+    socket.on("error", () => {});
+  });
+  await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const { port } = server.address();
+  const bambu = new BambuImplementation(async () => true);
+
+  const frame = await bambu.fetchTcpCameraFrame("127.0.0.1", "ACCESS01", 3000, port);
+  assert.deepEqual(frame, live.jpeg, "the buffered frame must not be returned");
+  assert.equal(auths[0].length, 80);
+  assert.equal(auths[0].subarray(16, 20).toString("ascii"), "bblp");
+  assert.equal(auths[0].subarray(48, 56).toString("ascii"), "ACCESS01");
+
+  sendLive = false;
+  await assert.rejects(bambu.fetchTcpCameraFrame("127.0.0.1", "ACCESS01", 400, port),
+    /timed out after 400ms after only the printer's buffered frame, which may be stale; no live frame arrived/);
 });
 
 test("camera_snapshot RTSP path: ffmpeg ENOENT yields a clear, actionable error", async () => {
@@ -1853,7 +2242,7 @@ test("slice_stl writes the installed nozzle type into the machine preset so prin
       env: {
         ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "p1s", BAMBU_SERIAL: "", BAMBU_TOKEN: "",
         BAMBU_SLICER_PROFILE: "", BAMBU_TEMPLATE_3MF_PATH: "", BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot,
-        BAMBU_SLICER_PROFILE_DIRS: "", BAMBU_NOZZLE_TYPE: "", MCP_ALLOW_EXECUTABLE_ARG: "1", ...extraEnv,
+        BAMBU_SLICER_PROFILE_DIRS: "", BAMBU_NOZZLE_TYPE: "", BAMBU_NOZZLE_VOLUME_TYPE: "", MCP_ALLOW_EXECUTABLE_ARG: "1", ...extraEnv,
       },
       stderr: "pipe",
     });
@@ -1886,6 +2275,62 @@ test("slice_stl writes the installed nozzle type into the machine preset so prin
   result = await (await connect({ BAMBU_NOZZLE_TYPE: "hardened-steel" }))({});
   assert.equal(result.isError, undefined, JSON.stringify(result.content));
   assert.deepEqual(machine().nozzle_type, ["hardened_steel"]);
+});
+
+test("slice_stl slices for the installed nozzle flow type and refuses one the preset lacks", async (t) => {
+  const fakeSlicer = await createFakeBambuSlicer();
+  const writeMachine = (variants) => fs.writeFileSync(path.join(fakeSlicer.profilesRoot, "BBL", "machine", "Bambu Lab P1S 0.4 nozzle.json"), JSON.stringify({
+    name: "Bambu Lab P1S 0.4 nozzle", nozzle_diameter: ["0.4"], extruder_type: ["Direct Drive"], extruder_variant_list: [variants],
+    default_print_profile: "Behavior process", default_filament_profile: ["Behavior filament"], machine_start_gcode: "fixture start",
+  }));
+  writeMachine("Direct Drive Standard,Direct Drive High Flow");
+  const connect = async (extraEnv = {}) => {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [SERVER_ENTRY],
+      env: {
+        ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "p1s", BAMBU_SERIAL: "", BAMBU_TOKEN: "",
+        BAMBU_SLICER_PROFILE: "", BAMBU_TEMPLATE_3MF_PATH: "", BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot,
+        BAMBU_SLICER_PROFILE_DIRS: "", BAMBU_NOZZLE_TYPE: "", BAMBU_NOZZLE_VOLUME_TYPE: "", MCP_ALLOW_EXECUTABLE_ARG: "1", ...extraEnv,
+      },
+      stderr: "pipe",
+    });
+    const client = createClient();
+    t.after(async () => { await closeTransport(transport); });
+    await client.connect(transport);
+    return (extra) => client.callTool({ name: "slice_stl", arguments: {
+      stl_path: SAMPLE_STL, bambu_model: "p1s", slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false, ...extra,
+    } });
+  };
+  const machine = () => {
+    const slicerArgs = JSON.parse(fs.readFileSync(fakeSlicer.argsOutPath, "utf8"));
+    return JSON.parse(fs.readFileSync(slicerArgs[slicerArgs.indexOf("--load-settings") + 1].split(";")[0], "utf8"));
+  };
+  const slice = await connect();
+  let result = await slice({ nozzle_volume_type: "high_flow" });
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.deepEqual(machine().nozzle_volume_type, ["High Flow"]);
+  // Without a choice the preset's Standard default is kept.
+  result = await slice({});
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.deepEqual(machine().nozzle_volume_type, ["Standard"]);
+  // Invalid values stop before the slicer runs.
+  fs.rmSync(fakeSlicer.argsOutPath);
+  result = await slice({ nozzle_volume_type: "turbo" });
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result.content), /Invalid nozzle volume type/);
+  assert.equal(fs.existsSync(fakeSlicer.argsOutPath), false, "the slicer must not run");
+  // BAMBU_NOZZLE_VOLUME_TYPE supplies the default.
+  result = await (await connect({ BAMBU_NOZZLE_VOLUME_TYPE: "High Flow" }))({});
+  assert.equal(result.isError, undefined, JSON.stringify(result.content));
+  assert.deepEqual(machine().nozzle_volume_type, ["High Flow"]);
+  // A preset without High Flow values is refused rather than mislabelled.
+  writeMachine("Direct Drive Standard");
+  fs.rmSync(fakeSlicer.argsOutPath);
+  result = await slice({ nozzle_volume_type: "high_flow" });
+  assert.equal(result.isError, true);
+  assert.match(JSON.stringify(result.content), /declares no High Flow variant/);
+  assert.equal(fs.existsSync(fakeSlicer.argsOutPath), false, "the slicer must not run");
 });
 
 test("template_name resolves by source type for slicer profiles versus 3MF sources", async (t) => {

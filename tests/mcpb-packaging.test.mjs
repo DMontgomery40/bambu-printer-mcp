@@ -20,7 +20,8 @@ test("MCPB archive preserves runtime and licenses without local secrets or pruni
   }
   fs.mkdirSync(path.join(fixture, "scripts"));
   fs.copyFileSync(path.join(ROOT, "scripts/install-patches.mjs"), path.join(fixture, "scripts/install-patches.mjs"));
-  fs.copyFileSync(path.join(ROOT, "scripts/build-bambu-native.zsh"), path.join(fixture, "scripts/build-bambu-native.zsh"));
+  fs.copyFileSync(path.join(ROOT, "scripts/build-bambu-native.sh"), path.join(fixture, "scripts/build-bambu-native.sh"));
+  fs.copyFileSync(path.join(ROOT, "scripts/setup-bambu-native.mjs"), path.join(fixture, "scripts/setup-bambu-native.mjs"));
   for (const name of ["native/local-secret.txt", "bambu certs/embedded-key.pem", "bambu-mcp-config.json", "temp/private-model.stl", ".env.production", "unrelated.txt", "node_modules/typescript/developer-marker"]) {
     const destination = path.join(fixture, name);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
@@ -33,7 +34,7 @@ test("MCPB archive preserves runtime and licenses without local secrets or pruni
   packageMcpb({ root: fixture, outputPath, quiet: true });
 
   const archive = await JSZip.loadAsync(fs.readFileSync(outputPath));
-  for (const name of ["manifest.json", "package.json", "dist/index.js", "src/index.ts", "patches/bambu-node+3.22.21.patch", "scripts/install-patches.mjs", "scripts/build-bambu-native.zsh", "native/bambu-native-print.cpp", "LICENSE", "README.md", "CONTRIBUTORS.md", "node_modules/mqtt/LICENSE.md", "node_modules/bambu-node/LICENSE", "node_modules/three/LICENSE", "node_modules/basic-ftp/LICENSE.txt"]) {
+  for (const name of ["manifest.json", "package.json", "dist/index.js", "src/index.ts", "patches/bambu-node+3.22.21.patch", "scripts/install-patches.mjs", "scripts/build-bambu-native.sh", "scripts/setup-bambu-native.mjs", "native/bambu-native-print.cpp", "LICENSE", "README.md", "CONTRIBUTORS.md", "node_modules/mqtt/LICENSE.md", "node_modules/bambu-node/LICENSE", "node_modules/three/LICENSE", "node_modules/basic-ftp/LICENSE.txt"]) {
     assert.ok(archive.file(name), `missing release file: ${name}`);
   }
   for (const name of Object.keys(archive.files)) {

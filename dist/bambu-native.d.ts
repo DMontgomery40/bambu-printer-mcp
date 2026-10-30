@@ -19,6 +19,8 @@ export type BambuNativePrintOptions = {
     vibrationCalibration?: boolean;
     layerInspect?: boolean;
     timelapse?: boolean;
+    /** true: the SD card or USB stick; false: internal storage (eMMC); unset: BAMBU_NATIVE_TRY_EMMC_PRINT or internal. Reported as the requested storage. */
+    externalStorage?: boolean;
 };
 export type BambuNativeControlOptions = {
     host: string;
@@ -49,7 +51,62 @@ export type BambuNativeTemperatureCommand = {
     temperature: number;
     messageJson: string;
 };
+/**
+ * Hosts for which the native helper and Bambu's networking plug-in exist.
+ * Bambu publishes its Linux plug-in for x86-64 only.
+ */
+export declare function isBambuNativePlatform(platform?: NodeJS.Platform, arch?: string): boolean;
+/**
+ * Private directory used by `bambu-printer-mcp-native-setup` on Linux. Mirrors
+ * nativeHomeDir() in native/bambu-native-print.cpp: empty values count as unset.
+ */
+export declare function bambuNativeHomeDir(env?: NodeJS.ProcessEnv): string;
+export declare const BAMBU_NATIVE_CERTIFICATES: readonly ["slicer_base64.cer", "printer.cer"];
+/**
+ * The networking plug-in followed by the library it loads from its own
+ * directory for the eMMC file tunnel; without it uploads fail with -4.
+ */
+export declare const BAMBU_NATIVE_PLUGIN_LIBRARIES: readonly ["libbambu_networking.so", "libBambuSource.so"];
+/**
+ * The only Linux plug-in build whose PrintParams layout matches the helper
+ * (Bambu Studio v02.08.02.61, network agent 02.08.02.54). The setup installs
+ * exactly these files and the server refuses anything else.
+ */
+export declare const BAMBU_NATIVE_PINNED_PLUGIN: Readonly<{
+    version: "02.08.02.54";
+    sha256: Readonly<Record<"libbambu_networking.so" | "libBambuSource.so", string>>;
+}>;
+/** Layout shared by the Linux setup script, the server and the helper's environment. */
+export declare function bambuNativeManagedPaths(env?: NodeJS.ProcessEnv): {
+    home: string;
+    helper: string;
+    plugin: string;
+    certDir: string;
+    configDir: string;
+    receipt: string;
+};
+export declare const BAMBU_NATIVE_SOURCE: string;
+export declare function sha256Hex(data: Buffer | string): string;
+export declare function sha256File(file: string): string;
+/**
+ * Name the setup from this server's own version, whose helper source it
+ * accepts, and its own install directory when that is not the default.
+ */
+export declare function bambuNativeSetupCommand(version?: string, env?: NodeJS.ProcessEnv): string;
 export declare function assertBambuNativeAvailable(): void;
+/**
+ * True when X2D controls should use the native route. macOS keeps its
+ * unconditional routing. Linux opts in only with a complete installation, so
+ * stop, pause and heater-off keep their MQTT route otherwise.
+ */
+export declare function bambuNativeControlsAvailable(): boolean;
+/** Why native X2D controls are not used on this host, or undefined when they are. */
+export declare function bambuNativeUnavailableReason(): string | undefined;
+/**
+ * Interrupt this printer's pending print, upload and heating helpers and
+ * resolve once they have exited, so none can still dispatch afterwards.
+ */
+export declare function interruptNativeOperations(serial: string): Promise<void>;
 export declare function buildBambuNativeFanCommand(fan: string | number, speed: number, sequenceId?: string): BambuNativeFanCommand;
 export declare function buildBambuNativeTemperatureCommand(component: string, temperature: number, sequenceId?: string): BambuNativeTemperatureCommand;
 export declare function validateBambuNativeControlMessage(messageJson: string): {

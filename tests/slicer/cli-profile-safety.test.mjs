@@ -34,7 +34,7 @@ async function fixture(t, slicerType = 'bambustudio') {
   const executable = path.join(root, 'BambuStudio.app', 'Contents', 'MacOS', 'BambuStudio');
   const capture = path.join(root, 'args.json');
   await fs.mkdir(path.dirname(executable), { recursive: true });
-  await fs.writeFile(executable, `#!${process.execPath}\nconst fs = require('fs'); const path = require('path'); const args = process.argv.slice(2); fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify(args)); fs.writeFileSync(path.join(args[args.indexOf('--outputdir') + 1], args[args.indexOf('--export-3mf') + 1]), 'fixture output');\n`, { mode: 0o755 });
+  await fs.writeFile(executable, `#!${process.execPath}\nconst fs = require('fs'); const path = require('path'); const args = process.argv.slice(2); fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify(args)); fs.copyFileSync(args[args.length - 1], ${JSON.stringify(capture)} + '.input'); fs.writeFileSync(path.join(args[args.indexOf('--outputdir') + 1], args[args.indexOf('--export-3mf') + 1]), 'fixture output');\n`, { mode: 0o755 });
   const saved = Object.fromEntries(['BAMBU_PROFILES_ROOT', 'BAMBU_SLICER_PROFILE_DIRS', 'BAMBU_CLI_FLATTEN'].map(k => [k, process.env[k]]));
   t.after(() => { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } });
   process.env.BAMBU_PROFILES_ROOT = profiles;
@@ -452,6 +452,45 @@ for (const [kind, file, reference] of [['process', 'SAFETY process base', 'inher
   });
 }
 
+test('nested vendor profiles retain exact process filament and inherited settings', async t => {
+  const f = await fixture(t);
+  await f.write('filament', { name: 'SAFETY filament base', filament_type: ['PLA'], nozzle_temperature: ['220'] });
+  await f.write('filament', { name: 'SAFETY filament', inherits: 'SAFETY filament base', filament_id: 'GFA00' });
+  for (const kind of ['process', 'filament']) {
+    const dir = path.join(f.profiles, 'BBL', kind);
+    const nested = path.join(dir, 'SAFETY', '0.4');
+    await fs.mkdir(nested, { recursive: true });
+    for (const file of (await fs.readdir(dir)).filter(name => name.endsWith('.json')))
+      await fs.rename(path.join(dir, file), path.join(nested, file));
+  }
+  await f.slice();
+  const args = await f.args();
+  const processConfig = JSON.parse(await fs.readFile(args[args.indexOf('--load-settings') + 1].split(';')[1], 'utf8'));
+  assert.equal(processConfig.layer_height, '0.2');
+  assert.equal(processConfig.wall_loops, '2');
+  const filament = JSON.parse(await fs.readFile((await f.loaded())[0], 'utf8'));
+  assert.deepEqual(filament.filament_type, ['PLA']);
+  assert.deepEqual(filament.nozzle_temperature, ['220']);
+  const custom = path.join(f.root, 'custom.json');
+  await fs.writeFile(custom, JSON.stringify({ name: 'Custom', inherits: 'SAFETY process', filament_ids: ['GFA00'] }));
+  await f.slice({}, custom);
+  assert.deepEqual(JSON.parse(await fs.readFile((await f.loaded())[0], 'utf8')).filament_type, ['PLA']);
+});
+
+for (const location of ['nested', 'category root']) {
+  test(`vendor discovery cannot borrow a symlinked foreign profile directory at ${location}`, async t => {
+    const f = await fixture(t);
+    const foreign = path.join(f.root, 'foreign');
+    const category = path.join(f.profiles, 'BBL', 'filament');
+    await fs.mkdir(foreign);
+    await fs.rename(f.filament, path.join(foreign, 'SAFETY filament.json'));
+    if (location === 'category root') await fs.rm(category, { recursive: true });
+    await fs.symlink(foreign, location === 'nested' ? path.join(category, 'external') : category, 'dir');
+    await assert.rejects(f.slice(), /Filament profile.*not found/);
+    await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+  });
+}
+
 test('installed stock BambuStudio presets keep every default process and filament setting', async t => {
   const installed = '/Applications/BambuStudio.app/Contents/Resources/profiles';
   const machineDir = path.join(installed, 'BBL', 'machine');
@@ -705,4 +744,115 @@ test('multi-nozzle machines get a prime tower every nozzle can reach', async t =
   // Without a prime tower there is nothing to place.
   const noTower = await flattenForCli({ ...opts, sourceProfiles: { process: { name: 'No tower', inherits: 'SAFETY process', enable_prime_tower: '0' } } });
   assert.deepEqual(await tower(noTower), [undefined, undefined]);
+});
+
+// OrcaSlicer 2.4.2's CLI segfaults (PartPlate::check_outside needs the GUI Plater) when
+// --scale or --rotate-x/-y sink an object below the bed while arranging, and rejects
+// --repetitions for one STL; matrix-tested on the Linux build, crash also seen on macOS.
+const SAMPLE_CUBE = new URL('../../test/sample_cube.stl', import.meta.url);
+function stlBounds(buffer) {
+  const points = [];
+  if (buffer.subarray(0, 5).toString('ascii').toLowerCase() === 'solid' && buffer.includes('facet')) {
+    for (const match of buffer.toString('ascii').matchAll(/vertex\s+(\S+)\s+(\S+)\s+(\S+)/g)) points.push(match.slice(1, 4).map(Number));
+  } else {
+    for (let i = 0, count = buffer.readUInt32LE(80); i < count; i++) {
+      for (let v = 0; v < 3; v++) points.push([0, 1, 2].map(axis => buffer.readFloatLE(84 + i * 50 + 12 + v * 12 + axis * 4)));
+    }
+  }
+  return [0, 1, 2].map(axis => Math.max(...points.map(p => p[axis])) - Math.min(...points.map(p => p[axis])));
+}
+
+// A binary STL box from (0,0,0) to the given size, so orientation is visible in its bounds.
+function boxStl([x, y, z]) {
+  const v = [[0,0,0],[x,0,0],[x,y,0],[0,y,0],[0,0,z],[x,0,z],[x,y,z],[0,y,z]];
+  const faces = [[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[1,2,6],[1,6,5],[2,3,7],[2,7,6],[3,0,4],[3,4,7]];
+  const buffer = Buffer.alloc(84 + faces.length * 50);
+  buffer.writeUInt32LE(faces.length, 80);
+  faces.forEach((face, i) => face.forEach((corner, k) => v[corner].forEach((value, axis) => buffer.writeFloatLE(value, 84 + i * 50 + 12 + k * 12 + axis * 4))));
+  return buffer;
+}
+
+for (const slicerType of ['orcaslicer', 'orcaslicer-bambulab']) {
+  // Orca adds each --rotate* to the object's Euler angles, so it rotates about X, then Y, then Z
+  // regardless of argument order; a 10x20x30 box tells the orders apart.
+  test(`${slicerType} rotates an STL mesh in OrcaSlicer's X, Y, Z order`, async t => {
+    const f = await fixture(t, slicerType);
+    await fs.writeFile(f.stl, boxStl([10, 20, 30]));
+    for (const [options, bounds] of [[{ rotate: 90, rotateX: 90 }, [30, 10, 20]], [{ rotateX: 90, rotateY: 90 }, [20, 30, 10]], [{ scale: 2, rotateY: 90 }, [60, 40, 20]]]) {
+      await f.slice({ ...options, arrange: true });
+      const args = await f.args();
+      assert.deepEqual(stlBounds(await fs.readFile(f.capture + '.input')).map(size => Math.round(size * 1000) / 1000), bounds, JSON.stringify(options));
+      await assert.rejects(fs.access(args.at(-1)), { code: 'ENOENT' }, 'the temporary mesh is removed after slicing');
+    }
+  });
+
+  test(`${slicerType} applies STL scale and tilts to the mesh instead of the crashing CLI flags`, async t => {
+    const f = await fixture(t, slicerType);
+    await fs.copyFile(SAMPLE_CUBE, f.stl);
+    await f.slice({ scale: 4, rotate: 90, rotateX: 90, arrange: true, repetitions: 3 });
+    const args = await f.args();
+    for (const flag of ['--scale', '--rotate', '--rotate-x', '--rotate-y', '--repetitions']) assert.equal(args.includes(flag), false, flag);
+    assert.deepEqual(args.slice(args.indexOf('--clone-objects'), args.indexOf('--clone-objects') + 2), ['--clone-objects', '3']);
+    const input = args.at(-1);
+    assert.notEqual(input, f.stl, 'the original STL is not modified');
+    assert.deepEqual(stlBounds(await fs.readFile(f.capture + '.input')).map(size => Math.round(size * 1000) / 1000), [40, 40, 40]);
+    assert.deepEqual(stlBounds(await fs.readFile(f.stl)).map(size => Math.round(size)), [10, 10, 10]);
+
+    // A Z rotation alone is safe and keeps its flag.
+    await f.slice({ rotate: 45 });
+    const zOnly = await f.args();
+    assert.equal(zOnly.at(-1), f.stl);
+    assert.deepEqual(zOnly.slice(zOnly.indexOf('--rotate'), zOnly.indexOf('--rotate') + 2), ['--rotate', '45']);
+  });
+
+  test(`${slicerType} refuses 3MF transforms that crash its CLI while arranging and conflicting STL copies`, async t => {
+    const f = await fixture(t, slicerType);
+    const project = await f.project(1);
+    for (const options of [{ scale: 2, arrange: true }, { rotateX: 45, arrange: true }, { rotateY: 30, arrange: true }]) {
+      await assert.rejects(f.slice(options, undefined, project), /OrcaSlicer's CLI crashes when scale above 1, rotate_x or rotate_y moves a 3MF object below the bed while arranging/);
+      await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+    }
+    await fs.copyFile(SAMPLE_CUBE, f.stl);
+    await assert.rejects(f.slice({ repetitions: 2, cloneObjects: '2' }), /either repetitions or clone_objects/);
+    await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+    // Without arrange the 3MF keeps the CLI flags and its own --repetitions.
+    await f.slice({ scale: 2, arrange: false, repetitions: 2 }, undefined, project);
+    const args = await f.args();
+    assert.deepEqual(args.slice(args.indexOf('--scale'), args.indexOf('--scale') + 2), ['--scale', '2']);
+    assert.deepEqual(args.slice(args.indexOf('--repetitions'), args.indexOf('--repetitions') + 2), ['--repetitions', '2']);
+  });
+}
+
+test('BambuStudio keeps its transform and repetition flags unchanged', async t => {
+  const f = await fixture(t, 'bambustudio');
+  await f.slice({ scale: 4, rotate: 90, rotateX: 90, rotateY: 30, arrange: true, repetitions: 3 });
+  const args = await f.args();
+  for (const [flag, value] of [['--scale', '4'], ['--rotate', '90'], ['--rotate-x', '90'], ['--rotate-y', '30'], ['--repetitions', '3']]) {
+    assert.deepEqual(args.slice(args.indexOf(flag), args.indexOf(flag) + 2), [flag, value]);
+  }
+  assert.equal(args.at(-1), f.stl);
+});
+
+test('a Bambu-style CLI failure names its reason from a fresh result.json or its exit code', async t => {
+  const f = await fixture(t, 'orcaslicer');
+  await fs.copyFile(SAMPLE_CUBE, f.stl);
+  const failing = path.join(f.root, 'failing-orca');
+  await fs.writeFile(failing, `#!${process.execPath}
+const fs = require('fs'); const path = require('path'); const args = process.argv.slice(2);
+if (process.env.FAKE_RESULT_JSON) fs.writeFileSync(path.join(args[args.indexOf('--outputdir') + 1], 'result.json'), process.env.FAKE_RESULT_JSON);
+console.error('Errors'); process.exit(206);
+`, { mode: 0o755 });
+  const manipulator = new STLManipulator(path.join(f.root, 'out'));
+  const slice = () => manipulator.sliceSTL(f.stl, 'orcaslicer', failing, undefined, undefined, 'Bambu Lab SAFETY 0.4 nozzle', {});
+  t.after(() => { delete process.env.FAKE_RESULT_JSON; });
+
+  process.env.FAKE_RESULT_JSON = JSON.stringify({ return_code: -52, error_string: 'Some objects are located over the boundary of the heated bed.' });
+  await assert.rejects(slice(), /the slicer exited with code 206 \(Some objects are located over the boundary of the heated bed\. \[-52\]\)/);
+
+  // macOS writes no result.json; an old one from an earlier run must not be reused.
+  delete process.env.FAKE_RESULT_JSON;
+  const stale = path.join(f.root, 'out', 'result.json');
+  const old = new Date(Date.now() - 60_000);
+  await fs.utimes(stale, old, old);
+  await assert.rejects(slice(), /the slicer exited with code 206 \(a plate is empty or has no object fully inside it; arrange the model or place it on the plate \[-50\]\)/);
 });

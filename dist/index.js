@@ -10,15 +10,16 @@ import path from "path";
 import { createServer as createHttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { STLManipulator, SLICER_TYPES, normalizeSlicerType, } from "./stl/stl-manipulator.js";
-import { BambuNetworkBridge } from "./bambu-network-bridge.js";
-import { assertBambuNativeAvailable, validateBambuNativeMetadata, buildBambuNativeFanCommand, buildBambuNativeTemperatureCommand, printWithBambuNative, sendCommandWithBambuNative, uploadWithBambuNative, } from "./bambu-native.js";
+import { BambuNetworkBridge, describeBambuNetworkPrintError } from "./bambu-network-bridge.js";
+import { assertBambuNativeAvailable, bambuNativeControlsAvailable, bambuNativeUnavailableReason, interruptNativeOperations, validateBambuNativeMetadata, buildBambuNativeFanCommand, buildBambuNativeTemperatureCommand, printWithBambuNative, sendCommandWithBambuNative, uploadWithBambuNative, } from "./bambu-native.js";
 import { importFileViaBambuConnect } from "./bambu-connect.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
-import { hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue } from "./ams-mapping.js";
+import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue } from "./ams-mapping.js";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, parse3MF } from './3mf_parser.js';
 import { BambuImplementation, assertDirectPrintSupported } from "./printers/bambu.js";
 import { inspectPrintFile } from "./safety/print-file.js";
-import { validatePrinterState } from "./safety/printer-state.js";
+import { externalStorageState, validatePrinterState } from "./safety/printer-state.js";
+import { isDualNozzleModel } from "./safety/limits.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safety/artifact.js";
 import { detectProfilesRoot } from "./slicer/profile-flatten.js";
 dotenv.config();
@@ -51,6 +52,36 @@ const DEFAULT_BAMBU_MODEL = process.env.BAMBU_PRINTER_MODEL?.trim().toLowerCase(
 const DEFAULT_BAMBU_CONNECTION_MODE = process.env.BAMBU_DEFAULT_CONNECTION_MODE?.trim().toLowerCase() || "";
 const DEFAULT_BED_TYPE = process.env.BED_TYPE?.trim().toLowerCase() || "textured_plate";
 const DEFAULT_NOZZLE_DIAMETER = process.env.NOZZLE_DIAMETER?.trim() || "0.4";
+/** Bound for each Linux X2D emergency MQTT send (BAMBU_EMERGENCY_MQTT_TIMEOUT_MS, 1–60000 ms). */
+function withEmergencyMqttTimeout(send) {
+    const raw = Number(process.env.BAMBU_EMERGENCY_MQTT_TIMEOUT_MS?.trim() || 15000);
+    const ms = Number.isInteger(raw) && raw >= 1 && raw <= 60000 ? raw : 15000;
+    const controller = new AbortController();
+    let timer;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+            const error = new Error(`no MQTT confirmation within ${ms / 1000} s`);
+            controller.abort(error);
+            reject(error);
+        }, ms);
+    });
+    return Promise.race([Promise.resolve().then(() => send(controller.signal)), timeout]).finally(() => clearTimeout(timer));
+}
+/**
+ * Whether an X2D native print stores its job on the SD card or USB stick
+ * (true) or internal storage (eMMC). An explicit try_emmc_print wins, then
+ * BAMBU_NATIVE_TRY_EMMC_PRINT read as the helper reads it; otherwise a ready
+ * card is used, as OrcaSlicer does, so the job can be reprinted from the
+ * printer and read over FTPS.
+ */
+function nativeExternalStorage(tryEmmcPrint, raw) {
+    if (tryEmmcPrint !== undefined)
+        return !tryEmmcPrint;
+    const configured = process.env.BAMBU_NATIVE_TRY_EMMC_PRINT?.trim();
+    if (configured)
+        return !["1", "true", "TRUE", "yes"].includes(configured);
+    return externalStorageState(raw) === "normal";
+}
 function requestedPrintNozzles(args) {
     if (args.nozzle_diameters !== undefined && args.nozzle_diameter !== undefined) {
         throw new Error("Supply nozzle_diameters or nozzle_diameter, not both.");
@@ -89,6 +120,20 @@ function resolveNozzleType(value) {
         throw new Error(`Invalid nozzle type "${raw}". Valid types: ${VALID_NOZZLE_TYPES.join(", ")}`);
     }
     return normalized;
+}
+/** BambuStudio's nozzle_volume_type value for each tool argument value. */
+const NOZZLE_VOLUME_TYPES = { standard: "Standard", high_flow: "High Flow" };
+const VALID_NOZZLE_VOLUME_TYPES = Object.keys(NOZZLE_VOLUME_TYPES);
+/** The installed nozzle's flow type. Bambu machine presets assume Standard; the print gate compares this with the printer. */
+function resolveNozzleVolumeType(value) {
+    const raw = value === undefined || value === null || value === "" ? process.env.BAMBU_NOZZLE_VOLUME_TYPE?.trim() : value;
+    if (raw === undefined || raw === "")
+        return undefined;
+    const normalized = String(raw).trim().toLowerCase().replace(/[\s-]+/g, "_");
+    if (!VALID_NOZZLE_VOLUME_TYPES.includes(normalized)) {
+        throw new Error(`Invalid nozzle volume type "${raw}". Valid types: ${VALID_NOZZLE_VOLUME_TYPES.join(", ")}`);
+    }
+    return NOZZLE_VOLUME_TYPES[normalized];
 }
 const VALID_BAMBUSTUDIO_CLI_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"];
 // Map model IDs to BambuStudio --load-machine preset names
@@ -509,7 +554,7 @@ function defaultSlicerPathFor(slicerType) {
 }
 function resolveSlicerConfig(args) {
     const slicerType = normalizeSlicerType(String(args?.slicer_type || DEFAULT_SLICER_TYPE));
-    const slicerPath = String(args?.slicer_path || process.env.SLICER_PATH || defaultSlicerPathFor(slicerType));
+    const slicerPath = slicerType === "orca-slicer-api" ? "" : String(args?.slicer_path || process.env.SLICER_PATH || defaultSlicerPathFor(slicerType));
     const slicerProfile = String(args?.slicer_profile || DEFAULT_SLICER_PROFILE);
     return { slicerType, slicerPath, slicerProfile };
 }
@@ -721,18 +766,10 @@ function stringifyBridgeJson(value) {
         return value;
     return JSON.stringify(value);
 }
-function nativeAmsMapping2(mapping) {
+function nativeAmsMapping2(mapping, dualNozzle = false) {
     if (!mapping || mapping.length === 0)
         return undefined;
-    return JSON.stringify(mapping.map((value) => {
-        if (value < 0 || value === 255)
-            return { ams_id: 255, slot_id: 255 };
-        if (value === 254)
-            return { ams_id: 254, slot_id: 254 };
-        if (value >= 128)
-            return { ams_id: 128, slot_id: value - 128 };
-        return { ams_id: Math.floor(value / 4), slot_id: value % 4 };
-    }));
+    return JSON.stringify(mapping.map((value) => bridgeAmsMapping2Entry(value, dualNozzle)));
 }
 function redactPrintParams(params) {
     return {
@@ -1011,6 +1048,9 @@ class BambuPrinterMCPServer {
     resolveSlicerConfigFromArgs(args, toolName) {
         const config = resolveSlicerConfig(args);
         if (args?.slicer_path !== undefined) {
+            if (config.slicerType === "orca-slicer-api") {
+                throw new Error(`${toolName}: remote slicing uses trusted SLICER_API_URL and BAMBU_PROFILES_ROOT configuration; slicer_path is unsupported.`);
+            }
             const resolvedSlicerPath = this.resolveExecutableSelectorArg(args.slicer_path, toolName, "slicer_path");
             if (resolvedSlicerPath !== undefined) {
                 config.slicerPath = resolvedSlicerPath;
@@ -1034,12 +1074,13 @@ class BambuPrinterMCPServer {
         }
         console.error(`3MF has no gcode - auto-slicing with ${slicerType} for ${printModel}`);
         const autoSliceOptions = {
-            uptodate: true,
-            ensureOnBed: true,
-            minSave: true,
-            skipModifiedGcodes: true,
+            ...(slicerType === "orca-slicer-api" ? {} : {
+                uptodate: true, ensureOnBed: true, minSave: true, skipModifiedGcodes: true,
+            }),
+            ...(slicerType === "orca-slicer-api" ? { slicePlate: Number(args.plate_index ?? 0) + 1 } : {}),
             bedType: bedType ? resolveBambuStudioCliBedType(bedType) : undefined,
             nozzleType: resolveNozzleType(args?.nozzle_type),
+            nozzleVolumeType: resolveNozzleVolumeType(args?.nozzle_volume_type),
         };
         threeMFPath = await this.stlManipulator.sliceSTL(threeMFPath, slicerType, slicerPath, slicerProfile || undefined, undefined, printPreset, autoSliceOptions);
         console.error("Auto-sliced to: " + threeMFPath);
@@ -1048,8 +1089,9 @@ class BambuPrinterMCPServer {
     async resolveAmsPrintSettings(threeMFPath, args, host, bambuSerial, bambuToken, printModel, printNozzle) {
         const parsed3MFData = await parse3MF(threeMFPath);
         let parsedAmsMapping;
+        const trayOptions = { dualNozzle: isDualNozzleModel(printModel) };
         if (parsed3MFData.slicerConfig?.ams_mapping) {
-            const slots = normalizeAmsMappingObject(parsed3MFData.slicerConfig.ams_mapping);
+            const slots = normalizeAmsMappingObject(parsed3MFData.slicerConfig.ams_mapping, "ams_mapping", trayOptions);
             if (slots.length > 0) {
                 parsedAmsMapping = slots;
             }
@@ -1062,10 +1104,10 @@ class BambuPrinterMCPServer {
         if (hasUserAmsMapping) {
             let userMappingOverride;
             if (Array.isArray(args.ams_mapping)) {
-                userMappingOverride = args.ams_mapping.map((v, i) => normalizeBridgeAmsTrayValue(v, `ams_mapping[${i}]`));
+                userMappingOverride = args.ams_mapping.map((v, i) => normalizeBridgeAmsTrayValue(v, `ams_mapping[${i}]`, trayOptions));
             }
             else if (args.ams_mapping && typeof args.ams_mapping === 'object') {
-                userMappingOverride = normalizeAmsMappingObject(args.ams_mapping);
+                userMappingOverride = normalizeAmsMappingObject(args.ams_mapping, "ams_mapping", trayOptions);
             }
             if (userMappingOverride && userMappingOverride.length > 0) {
                 finalAmsMapping = userMappingOverride;
@@ -1074,7 +1116,7 @@ class BambuPrinterMCPServer {
             }
         }
         if (!hasUserAmsMapping && hasUserAmsSlots) {
-            const userSlots = args.ams_slots.map((slot, i) => normalizeBridgeAmsTrayValue(slot, `ams_slots[${i}]`));
+            const userSlots = args.ams_slots.map((slot, i) => normalizeBridgeAmsTrayValue(slot, `ams_slots[${i}]`, trayOptions));
             finalAmsSlots = userSlots;
             finalAmsMapping = undefined;
             useAMS = userSlots.length > 0;
@@ -1091,8 +1133,10 @@ class BambuPrinterMCPServer {
             useAMS = true;
         }
         if (args?.use_ams === false) {
-            finalAmsMapping = undefined;
-            finalAmsSlots = undefined;
+            if (!hasUserAmsMapping)
+                finalAmsMapping = undefined;
+            if (!hasUserAmsSlots)
+                finalAmsSlots = undefined;
             useAMS = false;
         }
         if ((!finalAmsMapping || finalAmsMapping.length === 0) && (!finalAmsSlots || finalAmsSlots.length === 0)) {
@@ -1106,6 +1150,9 @@ class BambuPrinterMCPServer {
     async print3mfViaBambuNetwork(args, host, bambuSerial, bambuToken, native) {
         if (!args?.three_mf_path) {
             throw new Error("Missing required parameter: three_mf_path");
+        }
+        if (args?.try_emmc_print !== undefined && typeof args.try_emmc_print !== "boolean") {
+            throw new Error("try_emmc_print must be true or false.");
         }
         const printModel = await this.resolveBambuModel(args?.bambu_model);
         const printBedType = resolveBedType(args?.bed_type);
@@ -1162,8 +1209,16 @@ class BambuPrinterMCPServer {
                 inspection.usedFilamentPositions.forEach((position, index) => { mapping[position] = finalAmsSlots[index]; });
             }
             if (!useAMS) {
-                mapping = Array(inspection.materials.length).fill(-1);
-                inspection.usedFilamentPositions.forEach(position => { mapping[position] = 254; });
+                mapping ?? (mapping = Array(inspection.materials.length).fill(-1));
+                const dualNozzle = isDualNozzleModel(printModel);
+                for (const position of inspection.usedFilamentPositions) {
+                    if (mapping[position] === undefined || mapping[position] < 0) {
+                        mapping[position] = externalTrayForNozzle(inspection.filamentNozzleIndices?.[position], dualNozzle);
+                    }
+                    if (mapping[position] !== 254 && !(dualNozzle && mapping[position] === 255)) {
+                        throw new Error("use_ams:false requires an external-spool mapping for every used filament.");
+                    }
+                }
             }
             const requirements = { ...inspection, amsMapping: mapping, useAMS };
             const initialStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
@@ -1172,14 +1227,19 @@ class BambuPrinterMCPServer {
             const confirmedStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
             validatePrinterState(confirmedStatus, requirements);
             this.bambu.assertBedClearance(confirmedStatus, bedClearance);
-            const amsMapping = stringifyBridgeJson(mapping);
+            const amsMapping = stringifyBridgeJson(mapping?.map(value => bridgeAmsMappingValue(value, isDualNozzleModel(printModel))));
             const remoteFileName = uniquePrintName(threeMFPath);
+            const checkedName = remoteFileName.replace(/(?:\.gcode)?\.3mf$/i, "");
             const params = {
                 dev_id: devId,
                 // Firmware can report the task name instead of the uploaded filename.
                 // Bind either report to this inspected artifact for a later safe resume.
-                task_name: remoteFileName.replace(/(?:\.gcode)?\.3mf$/i, ""),
-                project_name: projectName,
+                task_name: checkedName,
+                // The plug-in names the uploaded file and the printer's job from
+                // project_name, so it carries the same unique checked name, as the
+                // native route already passes; a reused name would overwrite a stored
+                // job and break the resume binding.
+                project_name: checkedName,
                 preset_name: presetName,
                 filename: snapshot,
                 config_filename: snapshot,
@@ -1189,7 +1249,7 @@ class BambuPrinterMCPServer {
                 ftp_file_md5: String(args?.ftp_file_md5 || ""),
                 nozzle_mapping: stringifyBridgeJson(args?.nozzle_mapping) || "",
                 ams_mapping: amsMapping || "",
-                ams_mapping2: stringifyBridgeJson(args?.ams_mapping2) || "",
+                ams_mapping2: nativeAmsMapping2(mapping, isDualNozzleModel(printModel)) || "",
                 ams_mapping_info: stringifyBridgeJson(args?.ams_mapping_info) || "",
                 nozzles_info: stringifyBridgeJson(args?.nozzles_info) || "",
                 connection_type: connectionType,
@@ -1222,6 +1282,10 @@ class BambuPrinterMCPServer {
             };
             assertActive();
             if (native) {
+                const externalStorage = nativeExternalStorage(args?.try_emmc_print, confirmedStatus.raw);
+                if (externalStorage && externalStorageState(confirmedStatus.raw) !== "normal") {
+                    throw new Error("External storage was requested, but the printer reports no ready SD card or USB stick.");
+                }
                 // Release the telemetry client before the installed plug-in opens its session.
                 await this.bambu.disconnectAll();
                 assertActive();
@@ -1229,24 +1293,28 @@ class BambuPrinterMCPServer {
                     host: devIp, serial: devId, token: password || bambuToken, filePath: snapshot,
                     projectName: String(params.task_name), presetName, remoteName: remoteFileName,
                     plateIndex, bedType: printBedType, useAMS,
-                    amsMapping, amsMapping2: nativeAmsMapping2(mapping),
+                    amsMapping, amsMapping2: nativeAmsMapping2(mapping, isDualNozzleModel(printModel)),
                     bedLeveling: params.task_bed_leveling,
                     flowCalibration: params.task_flow_cali,
                     vibrationCalibration: params.task_vibration_cali,
                     layerInspect: params.task_layer_inspect,
                     timelapse: params.task_record_timelapse,
+                    externalStorage,
                 }, native.onUpdate, { signal: native.signal, assertActive, beforeDispatch: async () => {
                         assertActive();
                         const dispatchStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
                         validatePrinterState(dispatchStatus, requirements);
                         this.bambu.assertBedClearance(dispatchStatus, bedClearance);
+                        if (externalStorage && externalStorageState(dispatchStatus.raw) !== "normal") {
+                            throw new Error("The printer's SD card or USB stick is no longer ready. Check it and start the print again.");
+                        }
                         assertActive();
                     } });
                 assertActive();
                 this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements);
                 return { ...nativeResult, autoSliced, projectName, plateIndex, useAMS, amsMapping: mapping };
             }
-            const bridgeResult = await this.bambuNetwork.callWithAgent(bridgeMethod, { client_job_id: clientJobId, params }, {
+            const bridgeOptions = {
                 ...this.bridgeOptionsFromArgs(args, "print_3mf_bambu_network"),
                 beforeDispatch: async (method) => {
                     if (method !== bridgeMethod)
@@ -1260,7 +1328,15 @@ class BambuPrinterMCPServer {
                     assertActive(); },
                 onDispatched: method => { if (method === bridgeMethod)
                     retainForDispatchedUpload(); },
-            });
+            };
+            let jobUpdates = [];
+            let bridgeResult;
+            if (isLocalBridgePrint) {
+                ({ result: bridgeResult, jobUpdates } = await this.bambuNetwork.startLocalPrint({ devId, devIp, username: String(params.username), password, useSsl: params.use_ssl_for_mqtt }, bridgeMethod, { client_job_id: clientJobId, params }, bridgeOptions, assertActive));
+            }
+            else {
+                bridgeResult = await this.bambuNetwork.callWithAgent(bridgeMethod, { client_job_id: clientJobId, params }, bridgeOptions);
+            }
             if (typeof bridgeResult === "object" && bridgeResult !== null && bridgeResult.ok === false) {
                 throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} failed: ${String(bridgeResult.error || "unknown bridge error")}`);
             }
@@ -1269,7 +1345,10 @@ class BambuPrinterMCPServer {
                 typeof bridgeResult.value === "number" &&
                 bridgeResult.value !== 0) {
                 const value = bridgeResult.value;
-                throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} returned non-zero result ${value}.`);
+                const reported = jobUpdates.filter(update => update.code !== 0 || update.msg).slice(-3)
+                    .map(update => `status ${update.status}, code ${update.code}${update.msg ? `: ${update.msg}` : ""}`).join("; ");
+                throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} returned non-zero result ${value}${describeBambuNetworkPrintError(value)}.` +
+                    (reported ? ` Plug-in reported: ${reported}.` : ""));
             }
             assertActive();
             this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements);
@@ -1283,6 +1362,7 @@ class BambuPrinterMCPServer {
                 projectName,
                 plateIndex,
                 bridgePlateIndex: plateIndex + 1,
+                printerJobName: checkedName,
                 useAMS,
                 amsMapping: mapping,
                 params: redactPrintParams(params),
@@ -1326,12 +1406,14 @@ class BambuPrinterMCPServer {
         return this.print3mfViaBambuNetwork({ ...args, bambu_model: model, connection_type: "lan", bambu_network_method: "start_local_print" }, host, bambuSerial, bambuToken, { onUpdate, signal });
     }
     async uploadFileViaBambuNative(args, host, bambuSerial, bambuToken, onUpdate, signal) {
-        assertBambuNativeAvailable();
         if (args.print)
             throw new Error("Native upload never starts printing; use print_3mf.");
+        // Resolve and enforce the model first, as the print path does, so a
+        // non-X2D request is never told to install the native helper.
         const model = await this.resolveBambuModel(args.bambu_model);
         if (model !== "x2d")
             throw new Error("connection_mode=bambu_native is restricted to X2D.");
+        assertBambuNativeAvailable();
         const unsupported = ["use_ams", "ams_mapping", "ams_mapping2", "ams_mapping_info", "nozzle_mapping", "nozzles_info",
             "bed_leveling", "flow_calibration", "vibration_calibration", "layer_inspect", "timelapse"];
         for (const key of unsupported) {
@@ -1430,10 +1512,9 @@ class BambuPrinterMCPServer {
             throw new Error('BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF for SuperTack or choose textured_plate, cool_plate, engineering_plate, or hot_plate.');
         }
         const autoSliceOptions = {
-            uptodate: true,
-            ensureOnBed: true,
-            minSave: true,
-            skipModifiedGcodes: true,
+            ...(slicerType === "orca-slicer-api" ? {} : {
+                uptodate: true, ensureOnBed: true, minSave: true, skipModifiedGcodes: true,
+            }),
             bedType,
         };
         try {
@@ -1841,6 +1922,11 @@ class BambuPrinterMCPServer {
                                     enum: [...VALID_NOZZLE_TYPES],
                                     description: "Bambu-compatible slicing: the hotend nozzle material installed on the printer (default: BAMBU_NOZZLE_TYPE, else the model preset's stock nozzle, usually stainless_steel). Printing compares it with the printer's reported nozzle."
                                 },
+                                nozzle_volume_type: {
+                                    type: "string",
+                                    enum: [...VALID_NOZZLE_VOLUME_TYPES],
+                                    description: "Bambu-compatible slicing: the flow type of the nozzle installed on the printer (default: BAMBU_NOZZLE_VOLUME_TYPE, else standard). high_flow uses the presets' High Flow values, such as the filament's High Flow max volumetric speed, and is refused if the machine preset has no High Flow variant. Printing compares it with the printer's reported nozzle flow."
+                                },
                                 use_printer_filaments: { type: "boolean", description: "When true, and no explicit slicer profile or load_filaments override is provided, use the printer's current or first loaded AMS filament as the slicer filament profile." },
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
@@ -1896,13 +1982,18 @@ class BambuPrinterMCPServer {
                                     enum: [...VALID_NOZZLE_TYPES],
                                     description: "Bambu-compatible slicing: the hotend nozzle material installed on the printer (default: BAMBU_NOZZLE_TYPE, else the model preset's stock nozzle, usually stainless_steel). Printing compares it with the printer's reported nozzle."
                                 },
+                                nozzle_volume_type: {
+                                    type: "string",
+                                    enum: [...VALID_NOZZLE_VOLUME_TYPES],
+                                    description: "Bambu-compatible slicing: the flow type of the nozzle installed on the printer (default: BAMBU_NOZZLE_VOLUME_TYPE, else standard). high_flow uses the presets' High Flow values, such as the filament's High Flow max volumetric speed, and is refused if the machine preset has no High Flow variant. Printing compares it with the printer's reported nozzle flow."
+                                },
                                 use_printer_filaments: { type: "boolean", description: "When true, and no explicit slicer profile or load_filaments override is provided, use the printer's current or first loaded AMS filament as the slicer filament profile. Template 3MF process settings can still be used at the same time." },
                                 uptodate: { type: "boolean", description: "Refresh 3MF preset configs to match the latest BambuStudio version. Use when slicing downloaded or older 3MF files to prevent stale-config failures." },
-                                repetitions: { type: "number", description: "Print N identical copies of the model. Each copy gets its own plate placement. Example: 3 prints three copies." },
+                                repetitions: { type: "number", description: "Print N identical copies of the model. Each copy gets its own plate placement. Example: 3 prints three copies. OrcaSlicer copies an STL with --clone-objects; do not combine with clone_objects." },
                                 orient: { type: "boolean", description: "Auto-orient the model for optimal printability (minimize supports, maximize bed adhesion). Recommended for raw STL imports that lack a pre-set orientation." },
-                                arrange: { type: "boolean", description: "Auto-arrange all objects on the build plate with optimal spacing. Recommended when importing STLs or adding multiple objects. Set false to preserve existing plate layout." },
+                                arrange: { type: "boolean", description: "Auto-arrange all objects on the build plate with optimal spacing; STL input is arranged by default. Set false only to keep a 3MF's existing layout: an STL that is not already on the plate then fails to slice." },
                                 ensure_on_bed: { type: "boolean", description: "Detect models floating above the bed and lower them onto the build surface. Safety net for imported models with incorrect Z origins." },
-                                clone_objects: { type: "string", description: "Duplicate specific objects on the plate. Comma-separated clone counts per object index, e.g. '1,3,1,10' clones object 0 once, object 1 three times, etc." },
+                                clone_objects: { type: "string", description: "Clone the loaded model: total copies as a single integer, e.g. '3'. The Bambu-style CLIs count copies per input file and this tool loads one file, so a comma-separated list is rejected by the slicer." },
                                 skip_objects: { type: "string", description: "Skip specific objects during slicing by index. Comma-separated, e.g. '3,5,10'. Useful for multi-object 3MFs where you only want to print some parts." },
                                 load_filaments: { type: "string", description: "Override filament profiles. Semicolon-separated paths to filament JSON configs, e.g. 'pla_basic.json;petg_cf.json'." },
                                 filament_profile: { type: "string", description: "Compatibility alias for load_filaments. Semicolon-separated Orca/Bambu filament profile JSON paths." },
@@ -1916,7 +2007,7 @@ class BambuPrinterMCPServer {
                                 rotate_y: { type: "number", description: "Rotate the model around the Y-axis by this many degrees before slicing. Useful for reorienting prints for better layer adhesion." },
                                 min_save: { type: "boolean", description: "Write a smaller output 3MF by omitting non-essential metadata. Reduces file size for faster FTP upload to the printer." },
                                 skip_modified_gcodes: { type: "boolean", description: "Strip custom start/end gcodes embedded in the 3MF. Recommended for downloaded 3MFs since custom gcodes from other users' profiles may be unsafe for your printer." },
-                                slice_plate: { type: "number", description: "Which plate index to slice. 0 = all plates (default). Use 1, 2, etc. to slice only a specific plate in multi-plate 3MF projects." }
+                                slice_plate: { type: "number", description: "Which plate index to slice. 0 = all plates for local slicers; remote slicing defaults to plate 1 and rejects 0. Use 1, 2, etc. to slice only a specific plate in multi-plate 3MF projects." }
                             },
                             required: ["stl_path", "bambu_model"]
                         }
@@ -2002,8 +2093,9 @@ class BambuPrinterMCPServer {
                                 password: { type: "string", description: "Printer password/access code override for LAN/local bridge methods." },
                                 bed_type: { type: "string", enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"], description: "Bed plate type currently installed (default: textured_plate)." },
                                 nozzle_type: { type: "string", enum: [...VALID_NOZZLE_TYPES], description: "Installed nozzle material, used when the 3MF must be auto-sliced (default: BAMBU_NOZZLE_TYPE, else the preset's stock nozzle)." },
+                                nozzle_volume_type: { type: "string", enum: [...VALID_NOZZLE_VOLUME_TYPES], description: "Installed nozzle flow type, used when the 3MF must be auto-sliced (default: BAMBU_NOZZLE_VOLUME_TYPE, else standard)." },
                                 plate_index: { type: "number", description: "Zero-based plate index to print from the sliced 3MF; converted to FULU's one-based PrintParams plate_index." },
-                                project_name: { type: "string", description: "Optional project name sent in FULU PrintParams; defaults to the 3MF filename without extension." },
+                                project_name: { type: "string", description: "Optional project name returned in the result; defaults to the 3MF filename without extension. The printer job and stored file use the server's unique checked name so resume_print can bind to the inspected file." },
                                 preset_name: { type: "string", description: "Optional preset name sent in FULU PrintParams; defaults to project plus one-based plate index." },
                                 task_name: { type: "string", description: "Optional project label when project_name is omitted. The submitted task name uses a unique inspected-job identity for safe resume." },
                                 config_filename: { type: "string", description: "Optional config 3MF path for cloud print; defaults to the same 3MF path." },
@@ -2018,8 +2110,8 @@ class BambuPrinterMCPServer {
                                 nozzle_diameter: { type: "string", description: "Nozzle diameter in mm for auto-slicing (default: 0.4)." },
                                 nozzle_diameters: { type: "array", minItems: 1, maxItems: 2, items: { type: "number", enum: [0.2, 0.4, 0.6, 0.8] }, description: "Complete per-nozzle diameters for pre-sliced jobs, e.g. [0.4, 0.6]. Omit to verify file metadata against every reported nozzle; cannot combine with nozzle_diameter." },
                                 use_ams: { type: "boolean", description: "Whether to use the AMS; defaults to auto-detect from the 3MF mapping." },
-                                ams_mapping: { type: "array", description: "AMS slot mapping array used by both local MCP printing and FULU PrintParams.", items: { type: "number" } },
-                                ams_slots: { type: "array", description: "Per-used-filament AMS slot list, matching the local LAN print path.", items: { type: "number" } },
+                                ams_mapping: { type: "array", description: "AMS slot mapping array used by both local MCP printing and FULU PrintParams. Same tray values as print_3mf: 254 = external spool; on dual-nozzle printers 254 = left/deputy nozzle external and 255 = right/main nozzle external.", items: { type: "number" } },
+                                ams_slots: { type: "array", description: "Per-used-filament AMS slot list, matching the local LAN print path (254/255 external spool rules as in print_3mf).", items: { type: "number" } },
                                 ams_mapping_bridge: { type: "string", description: "Raw JSON string override for FULU PrintParams ams_mapping when the automatic array is not enough." },
                                 ams_mapping2: { type: "string", description: "Raw JSON string for FULU PrintParams ams_mapping2, matching OrcaSlicer-bambulab's v1 AMS mapping field." },
                                 ams_mapping_info: { type: "string", description: "Raw JSON string for FULU PrintParams ams_mapping_info, matching OrcaSlicer-bambulab's detailed AMS mapping field." },
@@ -2033,7 +2125,7 @@ class BambuPrinterMCPServer {
                                 use_ssl_for_ftp: { type: "boolean", description: "Whether FULU local print should use SSL for FTP (default: true)." },
                                 use_ssl_for_mqtt: { type: "boolean", description: "Whether FULU local print should use SSL for MQTT (default: true)." },
                                 external_change_assist: { type: "boolean", description: "Enable FULU PrintParams task_ext_change_assist for external filament change assistance." },
-                                try_emmc_print: { type: "boolean", description: "Enable FULU PrintParams try_emmc_print for printers that support internal storage printing." },
+                                try_emmc_print: { type: "boolean", description: "Store the job on internal storage (eMMC) instead of the SD card or USB stick. FULU bridge: default false. X2D native printing: omit to use a ready card, else eMMC." },
                                 extra_options: { type: "string", description: "Raw JSON string or text for FULU PrintParams extra_options." },
                                 client_job_id: { type: "number", description: "Optional client job id sent to the bridge; defaults to the current timestamp." }
                             },
@@ -2047,7 +2139,7 @@ class BambuPrinterMCPServer {
                             type: "object",
                             properties: {
                                 save_path: { type: "string", description: "Optional absolute path to write the JPEG to disk. If omitted, only the base64 payload is returned." },
-                                timeout_ms: { type: "number", description: "Max ms to wait for a full frame (default 8000). Camera may take a few seconds on cold start." },
+                                timeout_ms: { type: "number", description: "Max ms to wait for a live frame (default 8000). A1/P1 cameras first replay a buffered frame, which is skipped, so a live frame takes about 3 s, longer on cold start." },
                                 bambu_model: { type: "string", description: "Printer model. Used to route to the correct protocol or fail fast on unsupported models. Defaults to BAMBU_MODEL." },
                                 experimental: { type: "boolean", description: "Deprecated and ignored. Earlier this flag let callers probe H2 series via the A1/P1 TCP-on-6000 path; live testing on an H2S confirmed H2 uses RTSP instead, so the flag has no effect now." },
                                 ffmpeg_path: { type: "string", description: "Override path to the ffmpeg binary used by the RTSP path. Defaults to FFMPEG_PATH or ffmpeg via $PATH. Per-call overrides require MCP_ALLOW_EXECUTABLE_ARG=1. Required only for the RTSP transport (X1, P2S, H2 series, X2D)." },
@@ -2265,7 +2357,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "reread_ams_rfid",
-                        description: "Trigger a Bambu AMS RFID re-read for one AMS slot. X2D on macOS uses the native official plug-in route. This can move AMS filament; use only when the printer is idle and unloaded.",
+                        description: "Trigger a Bambu AMS RFID re-read for one AMS slot. X2D on macOS, or Linux with the native helper installed, uses the native official plug-in route. This can move AMS filament; use only when the printer is idle and unloaded.",
                         inputSchema: {
                             type: "object",
                             properties: {
@@ -2298,7 +2390,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "set_fan_speed",
-                        description: "Set a Bambu printer fan speed percentage. X2D on macOS uses the installed Bambu networking plug-in without UI automation; other models use MQTT.",
+                        description: "Set a Bambu printer fan speed percentage. X2D on macOS, or Linux with the native helper installed, uses Bambu's networking plug-in without UI automation; other models use MQTT.",
                         inputSchema: {
                             type: "object",
                             properties: {
@@ -2357,7 +2449,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "set_ams_drying",
-                        description: "Start or stop the AMS filament drying cycle. X2D on macOS uses the native official plug-in route and supports AMS-HT id 128.",
+                        description: "Start or stop the AMS filament drying cycle. X2D on macOS, or Linux with the native helper installed, uses the native official plug-in route and supports AMS-HT id 128.",
                         inputSchema: {
                             type: "object",
                             properties: {
@@ -2378,6 +2470,23 @@ class BambuPrinterMCPServer {
                         }
                     },
                     {
+                        name: "inspect_print_file",
+                        description: "Inspect an exact private snapshot of a prepared sliced 3MF or textual G-code file and selected plate without contacting a printer. Returns versioned file-only evidence; no printer readiness or permission to dispatch is established. Does not auto-slice.",
+                        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+                        inputSchema: {
+                            type: "object",
+                            additionalProperties: false,
+                            properties: {
+                                file_path: { type: "string", minLength: 1, description: "Local prepared .3mf or textual .gcode artifact to inspect; checksum-only and unsliced projects reject." },
+                                bambu_model: { type: "string", enum: [...VALID_BAMBU_MODELS], description: "Explicit file-inspection target model; never inferred from environment or live state." },
+                                plate_index: { type: "integer", minimum: 0, description: "Zero-based selected plate; defaults to 0. Raw G-code only supports 0." },
+                                nozzle_diameters: { type: "array", minItems: 1, maxItems: 2, items: { type: "number", enum: [0.2, 0.4, 0.6, 0.8] }, description: "Optional requested nozzle diameters to compare with file declarations; this does not observe installed hardware." },
+                                bed_type: { type: "string", enum: [...VALID_BED_TYPES], description: "Optional declared bed type to compare with file metadata." },
+                            },
+                            required: ["file_path", "bambu_model"],
+                        },
+                    },
+                    {
                         name: "print_3mf",
                         description: "Print a 3MF file on a Bambu Lab printer. Auto-slices if the 3MF has no gcode. IMPORTANT: bambu_model must be specified to ensure safe printer operation.",
                         inputSchema: {
@@ -2392,8 +2501,9 @@ class BambuPrinterMCPServer {
                                 connection_mode: {
                                     type: "string",
                                     enum: ["lan_mqtt_ftps", "bambu_network", "bambu_native", "bambu_connect"],
-                                    description: "Print path: bambu_connect hands a printable file to the signed-in Bambu Connect app for cloud-mode review; X2D otherwise defaults to bambu_native (Bambu Studio's installed local networking plug-in and emmc tunnel); lan_mqtt_ftps is the legacy direct MQTT/FTPS path; bambu_network uses the FULU bridge."
+                                    description: "Print path: bambu_connect hands a printable file to the signed-in Bambu Connect app for cloud-mode review; X2D otherwise defaults to bambu_native (Bambu Studio's installed local networking plug-in, storing the job on a ready SD card or USB stick, otherwise internal eMMC); lan_mqtt_ftps is the legacy direct MQTT/FTPS path; bambu_network uses the FULU bridge."
                                 },
+                                try_emmc_print: { type: "boolean", description: "X2D native printing: true stores the job on internal storage (eMMC), false on the SD card or USB stick (refused unless the printer reports one ready). Omit to use the card when ready, else eMMC; BAMBU_NATIVE_TRY_EMMC_PRINT sets a server default." },
                                 connection_type: { type: "string", enum: ["cloud", "lan"], description: "BambuNetwork connection type when connection_mode is bambu_network; cloud uses restored internet printing, lan uses local bridge printing." },
                                 bambu_network_method: { type: "string", enum: BAMBU_NETWORK_PRINT_METHODS, description: "FULU print method when connection_mode is bambu_network; defaults to start_print for cloud and start_local_print for lan." },
                                 dev_id: { type: "string", description: "Bambu device id for FULU BambuNetwork printing; defaults to BAMBU_DEV_ID or BAMBU_SERIAL." },
@@ -2412,6 +2522,11 @@ class BambuPrinterMCPServer {
                                     enum: [...VALID_NOZZLE_TYPES],
                                     description: "Installed nozzle material, used when the 3MF must be auto-sliced (default: BAMBU_NOZZLE_TYPE, else the preset's stock nozzle)."
                                 },
+                                nozzle_volume_type: {
+                                    type: "string",
+                                    enum: [...VALID_NOZZLE_VOLUME_TYPES],
+                                    description: "Installed nozzle flow type, used when the 3MF must be auto-sliced (default: BAMBU_NOZZLE_VOLUME_TYPE, else standard)."
+                                },
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
                                 bambu_token: { type: "string", description: "Access token (default: value from env)" },
@@ -2425,12 +2540,12 @@ class BambuPrinterMCPServer {
                                 use_ams: { type: "boolean", description: "Whether to use the AMS (default: auto-detect from 3MF)" },
                                 ams_mapping: {
                                     type: "array",
-                                    description: "Project-level AMS mapping array. Position = project filament index, value = absolute AMS tray (0-3=AMS 0, 4-7=AMS 1, 8-11=AMS 2, 128+=AMS-HT, 254=external, -1=unused). Prefer ams_slots unless you know the project-level layout.",
+                                    description: "Project-level AMS mapping array. Position = project filament index, value = absolute AMS tray (0-3=AMS 0, 4-7=AMS 1, 8-11=AMS 2, 128+=AMS-HT, 254=external, -1=unused). On dual-nozzle printers (H2D, H2D Pro, H2C, X2D) 254 is the LEFT/deputy nozzle external spool and 255 the RIGHT/main nozzle external spool, matching Bambu Studio's virtual tray ids; the gcode header's filament_map (1=left, 2=right) says which nozzle each filament was sliced for. Prefer ams_slots unless you know the project-level layout.",
                                     items: { type: "number" }
                                 },
                                 ams_slots: {
                                     type: "array",
-                                    description: "Preferred AMS input: one absolute tray index per USED filament in plate order, e.g. [1] for a single-filament print pulling from AMS 0 slot 1. Expanded to project-level ams_mapping automatically from the 3MF's plate_N.json and gcode header.",
+                                    description: "Preferred AMS input: one absolute tray index per USED filament in plate order, e.g. [1] for a single-filament print pulling from AMS 0 slot 1. Use 254 for the external spool (on dual-nozzle printers: 254 = left/deputy nozzle external, 255 = right/main nozzle external). Expanded to project-level ams_mapping automatically from the 3MF's plate_N.json and gcode header.",
                                     items: { type: "number" }
                                 },
                                 auto_match_ams: {
@@ -2601,9 +2716,51 @@ class BambuPrinterMCPServer {
             const host = String(args?.host || DEFAULT_HOST);
             const bambuSerial = String(args?.bambu_serial || DEFAULT_BAMBU_SERIAL);
             const bambuToken = String(args?.bambu_token || DEFAULT_BAMBU_TOKEN);
-            const nativeControls = process.platform === "darwin" &&
-                (bambuSerial.trim().toUpperCase().startsWith("20P") ||
-                    (DEFAULT_BAMBU_MODEL === "x2d" && bambuSerial === DEFAULT_BAMBU_SERIAL));
+            const x2dTarget = bambuSerial.trim().toUpperCase().startsWith("20P") ||
+                (DEFAULT_BAMBU_MODEL === "x2d" && bambuSerial === DEFAULT_BAMBU_SERIAL);
+            // Resolved lazily: the Linux availability check reads files, and most
+            // tools (status, slicing, STL) never need it.
+            // One resolution per request; null means native X2D controls are usable.
+            let nativeUnavailable;
+            const nativeUnavailableReason = () => (nativeUnavailable ?? (nativeUnavailable = x2dTarget ? bambuNativeUnavailableReason() ?? null : "The selected printer is not an X2D."));
+            const nativeControls = () => nativeUnavailableReason() === null;
+            // Linux sent X2D stop and heater-off over MQTT before the native route
+            // existed. Send them over both routes there: a stuck helper must not
+            // delay an emergency control, and a repeated stop or heater-off is
+            // harmless. The immediate MQTT send can precede the exit of an older
+            // print or heating helper that then still dispatches, so MQTT is sent
+            // again once every older helper for this printer has exited, and only
+            // that send counts. Either counted route succeeding is success. macOS
+            // stays native-only.
+            const linuxEmergency = (native, mqtt) => async () => {
+                if (process.platform !== "linux")
+                    return native();
+                // An unreachable printer makes the MQTT connect retry forever; bound each
+                // MQTT send so it cannot hold back a stop the native route already sent.
+                const immediate = withEmergencyMqttTimeout(mqtt);
+                const [nativeResult, immediateResult, mqttResult] = await Promise.allSettled([
+                    native(),
+                    immediate,
+                    // Finish the first attempt before reusing its cached publisher: its
+                    // expiry must never close the later, counted send's transport.
+                    Promise.allSettled([interruptNativeOperations(bambuSerial), immediate]).then(results => {
+                        if (results[0].status === "rejected")
+                            throw results[0].reason;
+                        return withEmergencyMqttTimeout(mqtt);
+                    }),
+                ]);
+                const reason = (result) => result.status === "rejected" ? (result.reason instanceof Error ? result.reason.message : String(result.reason)) : undefined;
+                if (nativeResult.status === "rejected" && mqttResult.status === "rejected") {
+                    throw new Error(`native route: ${reason(nativeResult)}; MQTT route: ${reason(mqttResult)}`);
+                }
+                const state = (result) => result.status === "fulfilled" ? "sent" : "failed";
+                return {
+                    status: "success",
+                    routes: { native: state(nativeResult), mqtt: state(mqttResult), mqtt_immediate: state(immediateResult) },
+                    ...(reason(nativeResult) ? { native_error: reason(nativeResult) } : {}),
+                    ...(reason(mqttResult) ? { mqtt_error: reason(mqttResult) } : {}),
+                };
+            };
             const requestedTemplateDir = typeof args?.template_dir === "string" && args.template_dir.trim().length > 0
                 ? String(args.template_dir)
                 : undefined;
@@ -2613,6 +2770,42 @@ class BambuPrinterMCPServer {
             try {
                 let result;
                 switch (name) {
+                    case "inspect_print_file": {
+                        const allowed = new Set(["file_path", "bambu_model", "plate_index", "nozzle_diameters", "bed_type"]);
+                        if (!args || Object.keys(args).some(key => !allowed.has(key)))
+                            throw new Error("inspect_print_file accepts only file/model/plate/nozzle/bed arguments.");
+                        if (typeof args.file_path !== "string" || !args.file_path.trim() || args.file_path.includes("\0"))
+                            throw new Error("file_path must name a local prepared artifact.");
+                        if (typeof args.bambu_model !== "string" || !args.bambu_model.trim())
+                            throw new Error("An explicit bambu_model is required for file inspection.");
+                        const model = validateBambuModel(args.bambu_model);
+                        const plateIndex = args.plate_index === undefined ? 0 : args.plate_index;
+                        if (typeof plateIndex !== "number" || !Number.isSafeInteger(plateIndex) || plateIndex < 0)
+                            throw new Error("plate_index must be a nonnegative safe integer.");
+                        if (args.nozzle_diameters !== undefined && (!Array.isArray(args.nozzle_diameters) || args.nozzle_diameters.some(value => typeof value !== "number")))
+                            throw new Error("nozzle_diameters must be numeric sizes.");
+                        const nozzles = requestedPrintNozzles(args);
+                        if (args.bed_type !== undefined && (typeof args.bed_type !== "string" || !args.bed_type.trim()))
+                            throw new Error("bed_type must be a supported plate type.");
+                        const bedType = args.bed_type === undefined ? undefined : resolveBedType(args.bed_type);
+                        if (extra.signal.aborted)
+                            throw new Error("File inspection cancelled.");
+                        result = await withPrintSnapshot(args.file_path, async (snapshot) => {
+                            const inspection = await inspectPrintFile(snapshot, { model, nozzleDiameters: nozzles, plateIndex, bedType });
+                            if (extra.signal.aborted)
+                                throw new Error("File inspection cancelled.");
+                            const byteLength = (await fs.promises.stat(snapshot)).size;
+                            return {
+                                receipt_version: "1",
+                                evidence: "file-only",
+                                dispatch_authorized: false,
+                                artifact: { sha256: inspection.sha256, byte_length: byteLength, file_format: path.extname(snapshot).toLowerCase() === ".3mf" ? "3mf" : "gcode" },
+                                selection: { bambu_model: model, plate_index: plateIndex, ...(nozzles === undefined ? {} : { nozzle_diameters: nozzles }), ...(bedType === undefined ? {} : { bed_type: bedType }) },
+                                inspection,
+                            };
+                        });
+                        break;
+                    }
                     case "get_printer_status":
                         result = await this.bambu.getStatus(host, bambuSerial, bambuToken);
                         break;
@@ -2769,19 +2962,19 @@ class BambuPrinterMCPServer {
                         break;
                     }
                     case "cancel_print":
-                        result = await this.bambu.cancelJob(host, bambuSerial, bambuToken, nativeControls
-                            ? () => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
-                                messageJson: JSON.stringify({ print: { command: "stop", param: "", sequence_id: String(Date.now()) } }), qos: 1 })
+                        result = await this.bambu.cancelJob(host, bambuSerial, bambuToken, nativeControls()
+                            ? linuxEmergency(() => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
+                                messageJson: JSON.stringify({ print: { command: "stop", param: "", sequence_id: String(Date.now()) } }), qos: 1 }), signal => this.bambu.sendStopOverMqtt(host, bambuSerial, bambuToken, signal))
                             : undefined);
                         break;
                     case "pause_print":
-                        result = await this.bambu.pauseJob(host, bambuSerial, bambuToken, nativeControls
+                        result = await this.bambu.pauseJob(host, bambuSerial, bambuToken, nativeControls()
                             ? () => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
                                 messageJson: JSON.stringify({ print: { command: "pause", param: "", sequence_id: String(Date.now()) } }), qos: 1 })
                             : undefined);
                         break;
                     case "resume_print":
-                        result = await this.bambu.resumeJob(host, bambuSerial, bambuToken, nativeControls
+                        result = await this.bambu.resumeJob(host, bambuSerial, bambuToken, nativeControls()
                             ? (assertActive, beforeDispatch) => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
                                 messageJson: JSON.stringify({ print: { command: "resume", param: "", sequence_id: String(Date.now()) } }), qos: 1 }, { signal: extra.signal, assertActive, beforeDispatch })
                             : undefined);
@@ -2790,8 +2983,9 @@ class BambuPrinterMCPServer {
                         if (!args?.message_json) {
                             throw new Error("Missing required parameter: message_json");
                         }
-                        if (!nativeControls) {
-                            throw new Error("x2d_native_control is restricted to a selected X2D printer on macOS.");
+                        if (!nativeControls()) {
+                            throw new Error("x2d_native_control is restricted to a selected X2D printer on macOS, or on Linux with the native helper installed. " +
+                                nativeUnavailableReason());
                         }
                         const messageJson = validateBambuNativeMetadata(String(args.message_json));
                         result = await sendNativeCommand({
@@ -2805,7 +2999,7 @@ class BambuPrinterMCPServer {
                         break;
                     }
                     case "clear_hms_errors":
-                        result = await this.bambu.clearHmsErrors(host, bambuSerial, bambuToken, nativeControls
+                        result = await this.bambu.clearHmsErrors(host, bambuSerial, bambuToken, nativeControls()
                             ? (assertActive, beforeDispatch) => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
                                 messageJson: JSON.stringify({ print: { command: "clean_print_error", param: "", sequence_id: String(Date.now()) } }), qos: 1 }, { signal: extra.signal, assertActive, beforeDispatch })
                             : undefined);
@@ -2814,7 +3008,7 @@ class BambuPrinterMCPServer {
                         if (!args?.mode) {
                             throw new Error("Missing required parameter: mode");
                         }
-                        if (nativeControls) {
+                        if (nativeControls()) {
                             const normalized = String(args.mode).trim().toLowerCase();
                             const mode = normalized === "silent" ? 1
                                 : normalized === "standard" ? 2
@@ -2841,7 +3035,7 @@ class BambuPrinterMCPServer {
                         if (!args?.mode) {
                             throw new Error("Missing required parameter: mode");
                         }
-                        if (nativeControls) {
+                        if (nativeControls()) {
                             const mode = String(args.mode).trim().toLowerCase();
                             if (mode !== "cooling" && mode !== "heating") {
                                 throw new Error("Airduct mode must be one of: cooling, heating.");
@@ -2868,7 +3062,7 @@ class BambuPrinterMCPServer {
                         if (args?.ams_id === undefined || args?.slot_id === undefined) {
                             throw new Error("Missing required parameters: ams_id and slot_id");
                         }
-                        if (nativeControls) {
+                        if (nativeControls()) {
                             const amsId = Number(args.ams_id);
                             const slotId = Number(args.slot_id);
                             if ((!Number.isInteger(amsId) || (amsId < 0 || amsId > 3)) && amsId !== 128) {
@@ -2905,9 +3099,14 @@ class BambuPrinterMCPServer {
                         const heaterModel = args.temperature === 0
                             ? String(args.bambu_model || DEFAULT_BAMBU_MODEL).trim().toLowerCase()
                             : await this.resolveBambuModel(args.bambu_model);
-                        result = await this.bambu.setTemperature(host, bambuSerial, bambuToken, String(args.component), args.temperature, heaterModel || undefined, args?.material !== undefined ? String(args.material) : undefined, Number(args?.nozzle_diameter ?? DEFAULT_NOZZLE_DIAMETER), (args.temperature === 0 ? nativeControls : heaterModel === "x2d" && process.platform === "darwin")
-                            ? (heater, target, assertActive, beforeDispatch) => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
-                                messageJson: buildBambuNativeTemperatureCommand(heater, target).messageJson }, { signal: extra.signal, assertActive, beforeDispatch })
+                        result = await this.bambu.setTemperature(host, bambuSerial, bambuToken, String(args.component), args.temperature, heaterModel || undefined, args?.material !== undefined ? String(args.material) : undefined, Number(args?.nozzle_diameter ?? DEFAULT_NOZZLE_DIAMETER), (args.temperature === 0 ? nativeControls() : heaterModel === "x2d" && bambuNativeControlsAvailable())
+                            ? (heater, target, assertActive, beforeDispatch) => {
+                                const native = () => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
+                                    messageJson: buildBambuNativeTemperatureCommand(heater, target).messageJson }, { signal: extra.signal, assertActive, beforeDispatch });
+                                return target === 0
+                                    ? linuxEmergency(native, signal => this.bambu.sendHeaterOffOverMqtt(host, bambuSerial, bambuToken, heater, signal))()
+                                    : native();
+                            }
                             : undefined);
                         break;
                     }
@@ -2915,7 +3114,7 @@ class BambuPrinterMCPServer {
                         if (!args?.fan || args?.speed === undefined) {
                             throw new Error("Missing required parameters: fan and speed");
                         }
-                        if (nativeControls) {
+                        if (nativeControls()) {
                             const status = await this.bambu.getStatus(host, bambuSerial, bambuToken);
                             const printerState = String(status?.raw?.gcode_state ?? status?.raw?.print?.gcode_state ?? status?.gcode_state ?? status?.status ?? "").toUpperCase();
                             if (printerState === "RUNNING" && args?.confirm_during_print !== true) {
@@ -2943,7 +3142,7 @@ class BambuPrinterMCPServer {
                         if (!args?.light || !args?.mode) {
                             throw new Error("Missing required parameters: light and mode");
                         }
-                        if (nativeControls) {
+                        if (nativeControls()) {
                             const light = String(args.light).trim();
                             const mode = String(args.mode).trim().toLowerCase();
                             if (light !== "chamber_light" && light !== "chamber_light2") {
@@ -2978,7 +3177,7 @@ class BambuPrinterMCPServer {
                         if (!Array.isArray(args?.object_ids)) {
                             throw new Error("Missing required parameter: object_ids");
                         }
-                        if (nativeControls) {
+                        if (nativeControls()) {
                             const objectIds = args.object_ids.map((id) => Number(id));
                             if (objectIds.length === 0 || objectIds.some((id) => !Number.isInteger(id) || id < 0)) {
                                 throw new Error("object_ids must contain one or more non-negative integers.");
@@ -3001,7 +3200,7 @@ class BambuPrinterMCPServer {
                         if (!args?.action || args?.ams_id === undefined) {
                             throw new Error("Missing required parameters: action and ams_id");
                         }
-                        if (nativeControls) {
+                        if (nativeControls()) {
                             const action = String(args.action).trim().toLowerCase();
                             const amsId = Number(args.ams_id);
                             if (action !== "start" && action !== "stop") {
@@ -3111,6 +3310,7 @@ class BambuPrinterMCPServer {
                             sliceBambuOptions.filamentColours = parseFilamentColours(String(args.filament_colours));
                         sliceBambuOptions.bedType = resolveBambuStudioCliBedType(args?.bed_type);
                         sliceBambuOptions.nozzleType = resolveNozzleType(args?.nozzle_type);
+                        sliceBambuOptions.nozzleVolumeType = resolveNozzleVolumeType(args?.nozzle_volume_type);
                         if (args?.enable_timelapse !== undefined)
                             sliceBambuOptions.enableTimelapse = Boolean(args.enable_timelapse);
                         if (args?.allow_mix_temp !== undefined)
@@ -3191,6 +3391,7 @@ class BambuPrinterMCPServer {
                             sliceBambuOptions.filamentColours = parseFilamentColours(String(args.filament_colours));
                         sliceBambuOptions.bedType = resolveBambuStudioCliBedType(args?.bed_type);
                         sliceBambuOptions.nozzleType = resolveNozzleType(args?.nozzle_type);
+                        sliceBambuOptions.nozzleVolumeType = resolveNozzleVolumeType(args?.nozzle_volume_type);
                         if (args?.enable_timelapse !== undefined)
                             sliceBambuOptions.enableTimelapse = Boolean(args.enable_timelapse);
                         if (args?.allow_mix_temp !== undefined)
@@ -3288,12 +3489,12 @@ class BambuPrinterMCPServer {
                             }
                             console.error(`3MF has no gcode — auto-slicing with ${slicerType} for ${printModel}`);
                             const autoSliceOptions = {
-                                uptodate: true,
-                                ensureOnBed: true,
-                                minSave: true,
-                                skipModifiedGcodes: true,
+                                ...(slicerType === "orca-slicer-api" ? { slicePlate: plateIndex + 1 } : {
+                                    uptodate: true, ensureOnBed: true, minSave: true, skipModifiedGcodes: true,
+                                }),
                                 bedType: printBedType,
                                 nozzleType: resolveNozzleType(args?.nozzle_type),
+                                nozzleVolumeType: resolveNozzleVolumeType(args?.nozzle_volume_type),
                             };
                             if (!explicitSlicerProfile) {
                                 try {
@@ -3312,9 +3513,10 @@ class BambuPrinterMCPServer {
                         }
                         const parsed3MFData = await parse3MF(threeMFPath);
                         const isH2Print = H2_BAMBU_MODELS.has(printModel);
+                        const trayOptions = { dualNozzle: isDualNozzleModel(printModel) };
                         let parsedAmsMapping;
                         if (!isH2Print && parsed3MFData.slicerConfig?.ams_mapping) {
-                            const slots = normalizeAmsMappingObject(parsed3MFData.slicerConfig.ams_mapping);
+                            const slots = normalizeAmsMappingObject(parsed3MFData.slicerConfig.ams_mapping, "ams_mapping", trayOptions);
                             if (slots.length > 0) {
                                 parsedAmsMapping = slots;
                             }
@@ -3327,10 +3529,10 @@ class BambuPrinterMCPServer {
                         if (hasUserAmsMapping) {
                             let userMappingOverride;
                             if (Array.isArray(args.ams_mapping)) {
-                                userMappingOverride = args.ams_mapping.map((v, i) => normalizeBridgeAmsTrayValue(v, `ams_mapping[${i}]`));
+                                userMappingOverride = args.ams_mapping.map((v, i) => normalizeBridgeAmsTrayValue(v, `ams_mapping[${i}]`, trayOptions));
                             }
                             else if (args.ams_mapping && typeof args.ams_mapping === 'object') {
-                                userMappingOverride = normalizeAmsMappingObject(args.ams_mapping);
+                                userMappingOverride = normalizeAmsMappingObject(args.ams_mapping, "ams_mapping", trayOptions);
                             }
                             if (userMappingOverride && userMappingOverride.length > 0) {
                                 finalAmsMapping = userMappingOverride;
@@ -3371,8 +3573,10 @@ class BambuPrinterMCPServer {
                             }
                         }
                         if (args?.use_ams === false) {
-                            finalAmsMapping = undefined;
-                            finalAmsSlots = undefined;
+                            if (!hasUserAmsMapping)
+                                finalAmsMapping = undefined;
+                            if (!hasUserAmsSlots)
+                                finalAmsSlots = undefined;
                             useAMS = false;
                         }
                         if ((!finalAmsMapping || finalAmsMapping.length === 0) && (!finalAmsSlots || finalAmsSlots.length === 0)) {

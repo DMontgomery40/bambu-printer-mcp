@@ -7,11 +7,11 @@ import os from "node:os";
 import { Readable } from "node:stream";
 import { readSafe3mfArchive } from "../safety/archive.js";
 import { inspectPrintFile } from "../safety/print-file.js";
-import { normalizeModel, validateTemperature } from "../safety/limits.js";
-import { validatePrinterState, manualHeatingRequirements } from "../safety/printer-state.js";
+import { isDualNozzleModel, normalizeModel, validateTemperature } from "../safety/limits.js";
+import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, describeAmsTrayRange } from "../ams-mapping.js";
+import { describeHmsKey, hiddenHmsKeys, hiddenHmsNotices, reportedHmsKey, unchippedNozzles, validatePrinterState, manualHeatingRequirements } from "../safety/printer-state.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRemotePath, cancelPendingPrinterOperations } from "../safety/artifact.js";
 import { Client as FTPClient } from "basic-ftp";
-import { BambuPrinter } from "bambu-js";
 import * as mqtt from "mqtt";
 import { BambuClient, GCodeFileCommand, GCodeLineCommand, PushAllCommand, UpdateFanCommand, UpdateLightCommand, UpdateStateCommand, } from "bambu-node";
 /**
@@ -69,7 +69,7 @@ const MODEL_ID_TO_NAME = {
 const H2_MODEL_NAMES = new Set(["h2", "h2c", "h2d", "h2dpro", "h2d pro", "h2s", "x2d"]);
 export function assertDirectPrintSupported(model, serial) {
     if (model?.trim().toLowerCase() === "x2d" || serial?.trim().toUpperCase().startsWith("20P")) {
-        throw new Error("X2D direct printing is not supported through legacy MQTT/FTPS. Use the macOS native eMMC route via print_3mf. " +
+        throw new Error("X2D direct printing is not supported through legacy MQTT/FTPS. Use the native eMMC route via print_3mf (macOS, or Linux with the native helper installed). " +
             "X2D status and slicing remain available on all supported platforms.");
     }
 }
@@ -276,6 +276,7 @@ class BambuClientStore {
     }
     async waitForInitialReport(host, serial, token, timeoutMs = 4000) {
         const key = getPrinterKey(host, serial, token);
+        const deadline = Date.now() + timeoutMs + 500;
         const existing = this.reportSnapshots.get(key);
         if (!existing || Object.keys(existing).length === 0) {
             // No MQTT data yet — wait for the first push.
@@ -297,8 +298,12 @@ class BambuClientStore {
         // (gcode_state, ams, hms, temperatures, fans, etc.) arrives afterward
         // and gets merged into reportSnapshots via incremental update.
         // This settle runs regardless of whether data arrived before or during
-        // the promise race above, so the merge has time to complete.
+        // the promise race above, so the merge has time to complete. A busy host
+        // can take longer, which returned the sparse report as status UNKNOWN,
+        // so keep waiting for the full status within the same bound.
         await sleep(500);
+        while (typeof this.reportSnapshots.get(key)?.gcode_state !== "string" && Date.now() < deadline)
+            await sleep(50);
         return this.reportSnapshots.get(key) || null;
     }
     async getPrinter(host, serial, token) {
@@ -355,6 +360,12 @@ class BambuClientStore {
             throw error;
         }
     }
+    forgetPrinter(printer) {
+        for (const [key, cached] of this.printers) {
+            if (cached === printer)
+                this.clearPrinterState(key);
+        }
+    }
     async disconnectAll() {
         const disconnectPromises = [];
         for (const printer of this.printers.values()) {
@@ -375,6 +386,37 @@ class BambuClientStore {
         this.initialReportResolvers.clear();
     }
 }
+/**
+ * Split the A1/P1 camera stream on port 6000 into JPEG frames. Each frame is
+ * a 16-byte header (payload size LE, itrack, flags, reserved) and the JPEG.
+ */
+export function cameraFrameParser(onFrame, onError) {
+    let buffered = Buffer.alloc(0);
+    let failed = false;
+    return chunk => {
+        if (failed)
+            return;
+        buffered = Buffer.concat([buffered, chunk]);
+        while (buffered.length >= 16) {
+            const payloadSize = buffered.readUInt32LE(0);
+            if (payloadSize <= 0 || payloadSize > 5000000) {
+                failed = true;
+                onError(new Error(`camera_snapshot: unreasonable payload size ${payloadSize} from header; auth likely failed.`));
+                return;
+            }
+            if (buffered.length < 16 + payloadSize)
+                return;
+            const jpeg = buffered.subarray(16, 16 + payloadSize);
+            buffered = buffered.subarray(16 + payloadSize);
+            if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) {
+                failed = true;
+                onError(new Error(`camera_snapshot: payload does not start with JPEG SOI (FF D8); got ${jpeg[0].toString(16)} ${jpeg[1].toString(16)}.`));
+                return;
+            }
+            onFrame(Buffer.from(jpeg));
+        }
+    };
+}
 export class BambuImplementation {
     constructor(confirm) {
         this.confirm = confirm;
@@ -385,27 +427,52 @@ export class BambuImplementation {
     async confirmHardwareAction(message, physicalCheck = false) {
         if (!physicalCheck && process.env.BAMBU_REQUIRE_CONFIRMATION === "0")
             return;
-        if (!this.confirm || !(await this.confirm(message))) {
-            throw new Error("Hardware safety confirmation was declined or unavailable. Use an MCP client with elicitation support. No command was sent.");
+        if (!this.confirm) {
+            throw new Error("Hardware safety confirmation is unavailable. Use an MCP client with elicitation support. No command was sent.");
+        }
+        if (!(await this.confirm(message))) {
+            throw new Error("Hardware safety confirmation was declined or cancelled in the MCP client. No command was sent. " + (physicalCheck
+                ? "This confirmation covers a physical check at the printer and always needs a person to accept it."
+                : "Some clients decline prompts automatically, for example in a non-interactive permission mode. " +
+                    "A deliberately headless setup that approves jobs another way can set BAMBU_REQUIRE_CONFIRMATION=0 to skip ordinary print and heating prompts."));
         }
     }
     finishedJobIdentity(status) {
         return status.raw.gcode_state === "FINISH" ? JSON.stringify([status.raw.gcode_file, status.raw.subtask_name, status.raw.task_id, status.raw.subtask_id]) : undefined;
     }
+    /**
+     * The human print confirmation. Its result goes to assertBedClearance at
+     * every later state check of the same print, which stops the print if the
+     * situation the human confirmed has changed.
+     */
     async confirmPrintPreflight(serial, status, inspection) {
         const finishedJob = this.finishedJobIdentity(status);
         const cleared = this.clearedErrors.get(serial);
+        const notices = hiddenHmsNotices(status?.raw, serial, inspection.model);
+        const unchipped = unchippedNozzles(status?.raw);
         await this.confirmHardwareAction(`Start a checked print on ${inspection.model.toUpperCase()} (${serial})? Nozzles: ${inspection.nozzleDiameters.join(", ")} mm. ` +
             `Materials: ${inspection.materials.join(", ")}. Peak targets: nozzle ${inspection.maxNozzleTemperature}°C, bed ${inspection.maxBedTemperature}°C, chamber ${inspection.maxChamberTemperature}°C. ` +
             `File SHA-256: ${inspection.sha256}. Confirm the physical spool labels and that the build plate is clear.` +
             (finishedJob !== undefined ? " The printer reports FINISH: remove the previous part and debris before confirming." : "") +
-            (cleared ? ` Previously cleared hardware codes: ${cleared.join(", ")}. Confirm their physical causes have been resolved.` : ""), finishedJob !== undefined || !!cleared);
-        return finishedJob;
+            (cleared ? ` Previously cleared hardware codes: ${cleared.map(describeHmsKey).join(", ")}. Confirm their physical causes have been resolved.` : "") +
+            (notices.length ? ` The printer also reports ${notices.join(", ")}, which Bambu lists for this model without text and never shows as a fault; ` +
+                `${notices.length === 1 ? "it does" : "they do"} not block printing.` : "") +
+            (unchipped.length ? ` Printer ${unchipped.length === 1 ? `nozzle ${unchipped[0]} reports` : `nozzles ${unchipped.join(" and ")} report`} no identity chip, ` +
+                `so ${unchipped.length === 1 ? "its" : "their"} diameter and type are the printer's configured settings; confirm they match the installed ${unchipped.length === 1 ? "hotend" : "hotends"}.` : ""), finishedJob !== undefined || !!cleared);
+        return { finishedJob, serial, model: inspection.model, notices };
     }
-    assertBedClearance(status, confirmedFinishedJob) {
+    /** Stop a print whose confirmed situation changed: a newly finished job, or a hidden HMS notice the preflight did not name. */
+    assertBedClearance(status, preflight) {
         const current = this.finishedJobIdentity(status);
-        if (current !== undefined && current !== confirmedFinishedJob) {
+        if (current !== undefined && current !== preflight.finishedJob) {
             throw new Error("Printer reports a newly finished job. Confirm that its part and debris have been removed before retrying the print.");
+        }
+        // An X2D raises its hidden camera notice about 15 seconds after boot, so it
+        // can appear after the human confirmed. Never pass a notice nobody was told about.
+        const unnamed = hiddenHmsNotices(status?.raw, preflight.serial, preflight.model).filter(notice => !preflight.notices.includes(notice));
+        if (unnamed.length) {
+            throw new Error(`Printer reported ${unnamed.join(", ")} after the print confirmation. ` +
+                "Bambu hides it and it does not block printing, but it was not named when you confirmed; start the print again to review it.");
         }
     }
     async getPrinter(host, serial, token) {
@@ -604,12 +671,17 @@ export class BambuImplementation {
         // `plate_N.json.filament_ids` -- and expand to a full project-level
         // array here. `amsMapping` is the raw escape hatch (takes precedence
         // when both are supplied).
+        // Dual-nozzle printers address two external spools: 254 feeds the left/deputy
+        // nozzle and 255 the right/main nozzle (Bambu Studio VIRTUAL_TRAY_DEPUTY_ID /
+        // VIRTUAL_TRAY_MAIN_ID). Single-nozzle printers keep 254 as the only external tray.
+        const dualNozzle = isDualNozzleModel(model);
+        const externalTrays = dualNozzle ? [254, 255] : [254];
         const validateTrayValue = (v, label) => {
             if (!Number.isInteger(v) ||
                 v < -1 ||
                 (v > 15 && v < 128) ||
-                v > 254) {
-                throw new Error(`${label} values must be integers in [-1, 15] (absolute tray) or 128-254 (HT/external); got ${v}`);
+                v > (dualNozzle ? 255 : 254)) {
+                throw new Error(`${label} values must be integers in ${describeAmsTrayRange({ dualNozzle })}; got ${v}`);
             }
         };
         let baseMapping;
@@ -639,7 +711,7 @@ export class BambuImplementation {
             const projectLen = Math.max(projectMetadata.projectFilamentCount, ...positions.map((p) => p + 1), 1);
             baseMapping = Array(projectLen).fill(-1);
             positions.forEach((pos, i) => {
-                baseMapping[pos] = options.useAMS === false ? 254 : i;
+                baseMapping[pos] = options.useAMS === false ? externalTrayForNozzle(inspection.filamentNozzleIndices?.[pos], dualNozzle) : i;
             });
         }
         let amsMapping;
@@ -647,15 +719,7 @@ export class BambuImplementation {
         if (usesH2ProjectFile) {
             const projLen = Math.max(projectMetadata.projectFilamentCount, baseMapping.length, 1);
             amsMapping = Array.from({ length: projLen }, (_, i) => i < baseMapping.length ? baseMapping[i] : -1);
-            amsMapping2 = amsMapping.map((v) => {
-                if (v < 0 || v === 255)
-                    return { ams_id: 255, slot_id: 255 };
-                if (v === 254)
-                    return { ams_id: 254, slot_id: 254 };
-                if (v >= 128)
-                    return { ams_id: 128, slot_id: v - 128 };
-                return { ams_id: Math.floor(v / 4), slot_id: v % 4 };
-            });
+            amsMapping2 = amsMapping.map((v) => bridgeAmsMapping2Entry(v, dualNozzle));
         }
         else {
             amsMapping = Array.from({ length: Math.max(5, baseMapping.length, projectMetadata.projectFilamentCount) }, (_, i) => i < baseMapping.length ? baseMapping[i] : -1);
@@ -665,8 +729,8 @@ export class BambuImplementation {
             if (baseMapping[position] === undefined || baseMapping[position] < 0) {
                 throw new Error(`Missing physical filament mapping for project filament ${position}.`);
             }
-            if (options.useAMS === false && baseMapping[position] !== 254) {
-                throw new Error("External-spool printing requires external spool mapping (254).");
+            if (options.useAMS === false && !externalTrays.includes(baseMapping[position])) {
+                throw new Error(`External-spool printing requires external spool mapping (${externalTrays.join(" or ")}).`);
             }
         }
         const legacyContainer = options.filePath.toLowerCase().endsWith(".gcode.3mf") && !usesH2ProjectFile && !isA1;
@@ -752,7 +816,7 @@ export class BambuImplementation {
                     project_id: submissionId,
                     subtask_id: submissionId,
                     task_id: submissionId,
-                    ams_mapping: amsMapping,
+                    ams_mapping: amsMapping.map(value => bridgeAmsMappingValue(value, dualNozzle)),
                     ams_mapping2: amsMapping2,
                 },
             };
@@ -822,6 +886,50 @@ export class BambuImplementation {
             throw new Error(`Failed to cancel print: ${error.message}`);
         }
     }
+    async invokeEmergencyCommand(printer, command, signal) {
+        if (!signal)
+            return invokeWithoutAck(printer, command);
+        let onAbort;
+        try {
+            await new Promise((resolve, reject) => {
+                onAbort = () => {
+                    // Force-close the actual transport: a raced publish may be queued
+                    // inside MQTT.js and otherwise dispatch after a later reconnect.
+                    this.printerStore.forgetPrinter(printer);
+                    void printer.disconnect(true).catch(() => {
+                        console.error("Failed to close an expired emergency MQTT client.");
+                    });
+                    reject(signal.reason);
+                };
+                signal.addEventListener("abort", onAbort, { once: true });
+                if (signal.aborted)
+                    onAbort();
+                else
+                    command.invoke(printer).then(resolve, reject);
+            });
+        }
+        finally {
+            signal.removeEventListener("abort", onAbort);
+        }
+        await sleep(COMMAND_SETTLE_MS);
+    }
+    /** Raw MQTT stop for routes that already ran the shared cancellation steps. */
+    async sendStopOverMqtt(host, serial, token, signal) {
+        signal?.throwIfAborted();
+        const printer = await this.getPrinter(host, serial, token);
+        signal?.throwIfAborted();
+        await this.invokeEmergencyCommand(printer, new UpdateStateCommand({ state: "stop" }), signal);
+        return { status: "success", message: "Cancel command sent over MQTT." };
+    }
+    /** Raw MQTT heater-off; switching off needs no material or model declaration. */
+    async sendHeaterOffOverMqtt(host, serial, token, heater, signal) {
+        signal?.throwIfAborted();
+        const printer = await this.getPrinter(host, serial, token);
+        signal?.throwIfAborted();
+        const gcode = `${heater === "bed" ? "M140" : "M104"} S0`;
+        await this.invokeEmergencyCommand(printer, new GCodeLineCommand({ gcodes: [gcode] }), signal);
+        return { status: "success", message: `Heater-off sent over MQTT for ${heater}.`, command: gcode };
+    }
     async pauseJob(host, serial, token, dispatch) {
         const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
         try {
@@ -867,10 +975,12 @@ export class BambuImplementation {
             const codesFor = (status) => {
                 if (!Array.isArray(status.raw?.hms) || status.raw?.print_error === undefined)
                     throw new Error("Fresh error codes are required before clearing hardware errors.");
-                return [`print_error:${status.raw.print_error}`, ...status.raw.hms.map((entry) => `hms:${entry.attr}:${entry.code}`)].sort();
+                // Hidden notices never block and survive clean_print_error, so they are not errors to clear or re-acknowledge.
+                const hidden = new Set(hiddenHmsKeys(status.raw, serial, String(status.model ?? "")));
+                return [`print_error:${status.raw.print_error}`, ...status.raw.hms.map(reportedHmsKey).filter((key) => !hidden.has(key))].sort();
             };
             const codes = codesFor(await this.getSafetyStatus(host, serial, token));
-            await this.confirmHardwareAction(`Clear reported hardware errors on ${serial}: ${codes.join(", ")}? Inspect the printer and resolve the physical cause first. Confirm only after removing obstructions and correcting the fault.`, true);
+            await this.confirmHardwareAction(`Clear reported hardware errors on ${serial}: ${codes.map(describeHmsKey).join(", ")}? Inspect the printer and resolve the physical cause first. Confirm only after removing obstructions and correcting the fault.`, true);
             const beforeDispatch = async () => {
                 assertActive();
                 const current = codesFor(await this.getSafetyStatus(host, serial, token));
@@ -1001,11 +1111,13 @@ export class BambuImplementation {
             }
             const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
             assertActive();
-            if (dispatch)
-                await dispatch(heater, targetTemperature, assertActive, beforeDispatch);
-            else
+            const dispatched = dispatch ? await dispatch(heater, targetTemperature, assertActive, beforeDispatch) : undefined;
+            if (!dispatch)
                 await invokeWithoutAck(printer, new GCodeLineCommand({ gcodes: [gcode] }));
-            return { status: "success", message: `Temperature command sent for ${normalizedComponent}.`, command: gcode };
+            // Keep route details from a dual-route Linux heater-off.
+            const routeDetails = dispatched && typeof dispatched === "object" && "routes" in dispatched
+                ? { routes: dispatched.routes, native_error: dispatched.native_error, mqtt_error: dispatched.mqtt_error } : {};
+            return { status: "success", message: `Temperature command sent for ${normalizedComponent}.`, command: gcode, ...routeDetails };
         };
         if (targetTemperature === 0) {
             cancelPendingPrinterOperations(host, serial);
@@ -1141,21 +1253,6 @@ export class BambuImplementation {
         return {
             files,
             directories: filesByDirectory,
-        };
-    }
-    async getFile(host, serial, token, filename) {
-        const printer = new BambuPrinter(host, serial, token);
-        const normalized = filename.replace(/^\/+/, "");
-        const directory = path.posix.dirname(normalized) === "." ? "cache" : path.posix.dirname(normalized);
-        const baseName = path.posix.basename(normalized);
-        let exists = false;
-        await printer.manipulateFiles(async (context) => {
-            const entries = await context.readDir(directory);
-            exists = entries.includes(baseName);
-        });
-        return {
-            name: `${directory}/${baseName}`,
-            exists,
         };
     }
     async uploadFile(host, serial, token, filePath, filename, print, bambuModel, upload) {
@@ -1541,10 +1638,15 @@ export class BambuImplementation {
         });
     }
     /**
-     * Open the TLS-on-6000 socket, send the 80-byte auth packet, and read
-     * a single complete JPEG frame. Returns the JPEG bytes.
+     * Open the TLS-on-6000 socket, send the 80-byte auth packet, and return
+     * a live JPEG frame. The printer first replays the last frame it buffered,
+     * which after an idle period can show the chamber as it was long ago (a
+     * finished part still on the bed), so that frame and any byte-identical
+     * repeat of it are discarded and the next frame returned; live frames always
+     * differ by sensor noise. If no live frame arrives in time, this fails rather
+     * than return a possibly stale image.
      */
-    async fetchTcpCameraFrame(host, token, timeoutMs) {
+    async fetchTcpCameraFrame(host, token, timeoutMs, port = 6000) {
         const tls = await import("node:tls");
         const auth = Buffer.alloc(80, 0);
         auth.writeUInt32LE(0x40, 0); // payload size
@@ -1553,11 +1655,9 @@ export class BambuImplementation {
         auth.write("bblp", 16, 4, "ascii");
         auth.write(token, 48, Math.min(32, Buffer.byteLength(token, "ascii")), "ascii");
         return new Promise((resolve, reject) => {
-            const chunks = [];
-            let totalLen = 0;
-            const FRAME_HEADER_BYTES = 16;
-            let payloadSize = null;
             let settled = false;
+            let frames = 0;
+            let buffered;
             const finish = (err, jpeg) => {
                 if (settled)
                     return;
@@ -1571,44 +1671,29 @@ export class BambuImplementation {
                 else
                     reject(new Error("camera_snapshot: ended without jpeg payload"));
             };
-            const timer = setTimeout(() => finish(new Error(`camera_snapshot: timed out after ${timeoutMs}ms`)), timeoutMs);
+            const unfinished = (reason) => new Error(frames
+                ? `camera_snapshot: ${reason} after only the printer's buffered frame, which may be stale; no live frame arrived. Retry, or raise timeout_ms.`
+                : `camera_snapshot: ${reason} before a full JPEG frame arrived`);
+            const timer = setTimeout(() => finish(unfinished(`timed out after ${timeoutMs}ms`)), timeoutMs);
+            const parse = cameraFrameParser(jpeg => {
+                frames++;
+                if (!buffered)
+                    buffered = jpeg;
+                else if (!jpeg.equals(buffered))
+                    finish(null, jpeg);
+            }, error => finish(error));
             const socket = tls.connect({
                 host,
-                port: 6000,
+                port,
                 rejectUnauthorized: false,
                 // The printer uses TLS for confidentiality but presents a self-signed cert.
                 // Same trust posture as the FTPS path (basic-ftp with rejectUnauthorized: false).
             }, () => {
                 socket.write(auth);
             });
-            socket.on("data", (data) => {
-                chunks.push(data);
-                totalLen += data.length;
-                if (payloadSize === null && totalLen >= FRAME_HEADER_BYTES) {
-                    const merged = Buffer.concat(chunks, totalLen);
-                    payloadSize = merged.readUInt32LE(0);
-                    if (payloadSize <= 0 || payloadSize > 5000000) {
-                        finish(new Error(`camera_snapshot: unreasonable payload size ${payloadSize} from header; auth likely failed.`));
-                        return;
-                    }
-                    // Reset chunk list to remaining bytes after the header.
-                    const remainder = merged.subarray(FRAME_HEADER_BYTES);
-                    chunks.length = 0;
-                    chunks.push(remainder);
-                    totalLen = remainder.length;
-                }
-                if (payloadSize !== null && totalLen >= payloadSize) {
-                    const merged = Buffer.concat(chunks, totalLen);
-                    const jpeg = merged.subarray(0, payloadSize);
-                    if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) {
-                        finish(new Error(`camera_snapshot: payload does not start with JPEG SOI (FF D8); got ${jpeg[0].toString(16)} ${jpeg[1].toString(16)}.`));
-                        return;
-                    }
-                    finish(null, jpeg);
-                }
-            });
+            socket.on("data", parse);
             socket.on("error", (err) => finish(err));
-            socket.on("end", () => finish(new Error("camera_snapshot: connection ended before a full JPEG frame arrived")));
+            socket.on("end", () => finish(unfinished("connection ended")));
         });
     }
     /**

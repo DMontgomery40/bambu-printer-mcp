@@ -71,3 +71,23 @@ for (const [name, data, expected] of [
     assert.equal(status.temperatures.chamber, expected);
   });
 }
+
+// A sparse "hello" push (model/modules) precedes the full status. On a busy host the
+// full push arrived after the fixed 500 ms settle and get_printer_status reported UNKNOWN.
+test("printer status waits for the full report that follows a sparse first push", async () => {
+  const bambu = new BambuImplementation();
+  const store = bambu.printerStore;
+  const key = "127.0.0.1-01PTEST-test";
+  setTimeout(() => store.updateReportSnapshot(key, { model: "P1S", modules: [] }), 10);
+  setTimeout(() => store.updateReportSnapshot(key, { gcode_state: "IDLE", nozzle_temper: 27 }), 800);
+  const started = Date.now();
+  const report = await store.waitForInitialReport("127.0.0.1", "01PTEST", "test", 3000);
+  assert.equal(report.gcode_state, "IDLE");
+  assert.equal(report.model, "P1S");
+  assert.ok(Date.now() - started < 2000, "returns once the full status has merged");
+
+  const silent = new BambuImplementation().printerStore;
+  setTimeout(() => silent.updateReportSnapshot(key, { model: "P1S" }), 10);
+  const sparse = await silent.waitForInitialReport("127.0.0.1", "01PTEST", "test", 300);
+  assert.deepEqual(sparse, { model: "P1S" }, "a printer that never sends the full status still returns within the bound");
+});

@@ -22,7 +22,7 @@ export type TransformationParams = {
     relative?: boolean;
     selectionBounds?: THREE.Box3;
 };
-export declare const SLICER_TYPES: readonly ["bambustudio", "orcaslicer", "orcaslicer-bambulab", "prusaslicer", "cura", "slic3r"];
+export declare const SLICER_TYPES: readonly ["bambustudio", "orcaslicer", "orcaslicer-bambulab", "orca-slicer-api", "prusaslicer", "cura", "slic3r"];
 export type SlicerType = typeof SLICER_TYPES[number];
 export declare function normalizeSlicerType(rawSlicerType: string): SlicerType;
 export declare function isBambuCompatibleSlicer(slicerType: SlicerType): boolean;
@@ -39,6 +39,7 @@ export interface BambuSliceOptions {
     filamentColours?: string[];
     bedType?: string;
     nozzleType?: string;
+    nozzleVolumeType?: 'Standard' | 'High Flow';
     enableTimelapse?: boolean;
     allowMixTemp?: boolean;
     scale?: number;
@@ -113,6 +114,14 @@ export declare class STLManipulator extends EventEmitter {
      * Scale an STL model uniformly or along specific axes
      */
     scaleSTL(stlFilePath: string, scaleFactors: number | [number, number, number], progressCallback?: ProgressCallback): Promise<string>;
+    /**
+     * Apply slice_stl's scale and rotations to a copy of the mesh as OrcaSlicer's
+     * CLI would, about the model's centre. Orca adds each --rotate* to the
+     * object's Euler angles (ModelVolume::rotate), so the result rotates about X,
+     * then Y, then Z whatever the argument order, after scaling. The slicer then
+     * places the result on the plate.
+     */
+    private transformMeshForCli;
     /**
      * Rotate an STL model around specific axes
      */

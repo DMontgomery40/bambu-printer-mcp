@@ -8,13 +8,14 @@ import JSZip from "jszip";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { UNPINNED_PLUGIN_ENV, createFakeNativeHome } from "./fixtures/native-home.mjs";
 
 const entry = fileURLToPath(new URL("../dist/index.js", import.meta.url));
 const printerModule = new URL("../dist/printers/bambu.js", import.meta.url).href;
 
 // Exercise platform dispatch on every CI OS. Only the OS selector and transport
 // boundaries are mocked; file inspection, AMS validation and preflight are real.
-async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState, dispatchError } = {}) {
+async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState, dispatchError, installedHelper = true, installedPlugin = true, tunnelLibrary = true, arch = "x64", unpinnedOptIn = true, helperFails = false, mqttFails = false, mqttHangs = false, mqttDelay = 0, mqttFirstConnectionOffline = false, hms = [], storage = {}, dispatchStorage, env = {} } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-native-test-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const eventsFile = path.join(dir, "events.jsonl");
@@ -32,11 +33,16 @@ const event = { kind: 'helper', pid: process.pid, mode: process.argv[2], file: e
   projectName: e.BAMBU_NATIVE_PROJECT_NAME, presetName: e.BAMBU_NATIVE_PRESET_NAME,
   plateIndex: e.BAMBU_NATIVE_PLATE_INDEX, bedType: e.BAMBU_NATIVE_BED_TYPE,
   mapping: e.BAMBU_NATIVE_AMS_MAPPING, mapping2: e.BAMBU_NATIVE_AMS_MAPPING2,
+  tryEmmc: e.BAMBU_NATIVE_TRY_EMMC_PRINT, plugin: e.BAMBU_NATIVE_PLUGIN, certDir: e.BAMBU_NATIVE_CERT_DIR, configDir: e.BAMBU_NATIVE_CONFIG_DIR,
   command: JSON.parse(e.BAMBU_NATIVE_COMMAND_JSON || '{}') };
 event.olderAlive = readFileSync(${JSON.stringify(eventsFile)}, 'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse)
   .filter(old => old.mode === '--print-authorized' || old.command?.print?.temp > 0)
   .filter(old => { try { process.kill(old.pid, 0); return true; } catch { return false; } }).map(old => old.pid);
 appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify(event) + '\\n');
+if (${helperFails} && process.argv[2].startsWith('--command')) {
+  console.error('native_error=simulated plug-in failure');
+  process.exit(1);
+}
 if (${helperDelay} && (['--print-authorized', '--upload'].includes(process.argv[2]) || event.command.print?.temp > 0)) {
   await new Promise(resolve => setTimeout(resolve, ${helperDelay}));
   appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({kind:'sent'}) + '\\n');
@@ -53,23 +59,60 @@ console.log('native_print result=0');
 `, { mode: 0o755 });
   const zip = new JSZip();
   zip.file("3D/3dmodel.model", '<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources/><build/></model>');
-  zip.file("Metadata/plate_1.gcode", `; printer_model = Bambu Lab X2D\n; nozzle_diameter = 0.4;0.4\n; filament_type = PLA\n; curr_bed_type = Textured PEI Plate\n; filament_colour = #FFFFFF\n${gcode}`);
+  zip.file("Metadata/plate_1.gcode", `; printer_model = Bambu Lab X2D\n; nozzle_diameter = 0.4;0.4\n; filament_type = PLA\n; filament_map = 1\n; physical_extruder_map = 1,0\n; curr_bed_type = Textured PEI Plate\n; filament_colour = #FFFFFF\n${gcode}`);
   zip.file("Metadata/plate_1.json", JSON.stringify({ filament_ids: [0] }));
   await fs.writeFile(file, await zip.generateAsync({ type: "nodebuffer" }));
   const preload = `
     import { appendFileSync, readFileSync } from 'node:fs';
     import { BambuImplementation } from ${JSON.stringify(printerModule)};
     Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} });
+    Object.defineProperty(process, 'arch', { value: ${JSON.stringify(arch)} });
     const record = kind => appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({kind})+'\\n');
-    BambuImplementation.prototype.getPrinter = async () => ({ publish: async () => record('mqtt') });
+    let offlineClient;
+    BambuImplementation.prototype.getPrinter = async () => {
+      if (${mqttFirstConnectionOffline}) {
+        if (!offlineClient || offlineClient.closed) {
+          // First connection stays offline until expiry closes it. A replacement
+          // is ready immediately: test connection ordering, not reconnect timing.
+          const offline = !offlineClient;
+          const pending = new Set();
+          offlineClient = {
+            closed: false,
+            publish: () => {
+              if (!offline) { record('mqtt'); return Promise.resolve(); }
+              record('mqtt-queued');
+              return new Promise((_resolve, reject) => pending.add(reject));
+            },
+            disconnect: async () => {
+              offlineClient.closed = true;
+              for (const reject of pending) reject(new Error('transport closed'));
+              pending.clear();
+            },
+          };
+        }
+        return offlineClient;
+      }
+      if (${mqttFails}) { record('mqtt-failed'); throw new Error('simulated MQTT failure'); }
+      if (${mqttHangs}) { record('mqtt-hung'); return new Promise(() => {}); }
+      if (${mqttDelay}) { record('mqtt-wait'); await new Promise(resolve => setTimeout(resolve, ${mqttDelay})); record('mqtt-connected'); }
+      // Note which older print/heating helpers were still alive at each MQTT send.
+      return { publish: async () => {
+        const alive = readFileSync(${JSON.stringify(eventsFile)}, 'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse)
+          .filter(old => old.mode === '--print-authorized' || old.command?.print?.temp > 0)
+          .filter(old => { try { process.kill(old.pid, 0); return true; } catch { return false; } }).map(old => old.pid);
+        appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({ kind: 'mqtt', olderAlive: alive }) + '\\n');
+      } };
+    };
     BambuImplementation.prototype.ftpUpload = async () => { record('ftp'); throw new Error('unexpected FTPS'); };
     BambuImplementation.prototype.disconnectAll = async () => { record('disconnect'); };
     BambuImplementation.prototype.getSafetyStatus = async (_host, serial) => {
       record('status');
-      const observedState = ${JSON.stringify(dispatchState)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchState)} : ${JSON.stringify(state)};
+      const helperStarted = readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper');
+      const observedState = ${JSON.stringify(dispatchState)} && helperStarted ? ${JSON.stringify(dispatchState)} : ${JSON.stringify(state)};
+      const storage = ${JSON.stringify(dispatchStorage)} && helperStarted ? ${JSON.stringify(dispatchStorage)} : ${JSON.stringify(storage)};
       return { connected:true, serial, model:'x2d', status:observedState,
-        raw: {model:'x2d',gcode_state:observedState,print_error:${JSON.stringify(dispatchError)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchError)} : 0,hms:[],nozzle_diameter:['0.4','0.4'],
-          ams: { ams:[{id:'0',tray:[{id:'0',tray_type:'PLA'}]}, {id:'128',tray:[{id:'0',tray_type:'PLA'}]}] } },
+        raw: {serial,model:'x2d',vir_slot:[{id:254,tray_type:'PLA'},{id:255,tray_type:'PLA'}],gcode_state:observedState,print_error:${JSON.stringify(dispatchError)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchError)} : 0,hms:${JSON.stringify(hms)},nozzle_diameter:['0.4','0.4'],
+          ams: { ams:[{id:'0',tray:[{id:'0',tray_type:'PLA'}]}, {id:'128',tray:[{id:'0',tray_type:'PLA'}]}] }, ...storage },
         observation:{source:'mqtt',requestedAt:Date.now()-1,receivedAt:Date.now(),identitySource:'report'} };
     };
   `;
@@ -78,7 +121,11 @@ console.log('native_print result=0');
     args: ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, entry], cwd: dir,
     env: { ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: model, BAMBU_PRINTER_MODEL: "",
       BAMBU_PRINTER_HOST: "127.0.0.1", BAMBU_PRINTER_SERIAL: "20PTEST", BAMBU_PRINTER_ACCESS_TOKEN: "DUMMY",
-      BAMBU_NATIVE_HELPER: helper, BAMBU_DEFAULT_CONNECTION_MODE: "", BAMBU_REQUIRE_CONFIRMATION: "1" }, stderr: "pipe",
+      // An empty private home keeps a developer's real Linux setup out of the test.
+      BAMBU_NATIVE_HELPER: installedHelper ? helper : "",
+      BAMBU_NATIVE_HOME: installedPlugin ? createFakeNativeHome(dir, { tunnelLibrary }) : path.join(dir, "empty-native-home"),
+      ...(unpinnedOptIn ? UNPINNED_PLUGIN_ENV : { BAMBU_NATIVE_ALLOW_UNPINNED_PLUGIN: "" }),
+      BAMBU_DEFAULT_CONNECTION_MODE: "", BAMBU_REQUIRE_CONFIRMATION: "1", BAMBU_EMERGENCY_MQTT_TIMEOUT_MS: "500", BAMBU_NATIVE_TRY_EMMC_PRINT: undefined, ...env }, stderr: "pipe",
   });
   const client = new Client({ name: "native-regression", version: "0" }, { capabilities: { elicitation: { form: {} } } });
   const prompts = [];
@@ -142,25 +189,140 @@ test("native AMS cannot silently fall back; explicit external-spool printing is 
   assert.notEqual(result.isError, true, JSON.stringify(result));
   const call = (await s.events()).find(e => e.kind === "helper");
   assert.equal(call.useAMS, "false");
-  assert.deepEqual(JSON.parse(call.mapping), [254]);
+  assert.deepEqual(JSON.parse(call.mapping), [-1]);
 });
 
-for (const platform of ["darwin", "linux"]) {
-  test(`pause selects the correct transport on ${platform}`, async t => {
-    const s = await server(t, { platform });
+for (const [label, options, transport] of [
+  ["darwin", { platform: "darwin" }, "helper"],
+  ["linux with a complete install", { platform: "linux" }, "helper"],
+  // Incomplete Linux installs keep the previous MQTT route for stop/pause/heater-off.
+  ["linux without a native helper", { platform: "linux", installedHelper: false }, "mqtt"],
+  ["linux with a helper but no plug-in", { platform: "linux", installedPlugin: false }, "mqtt"],
+  ["linux without the tunnel library", { platform: "linux", tunnelLibrary: false }, "mqtt"],
+  ["linux with an unpinned plug-in", { platform: "linux", unpinnedOptIn: false }, "mqtt"],
+  ["linux arm64", { platform: "linux", arch: "arm64" }, "mqtt"],
+  ["win32", { platform: "win32" }, "mqtt"],
+]) {
+  test(`pause selects ${transport} on ${label}`, async t => {
+    const s = await server(t, options);
     const result = await s.client.callTool({ name: "pause_print", arguments: {} });
     assert.notEqual(result.isError, true, JSON.stringify(result));
     const events = await s.events();
-    assert.deepEqual(events.map(e => e.kind), [platform === "darwin" ? "helper" : "mqtt"]);
-    if (platform === "darwin") assert.equal(events[0].command.print.command, "pause");
+    assert.deepEqual(events.map(e => e.kind), [transport]);
+    if (transport === "helper") assert.equal(events[0].command.print.command, "pause");
   });
 }
 
-test("Linux X2D print fails with a platform error before touching the printer", async t => {
+// Status reported by the physical X2D with a ready 30 GB card: sdcard, home_flag
+// bits 8-9 and aux bits 12-13 all say "normal".
+const cardReady = { sdcard: true, home_flag: -1066969665, cfg: "4D10457D299", fun: "40029FD1930F9CB7", aux: "2801004", stat: "10010402180F0" };
+for (const [label, storage, tryEmmc, reported] of [
+  ["a ready card", cardReady, "false", "external"],
+  ["no card", { sdcard: false, home_flag: 0 }, "true", "internal"],
+  ["a read-only card", { ...cardReady, aux: "2803004" }, "true", "internal"],
+  ["an abnormal card", { sdcard: true, home_flag: 0x200 }, "true", "internal"],
+]) test(`native print with ${label} stores the job on ${reported} storage`, async t => {
+  const s = await server(t, { storage });
+  const result = await s.print({ ams_slots: [128] });
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  assert.equal(JSON.parse(result.content[0].text).storage, reported);
+  assert.equal((await s.events()).find(e => e.kind === "helper").tryEmmc, tryEmmc);
+});
+
+for (const [label, env, args] of [
+  ["BAMBU_NATIVE_TRY_EMMC_PRINT=1", { BAMBU_NATIVE_TRY_EMMC_PRINT: "1" }, {}],
+  ["try_emmc_print: true", {}, { try_emmc_print: true }],
+  ["try_emmc_print: true over BAMBU_NATIVE_TRY_EMMC_PRINT=0", { BAMBU_NATIVE_TRY_EMMC_PRINT: "0" }, { try_emmc_print: true }],
+]) test(`${label} keeps the job on internal storage despite a ready card`, async t => {
+  const s = await server(t, { storage: cardReady, env });
+  const result = await s.print({ ams_slots: [128], ...args });
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  assert.equal(JSON.parse(result.content[0].text).storage, "internal");
+  assert.equal((await s.events()).find(e => e.kind === "helper").tryEmmc, "true");
+});
+
+test("an empty BAMBU_NATIVE_TRY_EMMC_PRINT still detects the card", async t => {
+  const s = await server(t, { storage: cardReady, env: { BAMBU_NATIVE_TRY_EMMC_PRINT: " " } });
+  const result = await s.print({ ams_slots: [128] });
+  assert.equal(JSON.parse(result.content[0].text).storage, "external");
+});
+
+for (const [label, env, args] of [
+  ["try_emmc_print: false", {}, { try_emmc_print: false }],
+  ["BAMBU_NATIVE_TRY_EMMC_PRINT=0", { BAMBU_NATIVE_TRY_EMMC_PRINT: "0" }, {}],
+]) test(`${label} without a ready card is refused before the helper starts`, async t => {
+  const s = await server(t, { storage: { sdcard: false, home_flag: 0 }, env });
+  const result = await s.print({ ams_slots: [128], ...args });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /no ready SD card or USB stick/);
+  assert.equal((await s.events()).some(e => e.kind === "helper"), false);
+});
+
+test("a non-boolean try_emmc_print is refused before contacting the printer", async t => {
+  const s = await server(t, { storage: cardReady });
+  const result = await s.print({ ams_slots: [128], try_emmc_print: "false" });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /try_emmc_print must be true or false/);
+  assert.deepEqual(await s.events(), []);
+});
+
+test("a card that is removed before dispatch stops the print", async t => {
+  const s = await server(t, { storage: cardReady, dispatchStorage: { ...cardReady, aux: "2800004" } });
+  const result = await s.print({ ams_slots: [128] });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /SD card or USB stick is no longer ready/);
+  assert.equal((await s.events()).some(e => e.kind === "dispatched"), false);
+});
+
+test("Linux X2D print uses the installed native helper with the shared checks", async t => {
   const s = await server(t, { platform: "linux", model: "" });
+  const result = await s.print({ ams_slots: [0] });
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  assert.deepEqual(s.prompts, ["model", "confirm"]);
+  const events = await s.events();
+  assert.equal(events.some(e => ["ftp", "mqtt"].includes(e.kind)), false);
+  const call = events.find(e => e.kind === "helper");
+  assert.equal(call.mode, "--print-authorized");
+  assert.notEqual(call.file, s.file);
+  assert.deepEqual(JSON.parse(call.mapping), [0]);
+  assert.ok(events.some(e => e.kind === "dispatched"));
+  // The server hands the helper the exact pinned install it validated.
+  const home = path.join(s.dir, "native-home");
+  assert.equal(call.plugin, path.join(home, "plugins/libbambu_networking.so"));
+  assert.equal(call.certDir, path.join(home, "cert"));
+  assert.equal(call.configDir, path.join(home, "config"));
+});
+
+test("Linux X2D print without the helper names the setup command before touching the printer", async t => {
+  const s = await server(t, { platform: "linux", model: "", installedHelper: false });
   const result = await s.print({ use_ams: false });
   assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /requires macOS/);
+  assert.match(result.content[0].text, /bambu-printer-mcp-native-setup/);
+  assert.deepEqual(await s.events(), []);
+  assert.deepEqual(s.prompts, ["model"]);
+});
+
+for (const [label, options, message] of [
+  ["a missing plug-in", { installedPlugin: false }, /networking plug-in is not installed.*bambu-printer-mcp-native-setup/],
+  ["an arm64 host", { arch: "arm64" }, /requires macOS or x86-64 Linux/],
+  ["a missing tunnel library", { tunnelLibrary: false }, /libBambuSource\.so is missing beside/],
+  ["an unpinned plug-in", { unpinnedOptIn: false }, /is not the pinned Bambu plug-in 02\.08\.02\.54/],
+]) {
+  test(`Linux X2D print with ${label} fails before touching the printer`, async t => {
+    const s = await server(t, { platform: "linux", model: "", ...options });
+    const result = await s.print({ use_ams: false });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, message);
+    assert.deepEqual(await s.events(), []);
+    assert.deepEqual(s.prompts, ["model"]);
+  });
+}
+
+test("Windows X2D print fails with a platform error before touching the printer", async t => {
+  const s = await server(t, { platform: "win32", model: "" });
+  const result = await s.print({ use_ams: false });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /requires macOS or x86-64 Linux/);
   assert.deepEqual(await s.events(), []);
   assert.deepEqual(s.prompts, ["model"]);
 });
@@ -427,4 +589,127 @@ test("native heater-off stays available but rejected heating cannot reach the he
   assert.notEqual(off.isError, true, JSON.stringify(off));
   assert.equal((await s.events()).find(e => e.kind === "helper").command.print.temp, 0);
   assert.deepEqual(s.prompts, []);
+});
+
+for (const [name, args] of [["cancel_print", {}], ["set_temperature", { component: "bed", temperature: 0 }]]) {
+  test(`Linux ${name} goes out over native and MQTT at once`, async t => {
+    const s = await server(t, { platform: "linux" });
+    const result = await s.client.callTool({ name, arguments: args });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.deepEqual((await s.events()).map(e => e.kind).sort(), ["helper", "mqtt", "mqtt"], "immediate MQTT plus the send after older helpers exit");
+    assert.match(result.content[0].text, /"native":\s*"sent"[\s\S]*"mqtt":\s*"sent"[\s\S]*"mqtt_immediate":\s*"sent"/);
+  });
+
+  test(`Linux ${name} still succeeds over MQTT when the native helper fails`, async t => {
+    const s = await server(t, { platform: "linux", helperFails: true });
+    const result = await s.client.callTool({ name, arguments: args });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.deepEqual((await s.events()).map(e => e.kind).sort(), ["helper", "mqtt", "mqtt"], "immediate MQTT plus the send after older helpers exit");
+    assert.match(result.content[0].text, /"native":\s*"failed"[\s\S]*"mqtt":\s*"sent"[\s\S]*native_error/);
+  });
+
+  test(`Linux ${name} returns the native result when MQTT never connects`, async t => {
+    const s = await server(t, { platform: "linux", mqttHangs: true });
+    const started = Date.now();
+    const result = await s.client.callTool({ name, arguments: args });
+    assert.ok(Date.now() - started < 5_000, "a hanging MQTT connect must not hold back the stop");
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.match(result.content[0].text, /"native":\s*"sent"[\s\S]*"mqtt":\s*"failed"[\s\S]*no MQTT confirmation within 0.5 s/);
+  });
+
+  test(`Linux ${name} never dispatches a timed-out MQTT command after reconnection`, async t => {
+    const s = await server(t, { platform: "linux", mqttDelay: 1000 });
+    const result = await s.client.callTool({ name, arguments: args });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.match(result.content[0].text, /"mqtt":\s*"failed"/);
+    await until(async () => (await s.events()).filter(e => e.kind === 'mqtt-connected').length === 2);
+    await new Promise(resolve => setTimeout(resolve, 25));
+    assert.equal((await s.events()).filter(e => e.kind === 'mqtt').length, 0, 'expired stop/heater-off must never publish after MQTT reconnects');
+  });
+
+  test(`Linux ${name} gives the counted send its own window after the immediate queue expires`, async t => {
+    const s = await server(t, { platform: "linux", helperFails: true, mqttFirstConnectionOffline: true,
+      env: { BAMBU_EMERGENCY_MQTT_TIMEOUT_MS: "1500" } });
+    const result = await s.client.callTool({ name, arguments: args });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.match(result.content[0].text, /"native":\s*"failed"[\s\S]*"mqtt":\s*"sent"[\s\S]*"mqtt_immediate":\s*"failed"/);
+    assert.equal((await s.events()).filter(e => e.kind === 'mqtt').length, 1);
+  });
+
+  test(`Linux ${name} fails, naming both routes, when the helper fails and MQTT never connects`, async t => {
+    const s = await server(t, { platform: "linux", helperFails: true, mqttHangs: true });
+    const result = await s.client.callTool({ name, arguments: args });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /native route: .*MQTT route: no MQTT confirmation within 0.5 s/);
+  });
+
+  test(`Linux ${name} reports both reasons when both routes fail`, async t => {
+    const s = await server(t, { platform: "linux", helperFails: true, mqttFails: true });
+    const result = await s.client.callTool({ name, arguments: args });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /native route: .*MQTT route: /);
+  });
+
+  test(`macOS ${name} keeps its native-only route`, async t => {
+    const s = await server(t, { platform: "darwin", helperFails: true });
+    const result = await s.client.callTool({ name, arguments: args });
+    assert.equal(result.isError, true);
+    assert.deepEqual((await s.events()).map(e => e.kind), ["helper"]);
+  });
+}
+
+test("Linux pause stays native-only: only stop and heater-off use both routes", async t => {
+  const s = await server(t, { platform: "linux", helperFails: true });
+  const result = await s.client.callTool({ name: "pause_print", arguments: {} });
+  assert.equal(result.isError, true);
+  assert.deepEqual((await s.events()).map(e => e.kind), ["helper"]);
+});
+
+test("x2d_native_control names why Linux native controls are unavailable", async t => {
+  const s = await server(t, { platform: "linux", unpinnedOptIn: false });
+  const result = await s.client.callTool({ name: "x2d_native_control", arguments: {
+    message_json: JSON.stringify({ print: { command: "extrusion_cali_get", sequence_id: "1" } }) } });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /not the pinned Bambu plug-in.*bambu-printer-mcp@\d+\.\d+\.\d+ bambu-printer-mcp-native-setup/);
+  assert.deepEqual(await s.events(), []);
+});
+
+for (const name of ["cancel_print", "set_temperature"]) {
+  test(`Linux ${name} sends MQTT again after a SIGTERM-resistant print helper has exited`, async t => {
+    const s = await server(t, { platform: "linux", model: "", helperDelay: 3000, ignoreTerm: true });
+    const pending = s.print({ use_ams: false });
+    const call = await until(async () => (await s.events()).find(e => e.mode === "--print-authorized"));
+    const result = await s.client.callTool({ name, arguments: name === "set_temperature"
+      ? { component: "bed", temperature: 0, bambu_model: "x2d" } : {} });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.equal((await pending).isError, true);
+    const sends = (await s.events()).filter(e => e.kind === "mqtt");
+    assert.equal(sends.length, 2);
+    assert.deepEqual(sends.at(-1).olderAlive, [], "the counted MQTT send follows the old helper's exit");
+    assert.match(result.content[0].text, /"mqtt":\s*"sent"/, "the wait for the old helper does not count against the MQTT bound");
+    assert.equal(exited(call.pid), true);
+    assert.equal((await s.events()).some(e => e.kind === "sent"), false, "the old helper never dispatched");
+  });
+}
+
+test("Linux native upload rejects a non-X2D model before asking for the native setup", async t => {
+  const s = await server(t, { platform: "linux", installedHelper: false });
+  const result = await s.client.callTool({ name: "upload_file", arguments: {
+    file_path: s.file, filename: "cube.3mf", connection_mode: "bambu_native", bambu_model: "p1s" } });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /restricted to X2D/);
+  assert.doesNotMatch(result.content[0].text, /native-setup/);
+  assert.deepEqual(await s.events(), []);
+});
+
+test("X2D prints past the hidden boot camera notice without clearing, other codes still block", async t => {
+  const s = await server(t, { hms: [{ attr: 83887616, code: 131184 }] });
+  const printed = await s.print({ ams_slots: [0] });
+  assert.notEqual(printed.isError, true, JSON.stringify(printed));
+  assert.ok((await s.events()).some(e => e.kind === "dispatched"));
+  const blocked = await server(t, { hms: [{ attr: 83887616, code: 131184 }, { attr: 83887616, code: 0x20002 }] });
+  const result = await blocked.print({ ams_slots: [0] });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /HMS 0500-0600-0002-0002/);
+  assert.equal((await blocked.events()).some(e => e.kind === "helper"), false);
 });

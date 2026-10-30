@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import { BambuImplementation } from '../../dist/printers/bambu.js';
+import { externalStorageState } from '../../dist/safety/printer-state.js';
 
 // A raw MQTT transport boundary; never contacts hardware.
 test('safety status uses fresh printer report, not configured serial model', async () => {
@@ -36,7 +37,7 @@ const rawPrinter = (publish) => {
 test('accepts observed model aliases and a manually declared external material', () => {
   assert.doesNotThrow(() => check(fresh()));
   assert.doesNotThrow(() => check(fresh({model_id:undefined,model:'Bambu Lab A1 mini'}), req({model:'a1mini'})));
-  assert.doesNotThrow(() => check(fresh({model_id:undefined,model:'H2D Pro'}), req({model:'h2dpro',nozzleDiameters:[]})));
+  assert.doesNotThrow(() => check(fresh({model_id:undefined,model:'H2D Pro'}), req({model:'h2dpro',nozzleDiameters:[],verifyMaterials:false})));
 });
 test('ignores a print-job id in model_id when model or returned serial identifies X2D', () => {
   const requirements = req({model:'x2d',nozzleDiameters:[],verifyMaterials:false});
@@ -46,8 +47,12 @@ test('ignores a print-job id in model_id when model or returned serial identifie
   assert.throws(() => check(fresh({model_id:undefined,model:'P1S',modules:[{name:'ota',sn:'20PTEST'}]}, {serial:'20PTEST'}), requirements), /contradictory/i);
   assert.throws(() => check(fresh({model_id:'USb5974ce12ab89d',model:'X2D',printer_type:'unknown'}), requirements), /unknown model identity/i);
 });
-test('rejects missing, stale, future and synthetic telemetry provenance', () => {
-  for(const observation of [undefined,{source:'configured',requestedAt:Date.now(),receivedAt:Date.now()}, {source:'mqtt',requestedAt:1,receivedAt:2}, {source:'mqtt',requestedAt:Date.now()+5000,receivedAt:Date.now()+5000}, {source:'mqtt',requestedAt:Date.now(),receivedAt:Date.now()-1}]) {
+test('rejects missing, stale, future and synthetic telemetry provenance', t => {
+  let tick = 1700000000000;
+  // Advance between reads to exercise a millisecond boundary deterministically.
+  t.mock.method(Date, 'now', () => tick++);
+  const now = Date.now();
+  for(const observation of [undefined,{source:'configured',requestedAt:now,receivedAt:now}, {source:'mqtt',requestedAt:1,receivedAt:2}, {source:'mqtt',requestedAt:now+5000,receivedAt:now+5000}, {source:'mqtt',requestedAt:now,receivedAt:now-1}]) {
     assert.throws(() => check(fresh({}, {observation})), /fresh|observ|mqtt|stale/i);
   }
   assert.throws(() => check(fresh({}, {connected:false})), /connect/i);
@@ -69,16 +74,39 @@ test('diameter must be reported and match; bed-only state reads may omit diamete
 });
 test('matches used nozzles by index rather than accepting one matching nozzle among multiple', () => {
   const status = fresh({model_id:'O1D',nozzle_diameter:undefined,device:{nozzle:{info:[{id:0,diameter:0.4,type:'HH01',stat:0},{id:1,diameter:0.6,type:'HS01',stat:0}]}}});
-  assert.doesNotThrow(() => check(status,req({model:'h2d',nozzleDiameters:[0.4,0.6]})));
+  assert.doesNotThrow(() => check(status,req({model:'h2d',nozzleDiameters:[0.4,0.6],verifyMaterials:false})));
   assert.throws(() => check(status,req({model:'h2d',nozzleDiameters:[0.4,0.4]})), /nozzle|diameter/i);
   assert.throws(() => check(status,req({model:'h2d',nozzleDiameters:[0.4]})), /nozzle|ambiguous/i);
-  assert.doesNotThrow(() => check(status,req({model:'h2d',nozzleDiameters:[0.6],usedNozzleIndices:[1],nozzleFlows:['Standard']})));
+  assert.doesNotThrow(() => check(status,req({model:'h2d',nozzleDiameters:[0.6],usedNozzleIndices:[1],nozzleFlows:['Standard'],verifyMaterials:false})));
   assert.throws(() => check(status,req({model:'h2d',nozzleDiameters:[0.6],usedNozzleIndices:[1],nozzleFlows:['High Flow']})), /flow/i);
 });
 test('reported type, flow, absent or abnormal multi nozzle state cannot contradict job', () => {
   assert.throws(() => check(fresh({nozzle_type:'stainless_steel'}),req({nozzleTypes:['hardened_steel']})), /type/i);
   assert.throws(() => check(fresh({nozzle_type:'HH01'}),req({nozzleFlows:['Standard']})), /flow/i);
   for(const stat of [1,2,4]) assert.throws(() => check(fresh({device:{nozzle:{info:[{id:0,diameter:0.4,type:'HH01',stat}]}}})), /nozzle|reliable|abnormal/i);
+});
+// Issue #67: a stock H2D reports stat 1 (Bambu Studio DevNozzle: information
+// unreliable) on both HS01 nozzles, which have no identity chip (sn "N/A").
+test('stock nozzles without an identity chip pass bit 0 while abnormal, unknown and chipped unreliable nozzles still block', () => {
+  const h2dReport = (overrides = {}) => fresh({model_id:'O1D', nozzle_diameter:undefined, device:{nozzle:{exist:3, hc:0, src_id:0, state:4096, tar_id:0, info:[
+    {id:0, diameter:0.4, type:'HS01', stat:1, sn:'N/A', color_m:'00000000', fila_id:'', p_t:0, tm:0, wear:0, ...overrides},
+    {id:1, diameter:0.4, type:'HS01', stat:1, sn:'N/A', color_m:'00000000', fila_id:'', p_t:0, tm:0, wear:0},
+  ]}}});
+  const job = req({model:'h2d', nozzleDiameters:[0.4,0.4], nozzleTypes:['hardened_steel','hardened_steel'], nozzleFlows:['standard','standard'], verifyMaterials:false});
+  assert.doesNotThrow(() => check(h2dReport(), job));
+  assert.deepEqual(safety.unchippedNozzles(h2dReport().raw), [0, 1]);
+  // The file-to-hardware comparison is unchanged.
+  assert.throws(() => check(h2dReport({diameter:0.6}), job), /nozzle 0 diameter/i);
+  assert.throws(() => check(h2dReport({type:'HS00'}), job), /nozzle 0 type/i);
+  // Bits 1-2 are abnormal or unknown regardless of the chip.
+  for (const stat of [2, 3, 4, 5, 6, 7]) assert.throws(() => check(h2dReport({stat}), job), /unreliable, abnormal or unknown/, `stat ${stat}`);
+  // A chipped nozzle whose information is unreliable must be refreshed first.
+  for (const sn of ['B0123456789', '', undefined]) {
+    assert.throws(() => check(h2dReport({sn}), job), /nozzle 0 information is unreliable; refresh/, `sn ${sn}`);
+    assert.deepEqual(safety.unchippedNozzles(h2dReport({sn}).raw), [1]);
+  }
+  assert.deepEqual(safety.unchippedNozzles(h2dReport({stat:0}).raw), [1]);
+  assert.deepEqual(safety.unchippedNozzles({}), []);
 });
 test('rejects busy, failed, missing or unknown states while allowing IDLE and FINISH', () => {
   for(const gcode_state of ['RUNNING','PAUSE','PREPARE','SLICING','FAILED','OFFLINE','UNKNOWN',undefined]) assert.throws(() => check(fresh({gcode_state})), /state|idle/i);
@@ -154,7 +182,7 @@ test('old raw observations and fresh partial error reports cannot satisfy a new 
 
 test('a scalar file diameter is accepted only when every fresh physical nozzle matches', () => {
   const device={nozzle:{info:[{id:0,diameter:0.4,type:'HH01',stat:0},{id:1,diameter:0.4,type:'HH01',stat:0}]}};
-  assert.doesNotThrow(() => check(fresh({model_id:'O1D',device}),req({model:'h2d'})));
+  assert.doesNotThrow(() => check(fresh({model_id:'O1D',device}),req({model:'h2d',verifyMaterials:false})));
 });
 test('modern external spool reports cannot be hidden by a matching legacy tray field', () => {
   assert.throws(() => check(fresh({vt_tray:{tray_type:'PLA'},vir_slot:[{id:'254',tray_type:'PETG'}]})),/material/i);
@@ -226,8 +254,129 @@ test('official H2C and H2D Pro returned serials agree with declared identity and
   for(const [prefix,model,modelId,other] of [['31B','h2c','O1C2','O1E'],['239','h2dpro','O1E','O1C2']]) {
     const serial=prefix+'TEST';
     const status=fresh({model_id:modelId,modules:[{name:'ota',sn:serial}]},{serial});
-    assert.doesNotThrow(()=>check(status,req({model,serial,nozzleDiameters:[]})));
+    assert.doesNotThrow(()=>check(status,req({model,serial,nozzleDiameters:[],verifyMaterials:false})));
     assert.throws(()=>check(fresh({model_id:other,modules:[{name:'ota',sn:serial}]},{serial}),req({model,serial,nozzleDiameters:[]})),/identity|conflict|model/i);
     assert.throws(()=>check(fresh({model_id:undefined}),req({model,serial,nozzleDiameters:[]})),/identity|model/i);
   }
+});
+
+// Dual-nozzle printers report one virtual external slot per nozzle, numbered as Bambu
+// Studio's VIRTUAL_TRAY_MAIN_ID (255, right/main) and VIRTUAL_TRAY_DEPUTY_ID (254, left/deputy).
+const dualNozzleInfo={nozzle:{info:[{id:0,diameter:0.4,type:'HH01',stat:0},{id:1,diameter:0.4,type:'HH01',stat:0}]}};
+const x2d=(vir_slot,raw={})=>fresh({model_id:undefined,model:'X2D',device:dualNozzleInfo,ams:{ams:[{id:'0',tray:[0,1,2,3].map(id=>({id:String(id),tray_type:'PLA'}))}]},...(vir_slot===undefined?{}:{vir_slot}),...raw});
+const x2dReq=(extra={})=>req({model:'x2d',nozzleDiameters:[0.4,0.4],materials:['PLA','PLA','PLA','PLA','PLA'],useAMS:true,amsMapping:[0,1,2,3,255],filamentNozzleIndices:[0,0,0,0,0],...extra});
+test('dual-nozzle printers select the external spool slot by id: 255 right/main and 254 left/deputy', () => {
+  const both=[{id:'254',tray_type:'PLA'},{id:'255',tray_type:'PLA'}];
+  assert.doesNotThrow(() => check(x2d(both),x2dReq()));
+  assert.doesNotThrow(() => check(x2d(both),x2dReq({amsMapping:[0,1,2,3,254],filamentNozzleIndices:[0,0,0,0,1]})));
+  assert.doesNotThrow(() => check(x2d(both),x2dReq({amsMapping:[254,255,-1,-1,-1],usedFilamentPositions:[0,1],filamentNozzleIndices:[1,0]})));
+  const mixed=[{id:'254',tray_type:'PLA'},{id:'255',tray_type:'PETG'}];
+  assert.doesNotThrow(() => check(x2d(mixed),x2dReq({amsMapping:[0,1,2,3,254],filamentNozzleIndices:[0,0,0,0,1]})));
+  assert.throws(() => check(x2d(mixed),x2dReq()),/PETG|material/i);
+  assert.throws(() => check(x2d([{id:'254',tray_type:'PLA'}]),x2dReq()),/255/i);
+  assert.throws(() => check(x2d([{id:'255',tray_type:'PLA'},{id:'255',tray_type:'PLA'}]),x2dReq()),/ambiguous/i);
+  assert.throws(() => check(x2d(undefined),x2dReq()),/255/i);
+  assert.throws(() => check(x2d(undefined,{vt_tray:{tray_type:'PLA'}}),x2dReq()),/255/i);
+  assert.throws(() => check(x2d(undefined,{vt_tray:{tray_type:'PLA'}}),x2dReq({amsMapping:[0,1,2,3,254],filamentNozzleIndices:[0,0,0,0,1]})),/vir_slot/i);
+  assert.throws(() => check(x2d(both),x2dReq({amsMapping:[0,1,2,3,256]})),/mapping/i);
+  for(const model of ['h2d','h2c']) assert.doesNotThrow(() => check(fresh({model_id:undefined,model:model.toUpperCase(),device:dualNozzleInfo,vir_slot:both}),req({model,nozzleDiameters:[0.4,0.4],useAMS:true,amsMapping:[255],filamentNozzleIndices:[0]})),model);
+});
+test('dual-nozzle deputy spool cannot borrow the legacy main-spool material report', () => {
+  assert.throws(() => check(x2d(undefined,{vt_tray:{tray_type:'PLA'}}),
+    x2dReq({materials:['PLA'],usedFilamentPositions:[0],amsMapping:[254],filamentNozzleIndices:[1]})),/per-nozzle|vir_slot/i);
+});
+test('external-only dual-nozzle jobs validate the explicitly selected spool instead of slot 254', () => {
+  const both=[{id:'254',tray_type:'PLA'},{id:'255',tray_type:'PETG'}];
+  assert.throws(() => check(x2d(both),x2dReq({materials:['PLA'],usedFilamentPositions:[0],useAMS:false,amsMapping:[255],filamentNozzleIndices:[0]})),/PETG|material/i);
+});
+test('dual external spools require the inspected physical nozzle binding, and derive external-only defaults from it', () => {
+  const both=[{id:'254',tray_type:'PLA'},{id:'255',tray_type:'PETG'}];
+  const right={materials:['PETG'],usedFilamentPositions:[0],filamentNozzleIndices:[0]};
+  assert.equal(check(x2d(both),x2dReq({...right,useAMS:false,amsMapping:undefined})).filaments[0].trayIndex,255);
+  assert.equal(check(x2d(both),x2dReq({...right,useAMS:false,amsMapping:[255]})).filaments[0].trayIndex,255);
+  assert.equal(check(x2d(both),x2dReq({materials:['PLA'],usedFilamentPositions:[0],filamentNozzleIndices:[1],useAMS:false,amsMapping:undefined})).filaments[0].trayIndex,254);
+  for(const useAMS of [true,false]) {
+    assert.throws(() => check(x2d(both),x2dReq({...right,useAMS,amsMapping:[254]})),/does not feed physical nozzle/);
+    assert.throws(() => check(x2d(both),x2dReq({...right,useAMS,amsMapping:[255],filamentNozzleIndices:undefined})),/verified physical nozzle binding/);
+  }
+  assert.throws(() => check(x2d(both),x2dReq({...right,useAMS:false,amsMapping:undefined,filamentNozzleIndices:undefined})),/ambiguous.*filament_map/);
+  assert.throws(() => check(x2d(both),x2dReq({...right,useAMS:false,amsMapping:[0]})),/AMS trays require use_ams:true/);
+  // Missing bindings do not change ordinary AMS or single-nozzle material checks.
+  assert.doesNotThrow(() => check(x2d(both),x2dReq({materials:['PLA'],usedFilamentPositions:[0],amsMapping:[0],filamentNozzleIndices:undefined})));
+});
+test('single-nozzle printers still reject tray 255 and two external spool reports', () => {
+  assert.throws(() => check(fresh({vir_slot:[{id:'255',tray_type:'PLA'}]}),req({useAMS:true,amsMapping:[255]})),/mapping/i);
+  assert.throws(() => check(fresh({model_id:undefined,model:'H2S',vir_slot:[{id:'255',tray_type:'PLA'}]}),req({model:'h2s',useAMS:true,amsMapping:[255]})),/mapping/i);
+  assert.throws(() => check(fresh({vir_slot:[{id:'254',tray_type:'PLA'},{id:'255',tray_type:'PLA'}]})),/ambiguous/i);
+  assert.doesNotThrow(() => check(fresh({vir_slot:[{id:'254',tray_type:'PLA'}]})));
+});
+
+// X2D re-raises this camera entry (serious level) at every boot. Bambu lists it for
+// the X2D with empty text, so its screen, Studio and Handy never show it.
+const hiddenCamera = { attr: 83887616, code: 131184 };
+const x2dStatus = hms => fresh({ model_id: 'USb5974ce12ab89d', modules: [{ name: 'ota', sn: '20PTEST' }], hms }, { serial: '20PTEST' });
+const x2dRequirements = req({ model: 'x2d', nozzleDiameters: [], verifyMaterials: false });
+test('a code Bambu hides for this model is a notice; documented, fatal, unlisted and foreign codes still block', () => {
+  assert.doesNotThrow(() => check(x2dStatus([hiddenCamera]), x2dRequirements));
+  assert.deepEqual(safety.hiddenHmsNotices(x2dStatus([hiddenCamera]).raw, '20PTEST', 'x2d'), ['HMS 0500-0600-0002-0070']);
+  assert.deepEqual(safety.hiddenHmsKeys(x2dStatus([hiddenCamera]).raw, '20PTEST', 'x2d'), ['hms:83887616:131184']);
+  // A sparse report without a serial, a misconfigured 20P serial, and a verified P1S: the X2D table must not apply.
+  assert.throws(() => check(fresh({ hms: [hiddenCamera] }, { serial: '20PTEST' })), /HMS 0500-0600-0002-0070/, 'table prefix must match the verified model');
+  assert.deepEqual(safety.hiddenHmsNotices({ hms: [hiddenCamera] }, '20PTEST', 'p1s'), []);
+  assert.equal(safety.describeHmsKey('hms:83887616:131184'), 'HMS 0500-0600-0002-0070');
+  assert.equal(safety.describeHmsKey('print_error:0'), 'print_error:0');
+  assert.equal(safety.describeHmsKey('hms:abc:5'), 'hms:abc:5');
+  assert.deepEqual(safety.hiddenHmsNotices(x2dStatus([hiddenCamera, hiddenCamera]).raw, '20PTEST', 'x2d'), ['HMS 0500-0600-0002-0070'], 'repeated entries are named once');
+  assert.equal(safety.reportedHmsKey({ attr: '83887616', code: '131184' }), 'hms:83887616:131184', 'one key format for gate and clearing');
+  assert.throws(() => check(x2dStatus([hiddenCamera, { attr: 83887616, code: 0x20002 }]), x2dRequirements), /HMS 0500-0600-0002-0002/, 'documented camera fault');
+  assert.throws(() => check(x2dStatus([{ attr: 83887616, code: 0x10070 }]), x2dRequirements), /HMS 0500-0600-0001-0070/, 'fatal level');
+  assert.throws(() => check(x2dStatus([{ attr: 83887616, code: 0x20099 }]), x2dRequirements), /HMS 0500-0600-0002-0099/, 'not in Bambu table');
+  assert.throws(() => check(fresh({ hms: [hiddenCamera] })), /HMS 0500-0600-0002-0070/, 'P1S has no table');
+  assert.deepEqual(safety.hiddenHmsNotices(fresh({ hms: [hiddenCamera] }).raw, '01PTEST', 'p1s'), []);
+  const h2c = hms => fresh({ model_id: undefined, modules: [{ name: 'ota', sn: '31BTEST' }], hms }, { serial: '31BTEST' });
+  const h2cRequirements = req({ model: 'h2c', nozzleDiameters: [], verifyMaterials: false });
+  assert.doesNotThrow(() => check(h2c([{ attr: 83887616, code: 0x20005 }, { attr: 83887616, code: 0x20006 }]), h2cRequirements));
+  assert.throws(() => check(h2c([hiddenCamera]), h2cRequirements), /HMS 0500-0600-0002-0070/, 'hidden on X2D only');
+  // The table follows the observed serial prefix, as Bambu Studio selects it.
+  assert.deepEqual(safety.hiddenHmsNotices({ hms: [hiddenCamera] }, '31BTEST', 'h2c'), []);
+  assert.throws(() => check(x2dStatus([{ attr: 83887616 }]), x2dRequirements), /HMS errors;/, 'malformed entry');
+});
+
+test('a recognized model without a returned serial cannot downgrade hidden HMS faults', () => {
+  const status = fresh({ model_id: undefined, model: 'X2D', hms: [hiddenCamera] },
+    { serial: '20PTEST', observedSerial: '20PTEST' });
+  assert.throws(() => check(status, x2dRequirements), /HMS 0500-0600-0002-0070/);
+});
+
+test('hidden HMS notices and clear exclusions require the serial in the raw report', () => {
+  const raw = { model: 'X2D', hms: [hiddenCamera] };
+  assert.deepEqual(safety.hiddenHmsNotices(raw, '20PTEST', 'x2d'), []);
+  assert.deepEqual(safety.hiddenHmsKeys(raw, '20PTEST', 'x2d'), []);
+  for (const reported of [{ serial: '20PTEST' }, { serial_number: '20PTEST' }, { sn: '20PTEST' },
+    { device: { sn: '20PTEST' } }, { modules: [{ name: 'ota', sn: '20PTEST' }] }]) {
+    assert.deepEqual(safety.hiddenHmsNotices({ ...raw, ...reported }, '20PTEST', 'x2d'), ['HMS 0500-0600-0002-0070']);
+    assert.deepEqual(safety.hiddenHmsKeys({ ...raw, ...reported }, '20PTEST', 'x2d'), ['hms:83887616:131184']);
+  }
+});
+
+test('external storage state follows Bambu Studio: sdcard, then home_flag bits 8-9, then aux bits 12-13', () => {
+  const np = { cfg: '0', fun: '0', stat: '0' };
+  for (const [raw, expected] of [
+    [undefined, 'none'],
+    [{}, 'none'],
+    [{ sdcard: true }, 'normal'],
+    [{ sdcard: 'true' }, 'none'],
+    [{ sdcard: true, home_flag: 0 }, 'none'],
+    [{ sdcard: false, home_flag: 0x100 }, 'normal'],
+    [{ home_flag: 0x200 }, 'abnormal'],
+    [{ home_flag: 0x300 }, 'readonly'],
+    [{ home_flag: -1066969665 }, 'normal'],
+    [{ sdcard: true, home_flag: 1.5 }, 'normal'],
+    [{ home_flag: 0x100, aux: '3000' }, 'normal'],
+    [{ home_flag: 0x100, aux: '3000', ...np }, 'readonly'],
+    [{ home_flag: 0x100, aux: '0', ...np }, 'none'],
+    [{ home_flag: 0x100, aux: '', ...np }, 'normal'],
+    [{ home_flag: 0x100, aux: 'zz', ...np }, 'normal'],
+    [{ home_flag: 0, aux: 'FFFFFFFFFFFF1000', ...np }, 'normal'],
+  ]) assert.equal(externalStorageState(raw), expected, JSON.stringify(raw));
 });
