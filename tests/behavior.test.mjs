@@ -462,7 +462,14 @@ test("native upload forwards helper progress before returning the final result",
   t.after(async () => closeTransport(transport));
   await client.connect(transport);
 
-  const notifications = [];
+  // Observe wire order: the SDK defers progress handlers but removes them
+  // synchronously on a response, losing callbacks when both share one read.
+  const wireMessages = [];
+  const receive = transport.onmessage;
+  transport.onmessage = (message, ...rest) => {
+    wireMessages.push(message);
+    receive(message, ...rest);
+  };
   const uploadResult = parseJsonResult(await client.callTool(
     {
       name: "upload_file",
@@ -474,12 +481,14 @@ test("native upload forwards helper progress before returning the final result",
       },
     },
     undefined,
-    { onprogress: (update) => notifications.push(update.message) }
+    { onprogress: () => {} }
   ));
   assert.equal(uploadResult.status, "success");
-  assert.deepEqual(notifications, [
+  assert.deepEqual(wireMessages.map(message => message.method === "notifications/progress"
+    ? message.params.message : Object.hasOwn(message, "result") ? "response" : message.method), [
     "native_update status=1 code=12 msg=12%",
     "native_update status=1 code=68 msg=68%",
+    "response",
   ]);
 });
 
