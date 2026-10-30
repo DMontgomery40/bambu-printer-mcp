@@ -46,3 +46,4 @@ native/*.dSYM/
 !/docs/SLICING.md
 !/docs/FULU.md
 !/docs/SETUP.md
+!/docs/prd/scan-to-print-PRD.md

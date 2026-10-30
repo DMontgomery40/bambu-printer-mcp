@@ -1,0 +1,24 @@
+offer,channel,price,credits_used,net_per_used_credit,remix_margin,template_margin,freeform_margin,blended_contribution_per_started_project,blended_margin
+Pack 10,apple_iap_sbp,6.99,10.0,0.5942,free,0.5593,0.5353,0.3568,0.5318
+Pack 10,apple_iap_standard,6.99,10.0,0.4893,free,0.4649,0.4357,0.2384,0.4314
+Pack 10,google_play_credits_first_1m,6.99,10.0,0.5942,free,0.5593,0.5353,0.3568,0.5318
+Pack 10,google_play_credits_standard,6.99,10.0,0.5242,free,0.5006,0.4734,0.2779,0.4693
+Pack 10,us_web_linkout_stripe,6.99,10.0,0.6487,free,0.5964,0.5744,0.4185,0.5712
+Pack 30,apple_iap_sbp,16.99,30.0,0.4814,free,0.4561,0.4265,0.2295,0.4221
+Pack 30,apple_iap_standard,16.99,30.0,0.3964,free,0.3396,0.3036,0.1335,0.2982
+Pack 30,google_play_credits_first_1m,16.99,30.0,0.4814,free,0.4561,0.4265,0.2295,0.4221
+Pack 30,google_play_credits_standard,16.99,30.0,0.4248,free,0.3836,0.35,0.1655,0.345
+Pack 30,us_web_linkout_stripe,16.99,30.0,0.5399,free,0.5151,0.4886,0.2956,0.4847
+Pack 100,apple_iap_sbp,54.99,100.0,0.4674,free,0.4399,0.4093,0.2137,0.4048
+Pack 100,apple_iap_standard,54.99,100.0,0.3849,free,0.3198,0.2827,0.1205,0.2773
+Pack 100,google_play_credits_first_1m,54.99,100.0,0.4674,free,0.4399,0.4093,0.2137,0.4048
+Pack 100,google_play_credits_standard,54.99,100.0,0.4124,free,0.3652,0.3306,0.1516,0.3255
+Pack 100,us_web_linkout_stripe,54.99,100.0,0.531,free,0.5069,0.48,0.2855,0.476
+Fit+ monthly,apple_iap_sbp,7.99,8.25,0.8232,free,0.682,0.6646,0.6155,0.6621
+Fit+ monthly,apple_iap_standard,7.99,8.25,0.6779,free,0.6138,0.5927,0.4515,0.5896
+Fit+ monthly,google_play_sub,7.99,8.25,0.8232,free,0.682,0.6646,0.6155,0.6621
+Fit+ monthly,us_web_linkout_stripe,7.99,8.25,0.904,free,0.7104,0.6946,0.7068,0.6923
+Fit+ monthly (fully used),apple_iap_sbp,7.99,15.0,0.4528,free,0.4217,0.3902,0.1972,0.3856
+Fit+ monthly (fully used),apple_iap_standard,7.99,15.0,0.3729,free,0.2978,0.2595,0.1069,0.2539
+Fit+ monthly (fully used),google_play_sub,7.99,15.0,0.4528,free,0.4217,0.3902,0.1972,0.3856
+Fit+ monthly (fully used),us_web_linkout_stripe,7.99,15.0,0.4972,free,0.4734,0.4447,0.2474,0.4405

@@ -1,0 +1,130 @@
+{
+  "as_of": "2026-10-14",
+  "currency": "USD",
+  "note": "Every rate below carries a source id. Every quantity under profiles, compute_jobs, outcomes, mix, usage and price_card is an ESTIMATE to be replaced by pilot telemetry. No free tiers, credits or negotiated discounts are deducted unless named.",
+  "sources": {
+    "anthropic_pricing": "https://platform.claude.com/docs/en/about-claude/pricing",
+    "anthropic_vision": "https://platform.claude.com/docs/en/build-with-claude/vision",
+    "openai_pricing": "https://developers.openai.com/api/docs/pricing",
+    "gemini_pricing": "https://ai.google.dev/gemini-api/docs/pricing",
+    "xai_pricing": "https://docs.x.ai/developers/pricing",
+    "modal_pricing": "https://modal.com/pricing",
+    "modal_region": "https://modal.com/docs/guide/region-selection",
+    "r2_pricing": "https://developers.cloudflare.com/r2/pricing/",
+    "workers_pricing": "https://developers.cloudflare.com/workers/platform/pricing/",
+    "do_pricing": "https://developers.cloudflare.com/durable-objects/platform/pricing/",
+    "neon_plans": "https://neon.com/docs/introduction/plans",
+    "apple_sbp": "https://developer.apple.com/app-store/small-business-program/",
+    "apple_subs": "https://developer.apple.com/app-store/subscriptions/",
+    "apple_us_linkout_status": "https://appsubmit.io/blog/us-external-purchase-links-october-2026",
+    "google_fees": "https://support.google.com/googleplay/android-developer/answer/112622?hl=en",
+    "stripe_pricing": "https://stripe.com/pricing",
+    "codex_baseline": "Competing PRD cost workbook (Scan to Make, 2026-10-13): $250/month AWS shared baseline assumption"
+  },
+  "models": {
+    "claude-opus-5-5":        {"input": 4.00, "cache_write": 5.00,  "cache_read": 0.20,  "output": 20.00, "source": "anthropic_pricing"},
+    "claude-sonnet-5-5":      {"input": 2.00, "cache_write": 2.50,  "cache_read": 0.10,  "output": 10.00, "source": "anthropic_pricing"},
+    "gpt-6.1-sol":            {"input": 2.00, "cache_write": 2.50,  "cache_read": 0.10,  "output": 10.00, "source": "openai_pricing"},
+    "gpt-6-luna":             {"input": 0.10, "cache_write": 0.125, "cache_read": 0.01,  "output": 0.50,  "source": "openai_pricing"},
+    "gpt-6-astra":            {"input": 10.00,"cache_write": 12.50, "cache_read": 1.00,  "output": 50.00, "source": "openai_pricing"},
+    "gemini-4-argon-intro":   {"input": 2.00, "cache_write": 2.00,  "cache_read": 0.10,  "output": 10.00, "source": "gemini_pricing", "note": "introductory price through 2026-11-30; implicit caching, no write premium"},
+    "gemini-4-argon-dec2026": {"input": 4.00, "cache_write": 4.00,  "cache_read": 0.20,  "output": 20.00, "source": "gemini_pricing"},
+    "gemini-3.8-flash-2027":  {"input": 1.50, "cache_write": 1.50,  "cache_read": 0.15,  "output": 7.50,  "source": "gemini_pricing", "note": "price from 2027-01-01; intro $0.75/$3.75 through 2026-12-31"},
+    "grok-4.7":               {"input": 2.00, "cache_write": 2.00,  "cache_read": 0.50,  "output": 6.00,  "source": "xai_pricing", "note": "short-context (<200k) tier; no batch API"},
+    "apple-foundation-on-device": {"input": 0, "cache_write": 0, "cache_read": 0, "output": 0, "source": "https://www.apple.com/newsroom/2025/09/apples-foundation-models-framework-unlocks-new-intelligent-app-experiences/", "note": "free on-device inference on Apple Intelligence devices; iOS only"}
+  },
+  "role_assignment": {
+    "intake": "gpt-6-luna",
+    "planner": "claude-sonnet-5-5",
+    "critic": "claude-sonnet-5-5",
+    "coder": "claude-opus-5-5"
+  },
+  "sensitivity_coder_models": ["claude-opus-5-5", "claude-sonnet-5-5", "gpt-6.1-sol", "gemini-4-argon-dec2026", "grok-4.7", "gpt-6-astra"],
+  "image_tokens": {
+    "formula": "ceil(w/28)*ceil(h/28), Anthropic high-resolution tier; applied to every provider as an ESTIMATE",
+    "source": "anthropic_vision"
+  },
+  "profiles": {
+    "_comment": "ESTIMATES. prefix = cached system prompt + tool schemas + template catalog. Per turn: new_text tokens, images as [px] list, output includes reasoning tokens. shared_prefix_hit = share of prefix already cached by another user's request within the TTL.",
+    "intake":   {"role": "intake",  "prefix": 5000,  "shared_prefix_hit": 0.5, "turn": {"new_text": 1500, "images_px": [1024, 1024], "output": 700},  "turns_typical": 1, "turns_cap": 2},
+    "planner":  {"role": "planner", "prefix": 14000, "shared_prefix_hit": 0.5, "turn": {"new_text": 3000, "images_px": [768, 768],   "output": 1200}, "turns_typical": 2, "turns_cap": 4},
+    "critic":   {"role": "critic",  "prefix": 3000,  "shared_prefix_hit": 0.5, "turn": {"new_text": 800,  "images_px": [1024, 1024, 1024, 1024], "output": 500}, "turns_typical": 1, "turns_cap": 1},
+    "coder":    {"role": "coder",   "prefix": 22000, "shared_prefix_hit": 0.3, "turn": {"new_text": 4500, "images_px": [1024, 1024, 1024], "output": 5000}, "turns_typical": 4, "turns_cap": 6, "_cap_comment": "hard cap 6 plus stop after 2 consecutive iterations without validator progress"},
+    "revision": {"role": "planner", "prefix": 14000, "shared_prefix_hit": 0.5, "turn": {"new_text": 2000, "images_px": [768], "output": 800}, "turns_typical": 1, "turns_cap": 1}
+  },
+  "transient_retry_rate": 0.03,
+  "compute_rates": {
+    "modal_function_core_s": 0.0000131,
+    "modal_function_gib_s": 0.00000222,
+    "modal_sandbox_core_s": 0.00003942,
+    "modal_sandbox_gib_s": 0.00000667,
+    "modal_l4_s": 0.000222,
+    "modal_broad_region_multiplier": 1.15,
+    "source": "modal_pricing; multiplier: modal_region (broad US)"
+  },
+  "compute_jobs": {
+    "_comment": "ESTIMATES of billed wall time including container start. kind: function (trusted, pinned code) | sandbox (model-generated code, gVisor, network blocked) | gpu.",
+    "template_build": {"kind": "function", "cores": 1, "gib": 2,  "seconds": 6},
+    "freeform_build": {"kind": "sandbox",  "cores": 2, "gib": 4,  "seconds": 25},
+    "validate":       {"kind": "function", "cores": 1, "gib": 2,  "seconds": 8},
+    "render":         {"kind": "function", "cores": 2, "gib": 4,  "seconds": 6},
+    "slice":          {"kind": "function", "cores": 2, "gib": 4,  "seconds": 75},
+    "scan_cleanup":   {"kind": "function", "cores": 2, "gib": 8,  "seconds": 45},
+    "photogrammetry": {"kind": "gpu",      "cores": 4, "gib": 16, "seconds": 240}
+  },
+  "storage": {
+    "r2_gb_month": 0.015, "r2_class_a_per_m": 4.50, "r2_class_b_per_m": 0.36, "source": "r2_pricing",
+    "per_project_gb_month": 0.39, "per_project_class_a": 300, "per_project_class_b": 2000,
+    "_comment": "per_project values are ESTIMATES: 0.15 GB cropped capture kept 30 days + 0.02 GB artifacts kept 12 months"
+  },
+  "workflow": {
+    "_comment": "ESTIMATES. Probabilities per started project.",
+    "p_scan_cleanup": 0.5,
+    "p_photogrammetry": 0.10,
+    "template": {"p_success": 0.85, "p_escalate_on_fail": 0.6, "p_fit_key": 0.35, "p_llm_revision": 0.30},
+    "freeform": {"p_success": 0.65, "p_fit_key": 0.50, "p_llm_revision": 0.40},
+    "remix":    {"p_success": 0.97, "p_fit_key": 0.15}
+  },
+  "mix": {"remix": 0.35, "template": 0.45, "freeform": 0.20, "_comment": "ESTIMATE of hosted project mix after the community library exists"},
+  "channels": {
+    "apple_iap_sbp":        {"pct": 0.15, "fixed": 0.00, "source": "apple_sbp"},
+    "apple_iap_standard":   {"pct": 0.30, "fixed": 0.00, "source": "apple_sbp", "note": "standard IAP commission; first-year subscriptions also 30% (apple_subs)"},
+    "google_play_sub":      {"pct": 0.15, "fixed": 0.00, "source": "google_fees", "note": "10% service + 5% Play billing (US/EEA/UK from 2026-06-30)"},
+    "google_play_credits_first_1m": {"pct": 0.15, "fixed": 0.00, "source": "google_fees", "note": "10% + 5% billing"},
+    "google_play_credits_standard": {"pct": 0.25, "fixed": 0.00, "source": "google_fees", "note": "20% + 5% billing, new installs"},
+    "us_web_linkout_stripe": {"pct": 0.029, "fixed": 0.30, "source": "stripe_pricing", "note": "Apple commission on US link-outs currently 0% pending court rate-setting (apple_us_linkout_status)"}
+  },
+  "price_card": {
+    "_comment": "PROPOSED test prices. credits charged only when a design passes validation and is delivered.",
+    "credits": {"remix": 0, "template": 1, "freeform": 6},
+    "packs": [
+      {"name": "Pack 10",  "credits": 10,  "price": 6.99},
+      {"name": "Pack 30",  "credits": 30,  "price": 16.99},
+      {"name": "Pack 100", "credits": 100, "price": 54.99}
+    ],
+    "subscription": {"name": "Fit+ monthly", "price": 7.99, "credits": 15, "expected_utilization": 0.55},
+    "fit_guarantee_claim_rate": 0.05,
+    "_guarantee_comment": "ESTIMATE: share of delivered Green-confidence template/freeform designs refunded under Fit-or-refund"
+  },
+  "free_tier": {
+    "_comment": "ESTIMATES per free monthly active hosted user",
+    "free_template_fits_per_month": 1, "template_fit_uptake": 0.6,
+    "remixes_per_mau": 2.0
+  },
+  "relay": {
+    "do_requests_per_m": 0.15, "do_gb_s_per_m": 12.50, "workers_paid_min_month": 5.00, "source": "do_pricing; workers_pricing",
+    "per_bridge_month": {"connects": 30, "incoming_msgs": 2000, "ws_billing_ratio": 20, "active_ms_per_msg": 5, "memory_gb": 0.128},
+    "_comment": "per_bridge_month values are ESTIMATES; hibernating WebSocket API assumed (no duration while idle)"
+  },
+  "fixed_monthly": {
+    "_comment": "Lean hosted baseline. Rates sourced; quantities ESTIMATES.",
+    "workers_paid_plan": {"usd": 5.00, "source": "workers_pricing"},
+    "neon_compute": {"cu_hours": 250, "rate": 0.106, "source": "neon_plans"},
+    "neon_storage": {"gb": 20, "rate": 0.35, "source": "neon_plans"},
+    "r2_base_storage": {"gb": 200, "rate": 0.015, "source": "r2_pricing"},
+    "modal_plan": {"usd": 0.00, "source": "modal_pricing", "note": "Starter plan; move to Team ($250/mo) when concurrency limits bind"},
+    "error_tracking_email_misc": {"usd": 40.00, "source": "ESTIMATE"},
+    "apple_developer_program": {"usd": 8.25, "source": "https://developer.apple.com/programs/ ($99/year)"}
+  },
+  "volumes": [100, 1000, 10000]
+}

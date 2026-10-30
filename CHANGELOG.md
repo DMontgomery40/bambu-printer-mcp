@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.1.41] – 2026-10-30
+
+### Fixed
+- Keep already-horizontal faces eligible when `lay_flat` chooses the largest flat face. Thin plates previously stood on an edge, because faces pointing straight up or down were excluded; they now rest on their broad face at Z=0, including after repeated calls. When up- and down-facing areas tie exactly, as for a plate with a raised block or lettering, keep the face that already points down so a seated part is not flipped. Ported from mcp-3d-printer-server 1.2.20 with its regressions for horizontal, upside-down, edge-on, tilted and raised-block plates; generated STL geometry only, no printer is used.
+
+### Tests
+- Check native upload progress in MCP wire order, avoiding the client SDK callback race when progress and the final response arrive in one read.
+
+### Documentation
+- Add the Made to Fit scan-to-print proposal and reproducible cost model ([#51](https://github.com/DMontgomery40/bambu-printer-mcp/pull/51)). Make remix delivery probability explicit, reject unknown compute kinds, and require Fit Key coverage of the full measurement interval before reducing uncertainty. The proposal is repository documentation only; nothing in it is built.
+
 ## [1.1.40] – 2026-10-30
 
 ### Fixed
