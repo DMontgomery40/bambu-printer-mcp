@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.40] – 2026-10-30
+
+### Fixed
+- Recheck the confirmed job and hardware-error codes after acquiring the MQTT connection, immediately before clearing errors on any printer model. Refuse dispatch if either changes during the connection wait; retain unchanged-job clearing and the native helper's dispatch checks. Contributed by [JackCA](https://github.com/JackCA) in [#76](https://github.com/DMontgomery40/bambu-printer-mcp/pull/76), with mocked P1S and X2D regressions.
+- Let a freshly observed X2D task canceled with `fail_reason: 0300400C`, `print_error: 0`, and a reported job name/file reach checked print preparation. Keep other failures and active HMS errors blocked. Treat this terminal job like `FINISH`: require a person to confirm removal of the previous parts and debris, even when ordinary headless prompts are disabled, then recheck the same job after confirmation and at native dispatch. Do not send speculative error-dialog reset commands. Bind hardware-error clearing to the job observed before its confirmation so a different job cannot reuse approval. Reported with read-only X2D telemetry and contributed by [JackCA](https://github.com/JackCA) in [#76](https://github.com/DMontgomery40/bambu-printer-mcp/pull/76), with mocked printer/native-helper regressions; physical print delivery after this change remains unverified.
+
+### Dependencies
+- Refresh the installation lock to `@hono/node-server` 2.1.5 for GHSA-rmxm-3fg6-px4f, as in mcp-3d-printer-server 1.2.18. The advisory affects only `serveStatic`, which this server does not use. The lock controls the desktop extension bundle and source installs; npm installs on Node.js 20 or newer already resolve 2.1.5. The documented and tested runtime remains Node.js 24.
+
 ## [1.1.39] – 2026-10-30
 
 ### Fixed

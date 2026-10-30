@@ -146,6 +146,46 @@ console.log('native_print result=0');
   };
 }
 
+const canceledTask = { fail_reason: '50348044', subtask_name: 'previous-canceled-part', task_id: '1', subtask_id: '0', job_id: '0' };
+
+test('native printing from a canceled X2D task requires physical confirmation even in headless mode', async t => {
+  const s = await server(t, { state: 'FAILED', storage: canceledTask, decline: true, env: { BAMBU_REQUIRE_CONFIRMATION: '0' } });
+  const result = await s.print({ connection_mode: 'bambu_native', ams_slots: [0] });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /confirmation.*declined/);
+  assert.deepEqual(s.prompts, ['confirm']);
+  assert.equal((await s.events()).some(e => e.kind === 'helper'), false);
+});
+
+test('a confirmed canceled X2D task reaches checked native dispatch without error-reset commands', async t => {
+  const s = await server(t, { state: 'FAILED', storage: canceledTask });
+  const result = await s.print({ connection_mode: 'bambu_native', ams_slots: [0] });
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  const events = await s.events();
+  const helpers = events.filter(e => e.kind === 'helper');
+  assert.equal(helpers.length, 1);
+  assert.equal(helpers[0].mode, '--print-authorized');
+  assert.equal(events.filter(e => e.kind === 'dispatched').length, 1);
+  assert.equal(events.some(e => e.command?.system?.command === 'uiop' || e.command?.print?.command === 'clean_print_error'), false);
+});
+
+test('a different canceled task appearing during native setup cannot reuse bed clearance', async t => {
+  const s = await server(t, { state: 'FAILED', storage: canceledTask, dispatchStorage: { ...canceledTask, task_id: '2' } });
+  const result = await s.print({ connection_mode: 'bambu_native', ams_slots: [0] });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /newly finished job/);
+  assert.equal((await s.events()).some(e => e.kind === 'dispatched'), false);
+});
+
+for (const overrides of [{ fail_reason: 0x0300400d }, { print_error: 123 }, { hms: [{ attr: 1, code: 0x20001 }] }]) {
+  test(`native canceled-task recovery rejects a real fault ${JSON.stringify(overrides)}`, async t => {
+    const s = await server(t, { state: 'FAILED', storage: { ...canceledTask, ...overrides } });
+    const result = await s.print({ connection_mode: 'bambu_native', ams_slots: [0] });
+    assert.equal(result.isError, true);
+    assert.equal((await s.events()).some(e => e.kind === 'helper'), false);
+  });
+}
+
 for (const connection_mode of [undefined, "lan_mqtt_ftps", "bambu_native"]) {
   test(`elicited X2D uses native print with ${connection_mode || "default"} routing`, async t => {
     const s = await server(t, { model: "" });
@@ -435,6 +475,14 @@ test("native error clearing cannot clear newly appeared unconfirmed errors", asy
   assert.equal(result.isError, true, JSON.stringify(result));
   assert.match(result.content[0].text, /errors changed/i);
   assert.equal((await s.events()).some(e => e.kind === "dispatched"), false);
+});
+
+test('native error clearing cannot reuse confirmation for a different job during helper setup', async t => {
+  const s = await server(t, { state: 'FAILED', storage: canceledTask, dispatchStorage: { ...canceledTask, task_id: '2' } });
+  const result = await s.client.callTool({ name: 'clear_hms_errors', arguments: {} });
+  assert.equal(result.isError, true, JSON.stringify(result));
+  assert.match(result.content[0].text, /job changed/);
+  assert.equal((await s.events()).some(e => e.kind === 'dispatched'), false);
 });
 
 test("raw native controls cannot bypass checked heating, resume or error clearing", async t => {

@@ -116,6 +116,20 @@ function finiteNumber(value) {
     const number = Number(value);
     return Number.isFinite(number) ? number : undefined;
 }
+/**
+ * X2D retains FAILED after a canceled job even with no active print error.
+ * Bambu Studio classifies FAILED as a finished job; its v02.08.02.61
+ * hms_en_20P table (926a7192574bcb9b3a732e1ec59a46d79cb45466)
+ * calls 0300400C "The task was canceled."
+ * Only this observed terminal condition qualifies, never an arbitrary failure.
+ * Callers still validate HMS, identity, hardware and material configuration,
+ * and print dispatch must obtain job-bound physical bed-clearance confirmation.
+ */
+export function isCancelledX2DJob(raw, model) {
+    return normalizeModel(model) === "x2d" && raw.gcode_state === "FAILED" &&
+        finiteNumber(raw.print_error) === 0 && finiteNumber(raw.fail_reason) === 0x0300400c &&
+        [raw.gcode_file, raw.subtask_name].some(value => typeof value === "string" && value.trim().length > 0);
+}
 const token = (value) => typeof value === "string" ? value.trim().toLowerCase().replace(/[\s_-]/g, "") : "";
 function nozzleTypeAndFlow(value) {
     const text = String(value ?? "");
@@ -296,9 +310,10 @@ function logHiddenNotices(raw, serial, model) {
 }
 function validateErrors(raw, requireIdle, serial, model) {
     const state = typeof raw.gcode_state === "string" ? raw.gcode_state.toUpperCase() : "UNKNOWN";
-    if (requireIdle && !["IDLE", "FINISH"].includes(state))
+    const cancelled = isCancelledX2DJob(raw, model);
+    if (requireIdle && !["IDLE", "FINISH"].includes(state) && !cancelled)
         throw new Error(`Printer state ${state} is not safely idle.`);
-    if (!requireIdle && !["IDLE", "FINISH", "RUNNING", "PAUSE"].includes(state))
+    if (!requireIdle && !["IDLE", "FINISH", "RUNNING", "PAUSE"].includes(state) && !cancelled)
         throw new Error(`Printer state ${state} is unknown or failed.`);
     if (finiteNumber(raw.print_error) !== 0)
         throw new Error("Printer reports a print error or did not report its error state.");
