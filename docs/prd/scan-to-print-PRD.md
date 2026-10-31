@@ -152,7 +152,7 @@ IDs are stable; acceptance evidence is in §18.
 | ID | Requirement |
 |---|---|
 | D01 | Pipeline order: registry/FitBase match, then template instantiation, then free-form code. Escalation is visible to the user and never re-priced mid-job. |
-| D02 | The model gets only design tools (§8.3); it never sees printer credentials and has no print, heat or motion tool |
+| D02 | The hosted design loop exposes only the fit/design tools in §8.3. Print, heat, motion, slicing dispatch and live printer state go through `bambu-printer-mcp` on the user's bridge, phone executor, or any MCP client on a reachable route, with AGENTS.md safety gates. LAN credentials stay in Keychain, Keystore or the bridge—not in the Modal sandbox |
 | D03 | Generated code runs only in a network-blocked gVisor sandbox with no secrets ([Modal sandbox networking](https://modal.com/docs/guide/sandbox-networking)) or in a self-host local container without network |
 | D04 | Hard budgets: tokens, dollars and iterations per job (free-form: 6 iterations, stopping after 2 consecutive iterations without validator progress). Exhausting a budget returns the best valid candidate or an actionable failure. |
 | D05 | Every candidate records model id and version, prompt-policy version, tool and image digests, parameters and output hashes |
@@ -411,7 +411,7 @@ So the model gets **measured numbers and code**, and renders only for critique.
 
 `get_fitspec`, `propose_fitspec_patch` (returns a diff for the user to confirm), `search_registry`, `search_fitbase`, `list_templates`, `instantiate_template`, `build_freeform` (sandbox), `validate` (writes the FitProof; the model cannot), `render`, `ask_user`, `request_measurement`, `propose_fit_key`.
 
-There is no print, heat, move, credential or billing tool. Tool output and imported metadata are untrusted data. Each tool has a JSON Schema, deadline, output-size cap and idempotency key.
+§8.3 lists fit and design tools for the hosted agent loop only. Billing is handled by the app and ledger, not this MCP surface. Printing and printer control are the existing `bambu-printer-mcp` tools (`print_3mf`, `set_temperature`, `cancel_print`, and the rest in README.md), available to any MCP client that can reach the printer. Tool output and imported metadata are untrusted data. Each tool has a JSON Schema, deadline, output-size cap and idempotency key.
 
 ### 8.4 FitBench (the evaluation that decides models and templates)
 
@@ -500,7 +500,7 @@ The official build and self-builds are feature-identical; payment buys hosted co
 
 - **Inherited invariants (AGENTS.md):** exact-file inspection; independent model, component and material temperature ceilings; fresh observed identity; human confirmation; finished-bed clearance; no auto-replay; stop and heater-off always available. Both executors must pass this repo's `tests/behavior.test.mjs` safety fixtures through `fitcore-safety` before a route is enabled (Q-EXE-01).
 - **Use-class gating** (§1.3) happens before payment.
-- **Agent boundary:** no physical tools (§8.3); generated code runs network-blocked in a sandbox; a design is "checked" only by a validator FitProof.
+- **Hosted design sandbox:** the Modal agent loop exposes §8.3 tools only; generated build123d code runs network-blocked there. A design is "checked" only by a validator FitProof. Printer execution uses `bambu-printer-mcp` with the inherited safety invariants above—not by giving the design sandbox print credentials.
 - **New hardware classes** (laser, cutter, scanner) get their own physical-action rules. They never inherit FFF guarantees. Laser output starts only after a separate safety review; Class 1 versus Class 4 operation matters for the R1 ([R1 store notes](https://us.store.bambulab.com/products/r1)).
 
 ---
@@ -693,7 +693,7 @@ interface OutputAdapter { machineClass: "fff" | "laser" | "cutter"; build(spec: 
 | S04 | The relay carries end-to-end encrypted payloads between paired keys; device revocation is listed in the app |
 | S05 | Per-project Durable Object state plus account checks on every request; object ids are unguessable but are not treated as authorization |
 | S06 | Input hardening: archive bombs, external references, non-finite coordinates and oversized meshes are rejected before any worker parses them; the repo's ZIP collision and central-directory checks apply to 3MF (`src/safety/archive.ts`) |
-| S07 | Prompt injection: file names, OCR and metadata are data; tools are allowlisted; the model has no secrets or physical authority |
+| S07 | Prompt injection: file names, OCR and metadata are data; hosted design tools are allowlisted; the Modal sandbox has no printer credentials, billing access, or network. Print and motion use the checked MCP executor |
 | S08 | Supply chain: pinned digests, an SBOM for app, worker and bridge images, signed releases |
 | S09 | FitBase moderation: use-class filters, report and takedown, rate limits, pseudonymous authors |
 | S10 | Optional quality-data sharing for FitBench is opt-in only and separate from FitBase publishing |
@@ -711,7 +711,7 @@ interface OutputAdapter { machineClass: "fff" | "laser" | "cutter"; build(spec: 
 | Q-GEO-01 | Validator | Mutation fixtures (thin walls, non-manifold, out-of-volume, collisions over insertion depth) all reject |
 | Q-GEO-02 | Kernel parity | The same recipe gives the same geometry fingerprint on phone, bridge and cloud |
 | Q-GEO-04 | Twins | Primitive fit plus template match reproduces caliper dimensions within *U_m* on the twin fixtures |
-| Q-AGT-01 | Agent boundary | Hostile metadata, attempts to call a print tool, and budget exhaustion are all contained; no unbounded loops |
+| Q-AGT-01 | Hosted design sandbox | Hostile metadata and budget exhaustion are contained in the §8.3 loop; print preparation outside that surface goes through the checked MCP executor; no unbounded loops |
 | Q-ISO-01 | Sandbox | Generated code cannot reach the network, metadata, secrets or other tenants' objects |
 | Q-EXE-01 | Safety parity | `fitcore-safety` passes every repo safety fixture on Hermes (iOS and Android) and Node |
 | Q-EXE-02 | Dispatch | Kill or suspend the app at every step: no duplicate starts; uncertain states are reconciled |

@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.1.42] – 2026-10-31
+
+### Documentation
+- Remove invented "no printer contact" agent rules from the Made to Fit scan-to-print PRD. Clarify that hosted design sandboxes expose fit tools only while print, slice, and control go through `bambu-printer-mcp` on bridge, phone, or any MCP client with AGENTS.md safety gates—not a repo-wide ban on agents reaching printers.
+
 ## [1.1.41] – 2026-10-30
 
 ### Fixed
