@@ -411,7 +411,7 @@ So the model gets **measured numbers and code**, and renders only for critique.
 
 `get_fitspec`, `propose_fitspec_patch` (returns a diff for the user to confirm), `search_registry`, `search_fitbase`, `list_templates`, `instantiate_template`, `build_freeform` (sandbox), `validate` (writes the FitProof; the model cannot), `render`, `ask_user`, `request_measurement`, `propose_fit_key`.
 
-§8.3 lists fit and design tools for the hosted agent loop only. Billing is handled by the app and ledger, not this MCP surface. Printing and printer control are the existing `bambu-printer-mcp` tools (`print_3mf`, `heat_bed`, `stop_print`, and the rest in README.md), available to any MCP client that can reach the printer. Tool output and imported metadata are untrusted data. Each tool has a JSON Schema, deadline, output-size cap and idempotency key.
+§8.3 lists fit and design tools for the hosted agent loop only. Billing is handled by the app and ledger, not this MCP surface. Printing and printer control are the existing `bambu-printer-mcp` tools (`print_3mf`, `set_temperature`, `cancel_print`, and the rest in README.md), available to any MCP client that can reach the printer. Tool output and imported metadata are untrusted data. Each tool has a JSON Schema, deadline, output-size cap and idempotency key.
 
 ### 8.4 FitBench (the evaluation that decides models and templates)
 
