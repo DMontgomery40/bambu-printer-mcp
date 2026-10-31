@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.1.43] – 2026-10-31
+
+### Fixed
+- Resolve H2C first-layer temperatures from Bambu Studio’s per-variant project tables using the selected plate’s filament indices and variants. Single-filament jobs with the official three-variant PLA preset now pass inspection; distinct temperatures and multiple filaments retain their own mappings, header agreement and independent thermal ceilings. Missing or ambiguous mappings still reject. Reported by [Steve Pritchard (sjpritchard)](https://github.com/sjpritchard) in [#81](https://github.com/DMontgomery40/bambu-printer-mcp/issues/81). Verified with an isolated Bambu Studio 2.8.2.61 H2C cube slice and offline regressions; no physical print was run.
+
 ## [1.1.42] – 2026-10-31
 
 ### Documentation
