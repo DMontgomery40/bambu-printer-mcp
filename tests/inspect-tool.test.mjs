@@ -46,7 +46,7 @@ test('advertises additive read-only inspection with explicit required model', as
   await assert.rejects(access(s.networkLog), { code: 'ENOENT' });
 });
 
-test('actual MCP tool returns a generic versioned receipt for exact raw bytes with no printer contact', async t => {
+test('inspect_print_file returns a generic versioned file-only receipt for exact raw bytes without network I/O', async t => {
   const s = await server(t); const f = await raw(s);
   const result = await s.call({ file_path: f.path, bambu_model: 'p1s', nozzle_diameters: [0.4], plate_index: 0, bed_type: 'textured_plate' });
   assert.equal(result.isError, undefined); const r = s.decode(result);
