@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.1.45] – 2026-11-01
+
+### Fixed
+- Accept official H2C time-lapse and mid-print filament-change commands from Bambu Studio: bounded `M9711` captures, `M620.14` tower coordinates during a selected filament change, and `M620.15 P` incoming-filament pre-cooling. Preserve exact parameter, model, coordinate and independent material/hardware temperature checks. Reported and diagnosed by [billh-hub](https://github.com/billh-hub) in [#84](https://github.com/DMontgomery40/bambu-printer-mcp/issues/84), checked against pinned Studio 2.7/2.8 sources, offline regressions and an actual isolated Studio 2.8.2.61 two-colour H2C slice; no physical print was run.
+
 ## [1.1.44] – 2026-11-01
 
 ### Fixed

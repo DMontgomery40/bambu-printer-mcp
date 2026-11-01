@@ -515,7 +515,7 @@ test('X2D time-lapse capture accepts only its exact parameters inside the machin
     'M9711 M0 E1 Z0.6 S11 C10 O0 T3000 P1','M9711 M0 E1 Z0.6 S11 C10 O0 T3000 M104 S400','M9711 M0 E1 Z0.6 S11 C10 O0 T3000 G1',
     'M9711 E1 Z0.6 S11 C10 O0 T3000','M9711 M0 E1 Z0.6 S11 C10 O0 T3000 X','M9711',
   ]) await assert.rejects(inspect(t,base+command+'\n',{model:'x2d'}),/unsupported M9711 time-lapse parameters/,command);
-  for(const [model,nozzle] of [['H2C','0.4;0.4'],['H2S','0.4'],['P1S','0.4']])
+  for(const [model,nozzle] of [['H2S','0.4'],['P1S','0.4']])
     await assert.rejects(inspect(t,header(model,'PETG',nozzle)+orcaX2dLayer,{model:model.toLowerCase()}),/unsupported M9711 time-lapse parameters/,model);
 });
 test('official H2D time-lapse template capture forms pass inside the H2D volume', async t => {
@@ -674,7 +674,7 @@ test('X2D banner separators, M9711 timelapse and N nozzle index pass only on dua
   const r=await inspect(t,source,{model:'x2d'});
   assert.equal(r.maxNozzleTemperature,220);assert.deepEqual(r.usedFilamentPositions,[0]);
   await assert.doesNotReject(inspect(t,header('H2D','PLA','0.4;0.4')+'M104 T1 S25 N0\nM9711 M0 E1 Z1.4 S11 C10 O0 T3000\nM104 S220\n',{model:'h2d'}));
-  // The released M9711 rule covers X2D and H2D; H2C keeps the nozzle-index form.
+  // H2C also keeps the physical nozzle-index heater form.
   await assert.doesNotReject(inspect(t,header('H2C','PLA','0.4;0.4')+'M104 T1 S25 N0\nM104 S220\n',{model:'h2c'}));
   for(const [model,nozzle] of [['P1S','0.4'],['H2S','0.4'],['A1','0.4'],['P2S','0.4']]) for(const command of ['======== X2D filament_change gcode ==========','M9711 M0 E0 U205 V162 Z1.4 S11 C10 O0 T3000','M104 S220 N0','M109 T0 S220 N0'])
     await assert.rejects(inspect(t,header(model,'PLA',nozzle)+command+'\n',{model:model.toLowerCase()}),/unsupported|syntax|multiple|parameter/i,model+' '+command);
@@ -749,4 +749,45 @@ test('malformed or conflicting nozzle-binding headers cannot authorize physical 
     valid+'; filament_map = 2,1\n',
     valid+'; physical_extruder_map = 0,1\n',
   ]) await assert.rejects(inspect(t,x2dHeader()+metadata+'T0\nM104 S220\n',{model:'x2d'}),/filament map|physical extruder map|binding/i,metadata);
+});
+
+// Issue #84: emitted mid-print H2C commands, independent of startup allowances.
+// Official templates at BambuStudio 42d319c6692fa8e64790fddf0cdaafd2a4254bcc,
+// resources/profiles/BBL/machine/Bambu Lab H2C 0.4 nozzle template
+// {time_lapse_gcode,change_filament_gcode}.json. PrintConfig.cpp defines P as
+// filament_pre_cooling_temperature_nc[next_extruder] in Celsius (0 disables).
+test('H2C issue84 official time-lapse runs after deposition',async t=>{
+  const r=await inspect(t,h2cHeader()+'G1 X10 Y10 E1\nM9711 M0 E0 U36 V265 Z0.6 S11 C10 O0 T3000\n',{model:'h2c'});
+  assert.equal(r.model,'h2c');
+});
+test('H2C issue84 tower location runs during a filament change',async t=>{
+  const r=await inspect(t,h2cHeader()+'G1 X10 Y10 E1\n; CP TOOLCHANGE START\nM620 S0A\nM620.14 X195.626 Y216.626\nM621 S0A\n',{model:'h2c'});
+  assert.deepEqual(r.usedFilamentPositions,[0]);
+});
+test('H2C issue84 pre-cooling P and cooling C targets pass',async t=>{
+  const r=await inspect(t,h2cHeader()+'T0\nG1 X10 Y10 E1\nM620 S0A\nM620.15 P180\nM620.15 C210\nT0\nM621 S0A\n',{model:'h2c'});
+  assert.equal(r.maxNozzleTemperature,210);
+});
+
+test('H2C time-lapse preserves exact capture shape and physical limits',async t=>{
+  for(const command of ['M9711 M0 E2 U36 V265 Z0.6 S11 C10 O0 T3000','M9711 M0 E0 U331 V265 Z0.6 S11 C10 O0 T3000','M9711 M0 E0 U36 V321 Z0.6 S11 C10 O0 T3000','M9711 M0 E0 Z326 S11 C10 O0 T3000','M9711 M0 E0 Z0.6 S12 C10 O0 T3000','M9711 M0 E0 Z0.6 S11 C10 O0 T3000 P400'])
+    await assert.rejects(inspect(t,h2cHeader()+command+'\n',{model:'h2c'}),/unsupported M9711/);
+});
+test('H2C mid-print tower coordinates need a selected change and bounded XY only',async t=>{
+  for(const command of ['M620.14 X-1 Y20','M620.14 X351 Y20','M620.14 X20 Y351','M620.14 X20','M620.14 X20 Y20 T400','M620.14 XNaN Y20'])
+    await assert.rejects(inspect(t,h2cHeader()+'M620 S0A\n'+command+'\n',{model:'h2c'}),/unsupported|parameter/);
+  for(const prefix of ['', 'M620 S255\n','M620 S0A\nM621 S0A\n'])
+    await assert.rejects(inspect(t,h2cHeader()+prefix+'M620.14 X195 Y216\n',{model:'h2c'}),/unsupported H2C tower/);
+  await assert.rejects(inspect(t,header('H2D','PLA','0.4;0.4')+'M620 S0A\nM620.14 X195 Y216\n',{model:'h2d'}),/unsupported H2C tower/);
+});
+test('H2C hotend pre-cooling uses the incoming filament and independent thermal ceilings',async t=>{
+  const change=(materials,cmd)=>inspect(t,header('H2C',materials,'0.4;0.4')+'T0\nM620 S1A\n'+cmd+'\n',{model:'h2c'});
+  assert.equal((await change('PLA;PA-CF','M620.15 P300')).maxNozzleTemperature,300);
+  for(const cmd of ['M620.15 P300','M620.15 P400','M620.15 P-1','M620.15 PNaN','M620.15 P','M620.15 P180 C210','M620.15 P180 T400'])
+    await assert.rejects(change('PA-CF;PLA',cmd),/temperature|material|limit|parameter|target|unsupported|syntax/i,cmd);
+  await assert.rejects(change('PLA;PA-CF','M620.15 P400'),/temperature|limit/i);
+  assert.equal((await change('PA-CF;PLA','M620.15 P0')).maxNozzleTemperature,0);
+  await assert.rejects(inspect(t,header('H2C','PLA;PA-CF','0.4;0.4')+'M620.15 P300\n',{model:'h2c'}),/temperature|material|limit/i,'unknown selection checks all materials');
+  for(const model of ['H2D','X2D','P1S'])
+    await assert.rejects(inspect(t,header(model,'PLA',model==='P1S'?'0.4':'0.4;0.4')+'M620 S0A\nM620.15 P180\n',{model:model.toLowerCase()}),/unsupported M620.15/);
 });

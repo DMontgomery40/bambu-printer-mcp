@@ -374,19 +374,19 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
       const [base,subcode]=command![2].split('.');
       const code=command![1].toUpperCase()+String(Number(base))+(subcode===undefined?'':'.'+subcode);const argumentsText=line.slice(command![0].length).trim();commandCount++;
       if(code==='M9711') {
-        // Official X2D and H2D time-lapse capture (Bambu Studio and OrcaSlicer
+        // Official X2D, H2D and H2C time-lapse capture (Bambu Studio and OrcaSlicer
         // templates), emitted on every layer: M is the time-lapse mode and E the
         // physical extruder, not a second command; T is a duration, not a heater.
         // It sets no temperature. Positions stay inside the machine volume.
         const invalid=()=>fail('unsupported M9711 time-lapse parameters');
-        if(!['x2d','h2d'].includes(model)) invalid();
+        if(!['x2d','h2d','h2c'].includes(model)) invalid();
         let args:Map<string,number>;
         try {args=parameters(argumentsText);} catch {return invalid();}
         const [width,depth,height]=MACHINE_LIMITS[model].volume;
         const position=['X','Y','U','V'].filter(key=>args.has(key)).join('');
         const limit:Record<string,number>={X:width,U:width,Y:depth,V:depth};
         if([...args.keys()].some(key=>!'MEXYUVZSCOT'.includes(key)) ||
-           // X2D and H2D have two physical extruders, whatever the file declares.
+           // These models have two physical extruders, whatever the file declares.
            ![0,1].includes(args.get('M')!) || !Number.isInteger(args.get('E')) || !inRange(args,'E',0,Math.min(nozzleDiameters.length,2)-1) ||
            args.get('S')!==11 || args.get('C')!==10 || args.get('O')!==0 || !inRange(args,'T',0,600000) ||
            !inRange(args,'Z',0,height) ||
@@ -476,8 +476,9 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
         fail(`unsupported thermal-affecting wipe command ${code}`);
       } else if(code==='M620.14') {
         const args=parameters(argumentsText);
-        // H2C tower coordinates include the rear wipe area outside object bounds.
-        if(!h2cStartup(index) || args.size!==2 || !['X','Y'].every(key=>args.has(key) && Number.isFinite(args.get(key)) && args.get(key)!>=0 && args.get(key)!<=350)) fail('unsupported H2C startup tower parameters');
+        // H2C uses these coordinates during startup and a selected filament change.
+        // The rear wipe area extends outside object bounds (official fallback Y336).
+        if(!(h2cStartup(index) || (model==='h2c' && pending!==undefined)) || args.size!==2 || !['X','Y'].every(key=>args.has(key) && Number.isFinite(args.get(key)) && args.get(key)!>=0 && args.get(key)!<=350)) fail('unsupported H2C tower parameters');
       } else if(model==='h2c' && ['G383','G383.3','G383.7'].includes(code) && /U/i.test(argumentsText)) {
         const args=parameters(argumentsText);
         const expected=code==='G383.7'?'UJ':code==='G383.3'?'UL':'OUL';
@@ -508,8 +509,11 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
         // H2D change_filament_gcode supplies the incoming filament's cooling
         // temperature as C{new_filament_temp - filament_cooling_before_tower}.
         const args=parameters(argumentsText);
-        if(args.size!==1 || !args.has('C')) fail('unsupported M620.15 cooling temperature parameters');
-        heat('nozzle',args.get('C')!,pending ?? active);
+        // H2C also supplies P{filament_pre_cooling_temperature_nc[next_filament_id]}
+        // before switching hotends. P and C both constrain the incoming material.
+        const target=model==='h2c' && args.has('P')?'P':'C';
+        if(args.size!==1 || !args.has(target)) fail('unsupported M620.15 cooling temperature parameters');
+        heat('nozzle',args.get(target)!,pending ?? active);
       } else if(code==='M620.17') {
         const args=parameters(argumentsText);
         if(!args.has('S') || !args.has('L') || !args.has('T') || !Number.isInteger(args.get('T')) || args.get('T')!<0 || args.get('T')!>=nozzleDiameters.length) fail('unsupported M620.17 nozzle/material temperature mapping');
