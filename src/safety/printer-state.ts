@@ -141,6 +141,14 @@ export function isCancelledX2DJob(raw: Record<string, any>, model: string): bool
     finiteNumber(raw.print_error) === 0 && finiteNumber(raw.fail_reason) === 0x0300400c &&
     [raw.gcode_file, raw.subtask_name].some(value => typeof value === "string" && value.trim().length > 0);
 }
+/** Bambu Studio 2.8.2.61 marks FAILED as finished. Limit P1S recovery to
+ * a named prior job explicitly reporting idle, no print error and no HMS.
+ * Its bed still needs job-bound human clearance before every print. */
+export function isFinishedP1SJob(raw: Record<string, any>, model: string): boolean {
+  return normalizeModel(model) === "p1s" && raw.gcode_state === "FAILED" && raw.print_type === "idle" &&
+    finiteNumber(raw.print_error) === 0 && Array.isArray(raw.hms) && raw.hms.length === 0 &&
+    [raw.gcode_file, raw.subtask_name].some(value => typeof value === "string" && value.trim().length > 0);
+}
 const token = (value: unknown) => typeof value === "string" ? value.trim().toLowerCase().replace(/[\s_-]/g, "") : "";
 function nozzleTypeAndFlow(value: unknown): {type?: string; flow?: string} {
   const text = String(value ?? "");
@@ -319,9 +327,9 @@ function logHiddenNotices(raw: Record<string, any>, serial: string, model: strin
 
 function validateErrors(raw: Record<string,any>, requireIdle: boolean, serial: string, model: string) {
   const state = typeof raw.gcode_state === "string" ? raw.gcode_state.toUpperCase() : "UNKNOWN";
-  const cancelled = isCancelledX2DJob(raw, model);
-  if (requireIdle && !["IDLE","FINISH"].includes(state) && !cancelled) throw new Error(`Printer state ${state} is not safely idle.`);
-  if (!requireIdle && !["IDLE","FINISH","RUNNING","PAUSE"].includes(state) && !cancelled) throw new Error(`Printer state ${state} is unknown or failed.`);
+  const terminal = isCancelledX2DJob(raw, model) || isFinishedP1SJob(raw, model);
+  if (requireIdle && !["IDLE","FINISH"].includes(state) && !terminal) throw new Error(`Printer state ${state} is not safely idle.`);
+  if (!requireIdle && !["IDLE","FINISH","RUNNING","PAUSE"].includes(state) && !terminal) throw new Error(`Printer state ${state} is unknown or failed.`);
   if (finiteNumber(raw.print_error) !== 0) throw new Error("Printer reports a print error or did not report its error state.");
   if (!Array.isArray(raw.hms)) throw new Error("Printer HMS error state is missing or malformed.");
   for (const reported of raw.hms) {

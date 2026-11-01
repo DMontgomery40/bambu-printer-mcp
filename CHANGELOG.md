@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.1.46] – 2026-11-01
+
+### Fixed
+- Allow scoped P1S recovery from a named previous FAILED job that explicitly reports idle, zero print error and an empty HMS list. Require human bed-clearance confirmation bound to that same job even in headless mode; preserve fresh identity, nozzle, filament and temperature checks. No error reset is sent. Matches Bambu Studio 2.8.2.61’s finished-job classification; validated with offline readiness and job-bound clearance regressions, with physical print verification pending.
+
 ## [1.1.45] – 2026-11-01
 
 ### Fixed
