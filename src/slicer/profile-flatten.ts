@@ -809,7 +809,7 @@ async function writeTemp(
  */
 export function detectProfilesRoot(slicerPath?: string, slicerType = 'bambustudio'): string {
   if (process.env["BAMBU_PROFILES_ROOT"]) {
-    return process.env["BAMBU_PROFILES_ROOT"];
+    return path.resolve(process.env["BAMBU_PROFILES_ROOT"]);
   }
 
   if (slicerPath) {

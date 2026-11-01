@@ -129,7 +129,7 @@ function isPathLikeExecutable(slicerPath: string): boolean {
 function configuredBambuProfileDirs(): string[] {
   const override = process.env.BAMBU_SLICER_PROFILE_DIRS;
   if (override !== undefined) {
-    return override.split(path.delimiter).filter(Boolean);
+    return override.split(path.delimiter).filter(Boolean).map((dir) => path.resolve(dir));
   }
 
   const home = os.homedir();
@@ -270,7 +270,8 @@ export class STLManipulator extends EventEmitter {
 
   constructor(tempDir: string = path.join(process.cwd(), 'temp')) {
     super();
-    this.tempDir = tempDir;
+    // Every slicer output and generated profile lives here; keep it absolute.
+    this.tempDir = path.resolve(tempDir);
     // Ensure temp directory exists
     if (!fs.existsSync(this.tempDir)) {
       fs.mkdirSync(this.tempDir, { recursive: true });
@@ -287,7 +288,7 @@ export class STLManipulator extends EventEmitter {
   private getAvailableProfileRoots(): string[] {
     const selectedRoot = process.env.BAMBU_PROFILES_ROOT;
     return [
-      ...(selectedRoot ? [path.join(selectedRoot, 'BBL')] : []),
+      ...(selectedRoot ? [path.resolve(selectedRoot, 'BBL')] : []),
       ...configuredBambuProfileDirs(),
       ...BAMBU_PROFILE_ROOTS,
     ].filter((root) => fs.existsSync(root));
@@ -1834,6 +1835,9 @@ export class STLManipulator extends EventEmitter {
             cliResult = { resultPath: path.join(outputDir, 'result.json'), startedAt: Date.now() };
             // A result.json left by an earlier run must not explain this one.
             await fs.promises.rm(cliResult.resultPath, { force: true });
+            // BambuStudio fails exports to a relative --outputdir; give the CLI an
+            // absolute path for every file it reads, whichever setting supplied it.
+            const absoluteCliPathList = (paths: string[]) => paths.map((entry) => entry && path.resolve(entry)).join(';');
             args = [
               ...orcaExtraArgs,
               '--slice', String(bambuOptions?.slicePlate ?? 0),
@@ -1841,7 +1845,7 @@ export class STLManipulator extends EventEmitter {
               '--export-3mf', path.basename(bambuOutputPath),
             ];
             if (cliBundle.settingsArg) {
-              args.push('--load-settings', cliBundle.settingsArg);
+              args.push('--load-settings', absoluteCliPathList(cliBundle.settingsArg.split(';')));
             }
             // Always allow newer-version 3MF files (the CLI rejects them by default)
             args.push('--allow-newer-file');
@@ -1869,12 +1873,12 @@ export class STLManipulator extends EventEmitter {
             if (bambuOptions?.cloneObjects) args.push('--clone-objects', bambuOptions.cloneObjects);
             if (bambuOptions?.skipObjects) args.push('--skip-objects', bambuOptions.skipObjects);
             if (cliBundle.filamentPaths.length > 0) {
-              args.push('--load-filaments', cliBundle.filamentPaths.join(';'));
+              args.push('--load-filaments', absoluteCliPathList(cliBundle.filamentPaths));
               args.push('--load-defaultfila');
             }
             if (bambuOptions?.loadFilamentIds) args.push('--load-filament-ids', bambuOptions.loadFilamentIds);
 
-            args.push(inputPath);
+            args.push(path.resolve(inputPath));
             // Override outputFilePath for bambustudio since it produces 3MF, not gcode
             outputFilePath = bambuOutputPath;
           }

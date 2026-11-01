@@ -2170,6 +2170,75 @@ test("slice_with_template prefers named template settings over BAMBU_SLICER_PROF
   assert.ok(!settingsValue.includes(defaultProfilePath), "server-level BAMBU_SLICER_PROFILE must not override a named template");
 });
 
+test("relative TEMP_DIR and profile, filament and model paths reach the slicer as absolute paths", async (t) => {
+  // BambuStudio 2.8.2.61 fails every export ("return_code=-13") when
+  // --outputdir is relative, so a TEMP_DIR=./temp .env broke all slicing.
+  const fakeSlicer = await createFakeBambuSlicer();
+  t.after(() => fs.rmSync(fakeSlicer.tempDir, { recursive: true, force: true }));
+  // The child's cwd is the real path (/private/var on macOS, not /var).
+  const cwd = fs.realpathSync(fakeSlicer.tempDir);
+  fs.copyFileSync(SAMPLE_STL, path.join(cwd, "box.stl"));
+  fs.writeFileSync(path.join(cwd, "process.json"), JSON.stringify({ name: "Relative process", inherits: "Behavior process", layer_height: "0.16" }));
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    cwd,
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+      TEMP_DIR: "./temp",
+      BAMBU_PROFILES_ROOT: "profiles",
+      BAMBU_SLICER_PROFILE_DIRS: "",
+      BAMBU_SLICER_PROFILE: "",
+      SLICER_PROFILE: "",
+      BAMBU_TEMPLATE_3MF_PATH: "",
+      SLICER_TYPE: "bambustudio",
+      SLICER_PATH: "",
+      BAMBU_MODEL: "p1s",
+      BAMBU_PRINTER_MODEL: "",
+      BAMBU_SERIAL: "",
+      BAMBU_TOKEN: "",
+      MCP_ALLOW_EXECUTABLE_ARG: "1",
+    },
+    stderr: "pipe",
+  });
+  const client = createClient();
+  t.after(async () => { await closeTransport(transport); });
+  await client.connect(transport);
+  const result = await client.callTool({
+    name: "slice_stl",
+    arguments: {
+      stl_path: "box.stl",
+      bambu_model: "p1s",
+      slicer_path: fakeSlicer.fakeSlicerPath,
+      slicer_profile: "process.json",
+      load_filaments: path.join("profiles", "BBL", "filament", "Behavior filament.json"),
+      use_printer_filaments: false,
+    },
+  });
+
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  const slicerArgs = JSON.parse(fs.readFileSync(fakeSlicer.argsOutPath, "utf8"));
+  const valueOf = (flag) => {
+    assert.ok(slicerArgs.includes(flag), `${flag} missing from ${JSON.stringify(slicerArgs)}`);
+    return slicerArgs[slicerArgs.indexOf(flag) + 1];
+  };
+  const tempRoot = path.join(cwd, "temp");
+  assert.equal(valueOf("--outputdir"), tempRoot);
+  assert.equal(slicerArgs.at(-1), path.join(cwd, "box.stl"));
+  const settings = valueOf("--load-settings").split(";");
+  const filaments = valueOf("--load-filaments").split(";");
+  assert.equal(settings.length, 2);
+  for (const entry of [...settings, ...filaments]) {
+    assert.ok(path.isAbsolute(entry), `${entry} must be absolute`);
+    assert.ok(fs.existsSync(entry), `${entry} must exist`);
+  }
+  assert.equal(JSON.parse(fs.readFileSync(settings[1], "utf8")).layer_height, "0.16");
+  const outputPath = path.join(tempRoot, "box_sliced.3mf");
+  assert.ok(fs.existsSync(outputPath), "the sliced 3MF must be written under the resolved TEMP_DIR");
+  assert.ok(result.content[0].text.includes(outputPath), result.content[0].text);
+});
+
 test("template machine settings never replace the selected machine preset", async (t) => {
   const fakeSlicer = await createFakeBambuSlicer();
   fs.writeFileSync(path.join(fakeSlicer.profilesRoot, "BBL", "machine", "Bambu Lab P1S 0.4 nozzle.json"), JSON.stringify({

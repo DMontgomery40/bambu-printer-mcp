@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.1.44] – 2026-11-01
+
+### Fixed
+- Resolve a relative `TEMP_DIR` such as `./temp` against the server's working directory at startup. BambuStudio 2.8.2.61 fails every 3MF export to a relative `--outputdir` ("Failed exporting 3mf files", return code -13), so slicing and auto-slicing before a print always failed with that setting. Relative `BAMBU_PROFILES_ROOT`, `BAMBU_SLICER_PROFILE_DIRS`, `load_filaments`, process profile and model paths also reach BambuStudio and Orca CLIs as absolute paths, and tools such as `slice_stl` and `lay_flat` return absolute output paths. Verified with a real BambuStudio 2.8.2.61 slice on macOS with `TEMP_DIR=./temp` and a regression that records the CLI arguments; no print was started.
+
 ## [1.1.43] – 2026-10-31
 
 ### Fixed
