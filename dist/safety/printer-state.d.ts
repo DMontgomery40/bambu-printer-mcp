@@ -49,6 +49,10 @@ export interface ValidatedPrinterState {
  * and print dispatch must obtain job-bound physical bed-clearance confirmation.
  */
 export declare function isCancelledX2DJob(raw: Record<string, any>, model: string): boolean;
+/** Bambu Studio 2.8.2.61 marks FAILED as finished. Limit P1S recovery to
+ * a named prior job explicitly reporting idle, no print error and no HMS.
+ * Its bed still needs job-bound human clearance before every print. */
+export declare function isFinishedP1SJob(raw: Record<string, any>, model: string): boolean;
 /** Nozzles whose reported diameter and type are configured settings rather than chip readings. */
 export declare function unchippedNozzles(raw: unknown): number[];
 /** The one key format for a reported entry, shared by the gate and clear_hms_errors. */

@@ -26,7 +26,6 @@ interface BambuPrintOptionsInternal {
     amsSlots?: number[];
     md5?: string;
 }
-/** What the human confirmed in confirmPrintPreflight, checked again before dispatch. */
 export type PrintPreflight = {
     finishedJob?: string;
     serial: string;

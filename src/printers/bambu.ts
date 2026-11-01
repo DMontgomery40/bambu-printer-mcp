@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { isCancelledX2DJob, readFreshPrinterStatus } from "../safety/printer-state.js";
+import { isFinishedP1SJob, isCancelledX2DJob, readFreshPrinterStatus } from "../safety/printer-state.js";
 import fs from "node:fs/promises";
 import { readFileSync, existsSync } from "node:fs";
 import path from "node:path";
@@ -472,6 +472,10 @@ class BambuClientStore {
 }
 
 /** What the human confirmed in confirmPrintPreflight, checked again before dispatch. */
+function printJobIdentity(raw: Record<string, any>): string {
+  return JSON.stringify([raw.gcode_file, raw.subtask_name, raw.task_id, raw.subtask_id, raw.job_id]);
+}
+
 export type PrintPreflight = { finishedJob?: string; serial: string; model: string; notices: string[] };
 
 /**
@@ -528,8 +532,8 @@ export class BambuImplementation {
 
   private finishedJobIdentity(status: any): string | undefined {
     const raw = status.raw;
-    return raw.gcode_state === "FINISH" || isCancelledX2DJob(raw, String(status.model ?? ""))
-      ? JSON.stringify([raw.gcode_state, raw.gcode_file, raw.subtask_name, raw.task_id, raw.subtask_id, raw.job_id])
+    return raw.gcode_state === "FINISH" || (isCancelledX2DJob(raw, String(status.model ?? "")) || isFinishedP1SJob(raw, String(status.model ?? "")))
+      ? printJobIdentity(raw)
       : undefined;
   }
 
@@ -548,7 +552,9 @@ export class BambuImplementation {
       `Materials: ${inspection.materials.join(", ")}. Peak targets: nozzle ${inspection.maxNozzleTemperature}°C, bed ${inspection.maxBedTemperature}°C, chamber ${inspection.maxChamberTemperature}°C. ` +
       `File SHA-256: ${inspection.sha256}. Confirm the physical spool labels and that the build plate is clear.` +
       (finishedJob !== undefined ? (status.raw.gcode_state === "FAILED"
-        ? " The previous X2D task was canceled (0300400C): remove every detached part, support and strand from the plate and nozzle before confirming. FAILED is the previous job's terminal state; no error-reset command is sent."
+        ? (isFinishedP1SJob(status.raw, inspection.model)
+          ? " The previous P1S job ended in FAILED and the printer now reports idle with no print or HMS errors. Remove the previous part and every detached part, support and strand from the plate and nozzle before confirming. No error-reset command is sent."
+          : " The previous X2D task was canceled (0300400C): remove every detached part, support and strand from the plate and nozzle before confirming. FAILED is the previous job's terminal state; no error-reset command is sent.")
         : " The printer reports FINISH: remove the previous part and debris before confirming.") : "") +
       (cleared ? ` Previously cleared hardware codes: ${cleared.map(describeHmsKey).join(", ")}. Confirm their physical causes have been resolved.` : "") +
       (notices.length ? ` The printer also reports ${notices.join(", ")}, which Bambu lists for this model without text and never shows as a fault; ` +
@@ -563,7 +569,8 @@ export class BambuImplementation {
   /** Stop a print whose confirmed situation changed: a newly finished job, or a hidden HMS notice the preflight did not name. */
   assertBedClearance(status: any, preflight: PrintPreflight): void {
     const current = this.finishedJobIdentity(status);
-    if (current !== undefined && current !== preflight.finishedJob) {
+    if ((preflight.finishedJob !== undefined && printJobIdentity(status.raw) !== preflight.finishedJob)
+        || (current !== undefined && preflight.finishedJob === undefined)) {
       throw new Error("Printer reports a newly finished job. Confirm that its part and debris have been removed before retrying the print.");
     }
     // An X2D raises its hidden camera notice about 15 seconds after boot, so it
