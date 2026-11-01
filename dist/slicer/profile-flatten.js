@@ -644,7 +644,7 @@ async function writeTemp(tempDir, kind, leafName, data) {
  */
 export function detectProfilesRoot(slicerPath, slicerType = 'bambustudio') {
     if (process.env["BAMBU_PROFILES_ROOT"]) {
-        return process.env["BAMBU_PROFILES_ROOT"];
+        return path.resolve(process.env["BAMBU_PROFILES_ROOT"]);
     }
     if (slicerPath) {
         let executable = slicerPath;

@@ -32,7 +32,10 @@ const DEFAULT_BAMBU_DEV_ID = process.env.BAMBU_DEV_ID || DEFAULT_BAMBU_SERIAL;
 // cwd-relative default here can throw at module load via the mkdirSync
 // below and kill the server before it ever opens the stdio transport.
 const AUTOMATIC_TEMP_DIR = process.env.TEMP_DIR ? undefined : fs.mkdtempSync(path.join(os.tmpdir(), "bambu-printer-mcp-"));
-const TEMP_DIR = process.env.TEMP_DIR || AUTOMATIC_TEMP_DIR;
+// Resolve an explicit TEMP_DIR (e.g. ./temp) against the server's working
+// directory, as dotenv's own .env lookup is. Slicer CLIs receive paths under
+// it, and BambuStudio fails every 3MF export to a relative --outputdir.
+const TEMP_DIR = process.env.TEMP_DIR ? path.resolve(process.env.TEMP_DIR) : AUTOMATIC_TEMP_DIR;
 if (AUTOMATIC_TEMP_DIR) {
     // The exit event also covers startup failures and normal event-loop exit.
     // Only the directory created above belongs to us; explicit TEMP_DIR is retained.
