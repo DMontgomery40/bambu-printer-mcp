@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { EventEmitter } from 'events';
+import { type ProcessOverrides } from '../slicer/process-overrides.js';
 export type ProgressCallback = (progress: number, message?: string) => void;
 export type OperationResult = {
     success: boolean;
@@ -49,6 +50,7 @@ export interface BambuSliceOptions {
     minSave?: boolean;
     skipModifiedGcodes?: boolean;
     slicePlate?: number;
+    processOverrides?: ProcessOverrides;
 }
 export declare class STLManipulator extends EventEmitter {
     private tempDir;

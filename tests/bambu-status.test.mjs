@@ -91,3 +91,65 @@ test("printer status waits for the full report that follows a sparse first push"
   const sparse = await silent.waitForInitialReport("127.0.0.1", "01PTEST", "test", 300);
   assert.deepEqual(sparse, { model: "P1S" }, "a printer that never sends the full status still returns within the bound");
 });
+
+// counterpart_print_progress reads the cached MQTT report (PRD §8.3): no printer traffic on a held session.
+function heldSession(bambu, key, report, ageMs = 0) {
+  const store = bambu.printerStore;
+  const published = [];
+  const printer = { publish: async (message) => { published.push(message); } };
+  store.printers.set(key, printer);
+  store.updateReportSnapshot(key, report);
+  store.reportTimes.set(key, Date.now() - ageMs);
+  return { store, printer, published };
+}
+
+test("progress reads a held session's cached report without connecting or sending a command", async () => {
+  const bambu = new BambuImplementation();
+  const { published } = heldSession(bambu, "127.0.0.1-01PTEST-test", { gcode_state: "RUNNING", mc_percent: 12 });
+  bambu.getPrinter = async () => { throw new Error("must not connect"); };
+  const before = Date.now();
+  const report = await bambu.readProgressReport("127.0.0.1", "01PTEST", "test");
+  assert.equal(report.raw.mc_percent, 12);
+  assert.ok(report.receivedAt <= before && before - report.receivedAt < 1000, "observedAt is when the report arrived");
+  assert.deepEqual(published, []);
+});
+
+test("a quiet printer's stale report is refreshed with PushAll at most once per interval", async () => {
+  const bambu = new BambuImplementation();
+  const key = "127.0.0.1-01PTEST-test";
+  const { store, printer, published } = heldSession(bambu, key, { gcode_state: "IDLE" }, 600_000);
+  bambu.getPrinter = async () => printer;
+  setTimeout(() => store.updateReportSnapshot(key, { gcode_state: "IDLE", nozzle_temper: 26 }), 350);
+  const refreshed = await bambu.readProgressReport("127.0.0.1", "01PTEST", "test");
+  assert.equal(refreshed.raw.nozzle_temper, 26);
+  assert.equal(published.length, 1, "one pushall");
+  store.reportTimes.set(key, Date.now() - 600_000);
+  const again = await bambu.readProgressReport("127.0.0.1", "01PTEST", "test");
+  assert.equal(published.length, 1, "no second pushall within the interval");
+  assert.equal(again.raw.nozzle_temper, 26, "the cached report is still served, with its own time");
+});
+
+test("progress returns no report within its bound when the printer never answers", async () => {
+  const bambu = new BambuImplementation();
+  // An unreachable printer's MQTT connect retries forever.
+  bambu.getPrinter = () => new Promise(() => {});
+  const started = Date.now();
+  assert.equal(await bambu.readProgressReport("127.0.0.1", "01PTEST", "test", 200), null);
+  assert.ok(Date.now() - started < 1000);
+});
+
+test("a cold progress read connects, asks once, and returns the first full report", async () => {
+  const bambu = new BambuImplementation();
+  const key = "127.0.0.1-01PTEST-test";
+  const store = bambu.printerStore;
+  const published = [];
+  const printer = { publish: async (message) => { published.push(message); } };
+  bambu.getPrinter = async () => {
+    store.printers.set(key, printer);
+    setTimeout(() => store.updateReportSnapshot(key, { gcode_state: "FINISH", subtask_name: "part" }), 50);
+    return printer;
+  };
+  const report = await bambu.readProgressReport("127.0.0.1", "01PTEST", "test", 5000);
+  assert.equal(report.raw.gcode_state, "FINISH");
+  assert.equal(published.length, 1);
+});

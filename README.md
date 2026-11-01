@@ -1043,6 +1043,21 @@ This wrapper currently assumes:
 
 If the project does not match those assumptions, the tool fails fast with a structured error instead of guessing. The role-to-color and color-to-tray mapping is isolated in code so the next version can evolve toward customer-requested colors without replacing the whole wrapper.
 
+#### Counterpart tools (`counterpart/1`)
+
+[Counterpart](https://github.com/DMontgomery40/scan-to-make) (Scan to Make) reads printers through a small contract that this server and [mcp-3D-printer-server](https://github.com/DMontgomery40/mcp-3D-printer-server) share. Each tool declares an `outputSchema` and returns `structuredContent`, plus the same JSON as text for older clients. An error is returned as text only, because MCP clients check `structuredContent` against the schema even on errors. `counterpart_printer_info` and `counterpart_print_progress` take the usual optional `host`, `bambu_serial`, `bambu_token` and `bambu_model` (default `BAMBU_MODEL`) arguments.
+
+- **`counterpart_printer_info`** returns `{contract, server: {name, version}, printer: {kind: "bambu", model, serial, host}, capabilities}`. `capabilities` lists progress, layers, the camera transport (`bambu-tcp` for A1/P1, `rtsp` for X1, P2S, H2 and X2D, `none` without a model), `filaments: "ams"`, pause, resume, cancel, `print3mf` and `gcode` (false on X2D). It sends nothing to the printer and never returns the access code.
+- **`counterpart_print_progress`** returns `{contract, observedAt, state, job?, temps?, activeFilament?, problems}` from the printer's MQTT reports, which this server keeps while it is connected. A held session is answered from that cache without any printer traffic, and `observedAt` is when the printer sent the report. The server asks the printer for a full report only to fill an empty cache, and at most once every five minutes after the printer has been quiet that long. A printer that sends no report within 8 seconds is `offline`.
+  - `state`: `IDLE` is `idle`, `PREPARE`/`SLICING` `preparing`, `RUNNING` `printing`, `PAUSE` `paused`, `FINISH` `finished` and `FAILED` `failed`. A `FAILED` job with `0300400C` ("The task was canceled.") in `print_error`, or in X2D's `fail_reason`, is `cancelled`. Any other or missing `gcode_state` on a connected printer is `busy`.
+  - `job` (not for idle, busy or offline): `name` is `subtask_name` (else `gcode_file`); `id` is `task_id`, omitted when it is the LAN placeholder `"0"`; `progress` is `mc_percent`; `remainingSec` is `mc_remaining_time` (minutes) × 60; `layer`/`totalLayers` appear once the printer reports a total; `stage` is Bambu Studio's words for `stg_cur` ("Heatbed preheating", "Auto bed leveling").
+  - `temps`: nozzle and bed `{actual, target}`, and `chamber` from the H2 chamber controller or the X1 sensor. P1 and A1 printers have no chamber sensor, so it is omitted.
+  - `activeFilament`: `slot` is the AMS slot index that `ams_slots` uses (`amsId × 4 + tray`) or `"ext"` for the external spool, with its `material` and `#RRGGBB` `color`.
+  - `problems`: a non-zero `print_error` as 8 hex digits, such as `07008011`, and each HMS entry as `AAAA_BBBB_CCCC_DDDD`, such as `0300_1800_0001_0003`. Severity follows Bambu's HMS level: fatal is `fatal`, serious `error`, common `warning` and info `info`. Each HMS problem links to Bambu's page for that code. Messages come from the English HMS tables bundled with the pinned Bambu Studio release; `scripts/generate-hms-messages.mjs` turns them into `src/safety/hms-messages.ts` and the stage words into `src/printers/bambu-stages.ts`. A model without its own table, such as the P1S, gets the text the other tables share. Codes that Bambu lists for a printer without text are reported as `info`.
+- **`counterpart_make_3mf`** takes `{parts: [{stl_path, name, filament?}], out_path}` and writes a new 3MF for multi-colour printing. The parts become one assembly: they keep their relative positions, and each part prints with its own filament number (by default part 1 uses filament 1, part 2 filament 2, and so on). Slice it with `slice_stl` and one `load_filaments` profile per filament number, then print it with `print_3mf` and `ams_slots` or `ams_mapping`. The file holds one assembly rather than one object per part, because Bambu Studio 02.08.02.61's CLI arranges separate objects apart, reports G-code path conflicts between stacked objects when arranging is off, and refuses `load_filament_ids` for 3MF input. It never overwrites a file. The result lists `path`, `objects`, `filaments` (the highest filament number) and each part's triangle count.
+
+`print_3mf` on the direct LAN route also returns `subtaskName`, the job name the printer reports back as `subtask_name`. On H2 and P2S it also returns `taskId`, the `task_id` sent with the job; other models send `task_id: "0"`. A client can match `counterpart_print_progress` reports to its own print with these.
+
 </details>
 
 <details>
@@ -1139,7 +1154,7 @@ When `slicer_type` is `bambustudio` (the default), these additional parameters a
 | `clone_objects` | string | Clone counts per object, comma-separated (e.g. `"1,3,1,10"`) |
 | `skip_objects` | string | Object indices to skip, comma-separated (e.g. `"3,5,10"`) |
 | `load_filaments` | string | Filament profile paths, semicolon-separated |
-| `load_filament_ids` | string | Filament-to-object mapping, comma-separated |
+| `load_filament_ids` | string | Filament-to-object mapping, comma-separated. STL input only: Bambu Studio's CLI refuses it for a 3MF, where each object or part names its own filament (see `counterpart_make_3mf`) |
 | `nozzle_volume_type` | string | Installed nozzle flow type: `standard` or `high_flow` (default: `BAMBU_NOZZLE_VOLUME_TYPE`, else the preset's Standard default). `high_flow` uses the presets' High Flow values, such as the filament's High Flow max volumetric speed, and is refused if the machine preset declares no High Flow variant. Also on `slice_with_template`. |
 | `filament_colours` | string | Slot colours, one `#RRGGBB` per filament slot, semicolon-separated. Explicit values take priority, followed by input 3MF colours, each custom profile's colour, then the BambuStudio default. |
 | `enable_timelapse` | boolean | Enable timelapse-aware slicing |
@@ -1151,6 +1166,11 @@ When `slicer_type` is `bambustudio` (the default), these additional parameters a
 | `min_save` | boolean | Produce smaller output 3MF (faster uploads) |
 | `skip_modified_gcodes` | boolean | Ignore stale custom gcodes in the 3MF |
 | `slice_plate` | number | Which plate to slice (0 = all plates, default: 0) |
+| `layer_height` | number | Layer height in mm, such as 0.28, 0.2 or 0.12; at most the nozzle diameter |
+| `wall_loops` | integer | Number of walls, 0 to 1000 |
+| `sparse_infill_density` | string | Sparse infill density, such as `"15%"` |
+
+`layer_height`, `wall_loops` and `sparse_infill_density` are written as a process override on top of the machine and process preset the tool resolves, using Bambu Studio's keys and string forms (`"0.2"`, `"2"`, `"15%"`). Every other preset value, and the machine preset, stay as resolved, and your own profile files are not changed. They work with every Bambu-compatible slicer, including remote `orca-slicer-api` slicing, and are refused for PrusaSlicer, Slic3r and Cura.
 
 **Example: Slice with auto-orient and 3 copies**
 ```json

@@ -26,14 +26,18 @@ export const STUDIO_COMMIT = "926a7192574bcb9b3a732e1ec59a46d79cb45466";
 export const PREFIXES = ["093", "094", "20P", "22E", "239", "31B"];
 const OUTPUT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../src/safety/hidden-hms.ts");
 
-async function readTableBytes(prefix, checkout) {
-  const relative = `resources/hms/hms_en_${prefix}.json`;
+/** One file of Bambu Studio at STUDIO_COMMIT; scripts/generate-hms-messages.mjs reads through this too. */
+export async function readStudioFile(relative, checkout) {
   // Read the committed blob, never the working tree, so local edits cannot ship as pinned data.
   if (checkout) return execFileSync("git", ["-C", checkout, "show", `${STUDIO_COMMIT}:${relative}`], { maxBuffer: 64 * 1024 * 1024 });
   const url = `https://raw.githubusercontent.com/bambulab/BambuStudio/${STUDIO_COMMIT}/${relative}`;
   const response = await fetch(url, { signal: AbortSignal.timeout(60_000) });
   if (!response.ok) throw new Error(`Download failed (${response.status}): ${url}`);
   return Buffer.from(await response.arrayBuffer());
+}
+
+export function readTableBytes(prefix, checkout) {
+  return readStudioFile(`resources/hms/hms_en_${prefix}.json`, checkout);
 }
 
 /** A local checkout must contain the pinned commit at the pinned tag, or the output would mislabel its source. */

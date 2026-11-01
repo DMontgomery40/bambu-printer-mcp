@@ -10,6 +10,8 @@ const MAX_BYTES = 100_000_000;
 const SUPPORTED_OPTIONS = new Set([
   'arrange', 'orient', 'loadFilaments', 'filamentColours', 'bedType',
   'nozzleType', 'nozzleVolumeType', 'slicePlate',
+  // Written into the uploaded process preset before the request, not sent as API options.
+  'processOverrides',
 ]);
 
 function configuration(): { base: string; headers: Record<string, string>; mode: string; timeout: number } {

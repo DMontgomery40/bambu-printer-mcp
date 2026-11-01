@@ -11,6 +11,7 @@ import { isDualNozzleModel, normalizeModel, validateTemperature } from "../safet
 import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, describeAmsTrayRange } from "../ams-mapping.js";
 import { describeHmsKey, hiddenHmsKeys, hiddenHmsNotices, reportedHmsKey, unchippedNozzles, validatePrinterState, manualHeatingRequirements } from "../safety/printer-state.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRemotePath, cancelPendingPrinterOperations } from "../safety/artifact.js";
+import { RTSP_CAMERA_MODELS, TCP_CAMERA_MODELS } from "./camera-models.js";
 import { Client as FTPClient } from "basic-ftp";
 import * as mqtt from "mqtt";
 import { BambuClient, GCodeFileCommand, GCodeLineCommand, PushAllCommand, UpdateFanCommand, UpdateLightCommand, UpdateStateCommand, } from "bambu-node";
@@ -36,6 +37,8 @@ function loadClientCreds() {
 }
 const CLIENT_CREDS = loadClientCreds();
 const COMMAND_SETTLE_MS = 300;
+/** A cached report older than this may be refreshed once with PushAll; see readProgressReport. */
+const STALE_REPORT_MS = 300000;
 /** HMS 0500-0500-0001-0007: firmware 01.08.05+ rejected an unsigned MQTT command. */
 const COMMAND_VERIFICATION_HMS = { attr: 0x05000500, code: 0x00010007 };
 const COMMAND_REJECTED_MESSAGE = "The printer rejected the print command (HMS 0500-0500-0001-0007, \"MQTT command verification failed\"). " +
@@ -234,6 +237,10 @@ class BambuClientStore {
         this.printers = new Map();
         this.initialConnectionPromises = new Map();
         this.reportSnapshots = new Map();
+        /** When the last MQTT report for each printer arrived (ms since epoch). */
+        this.reportTimes = new Map();
+        /** When PushAll was last sent for a stale cache, so a quiet printer is not asked repeatedly. */
+        this.refreshTimes = new Map();
         this.initialReportPromises = new Map();
         this.initialReportResolvers = new Map();
     }
@@ -262,14 +269,33 @@ class BambuClientStore {
         }
         const previous = this.reportSnapshots.get(key) || {};
         this.reportSnapshots.set(key, { ...previous, ...update });
+        this.reportTimes.set(key, Date.now());
         this.resolveInitialReport(key);
     }
     clearPrinterState(key) {
         this.printers.delete(key);
         this.initialConnectionPromises.delete(key);
         this.reportSnapshots.delete(key);
+        this.reportTimes.delete(key);
+        this.refreshTimes.delete(key);
         this.initialReportPromises.delete(key);
         this.initialReportResolvers.delete(key);
+    }
+    /** The merged report of a connected printer and when it last arrived; none before the first report. */
+    getCachedReportWithTime(host, serial, token) {
+        const key = getPrinterKey(host, serial, token);
+        const raw = this.reportSnapshots.get(key);
+        const receivedAt = this.reportTimes.get(key);
+        return raw && receivedAt !== undefined && this.printers.has(key) ? { raw, receivedAt } : null;
+    }
+    /** Records a stale-cache refresh; false when one was sent within minIntervalMs. */
+    claimRefresh(host, serial, token, minIntervalMs) {
+        const key = getPrinterKey(host, serial, token);
+        const last = this.refreshTimes.get(key);
+        if (last !== undefined && Date.now() - last < minIntervalMs)
+            return false;
+        this.refreshTimes.set(key, Date.now());
+        return true;
     }
     getCachedReport(host, serial, token) {
         return this.reportSnapshots.get(getPrinterKey(host, serial, token)) || null;
@@ -382,6 +408,8 @@ class BambuClientStore {
         this.printers.clear();
         this.initialConnectionPromises.clear();
         this.reportSnapshots.clear();
+        this.reportTimes.clear();
+        this.refreshTimes.clear();
         this.initialReportPromises.clear();
         this.initialReportResolvers.clear();
     }
@@ -564,6 +592,62 @@ export class BambuImplementation {
     /** Safety reads never use the display cache or configured-serial model inference. */
     async getSafetyStatus(host, serial, token) {
         return readFreshPrinterStatus(await this.getPrinter(host, serial, token), serial);
+    }
+    /**
+     * The merged MQTT report for counterpart_print_progress and when it arrived.
+     * On a held session it comes from the cache with no printer traffic. PushAll
+     * is sent only to fill a cold cache, or at most once per STALE_REPORT_MS when
+     * the printer has been quiet for longer than that (P1-series firmware lags
+     * when asked often). Returns null when no report arrives within timeoutMs:
+     * the MQTT connect to an unreachable printer keeps retrying, so it must not
+     * hold the call. Display data only; safety checks use getSafetyStatus.
+     */
+    async readProgressReport(host, serial, token, timeoutMs = 8000) {
+        const cached = this.printerStore.getCachedReportWithTime(host, serial, token);
+        if (cached && typeof cached.raw.gcode_state === "string") {
+            if (Date.now() - cached.receivedAt <= STALE_REPORT_MS || !this.printerStore.claimRefresh(host, serial, token, STALE_REPORT_MS))
+                return cached;
+            try {
+                await invokeWithoutAck(await this.getPrinter(host, serial, token), new PushAllCommand());
+                const deadline = Date.now() + 2000;
+                while (Date.now() < deadline) {
+                    const latest = this.printerStore.getCachedReportWithTime(host, serial, token);
+                    if (latest && latest.receivedAt > cached.receivedAt)
+                        return latest;
+                    await sleep(50);
+                }
+            }
+            catch {
+                // A failed refresh leaves the cached report, which still carries its own time.
+            }
+            return this.printerStore.getCachedReportWithTime(host, serial, token) ?? cached;
+        }
+        const read = (async () => {
+            const printer = await this.getPrinter(host, serial, token);
+            try {
+                await invokeWithoutAck(printer, new PushAllCommand());
+            }
+            catch { /* the printer pushes on its own too */ }
+            await this.printerStore.waitForInitialReport(host, serial, token, Math.min(timeoutMs, 4000));
+            // A connected printer whose report still lacks gcode_state is busy, not offline.
+            return this.printerStore.getCachedReportWithTime(host, serial, token);
+        })();
+        read.catch(() => { });
+        let timer;
+        const expired = new Promise(resolve => { timer = setTimeout(() => resolve(null), timeoutMs); });
+        try {
+            return await Promise.race([read, expired]);
+        }
+        catch {
+            return null;
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    }
+    /** Cached report of an already-connected printer, without connecting or sending anything. */
+    cachedReport(host, serial, token) {
+        return this.printerStore.getCachedReportWithTime(host, serial, token)?.raw ?? null;
     }
     async getStatus(host, serial, token) {
         try {
@@ -796,8 +880,13 @@ export class BambuImplementation {
         }
         const b = (v) => (v ? 1 : 0);
         let projectFileCmd;
+        // The printer reports these back as subtask_name/task_id, so the result
+        // returns exactly what was sent. Only the H2-style route sends a real task id.
+        const subtaskName = remoteFileName.replace(/\.3mf$/i, "");
+        let taskId;
         if (usesH2ProjectFile) {
             const submissionId = String(Date.now() & 0x7fffffff);
+            taskId = submissionId;
             projectFileCmd = {
                 print: {
                     sequence_id: "0",
@@ -818,7 +907,7 @@ export class BambuImplementation {
                     extrude_cali_flag: 0,
                     extrude_cali_manual_mode: 0,
                     nozzle_offset_cali: 2,
-                    subtask_name: remoteFileName.replace(/\.3mf$/i, ""),
+                    subtask_name: subtaskName,
                     profile_id: "0",
                     project_id: submissionId,
                     subtask_id: submissionId,
@@ -834,7 +923,7 @@ export class BambuImplementation {
                     command: "project_file",
                     param: projectMetadata.plateInternalPath,
                     url: projectUrl,
-                    subtask_name: remoteFileName.replace(/\.3mf$/i, ""),
+                    subtask_name: subtaskName,
                     md5,
                     flow_cali: options.flowCalibration ?? true,
                     layer_inspect: options.layerInspect ?? true,
@@ -875,6 +964,8 @@ export class BambuImplementation {
             platePath: projectMetadata.plateInternalPath,
             md5,
             amsMapping,
+            subtaskName,
+            ...(taskId !== undefined ? { taskId } : {}),
         };
     }
     async cancelJob(host, serial, token, dispatch) {
@@ -1519,19 +1610,7 @@ export class BambuImplementation {
     async cameraSnapshot(host, _serial, token, options = {}) {
         const timeoutMs = options.timeoutMs ?? 8000;
         const model = (options.bambuModel ?? "").toLowerCase();
-        // P1/A1 series still use the proprietary TCP-on-6000 framed JPEG path
-        // (per https://github.com/Doridian/OpenBambuAPI/blob/main/video.md).
-        const TCP_CAMERA_MODELS = new Set(["a1", "a1mini", "p1s", "p1p"]);
-        // X1, P2S, H2 (H2S/H2D/H2C), AND X2D all use RTSP on port 322. The
-        // OpenBambuAPI doc only mentions X1/P2S, but the HA bambulab
-        // integration's models.py shows the printer reports its own
-        // `ipcam.rtsp_url` for these models, and Parker (H2S) rejects the
-        // A1/P1 80-byte auth packet on port 6000 (verified 2026-04-27 --
-        // confirmed by local H2 camera transport probes).
-        const RTSP_MODELS = new Set([
-            "x1", "x1c", "x1carbon", "x1e", "p2s",
-            "h2", "h2s", "h2d", "h2c", "h2dpro", "x2d",
-        ]);
+        const RTSP_MODELS = RTSP_CAMERA_MODELS;
         if (!model) {
             throw new Error("camera_snapshot requires bambu_model or BAMBU_MODEL so it can choose the correct Bambu camera protocol.");
         }

@@ -121,7 +121,7 @@ interface ReportedNozzle { index: number; diameter: number; type?: string; flow?
 interface ReportedFilament { position: number; material: string; trayIndex: number; nozzleMin?: number; nozzleMax?: number }
 export interface ValidatedPrinterState { model: string; reportedNozzles: ReportedNozzle[]; filaments: ReportedFilament[] }
 
-function finiteNumber(value: unknown): number | undefined {
+export function finiteNumber(value: unknown): number | undefined {
   if (typeof value !== "number" && (typeof value !== "string" || !value.trim())) return undefined;
   const number = Number(value);
   return Number.isFinite(number) ? number : undefined;
@@ -251,8 +251,8 @@ function reportedNozzles(raw: Record<string,any>): ReportedNozzle[] {
 
 const hiddenHmsSets = new Map(Object.entries(HIDDEN_HMS).map(([prefix, codes]) => [prefix, new Set(codes)]));
 
-type HmsEntry = { attr: number; code: number; severity: number; hex: string };
-function hmsCode(entry: any): HmsEntry | undefined {
+export type HmsEntry = { attr: number; code: number; severity: number; hex: string };
+export function hmsCode(entry: any): HmsEntry | undefined {
   const code = finiteNumber(entry?.code);
   const attr = finiteNumber(entry?.attr);
   const valid = (value: number | undefined): value is number => value !== undefined && Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
@@ -286,7 +286,7 @@ export function describeHmsKey(key: string): string {
  * without a serial must not let a misconfigured serial pick another model's
  * table. Fatal, invalid-level and unlisted entries never qualify.
  */
-function isHiddenNotice(serial: string, model: string, entry: HmsEntry): boolean {
+export function isHiddenNotice(serial: string, model: string, entry: HmsEntry): boolean {
   if (entry.severity !== 2 && entry.severity !== 3) return false;
   const prefix = serial.trim().toUpperCase().slice(0, 3);
   const normalized = normalizeModel(model);

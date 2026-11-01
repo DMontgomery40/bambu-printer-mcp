@@ -39,6 +39,7 @@ export interface ValidatedPrinterState {
     reportedNozzles: ReportedNozzle[];
     filaments: ReportedFilament[];
 }
+export declare function finiteNumber(value: unknown): number | undefined;
 /**
  * X2D retains FAILED after a canceled job even with no active print error.
  * Bambu Studio classifies FAILED as a finished job; its v02.08.02.61
@@ -55,10 +56,27 @@ export declare function isCancelledX2DJob(raw: Record<string, any>, model: strin
 export declare function isFinishedP1SJob(raw: Record<string, any>, model: string): boolean;
 /** Nozzles whose reported diameter and type are configured settings rather than chip readings. */
 export declare function unchippedNozzles(raw: unknown): number[];
+export type HmsEntry = {
+    attr: number;
+    code: number;
+    severity: number;
+    hex: string;
+};
+export declare function hmsCode(entry: any): HmsEntry | undefined;
 /** The one key format for a reported entry, shared by the gate and clear_hms_errors. */
 export declare function reportedHmsKey(entry: unknown): string;
 /** Bambu's display form of a cleared-code key such as "hms:83887616:131184"; other keys unchanged. */
 export declare function describeHmsKey(key: string): string;
+/**
+ * A serious or common entry that Bambu lists for this serial prefix with empty
+ * text: Bambu Studio, Bambu Handy and the printer screen never show it, and
+ * the printer keeps printing with it (an X2D raises 0500-0600-0002-0070 at
+ * every boot). Bambu Studio selects the table by serial prefix, so this does
+ * too, but only when that prefix belongs to the verified model: a sparse report
+ * without a serial must not let a misconfigured serial pick another model's
+ * table. Fatal, invalid-level and unlisted entries never qualify.
+ */
+export declare function isHiddenNotice(serial: string, model: string, entry: HmsEntry): boolean;
 /** Labels of reported entries that pass only because Bambu hides them for this printer. */
 export declare function hiddenHmsNotices(raw: unknown, serial: string, model: string): string[];
 /** Cleared-code keys of reported hidden entries; clearing never removes them, so they are not re-acknowledged. */

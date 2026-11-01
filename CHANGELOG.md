@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- Add the Counterpart contract (`counterpart/1`) shared with mcp-3D-printer-server. Each tool declares an `outputSchema` and returns `structuredContent` plus the same JSON as text, whatever `MCP_HTTP_JSON_RESPONSE` says. Errors from these tools are text only, because MCP SDK 1.32 clients validate `structuredContent` against the schema even on errors.
+  - `counterpart_printer_info`: server name and version, the configured printer, and its progress, camera, filament and control capabilities, with no printer traffic.
+  - `counterpart_print_progress`: state, job, stage words, temperatures, active filament and problems, read from the MQTT reports the server already keeps. A held session sends nothing to the printer. PushAll is sent only to fill an empty cache, and at most once every five minutes for a printer that has been quiet that long. An unreachable printer reports `offline` within 8 seconds instead of waiting on the MQTT reconnect. Time left converts minutes to seconds. A `FAILED` job with `0300400C` is `cancelled`. HMS entries become `AAAA_BBBB_CCCC_DDDD` problems with Bambu's severity, English text and page link, and `print_error` becomes 8 hex digits.
+  - `counterpart_make_3mf`: combines STL parts into one 3MF assembly. Each part keeps its position and its own filament, so it slices as one multi-colour print.
+- Generate `src/safety/hms-messages.ts` and `src/printers/bambu-stages.ts` with `scripts/generate-hms-messages.mjs`, from the same pinned Bambu Studio v02.08.02.61 tables and commit as `hidden-hms.ts`. Bambu bundles no P1S, X1 or A1 table at that tag, so those printers get the text the bundled tables share; that covers about 98% of the HMS codes in the P1S table Bambu Studio downloads.
+- Add `layer_height`, `wall_loops` and `sparse_infill_density` to `slice_stl`. They are written as a process override on top of the resolved machine and process preset, on every Bambu-compatible route including remote slicing. PrusaSlicer, Slic3r and Cura refuse them.
+- Return `subtaskName` from `print_3mf` on the direct LAN route, and `taskId` on H2 and P2S. These are the values sent as `subtask_name`/`task_id`, so clients can match a progress report to their own print.
+
+### Changed
+- `slice_stl` refuses `load_filament_ids` for 3MF input with an explanation. Bambu Studio's CLI rejects that combination itself with only "invalid parameters".
+
+Verified with a real Bambu Studio 02.08.02.61 slice of a two-part stacked assembly on the P1S preset. The slice used two filaments, kept the parts together and applied 0.12 mm / 4 walls / 25%, and `inspect_print_file` accepted it. Read-only live `counterpart_printer_info` and `counterpart_print_progress` calls against a P1S passed the client's schema validation. No print was started.
+
 ## [1.1.47] – 2026-11-02
 
 - Remove the separate bed-clearance prompt from print preflight, including after completed and eligible failed jobs. Continue checking printer job identity and state before dispatch.

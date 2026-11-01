@@ -59,6 +59,21 @@ export declare class BambuImplementation {
     private resolveProjectFileMetadata;
     /** Safety reads never use the display cache or configured-serial model inference. */
     getSafetyStatus(host: string, serial: string, token: string): Promise<any>;
+    /**
+     * The merged MQTT report for counterpart_print_progress and when it arrived.
+     * On a held session it comes from the cache with no printer traffic. PushAll
+     * is sent only to fill a cold cache, or at most once per STALE_REPORT_MS when
+     * the printer has been quiet for longer than that (P1-series firmware lags
+     * when asked often). Returns null when no report arrives within timeoutMs:
+     * the MQTT connect to an unreachable printer keeps retrying, so it must not
+     * hold the call. Display data only; safety checks use getSafetyStatus.
+     */
+    readProgressReport(host: string, serial: string, token: string, timeoutMs?: number): Promise<{
+        raw: Record<string, any>;
+        receivedAt: number;
+    } | null>;
+    /** Cached report of an already-connected printer, without connecting or sending anything. */
+    cachedReport(host: string, serial: string, token: string): Record<string, any> | null;
     getStatus(host: string, serial: string, token: string): Promise<any>;
     print3mf(host: string, serial: string, token: string, options: BambuPrintOptionsInternal): Promise<any>;
     private print3mfPrepared;

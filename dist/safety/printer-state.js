@@ -110,7 +110,7 @@ export function readFreshPrinterStatus(printer, serial, timeoutMs = 5000) {
             .then(() => { requestsPublished = true; maybeResolve(); }, fail);
     });
 }
-function finiteNumber(value) {
+export function finiteNumber(value) {
     if (typeof value !== "number" && (typeof value !== "string" || !value.trim()))
         return undefined;
     const number = Number(value);
@@ -247,7 +247,7 @@ function reportedNozzles(raw) {
     return output;
 }
 const hiddenHmsSets = new Map(Object.entries(HIDDEN_HMS).map(([prefix, codes]) => [prefix, new Set(codes)]));
-function hmsCode(entry) {
+export function hmsCode(entry) {
     const code = finiteNumber(entry?.code);
     const attr = finiteNumber(entry?.attr);
     const valid = (value) => value !== undefined && Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
@@ -278,7 +278,7 @@ export function describeHmsKey(key) {
  * without a serial must not let a misconfigured serial pick another model's
  * table. Fatal, invalid-level and unlisted entries never qualify.
  */
-function isHiddenNotice(serial, model, entry) {
+export function isHiddenNotice(serial, model, entry) {
     if (entry.severity !== 2 && entry.severity !== 3)
         return false;
     const prefix = serial.trim().toUpperCase().slice(0, 3);
