@@ -148,13 +148,12 @@ console.log('native_print result=0');
 
 const canceledTask = { fail_reason: '50348044', subtask_name: 'previous-canceled-part', task_id: '1', subtask_id: '0', job_id: '0' };
 
-test('native printing from a canceled X2D task requires physical confirmation even in headless mode', async t => {
+test('native printing from a canceled X2D task adds no plate prompt in headless mode', async t => {
   const s = await server(t, { state: 'FAILED', storage: canceledTask, decline: true, env: { BAMBU_REQUIRE_CONFIRMATION: '0' } });
   const result = await s.print({ connection_mode: 'bambu_native', ams_slots: [0] });
-  assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /confirmation.*declined/);
-  assert.deepEqual(s.prompts, ['confirm']);
-  assert.equal((await s.events()).some(e => e.kind === 'helper'), false);
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  assert.deepEqual(s.prompts, []);
+  assert.equal((await s.events()).some(e => e.kind === 'helper'), true);
 });
 
 test('a confirmed canceled X2D task reaches checked native dispatch without error-reset commands', async t => {
@@ -173,7 +172,7 @@ test('a different canceled task appearing during native setup cannot reuse bed c
   const s = await server(t, { state: 'FAILED', storage: canceledTask, dispatchStorage: { ...canceledTask, task_id: '2' } });
   const result = await s.print({ connection_mode: 'bambu_native', ams_slots: [0] });
   assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /newly finished job/);
+  assert.match(result.content[0].text, /job changed during preflight/i);
   assert.equal((await s.events()).some(e => e.kind === 'dispatched'), false);
 });
 

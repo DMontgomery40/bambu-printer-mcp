@@ -1243,7 +1243,7 @@ class BambuPrinterMCPServer {
           throw new Error(`No hardware confirmation within ${describeDuration(this.confirmationTimeoutMs)}; nothing was sent to the printer. Retry when someone can check the printer, or raise BAMBU_CONFIRMATION_TIMEOUT_MS.`);
         }
         if (isElicitationUnsupported(error)) {
-          throw new Error("Human hardware confirmation requires an MCP client with elicitation support. For deliberately headless operation, BAMBU_REQUIRE_CONFIRMATION=0 disables ordinary print/heat prompts; finished-bed clearance and hardware-error confirmation still require elicitation.");
+          throw new Error("Human hardware confirmation requires an MCP client with elicitation support. For deliberately headless operation, BAMBU_REQUIRE_CONFIRMATION=0 disables ordinary print/heat prompts; hardware-error confirmation still requires elicitation.");
         }
         throw new Error(`Human hardware confirmation failed: ${error?.message ?? error}. Nothing was sent to the printer.`);
       }
@@ -1642,10 +1642,10 @@ class BambuPrinterMCPServer {
       const requirements = { ...inspection, amsMapping: mapping, useAMS };
       const initialStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
       validatePrinterState(initialStatus, requirements);
-      const bedClearance = await this.bambu.confirmPrintPreflight(devId, initialStatus, inspection);
+      const preflight = await this.bambu.confirmPrintPreflight(devId, initialStatus, inspection);
       const confirmedStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
       validatePrinterState(confirmedStatus, requirements);
-      this.bambu.assertBedClearance(confirmedStatus, bedClearance);
+      this.bambu.assertPrintPreflight(confirmedStatus, preflight);
       const amsMapping = stringifyBridgeJson(mapping?.map(value => bridgeAmsMappingValue(value, isDualNozzleModel(printModel))));
       const remoteFileName = uniquePrintName(threeMFPath);
       const checkedName = remoteFileName.replace(/(?:\.gcode)?\.3mf$/i, "");
@@ -1724,7 +1724,7 @@ class BambuPrinterMCPServer {
           assertActive();
           const dispatchStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
           validatePrinterState(dispatchStatus, requirements);
-          this.bambu.assertBedClearance(dispatchStatus, bedClearance);
+          this.bambu.assertPrintPreflight(dispatchStatus, preflight);
           if (externalStorage && externalStorageState(dispatchStatus.raw) !== "normal") {
             throw new Error("The printer's SD card or USB stick is no longer ready. Check it and start the print again.");
           }
@@ -1741,7 +1741,7 @@ class BambuPrinterMCPServer {
           assertActive();
           const dispatchStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
           validatePrinterState(dispatchStatus, requirements);
-          this.bambu.assertBedClearance(dispatchStatus, bedClearance);
+          this.bambu.assertPrintPreflight(dispatchStatus, preflight);
         },
         assertDispatchAllowed: method => { if (method === bridgeMethod) assertActive(); },
         onDispatched: method => { if (method === bridgeMethod) retainForDispatchedUpload(); },

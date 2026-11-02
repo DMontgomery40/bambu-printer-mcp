@@ -730,7 +730,7 @@ test("human preflight rechecks printer state after confirmation", async (t) => {
   assertNoDispatch(events);
 });
 
-test("FINISH requires bed clearance even with ordinary headless prompts disabled", async (t) => {
+test("FINISH adds no plate confirmation in headless mode", async (t) => {
   const previous = process.env.BAMBU_REQUIRE_CONFIRMATION;
   process.env.BAMBU_REQUIRE_CONFIRMATION = "0";
   t.after(() => { if (previous === undefined) delete process.env.BAMBU_REQUIRE_CONFIRMATION; else process.env.BAMBU_REQUIRE_CONFIRMATION = previous; });
@@ -738,16 +738,15 @@ test("FINISH requires bed clearance even with ordinary headless prompts disabled
   const { printer, events } = isolatedPrinter(safetyStatus({ state: "FINISH", subtask_name: "previous-part" }));
   const prompts = [];
   printer.confirm = async message => { prompts.push(message); return false; };
-  await assert.rejects(printer.print3mf(host, serial, token, { projectName: "confirm", filePath: file, bambuModel: "p1s", useAMS: false }), /confirmation.*declined/i);
-  assert.match(prompts[0], /FINISH.*remove the previous part/i);
-  assertNoDispatch(events);
+  await printer.print3mf(host, serial, token, { projectName: "confirm", filePath: file, bambuModel: "p1s", useAMS: false });
+  assert.equal(prompts.length, 0);
 });
 
 test("bed clearance cannot authorize a different finished job", async (t) => {
   const file = await fixture(t);
   const { printer, events } = isolatedPrinter(safetyStatus({ state: "FINISH", subtask_name: "previous-part" }));
   printer.confirm = async () => { printer.getSafetyStatus = async () => safetyStatus({ state: "FINISH", subtask_name: "another-part" }); return true; };
-  await assert.rejects(printer.print3mf(host, serial, token, { projectName: "confirm", filePath: file, bambuModel: "p1s", useAMS: false }), /newly finished job/i);
+  await assert.rejects(printer.print3mf(host, serial, token, { projectName: "confirm", filePath: file, bambuModel: "p1s", useAMS: false }), /job changed during preflight/i);
   assertNoDispatch(events);
 });
 

@@ -206,7 +206,7 @@ The optional FULU **BambuNetwork bridge** exposes `bambu_network_bridge_status`,
 - Set print speed mode (`silent`/`standard`/`sport`/`ludicrous`), clear HMS/print errors, trigger AMS RFID re-read, and control H2/P2 airduct mode (`cooling`/`heating`) via MQTT
 - **Start/stop AMS filament drying** (`set_ams_drying`) on heated AMS units (AMS Pro / AMS-HT). Sends `print.ams_control` MQTT command.
 - Set nozzle and bed temperature via G-code dispatch over MQTT
-- Confirm print starts and positive manual heating through a human preflight prompt. Finished-bed clearance and hardware-error clearing require explicit human acknowledgment; see [hardware safety and headless configuration](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md).
+- Confirm print starts and positive manual heating through a human preflight prompt. Hardware-error clearing requires explicit human acknowledgment; see [hardware safety and headless configuration](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md).
 - Set fan speed (part, auxiliary, chamber) and chamber light mode (on/off/flashing) via MQTT
 - Read HMS (Health Management System) diagnostics as an MCP resource at `printer://{host}/hms` — read-only error summary from the printer, with automatic settle retry
 - Start G-code files already stored on the printer

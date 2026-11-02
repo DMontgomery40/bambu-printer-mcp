@@ -46,13 +46,12 @@ export declare class BambuImplementation {
     confirmHardwareAction(message: string, physicalCheck?: boolean): Promise<void>;
     private finishedJobIdentity;
     /**
-     * The human print confirmation. Its result goes to assertBedClearance at
-     * every later state check of the same print, which stops the print if the
-     * situation the human confirmed has changed.
+     * Record the current job and notices during preflight so a changed printer state
+     * is detected before dispatch.
      */
     confirmPrintPreflight(serial: string, status: any, inspection: Awaited<ReturnType<typeof inspectPrintFile>>): Promise<PrintPreflight>;
     /** Stop a print whose confirmed situation changed: a newly finished job, or a hidden HMS notice the preflight did not name. */
-    assertBedClearance(status: any, preflight: PrintPreflight): void;
+    assertPrintPreflight(status: any, preflight: PrintPreflight): void;
     private getPrinter;
     /** Internal handoff from a successful inspected transport; never exposed as an MCP tool. */
     recordCheckedJob(host: string, serial: string, remotePath: string, requirements: PrinterStateRequirements): void;
