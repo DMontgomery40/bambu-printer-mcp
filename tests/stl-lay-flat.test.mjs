@@ -120,15 +120,21 @@ function extrude(points, depth) {
   return new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false }).toNonIndexed();
 }
 
-// David's stove gap filler (Scan to Make handoff 4dd27c10): six T strips in
-// their installed pose, fins down to Z=-12 and domed caps up to Z=2.4. The
-// cap undersides' 23,838 mm² face down but sit 12 mm above the 4,094 mm² of
-// fin tips, so resting on them stood the strips on their fins upside down.
-test("lay_flat turns the stove gap filler cap-down instead of standing it on its fins", async (t) => {
+// David's stove gap filler, as Scan to Make handed it to the printer server.
+async function stoveGapFiller(t) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "stl-lay-flat-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const input = path.join(directory, "clean.stl");
   await fs.writeFile(input, zlib.gunzipSync(await fs.readFile(new URL("./fixtures/stove-gap-filler.stl.gz", import.meta.url))));
+  return { directory, input };
+}
+
+// The stove gap filler is six T strips in their installed pose: fins down to
+// Z=-12, domed caps up to Z=2.4. The cap undersides' 23,838 mm² face down but
+// sit 12 mm above the 4,094 mm² of fin tips, so resting on them stood the
+// strips on their fins, upside down.
+test("lay_flat turns the stove gap filler cap-down instead of standing it on its fins", async (t) => {
+  const { directory, input } = await stoveGapFiller(t);
   const result = await new STLManipulator(directory).layFlatWithResult(input);
   assert.equal(result.laid_flat, true, result.message);
 
@@ -214,10 +220,7 @@ test("Bambu Studio slices the laid-flat stove gap filler for a P1S with no warni
   skip: !existsSync(studioCli) && "Bambu Studio is not installed",
   timeout: 600_000,
 }, async (t) => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "stl-lay-flat-"));
-  t.after(() => fs.rm(directory, { recursive: true, force: true }));
-  const input = path.join(directory, "clean.stl");
-  await fs.writeFile(input, zlib.gunzipSync(await fs.readFile(new URL("./fixtures/stove-gap-filler.stl.gz", import.meta.url))));
+  const { directory, input } = await stoveGapFiller(t);
   const manipulator = new STLManipulator(directory);
   const flat = await manipulator.layFlat(input);
 
