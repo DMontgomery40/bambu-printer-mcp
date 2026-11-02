@@ -1193,3 +1193,16 @@ test("the BambuNetwork bridge sends exactly the PrintParams Bambu Studio's Send 
     auto_bed_leveling: 1, auto_flow_cali: 2, auto_offset_cali: 2, extruder_cali_manual_mode: 0, task_record_timelapse: false,
   });
 });
+
+test("H2D project_file encodes flow calibration on and off; auto has no verified field and sends what off sends", async (t) => {
+  const h2d = { ...safetyStatus({ model: "h2d", nozzle: ["0.4", "0.4"], sn: "094TESTSAFETY" }), serial: "094TESTSAFETY" };
+  const file = await fixture(t, { model: "h2d", nozzleDiameters: [0.4, 0.4] });
+  const sent = {};
+  for (const [label, autoFlowCali] of [["off", 0], ["on", 1], ["auto", 2]]) {
+    const { printer, events } = isolatedPrinter(h2d);
+    await printer.print3mf(host, "094TESTSAFETY", token, { projectName: `flow-${label}`, filePath: file, bambuModel: "h2d", useAMS: false, autoFlowCali });
+    const print = events.find(({ action }) => action === "publish").payload.print;
+    sent[label] = { flow_cali: print.flow_cali, extrude_cali_flag: print.extrude_cali_flag };
+  }
+  assert.deepEqual(sent, { off: { flow_cali: 0, extrude_cali_flag: 0 }, on: { flow_cali: 1, extrude_cali_flag: 0 }, auto: { flow_cali: 0, extrude_cali_flag: 0 } });
+});

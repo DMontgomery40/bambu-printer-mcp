@@ -9,6 +9,7 @@
   - else "auto" if offered, else "on".
 
   Vibration calibration is off and first-layer inspection on, as Studio hard-codes them; `extruder_cali_manual_mode` is 0. For a P1S that is `task_bed_leveling: true`, `auto_bed_leveling: 1`, `task_flow_cali: false`, `auto_flow_cali: 2`, `auto_offset_cali: 2`. An explicit option still wins. `BAMBU_STUDIO_CONFIG` overrides the config path; empty means none.
+- `counterpart_print_progress` shows text for HMS and `print_error` codes the bundled tables lack, such as the P1S's `0300_0D00_0002_0001`. It reads it from the user's own Bambu Studio download: `hms_en_<serial prefix>.json`, then `hms_en.json`, in the `hms` folder next to `BambuStudio.conf`. The pinned Studio tag bundles no P1, X1 or A1 table. Bambu's files are read, never copied, and their text is passed through unchanged.
 - `cancel_print` sends Bambu Studio's stop, `{"print":{"command":"stop","param":"","sequence_id":"<n>"}}`, at MQTT QoS 1 (`MachineObject::command_task_abort`), and waits up to 10 s for the printer's acknowledgement. Before, bambu-node sent the stop without `param`, at QoS 0. A stop that isn't acknowledged fails and closes its MQTT client, so it can't be sent late.
 
 ## [1.1.49] – 2026-11-02

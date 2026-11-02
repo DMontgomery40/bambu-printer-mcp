@@ -1045,6 +1045,11 @@ export class BambuImplementation {
                     timelapse: b(options.timelapse),
                     bed_leveling: b(studio.task_bed_leveling),
                     auto_bed_leveling: studio.auto_bed_leveling,
+                    // No verified project_file field requests automatic flow calibration
+                    // (Studio's PrintParams auto_flow_cali reaches the printer through the
+                    // plug-in, whose MQTT form is not public), so "auto" sends 0 as before,
+                    // and extrude_cali_flag keeps its existing 0. The bridge and native
+                    // routes carry auto_flow_cali.
                     flow_cali: b(studio.task_flow_cali),
                     vibration_cali: b(studio.task_vibration_cali),
                     layer_inspect: b(studio.task_layer_inspect),
