@@ -9,16 +9,16 @@ import { BambuImplementation } from "../dist/printers/bambu.js";
 // Mocked printers never report a started job; tests that cover it opt back in.
 process.env.BAMBU_DISPATCH_CHECK_MS = "0";
 
-async function capture(t, model, serial, { sparse = false, useAMS = true, suffix = ".gcode.3mf" } = {}) {
+async function capture(t, model, serial, { sparse = false, useAMS = true, suffix = ".gcode.3mf", filamentIds, amsSlots = [1], trays } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-route-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, `cube${suffix}`);
   const zip = new JSZip();
-  const filamentCount = sparse ? 6 : 1;
+  const filamentCount = filamentIds ? Math.max(...filamentIds) + 1 : sparse ? 6 : 1;
   const nozzleDiameters = ["h2d", "h2c"].includes(model) ? [0.4, 0.4] : [0.4];
   zip.file("Metadata/plate_1.gcode", `; printer_model = ${model}\n; nozzle_diameter = ${nozzleDiameters.join(";")}\n; filament_type = ${Array(filamentCount).fill("PLA").join(";")}\n${nozzleDiameters.length===2 ? `; filament_map = ${Array(filamentCount).fill(1).join(";")}\n; physical_extruder_map = 1,0\n` : ""}; filament_colour = ${Array(filamentCount).fill("#FFFFFF").join(";")}\nM104 S220\nM140 S60\nG1 X0 Y0\n`);
   zip.file("Metadata/project_settings.config", JSON.stringify({ printer_model: model, nozzle_diameter: nozzleDiameters.map(String), filament_type: Array(filamentCount).fill("PLA") }));
-  zip.file("Metadata/plate_1.json", JSON.stringify({ filament_ids: [sparse ? 5 : 0] }));
+  zip.file("Metadata/plate_1.json", JSON.stringify({ filament_ids: filamentIds ?? [sparse ? 5 : 0] }));
   await fs.writeFile(file, await zip.generateAsync({ type: "nodebuffer" }));
   const printer = new BambuImplementation(async () => true);
   let uploadedPath;
@@ -27,19 +27,19 @@ async function capture(t, model, serial, { sparse = false, useAMS = true, suffix
   printer.getSafetyStatus = async () => {
     const now = Date.now();
     return { connected: true, model, status: "IDLE", serial,
-      raw: { ...(nozzleDiameters.length===2 ? {vir_slot:[{id:255,tray_type:"PLA"},{id:254,tray_type:"PLA"}]} : {}), model, gcode_state: "IDLE", nozzle_diameter: "0.4", nozzle_type: "hardened_steel", device: { nozzle: { info: nozzleDiameters.map((diameter, id) => ({ id, diameter, type: "HH01", stat: 0 })) } }, print_error: 0, hms: [], ams: { tray_now: "254", ams: [{ id: "0", tray: [{ id: "1", tray_type: "PLA", nozzle_temp_min: "190", nozzle_temp_max: "240" }] }] } },
+      raw: { ...(nozzleDiameters.length===2 ? {vir_slot:[{id:255,tray_type:"PLA"},{id:254,tray_type:"PLA"}]} : {}), model, gcode_state: "IDLE", nozzle_diameter: "0.4", nozzle_type: "hardened_steel", device: { nozzle: { info: nozzleDiameters.map((diameter, id) => ({ id, diameter, type: "HH01", stat: 0 })) } }, print_error: 0, hms: [], ams: { tray_now: "254", ams: [{ id: "0", tray: trays ?? [{ id: "1", tray_type: "PLA", nozzle_temp_min: "190", nozzle_temp_max: "240" }] }] } },
       observation: { source: "mqtt", requestedAt: now, receivedAt: now, identitySource: "report" } };
   };
   printer.getPrinter = async () => ({ publish: async (message) => { published.push(typeof message === "string" ? JSON.parse(message) : message); } });
   const result = await printer.print3mf("127.0.0.1", serial, "test", {
     projectName: "cube", filePath: file, bambuModel: model,
     nozzleDiameters,
-    useAMS, ...(useAMS ? { amsSlots: [1] } : {}),
+    useAMS, ...(useAMS ? { amsSlots } : {}),
   });
   assert.equal(published.length, 1);
   assert.match(path.posix.basename(uploadedPath), /^checked-[a-f0-9-]+-cube(?:\.gcode)?\.3mf$/);
   assert.equal(uploadedPath, `/${result.remoteProjectPath}`);
-  return { uploadedPath, remote: result.remoteProjectPath, cmd: published[0].print };
+  return { uploadedPath, remote: result.remoteProjectPath, cmd: published[0].print, result };
 }
 
 test("full-size A1 uploads to SD root and uses project_file", async (t) => {
@@ -101,3 +101,39 @@ for (const [model, serial] of [["p1s", "01PTEST"], ["a1", "039TEST"], ["a1mini",
     if (cmd.command === "project_file") assert.equal(cmd.use_ams, false);
   });
 }
+
+// counterpart/1: print_3mf returns what it sent, so a progress report can be matched to this print.
+for (const [model, serial, command] of [["p1s", "01PTEST", "project_file"], ["a1", "039TEST", "project_file"], ["h2s", "093TEST", "project_file"], ["p2s", "22ETEST", "project_file"]]) {
+  test(`${model} print_3mf returns the subtask name and task id it sent`, async (t) => {
+    const { cmd, result } = await capture(t, model, serial, { suffix: ".3mf", useAMS: model !== "p2s" });
+    assert.equal(cmd.command, command);
+    assert.equal(result.subtaskName, cmd.subtask_name);
+    assert.match(result.subtaskName, /^checked-[a-f0-9-]+-cube$/);
+    if (["h2s", "p2s"].includes(model)) {
+      assert.notEqual(cmd.task_id, "0");
+      assert.equal(result.taskId, cmd.task_id);
+    } else {
+      assert.equal(cmd.task_id, "0", "LAN project_file on P1/X1/A1 sends no task id");
+      assert.equal(result.taskId, undefined);
+    }
+  });
+}
+
+test("a pre-sliced gcode.3mf sent as a G-code file returns no subtask name it cannot vouch for", async (t) => {
+  const { cmd, result } = await capture(t, "p1s", "01PTEST", { useAMS: false });
+  assert.equal(cmd.command, "gcode_file");
+  assert.equal(result.subtaskName, undefined);
+  assert.equal(result.taskId, undefined);
+});
+
+test("a two-filament assembly maps each project filament to its chosen AMS slot", async (t) => {
+  // The plate counterpart_make_3mf + slice_stl produce: filaments 0 and 1 used on plate 1.
+  const trays = [0, 1, 2].map((id) => ({ id: String(id), tray_type: "PLA", nozzle_temp_min: "190", nozzle_temp_max: "240" }));
+  const p1s = await capture(t, "p1s", "01PTEST", { suffix: ".3mf", filamentIds: [0, 1], amsSlots: [2, 0], trays });
+  assert.equal(p1s.cmd.command, "project_file");
+  // P1/X1/A1 project_file keeps its legacy five-entry positional mapping.
+  assert.deepEqual(p1s.cmd.ams_mapping, [2, 0, -1, -1, -1]);
+  const h2s = await capture(t, "h2s", "093TEST", { suffix: ".3mf", filamentIds: [0, 1], amsSlots: [2, 0], trays });
+  assert.deepEqual(h2s.cmd.ams_mapping, [2, 0]);
+  assert.deepEqual(h2s.cmd.ams_mapping2, [{ ams_id: 0, slot_id: 2 }, { ams_id: 0, slot_id: 0 }]);
+});
