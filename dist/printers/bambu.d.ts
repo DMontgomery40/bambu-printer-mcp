@@ -1,4 +1,4 @@
-import { inspectPrintFile } from "../safety/print-file.js";
+import { inspectPrintFile, type PrintFileInspection } from "../safety/print-file.js";
 import { type PrinterStateRequirements } from "../safety/printer-state.js";
 export declare function assertDirectPrintSupported(model: string | undefined, serial?: string): void;
 interface BambuPrintOptionsInternal {
@@ -26,6 +26,27 @@ interface BambuPrintOptionsInternal {
     amsSlots?: number[];
     md5?: string;
 }
+/** A merged MQTT report and when it last arrived (ms since epoch). */
+export type ProgressReport = {
+    raw: Record<string, any>;
+    receivedAt: number;
+};
+/** The inspected bytes and limits of a started job, for the resume prompt and byte check. */
+export type CheckedFile = {
+    sha256: string;
+    /** A project's printed plate: its number and the SHA-256 of its Metadata/plate_<index>.gcode. */
+    plate?: {
+        index: number;
+        sha256: string;
+    };
+    model: string;
+    maxNozzleTemperature: number;
+    maxBedTemperature: number;
+    maxChamberTemperature: number;
+    materials: string[];
+};
+/** What a resume needs to know about a started file (filePath, the inspected snapshot): its bytes, printed plate, limits and used materials. */
+export declare function checkedFile(inspection: PrintFileInspection, filePath: string): Promise<CheckedFile>;
 export type PrintPreflight = {
     finishedJob?: string;
     serial: string;
@@ -40,10 +61,22 @@ export declare function cameraFrameParser(onFrame: (jpeg: Buffer) => void, onErr
 export declare class BambuImplementation {
     private readonly confirm?;
     private printerStore;
+    /**
+     * The job each printer may resume, keyed host and serial. Cancel, a report
+     * that it ended after it was seen running, or another job seen in its place
+     * retires it, so a later job that reuses the name is never resumed.
+     */
     private checkedJobs;
+    /** In-flight counterpart_print_progress reads, one per printer. */
+    private progressReads;
     private clearedErrors;
     constructor(confirm?: ((message: string) => Promise<boolean>) | undefined);
-    confirmHardwareAction(message: string, physicalCheck?: boolean): Promise<void>;
+    /**
+     * Ask a person through MCP elicitation. BAMBU_REQUIRE_CONFIRMATION=0 skips
+     * ordinary prompts; a physical check, or a prompt with requiredBecause (why
+     * this one cannot be skipped), always asks.
+     */
+    confirmHardwareAction(message: string, physicalCheck?: boolean, requiredBecause?: string): Promise<void>;
     private finishedJobIdentity;
     /**
      * Record the current job and notices during preflight so a changed printer state
@@ -53,12 +86,34 @@ export declare class BambuImplementation {
     /** Stop a print whose confirmed situation changed: a newly finished job, or a hidden HMS notice the preflight did not name. */
     assertPrintPreflight(status: any, preflight: PrintPreflight): void;
     private getPrinter;
-    /** Internal handoff from a successful inspected transport; never exposed as an MCP tool. */
-    recordCheckedJob(host: string, serial: string, remotePath: string, requirements: PrinterStateRequirements): void;
+    /**
+     * Internal handoff from a successful inspected transport; never exposed as
+     * an MCP tool. uploadedHere is false for the plug-in routes, where Bambu's
+     * plug-in or cloud put the file on the printer at a path this server has not
+     * verified: a resume then re-reads it if it can and otherwise matches the
+     * unique name, as KAN-216 does for firmware that cannot download a file.
+     */
+    recordCheckedJob(host: string, serial: string, remotePath: string, requirements: PrinterStateRequirements, file: CheckedFile, uploadedHere?: boolean): void;
+    /** Feed one merged report to the resume record (internal; the client store calls it for every report). */
+    observeReport(host: string, serial: string, raw: Record<string, any> | undefined): void;
     private validateLoadedGcodeState;
     private resolveProjectFileMetadata;
     /** Safety reads never use the display cache or configured-serial model inference. */
     getSafetyStatus(host: string, serial: string, token: string): Promise<any>;
+    /**
+     * The merged MQTT report for counterpart_print_progress and when it arrived.
+     * On a held session it comes from the cache with no printer traffic. PushAll
+     * is sent only to fill a cold cache, or at most once per STALE_REPORT_MS when
+     * the printer has been quiet for longer than that (P1-series firmware lags
+     * when asked often). The whole read, connection and publish included, is
+     * bounded by timeoutMs: the MQTT connect to an unreachable printer keeps
+     * retrying, so it must not hold the call. Then the result is null, or a stale
+     * report that could not be refreshed in time. Display data only; safety
+     * checks use getSafetyStatus.
+     */
+    readProgressReport(host: string, serial: string, token: string, timeoutMs?: number): Promise<ProgressReport | null>;
+    private firstProgressReport;
+    private refreshProgressReport;
     getStatus(host: string, serial: string, token: string): Promise<any>;
     print3mf(host: string, serial: string, token: string, options: BambuPrintOptionsInternal): Promise<any>;
     private print3mfPrepared;
@@ -69,7 +124,22 @@ export declare class BambuImplementation {
     /** Raw MQTT heater-off; switching off needs no material or model declaration. */
     sendHeaterOffOverMqtt(host: string, serial: string, token: string, heater: "bed" | "nozzle", signal?: AbortSignal): Promise<any>;
     pauseJob(host: string, serial: string, token: string, dispatch?: () => Promise<any>): Promise<any>;
+    /**
+     * Resume reheats and moves the printer, so it is gated like a print start:
+     * only the job this server inspected and started, while a fresh report shows
+     * it paused, with its bytes re-read over FTPS and compared, and after human
+     * confirmation (unless BAMBU_REQUIRE_CONFIRMATION=0). The record must still
+     * be current at every check, including the native helper's last one.
+     */
     resumeJob(host: string, serial: string, token: string, dispatch?: (assertActive: () => void, beforeDispatch: () => Promise<void>) => Promise<any>): Promise<any>;
+    /**
+     * Re-read a started job's bytes over FTPS: the uploaded file, else the plate
+     * G-code the printer extracted from the project to print it. The first file
+     * that can be read decides; a mismatch is reported as changed.
+     */
+    private rereadJob;
+    /** SHA-256 of a printer file, streamed from an FTPS download into a private directory. */
+    private remoteSha256;
     clearHmsErrors(host: string, serial: string, token: string, dispatch?: (assertActive: () => void, beforeDispatch: () => Promise<void>) => Promise<any>): Promise<any>;
     setPrintSpeed(host: string, serial: string, token: string, speedMode: string | number): Promise<any>;
     setAirductMode(host: string, serial: string, token: string, mode: string): Promise<any>;
@@ -123,6 +193,7 @@ export declare class BambuImplementation {
         printRequested: boolean;
         dispatch: "started" | "unconfirmed";
         remotePath: string;
+        jobName: string;
         message: string;
     }>;
     private printRawPrepared;
@@ -139,6 +210,7 @@ export declare class BambuImplementation {
         printRequested: boolean;
         dispatch: "started" | "unconfirmed";
         remotePath: string;
+        jobName: string;
         message: string;
     }>;
     private ftpDownload;

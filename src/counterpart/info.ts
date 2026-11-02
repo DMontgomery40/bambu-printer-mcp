@@ -1,0 +1,36 @@
+/** counterpart_printer_info for Bambu printers (PRD §8.4). Pure: no printer traffic. */
+import { RTSP_CAMERA_MODELS, TCP_CAMERA_MODELS } from "../printers/camera-models.js";
+import { normalizeModel } from "../safety/limits.js";
+import { SERIAL_MODELS } from "../safety/printer-state.js";
+import { COUNTERPART_CONTRACT, type PrinterInfo } from "./schemas.js";
+
+/** Bambu's display names ("P1S", "A1 Mini", "H2D Pro"), keyed by normalized model. */
+const DISPLAY_NAMES = new Map(Object.values(SERIAL_MODELS).map(name => [normalizeModel(name), name]));
+
+export function bambuPrinterInfo(options: { server: { name: string; version: string }; host: string; serial?: string; model?: string }): PrinterInfo {
+  const model = normalizeModel(options.model);
+  const serial = options.serial?.trim();
+  return {
+    contract: COUNTERPART_CONTRACT,
+    server: options.server,
+    printer: {
+      kind: "bambu",
+      ...(model ? { model: DISPLAY_NAMES.get(model) ?? model.toUpperCase() } : {}),
+      ...(serial ? { serial } : {}),
+      host: options.host,
+    },
+    capabilities: {
+      progress: true,
+      layers: true,
+      // camera_snapshot needs the model to choose its transport.
+      camera: model && TCP_CAMERA_MODELS.has(model) ? "bambu-tcp" : model && RTSP_CAMERA_MODELS.has(model) ? "rtsp" : "none",
+      filaments: "ams",
+      pause: true,
+      resume: true,
+      cancel: true,
+      print3mf: true,
+      // X2D jobs go through its native route; FTPS/remote-file G-code starts stay blocked there.
+      gcode: model !== "x2d",
+    },
+  };
+}

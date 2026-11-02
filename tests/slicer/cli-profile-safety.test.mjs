@@ -856,3 +856,62 @@ console.error('Errors'); process.exit(206);
   await fs.utimes(stale, old, old);
   await assert.rejects(slice(), /the slicer exited with code 206 \(a plate is empty or has no object fully inside it; arrange the model or place it on the plate \[-50\]\)/);
 });
+
+// slice_stl layer_height / wall_loops / sparse_infill_density (PRD §8.4): a process override over the resolved presets.
+const overrides = { layer_height: '0.12', wall_loops: '4', sparse_infill_density: '25%' };
+for (const slicerType of ['bambustudio', 'orcaslicer', 'orcaslicer-bambulab']) {
+  test(`${slicerType} writes print-sheet settings over the resolved process preset only`, async t => {
+    const f = await fixture(t, slicerType);
+    await f.write('process', { name: 'SAFETY process base', layer_height: '0.2', wall_loops: '2', sparse_infill_density: '15%', top_shell_layers: '5' });
+    await f.slice({ processOverrides: overrides });
+    const args = await f.args();
+    const [machineFile, processFile] = args[args.indexOf('--load-settings') + 1].split(';');
+    const processProfile = JSON.parse(await fs.readFile(processFile, 'utf8'));
+    assert.deepEqual([processProfile.layer_height, processProfile.wall_loops, processProfile.sparse_infill_density], ['0.12', '4', '25%']);
+    assert.equal(processProfile.top_shell_layers, '5', 'other inherited process values are kept');
+    const machine = JSON.parse(await fs.readFile(machineFile, 'utf8'));
+    assert.equal(machine.machine_start_gcode, 'M620 S0A ; correct machine');
+    assert.equal(machine.layer_height, undefined, 'the machine preset is not changed');
+    // Without the arguments the preset's own values are used.
+    await f.slice();
+    const plain = await f.args();
+    const plainProcess = JSON.parse(await fs.readFile(plain[plain.indexOf('--load-settings') + 1].split(';')[1], 'utf8'));
+    assert.deepEqual([plainProcess.layer_height, plainProcess.wall_loops, plainProcess.sparse_infill_density], ['0.2', '2', '15%']);
+  });
+}
+
+test('print-sheet settings override a custom process profile without losing its own values', async t => {
+  const f = await fixture(t);
+  const custom = path.join(f.root, 'custom.json');
+  await fs.writeFile(custom, JSON.stringify({ name: 'Custom', from: 'User', inherits: 'SAFETY process', wall_loops: '5', brim_width: '7' }));
+  const original = await fs.readFile(custom, 'utf8');
+  await f.slice({ processOverrides: { wall_loops: '3' } }, custom);
+  const args = await f.args();
+  const processProfile = JSON.parse(await fs.readFile(args[args.indexOf('--load-settings') + 1].split(';')[1], 'utf8'));
+  assert.deepEqual([processProfile.wall_loops, processProfile.brim_width, processProfile.layer_height], ['3', '7', '0.2']);
+  assert.equal(await fs.readFile(custom, 'utf8'), original, 'the user\'s profile file is not modified');
+});
+
+test('print-sheet settings need a Bambu-compatible slicer and are rejected before execution elsewhere', async t => {
+  const f = await fixture(t);
+  const manipulator = new STLManipulator(path.join(f.root, 'other'));
+  for (const slicerType of ['prusaslicer', 'cura']) {
+    await assert.rejects(manipulator.sliceSTL(f.stl, slicerType, f.executable, undefined, undefined, undefined, { processOverrides: overrides }), /Bambu-compatible slicer/);
+  }
+  await assert.rejects(fs.access(f.capture), { code: 'ENOENT' });
+});
+
+test('print-sheet arguments are validated and written in Bambu Studio string forms', async () => {
+  const { parseProcessOverrides } = await import('../../dist/slicer/process-overrides.js');
+  const { validateRemoteSliceOptions } = await import('../../dist/slicer/remote-slicer.js');
+  assert.deepEqual(parseProcessOverrides({ layer_height: 0.28, wall_loops: 6, sparse_infill_density: ' 40 % ' }, 0.4),
+    { layer_height: '0.28', wall_loops: '6', sparse_infill_density: '40%' });
+  assert.deepEqual(parseProcessOverrides({ layer_height: 0.2 }, 0.4), { layer_height: '0.2' });
+  assert.equal(parseProcessOverrides({}, 0.4), undefined);
+  for (const bad of [{ layer_height: 0 }, { layer_height: 0.5 }, { layer_height: '0.2' }, { wall_loops: 2.5 }, { wall_loops: -1 },
+    { sparse_infill_density: '15' }, { sparse_infill_density: '150%' }, { sparse_infill_density: 15 }]) {
+    assert.throws(() => parseProcessOverrides(bad, 0.4), /layer_height|wall_loops|sparse_infill_density/, JSON.stringify(bad));
+  }
+  // The remote API slices the uploaded process preset, which carries the override.
+  assert.doesNotThrow(() => validateRemoteSliceOptions({ processOverrides: { wall_loops: '3' } }));
+});

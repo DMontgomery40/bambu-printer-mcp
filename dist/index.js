@@ -14,14 +14,20 @@ import { BambuNetworkBridge, describeBambuNetworkPrintError } from "./bambu-netw
 import { assertBambuNativeAvailable, bambuNativeControlsAvailable, bambuNativeUnavailableReason, interruptNativeOperations, validateBambuNativeMetadata, buildBambuNativeFanCommand, buildBambuNativeTemperatureCommand, printWithBambuNative, sendCommandWithBambuNative, uploadWithBambuNative, } from "./bambu-native.js";
 import { importFileViaBambuConnect } from "./bambu-connect.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
+import { FUSION_CALL_OUTPUT_SCHEMA, FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFAULT_ARGS, FUSION_NEW_DESIGN_OUTPUT_SCHEMA, FUSION_STATUS_OUTPUT_SCHEMA, FusionMcpBridge } from "./fusion-mcp-bridge.js";
 import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue } from "./ams-mapping.js";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, parse3MF } from './3mf_parser.js';
-import { BambuImplementation, assertDirectPrintSupported } from "./printers/bambu.js";
+import { BambuImplementation, assertDirectPrintSupported, checkedFile } from "./printers/bambu.js";
 import { inspectPrintFile } from "./safety/print-file.js";
-import { externalStorageState, validatePrinterState } from "./safety/printer-state.js";
+import { SERIAL_MODELS, externalStorageState, validatePrinterState } from "./safety/printer-state.js";
 import { isDualNozzleModel } from "./safety/limits.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safety/artifact.js";
 import { detectProfilesRoot } from "./slicer/profile-flatten.js";
+import { bambuPrinterInfo } from "./counterpart/info.js";
+import { bambuProgress, offlineProgress } from "./counterpart/progress.js";
+import { makeCounterpart3mf } from "./counterpart/make-3mf.js";
+import { MAKE_3MF_OUTPUT_SCHEMA, PRINT_PROGRESS_OUTPUT_SCHEMA, PRINTER_INFO_OUTPUT_SCHEMA } from "./counterpart/schemas.js";
+import { parseProcessOverrides } from "./slicer/process-overrides.js";
 dotenv.config();
 const DEFAULT_HOST = process.env.BAMBU_PRINTER_HOST || process.env.PRINTER_HOST || "localhost";
 const DEFAULT_BAMBU_SERIAL = process.env.BAMBU_PRINTER_SERIAL || process.env.BAMBU_SERIAL || "";
@@ -55,6 +61,16 @@ const DEFAULT_BAMBU_MODEL = process.env.BAMBU_PRINTER_MODEL?.trim().toLowerCase(
 const DEFAULT_BAMBU_CONNECTION_MODE = process.env.BAMBU_DEFAULT_CONNECTION_MODE?.trim().toLowerCase() || "";
 const DEFAULT_BED_TYPE = process.env.BED_TYPE?.trim().toLowerCase() || "textured_plate";
 const DEFAULT_NOZZLE_DIAMETER = process.env.NOZZLE_DIAMETER?.trim() || "0.4";
+/** MCP initialize name/version; counterpart_printer_info reports the same values. */
+const SERVER_INFO = {
+    name: "bambu-printer-mcp",
+    version: String(JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version),
+};
+/** Tools that declare an outputSchema: they always return structuredContent, and errors carry none. */
+const OUTPUT_SCHEMA_TOOLS = new Set([
+    "counterpart_printer_info", "counterpart_print_progress", "counterpart_make_3mf",
+    "fusion_mcp_status", "fusion_mcp_call", "fusion_mcp_new_design", "fusion_mcp_export",
+]);
 /** Bound for each Linux X2D emergency MQTT send (BAMBU_EMERGENCY_MQTT_TIMEOUT_MS, 1–60000 ms). */
 function withEmergencyMqttTimeout(send) {
     const raw = Number(process.env.BAMBU_EMERGENCY_MQTT_TIMEOUT_MS?.trim() || 15000);
@@ -913,13 +929,11 @@ if (!fs.existsSync(TEMP_DIR)) {
 class BambuPrinterMCPServer {
     constructor() {
         this.blender = new BlenderMcpBridge();
+        this.fusion = new FusionMcpBridge();
         this.shuttingDown = false;
         this.confirmationTimeoutMs = parseConfirmationTimeout(process.env.BAMBU_CONFIRMATION_TIMEOUT_MS);
         this.runtimeConfig = readRuntimeConfig();
-        this.server = new Server({
-            name: "bambu-printer-mcp",
-            version: JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version
-        }, {
+        this.server = new Server(SERVER_INFO, {
             capabilities: {
                 resources: {},
                 tools: {}
@@ -964,6 +978,15 @@ class BambuPrinterMCPServer {
     setupHandlers() {
         this.setupResourceHandlers();
         this.setupToolHandlers();
+    }
+    /**
+     * The model for display-only counterpart tools: the argument, then the
+     * configured model, then the serial prefix. Never a safety decision and
+     * never elicited; print routes use resolveBambuModel and fresh identity.
+     */
+    displayModel(args, serial) {
+        const requested = typeof args?.bambu_model === "string" ? args.bambu_model.trim() : "";
+        return requested || DEFAULT_BAMBU_MODEL || SERIAL_MODELS[serial.trim().toUpperCase().slice(0, 3)] || undefined;
     }
     /**
      * Resolve the Bambu printer model from args, env, or by asking the user via elicitation.
@@ -1207,6 +1230,7 @@ class BambuPrinterMCPServer {
         const clientJobId = args?.client_job_id !== undefined ? Number(args.client_job_id) : Date.now();
         return withPrinterOperation(devIp, devId, assertActive => withPrintSnapshot(threeMFPath, async (snapshot, retainForDispatchedUpload) => {
             const inspection = await inspectPrintFile(snapshot, { model: printModel, nozzleDiameters: printNozzles, plateIndex, bedType: printBedType });
+            const resumeFile = await checkedFile(inspection, snapshot);
             let mapping = finalAmsMapping?.slice();
             if (finalAmsSlots) {
                 if (finalAmsSlots.length !== inspection.usedFilamentPositions.length)
@@ -1317,7 +1341,7 @@ class BambuPrinterMCPServer {
                         assertActive();
                     } });
                 assertActive();
-                this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements);
+                this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements, resumeFile, false);
                 return { ...nativeResult, autoSliced, projectName, plateIndex, useAMS, amsMapping: mapping };
             }
             const bridgeOptions = {
@@ -1357,7 +1381,7 @@ class BambuPrinterMCPServer {
                     (reported ? ` Plug-in reported: ${reported}.` : ""));
             }
             assertActive();
-            this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements);
+            this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements, resumeFile, false);
             return {
                 status: "success",
                 message: `FULU BambuNetwork ${bridgePrintMethod} command for ${threeMfFilename} sent successfully.`,
@@ -2013,7 +2037,10 @@ class BambuPrinterMCPServer {
                                 rotate_y: { type: "number", description: "Rotate the model around the Y-axis by this many degrees before slicing. Useful for reorienting prints for better layer adhesion." },
                                 min_save: { type: "boolean", description: "Write a smaller output 3MF by omitting non-essential metadata. Reduces file size for faster FTP upload to the printer." },
                                 skip_modified_gcodes: { type: "boolean", description: "Strip custom start/end gcodes embedded in the 3MF. Recommended for downloaded 3MFs since custom gcodes from other users' profiles may be unsafe for your printer." },
-                                slice_plate: { type: "number", description: "Which plate index to slice. 0 = all plates for local slicers; remote slicing defaults to plate 1 and rejects 0. Use 1, 2, etc. to slice only a specific plate in multi-plate 3MF projects." }
+                                slice_plate: { type: "number", description: "Which plate index to slice. 0 = all plates for local slicers; remote slicing defaults to plate 1 and rejects 0. Use 1, 2, etc. to slice only a specific plate in multi-plate 3MF projects." },
+                                layer_height: { type: "number", exclusiveMinimum: 0, description: "Layer height in mm, such as 0.28 (draft), 0.2 (standard) or 0.12 (fine). Written as the process preset's layer_height over the machine and process preset this tool resolves; at most the nozzle diameter. Bambu-compatible slicers only." },
+                                wall_loops: { type: "integer", minimum: 0, maximum: 1000, description: "Number of walls (perimeters), written as the process preset's wall_loops. Bambu-compatible slicers only." },
+                                sparse_infill_density: { type: "string", pattern: "^\\s*\\d+(\\.\\d+)?\\s*%\\s*$", description: "Sparse infill density as a percentage, such as \"15%\", written as the process preset's sparse_infill_density. Bambu-compatible slicers only." }
                             },
                             required: ["stl_path", "bambu_model"]
                         }
@@ -2287,7 +2314,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "resume_print",
-                        description: "Resume a paused print job on the Bambu Lab printer",
+                        description: "Resume a paused job that this server inspected and started. It re-downloads the job's file over FTPS and compares its SHA-256, asks a person to confirm (unless BAMBU_REQUIRE_CONFIRMATION=0), and reads the printer again before sending. A job that was cancelled, ended or replaced is never resumed. Returns jobName and bytesVerified.",
                         inputSchema: {
                             type: "object",
                             properties: {
@@ -2689,6 +2716,121 @@ class BambuPrinterMCPServer {
                                 : ["stl_path", "operations"],
                             additionalProperties: false
                         }
+                    },
+                    {
+                        name: "counterpart_printer_info",
+                        description: "Counterpart contract (counterpart/1): this server's name and version, the configured Bambu printer, and which progress, layer, camera, filament, pause/resume/cancel and print features it has. Sends nothing to the printer.",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                bambu_model: { type: "string", description: "Printer model; defaults to BAMBU_MODEL. Selects the camera transport." },
+                                host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
+                                bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
+                                bambu_token: { type: "string", description: "Access token (default: value from env); never returned." }
+                            }
+                        },
+                        outputSchema: PRINTER_INFO_OUTPUT_SCHEMA,
+                        annotations: { readOnlyHint: true }
+                    },
+                    {
+                        name: "counterpart_print_progress",
+                        description: "Counterpart contract (counterpart/1): the printer's state, current job (name, task id, percent, time left, layers, stage words), temperatures, active filament and problems with Bambu's HMS messages and links. Read from the MQTT report this server keeps, so a held session asks the printer nothing; observedAt is when the printer sent it. An unreachable printer reports state offline. Read-only; not a safety check.",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                bambu_model: { type: "string", description: "Printer model; defaults to BAMBU_MODEL. Used for the chamber sensor and Bambu's per-model messages." },
+                                host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
+                                bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
+                                bambu_token: { type: "string", description: "Access token (default: value from env)" }
+                            }
+                        },
+                        outputSchema: PRINT_PROGRESS_OUTPUT_SCHEMA,
+                        annotations: { readOnlyHint: true }
+                    },
+                    {
+                        name: "counterpart_make_3mf",
+                        description: "Counterpart contract (counterpart/1): combine STL parts exported separately (for example each body of a design) into one new 3MF for multi-colour printing. The parts keep their relative positions as one assembly, and each part prints with its filament number (default: part 1 uses filament 1, part 2 filament 2, and so on). Slice it with slice_stl, passing one load_filaments profile per filament number, then print it with print_3mf and ams_mapping or ams_slots. Never overwrites a file.",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                parts: {
+                                    type: "array",
+                                    minItems: 1,
+                                    maxItems: 64,
+                                    description: "The parts, in filament order.",
+                                    items: {
+                                        type: "object",
+                                        properties: {
+                                            stl_path: { type: "string", description: "Path to the part's STL file." },
+                                            name: { type: "string", description: "The part's name, shown in the slicer." },
+                                            filament: { type: "integer", minimum: 1, maximum: 64, description: "1-based project filament for this part; defaults to the part's position (1, 2, ...)." }
+                                        },
+                                        required: ["stl_path", "name"],
+                                        additionalProperties: false
+                                    }
+                                },
+                                out_path: { type: "string", description: "New .3mf path whose parent directory exists. Existing files are never overwritten." }
+                            },
+                            required: ["parts", "out_path"],
+                            additionalProperties: false
+                        },
+                        outputSchema: MAKE_3MF_OUTPUT_SCHEMA
+                    },
+                    {
+                        name: "fusion_mcp_status",
+                        description: `Check Autodesk Fusion through the configured Fusion MCP server (faust-machines/fusion360-mcp-server): whether it is configured, Fusion is running, the Fusion360MCP add-in answers on its port, and the server's tools and schemas. connected is true only when the add-in answers. With launch: true, starts Fusion on macOS when it is not running and waits up to 90 s for the add-in. Configure FUSION_MCP_COMMAND (uvx) and FUSION_MCP_ARGS (${JSON.stringify(FUSION_MCP_DEFAULT_ARGS)}).`,
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                launch: { type: "boolean", description: "Start Autodesk Fusion (open -a \"Autodesk Fusion\") when it is not running, then wait up to 90 s for the add-in." },
+                                timeout_ms: { type: "integer", minimum: 100, maximum: 600000, description: "Connection and discovery deadline in milliseconds; defaults to FUSION_MCP_TIMEOUT_MS or 180000." }
+                            },
+                            additionalProperties: false
+                        },
+                        outputSchema: FUSION_STATUS_OUTPUT_SCHEMA
+                    },
+                    {
+                        name: "fusion_mcp_call",
+                        description: "Call a discovered tool on the configured Fusion MCP server, such as create_sketch, extrude, fillet, create_parameter, set_parameter, check_interference or execute_code, preserving its full MCP content and errors. Discover tool schemas with fusion_mcp_status first. Calls change the open Fusion design and are never automatically retried. Most tools need an open design: call fusion_mcp_new_design first.",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                tool_name: { type: "string", description: "Exact tool name advertised by the Fusion MCP server." },
+                                arguments: { type: "object", description: "Arguments matching the remote tool's discovered input schema." },
+                                timeout_ms: { type: "integer", minimum: 100, maximum: 600000, description: "Total deadline in milliseconds; defaults to FUSION_MCP_TIMEOUT_MS or 180000." }
+                            },
+                            required: ["tool_name"],
+                            additionalProperties: false
+                        },
+                        outputSchema: FUSION_CALL_OUTPUT_SCHEMA
+                    },
+                    {
+                        name: "fusion_mcp_new_design",
+                        description: "Open a new parametric design document in Fusion (execute_code with app.documents.add(FusionDesignDocumentType)). The Fusion MCP tools work on the open design, so a design pass calls this first.",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                timeout_ms: { type: "integer", minimum: 100, maximum: 600000, description: "Total deadline in milliseconds; defaults to FUSION_MCP_TIMEOUT_MS or 180000." }
+                            },
+                            additionalProperties: false
+                        },
+                        outputSchema: FUSION_NEW_DESIGN_OUTPUT_SCHEMA
+                    },
+                    {
+                        name: "fusion_mcp_export",
+                        description: "Export the open Fusion design into an existing directory as <name>.stl (export_stl of one body), <name>.f3d (export_f3d) and <name>.parameters.json (its user parameters), and return their absolute paths. The STL is checked as a finite triangle mesh; slice it like any other model. Fusion must run on this computer, and existing files are never overwritten.",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                output_dir: { type: "string", description: "Existing directory for the three files." },
+                                name: { type: "string", description: "File name without extension, such as bracket." },
+                                body_name: { type: "string", description: "The body to export as STL. Optional when the design has exactly one body." },
+                                timeout_ms: { type: "integer", minimum: 100, maximum: 600000, description: "Total deadline in milliseconds; defaults to FUSION_MCP_TIMEOUT_MS or 180000." }
+                            },
+                            required: ["output_dir", "name"],
+                            additionalProperties: false
+                        },
+                        outputSchema: FUSION_EXPORT_OUTPUT_SCHEMA
                     }
                 ]
             };
@@ -3416,6 +3558,13 @@ class BambuPrinterMCPServer {
                             sliceBambuOptions.skipModifiedGcodes = Boolean(args.skip_modified_gcodes);
                         if (args?.slice_plate !== undefined)
                             sliceBambuOptions.slicePlate = Number(args.slice_plate);
+                        const processOverrides = parseProcessOverrides(args, Number(nozzleDiam));
+                        if (processOverrides)
+                            sliceBambuOptions.processOverrides = processOverrides;
+                        if (sliceBambuOptions.loadFilamentIds && String(args.stl_path).toLowerCase().endsWith(".3mf")) {
+                            // Bambu Studio's CLI refuses --load-filament-ids for 3MF input and counts it per input file.
+                            throw new Error("load_filament_ids applies only to STL input. In a 3MF, each object or part names its own filament; counterpart_make_3mf writes it from parts[].filament.");
+                        }
                         const usePrinterFilaments = args?.use_printer_filaments !== undefined ? Boolean(args.use_printer_filaments) : true;
                         if (usePrinterFilaments &&
                             !explicitSlicerProfile &&
@@ -3692,12 +3841,40 @@ class BambuPrinterMCPServer {
                     case "blender_mcp_edit_model":
                         result = await this.blender.edit(args ?? {}, this.resolveExecutableSelectorArg(args?.bridge_command, "blender_mcp_edit_model", "bridge_command", true) ?? (!process.env.BLENDER_MCP_COMMAND?.trim() ? this.runtimeConfig.blenderBridgeCommand : undefined), extra.signal);
                         break;
+                    case "counterpart_printer_info":
+                        result = bambuPrinterInfo({ server: SERVER_INFO, host, serial: bambuSerial, model: this.displayModel(args, bambuSerial) });
+                        break;
+                    case "counterpart_print_progress": {
+                        const report = await this.bambu.readProgressReport(host, bambuSerial, bambuToken);
+                        result = report
+                            ? bambuProgress(report.raw, { receivedAt: report.receivedAt, serial: bambuSerial, model: this.displayModel(args, bambuSerial) })
+                            : offlineProgress(Date.now());
+                        break;
+                    }
+                    case "counterpart_make_3mf":
+                        result = await makeCounterpart3mf(args ?? {});
+                        break;
+                    case "fusion_mcp_status":
+                        result = await this.fusion.status(args ?? {}, extra.signal);
+                        break;
+                    case "fusion_mcp_call": {
+                        // The remote result passes through unchanged; its structuredContent satisfies the open schema.
+                        const remote = await this.fusion.call(args ?? {}, extra.signal);
+                        return { ...remote, structuredContent: remote.structuredContent ?? {} };
+                    }
+                    case "fusion_mcp_new_design":
+                        result = await this.fusion.newDesign(args ?? {}, extra.signal);
+                        break;
+                    case "fusion_mcp_export":
+                        result = await this.fusion.export(args ?? {}, extra.signal);
+                        break;
                     default:
                         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
                 }
                 await progressNotifications;
                 const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
-                if (this.runtimeConfig.enableJsonResponse && typeof result === "object") {
+                // A declared outputSchema obliges structuredContent whatever MCP_HTTP_JSON_RESPONSE says.
+                if ((this.runtimeConfig.enableJsonResponse || OUTPUT_SCHEMA_TOOLS.has(name)) && typeof result === "object") {
                     return {
                         content: [{ type: "text", text }],
                         structuredContent: result,
@@ -3718,9 +3895,11 @@ class BambuPrinterMCPServer {
                     message,
                     tool: name,
                 };
+                // MCP clients validate structuredContent against a declared outputSchema even on
+                // errors (SDK 1.32 Client.callTool), so those tools return the error as text only.
                 return {
                     content: [{ type: "text", text: `Error: ${message}` }],
-                    structuredContent: structured,
+                    ...(OUTPUT_SCHEMA_TOOLS.has(name) ? {} : { structuredContent: structured }),
                     isError: true,
                 };
             }
@@ -3739,6 +3918,7 @@ class BambuPrinterMCPServer {
         try {
             // Closing the MCP transport aborts its active requests before exit cleanup.
             await this.server.close();
+            await this.fusion.close();
             this.httpRuntime?.httpServer.close();
         }
         catch (error) {

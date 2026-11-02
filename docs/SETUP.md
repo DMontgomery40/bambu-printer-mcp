@@ -93,6 +93,15 @@ BLENDER_MCP_ARGS='["blender-mcp"]'
 BLENDER_MCP_TIMEOUT_MS=120000
 # Start the matching MCP addon inside Blender.
 # Legacy custom executable bridge (optional): BLENDER_MCP_BRIDGE_COMMAND=
+
+# --- Optional Autodesk Fusion through faust-machines/fusion360-mcp-server ---
+FUSION_MCP_COMMAND=uvx
+FUSION_MCP_ARGS='["--from","git+https://github.com/faust-machines/fusion360-mcp-server@19b9f1e95192","fusion360-mcp-server","--mode","socket"]'
+FUSION_MCP_TIMEOUT_MS=180000
+FUSION_MCP_HOST=localhost
+# The default here; Blender's MCP add-on holds the add-in's own default, 9876.
+FUSION_MCP_PORT=9877
+# Install the repository's addon/ at the same commit as the Fusion360MCP add-in and set it to Run on Startup.
 ```
 
 ### Environment variables reference
@@ -137,6 +146,11 @@ BLENDER_MCP_TIMEOUT_MS=120000
 | `BLENDER_MCP_ARGS` | `[]` | No | JSON array of server arguments, e.g. `["blender-mcp"]`; no shell parsing |
 | `BLENDER_MCP_TIMEOUT_MS` | `120000` | No | Connection/discovery/call deadline, 100–300000 ms; interrupted edits are never retried automatically |
 | `BLENDER_MCP_BRIDGE_COMMAND` | | No | Legacy custom executable receiving `MCP_BLENDER_PAYLOAD`; separate from the standard MCP integration |
+| `FUSION_MCP_COMMAND` | | No | Trusted executable for the Fusion MCP server, normally `uvx` (or its full path) |
+| `FUSION_MCP_ARGS` | the pinned faust-machines arguments | No | JSON array of server arguments; no shell parsing. The default is `["--from","git+https://github.com/faust-machines/fusion360-mcp-server@19b9f1e95192","fusion360-mcp-server","--mode","socket"]` |
+| `FUSION_MCP_TIMEOUT_MS` | `180000` | No | Connection/discovery/call deadline, 100–600000 ms; interrupted calls are never retried automatically |
+| `FUSION_MCP_HOST` | `localhost` | No | Where the Fusion360MCP add-in listens, passed to the Fusion MCP server |
+| `FUSION_MCP_PORT` | `9877` | No | The add-in's port. This bridge passes it to the Fusion MCP server, and `fusion_mcp_status` with `launch: true` starts Fusion with `open -a "Autodesk Fusion" --env FUSION_MCP_PORT=<port>`. The add-in and faust's own default is 9876, which Blender's MCP add-on holds; Fusion started from the Dock gets no environment and uses 9876 |
 | `BAMBU_CLI_FLATTEN` | automatic | No | Legacy setting; BBL profile resolution now always runs when profiles contain inheritance or includes. A false/unset value cannot bypass required machine G-code. Standalone custom files without dependencies pass through. See [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md). |
 | `BAMBU_PROFILES_ROOT` | derived from `SLICER_PATH` | No | Override path to the selected slicer's `Resources/profiles` directory containing `BBL`. BambuStudio, Orca, and FULU use this tree exclusively for bundled profiles. Useful for non-standard installs or dev environments. A relative path is resolved against the server's working directory. |
 

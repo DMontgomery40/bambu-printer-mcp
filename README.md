@@ -737,7 +737,16 @@ Pause the currently running print job. Sends an `UpdateState` MQTT command with 
 
 #### resume_print
 
-Resume a paused print job. Sends an `UpdateState` MQTT command with `state: "resume"`.
+Resume a paused print job that this server inspected and started. Resume reheats and moves the printer, so it is checked like a print start:
+
+1. A fresh report must show that job paused, with the inspected nozzle and filament still in place.
+2. The server downloads the job's file from the printer over FTPS and compares its SHA-256 with the inspected bytes. A P1S deletes an uploaded project once it starts printing and keeps the plate G-code it extracted, `cache/<name>_plate_<n>.gcode`, which is byte-identical to the 3MF's `Metadata/plate_<n>.gcode`. When the project is gone, the server compares that file with the inspected plate. A different file refuses the resume, and the job can no longer be resumed from here.
+3. A person confirms through MCP elicitation: the prompt names the job, its peak temperatures, materials and SHA-256. `BAMBU_REQUIRE_CONFIRMATION=0` skips this prompt, as it does for print and heating prompts.
+4. The printer is read again after the prompt, and on X2D and H2 the native helper rechecks it once more right before sending. Only then does the server send `UpdateState` with `state: "resume"`.
+
+The server keeps one resume record per printer. Cancelling the job ends it, and so does a report that the job finished, failed or went idle after it was seen running, or another job seen in its place. A later job with the same name, such as the same file reprinted from the touchscreen, is never resumed. The server watches every MQTT report it receives, not just its own reads. It doesn't see reports while its MQTT session is disconnected.
+
+The result is `{status, message, jobName, bytesVerified}`, where `jobName` is the name `counterpart_print_progress` reports. On the BambuNetwork and X2D native routes, Bambu's plug-in puts the file on the printer, so its FTPS path isn't verified. If the file can't be read back there, the resume matches the job by its unique name and returns `bytesVerified: false`, and the prompt says so. That prompt always appears, even with `BAMBU_REQUIRE_CONFIRMATION=0`, which skips only prompts for resumes whose bytes were verified. On every other route, a file that can't be re-read refuses the resume.
 
 ```json
 {
@@ -1043,6 +1052,21 @@ This wrapper currently assumes:
 
 If the project does not match those assumptions, the tool fails fast with a structured error instead of guessing. The role-to-color and color-to-tray mapping is isolated in code so the next version can evolve toward customer-requested colors without replacing the whole wrapper.
 
+#### Counterpart tools (`counterpart/1`)
+
+[Counterpart](https://github.com/DMontgomery40/scan-to-make) (Scan to Make) reads printers through a small contract that this server and [mcp-3D-printer-server](https://github.com/DMontgomery40/mcp-3D-printer-server) share. Each tool declares an `outputSchema` and returns `structuredContent`, plus the same JSON as text for older clients. An error is returned as text only, because MCP clients check `structuredContent` against the schema even on errors. `counterpart_printer_info` and `counterpart_print_progress` take the usual optional `host`, `bambu_serial`, `bambu_token` and `bambu_model` (default `BAMBU_MODEL`) arguments.
+
+- **`counterpart_printer_info`** returns `{contract, server: {name, version}, printer: {kind: "bambu", model, serial, host}, capabilities}`. `capabilities` lists progress, layers, the camera transport (`bambu-tcp` for A1/P1, `rtsp` for X1, P2S, H2 and X2D, `none` without a model), `filaments: "ams"`, pause, resume, cancel, `print3mf` and `gcode` (false on X2D). It sends nothing to the printer and never returns the access code.
+- **`counterpart_print_progress`** returns `{contract, observedAt, state, job?, temps?, activeFilament?, problems}` from the printer's MQTT reports, which this server keeps while it is connected. A held session is answered from that cache without any printer traffic, and `observedAt` is when the printer sent the report. The server asks the printer for a full report only to fill an empty cache, and at most once every five minutes after the printer has been quiet that long. A printer that sends no report within 8 seconds is `offline`.
+  - `state`: `IDLE` is `idle`, `PREPARE`/`SLICING` `preparing`, `RUNNING` `printing`, `PAUSE` `paused`, `FINISH` `finished` and `FAILED` `failed`. A `FAILED` job with `0300400C` ("The task was canceled.") in `print_error`, or in X2D's `fail_reason`, is `cancelled`. Any other or missing `gcode_state` on a connected printer is `busy`.
+  - `job` (not for idle, busy or offline): `name` is `subtask_name`, else the basename of `gcode_file` (a raw G-code print reports only its file path; that basename is the `jobName` the print returns); `id` is `task_id`, omitted when it is the LAN placeholder `"0"`; `progress` is `mc_percent`; `remainingSec` is `mc_remaining_time` (minutes) × 60; `layer`/`totalLayers` appear once the printer reports a total; `stage` is Bambu Studio's words for `stg_cur` ("Heatbed preheating", "Auto bed leveling").
+  - `temps`: nozzle and bed `{actual, target}`, and `chamber` from the H2 chamber controller or the X1 sensor. On H2 and X2D the nozzle is the active extruder's, from `device.extruder`. P1 and A1 printers have no chamber sensor, so it is omitted.
+  - `activeFilament`: the loaded spool's `material` and `#RRGGBB` `color`. `slot` is the index `ams_slots` uses: `amsId × 4 + tray` for an AMS, the unit id (128 and up) for an AMS-HT, and `"ext"` for the external spool, or `"254"` (left) / `"255"` (right) on dual-nozzle H2D, H2C and X2D. On H2 and X2D it comes from the active extruder's report.
+  - `problems`: a non-zero `print_error` as 8 hex digits, such as `07008011`, and each HMS entry as `AAAA_BBBB_CCCC_DDDD`, such as `0300_1800_0001_0003`. Severity follows Bambu's HMS level: fatal is `fatal`, serious `error`, common `warning` and info `info`. Each HMS problem links to Bambu's page for that code. Messages come from the English HMS tables bundled with the pinned Bambu Studio release; `scripts/generate-hms-messages.mjs` turns them into `src/safety/hms-messages.ts` and the stage words into `src/printers/bambu-stages.ts`. A model without its own table, such as the P1S, gets the text the other tables share. Codes that Bambu lists for a printer without text are reported as `info`.
+- **`counterpart_make_3mf`** takes `{parts: [{stl_path, name, filament?}], out_path}` and writes a new 3MF for multi-colour printing. The parts become one assembly: they keep their relative positions, and each part prints with its own filament number (by default part 1 uses filament 1, part 2 filament 2, and so on). Slice it with `slice_stl` and one `load_filaments` profile per filament number, then print it with `print_3mf` and `ams_slots` or `ams_mapping`. The file holds one assembly rather than one object per part, because Bambu Studio 02.08.02.61's CLI arranges separate objects apart, reports G-code path conflicts between stacked objects when arranging is off, and refuses `load_filament_ids` for 3MF input. It never overwrites a file. The result lists `path`, `objects`, `filaments` (the highest filament number) and each part's triangle count.
+
+`print_3mf` also returns `subtaskName`, the `subtask_name` it sends with the job, when it starts a 3MF with the LAN `project_file` command: an STL or 3MF sliced by `slice_stl`, and any 3MF on H2, P2S and A1. On H2 and P2S it also returns `taskId`, the `task_id` sent with the job; other models send `task_id: "0"`. A client can match `counterpart_print_progress` reports to its own print with these. Pre-sliced `.gcode.3mf` files on P1, X1 and A1 mini (sent as a G-code file), the X2D native route, and the BambuNetwork and Bambu Connect routes return neither.
+
 </details>
 
 <details>
@@ -1139,7 +1163,7 @@ When `slicer_type` is `bambustudio` (the default), these additional parameters a
 | `clone_objects` | string | Clone counts per object, comma-separated (e.g. `"1,3,1,10"`) |
 | `skip_objects` | string | Object indices to skip, comma-separated (e.g. `"3,5,10"`) |
 | `load_filaments` | string | Filament profile paths, semicolon-separated |
-| `load_filament_ids` | string | Filament-to-object mapping, comma-separated |
+| `load_filament_ids` | string | Filament-to-object mapping, comma-separated. STL input only: Bambu Studio's CLI refuses it for a 3MF, where each object or part names its own filament (see `counterpart_make_3mf`) |
 | `nozzle_volume_type` | string | Installed nozzle flow type: `standard` or `high_flow` (default: `BAMBU_NOZZLE_VOLUME_TYPE`, else the preset's Standard default). `high_flow` uses the presets' High Flow values, such as the filament's High Flow max volumetric speed, and is refused if the machine preset declares no High Flow variant. Also on `slice_with_template`. |
 | `filament_colours` | string | Slot colours, one `#RRGGBB` per filament slot, semicolon-separated. Explicit values take priority, followed by input 3MF colours, each custom profile's colour, then the BambuStudio default. |
 | `enable_timelapse` | boolean | Enable timelapse-aware slicing |
@@ -1151,6 +1175,11 @@ When `slicer_type` is `bambustudio` (the default), these additional parameters a
 | `min_save` | boolean | Produce smaller output 3MF (faster uploads) |
 | `skip_modified_gcodes` | boolean | Ignore stale custom gcodes in the 3MF |
 | `slice_plate` | number | Which plate to slice (0 = all plates, default: 0) |
+| `layer_height` | number | Layer height in mm, such as 0.28, 0.2 or 0.12; at most the nozzle diameter |
+| `wall_loops` | integer | Number of walls, 0 to 1000 |
+| `sparse_infill_density` | string | Sparse infill density, such as `"15%"` |
+
+`layer_height`, `wall_loops` and `sparse_infill_density` are written as a process override on top of the machine and process preset the tool resolves, using Bambu Studio's keys and string forms (`"0.2"`, `"2"`, `"15%"`). Every other preset value, and the machine preset, stay as resolved, and your own profile files are not changed. They work with every Bambu-compatible slicer, including remote `orca-slicer-api` slicing, and are refused for PrusaSlicer, Slic3r and Cura.
 
 **Example: Slice with auto-orient and 3 copies**
 ```json
@@ -1244,6 +1273,91 @@ They receive `MCP_BLENDER_PAYLOAD` with the requested file and operations;
 their results explicitly report `output_verified: false`. A missing executable
 configuration is an error when execution is requested. Per-call legacy
 `bridge_command` overrides remain disabled unless `MCP_ALLOW_EXECUTABLE_ARG=1`.
+
+#### Fusion MCP
+
+Design a part from scratch in Autodesk Fusion through
+[faust-machines/fusion360-mcp-server](https://github.com/faust-machines/fusion360-mcp-server)
+(MIT). It is a stdio MCP server that talks TCP on `localhost:9877` here to its
+`Fusion360MCP` add-in inside Fusion. Fusion and its licence, including Autodesk's
+free personal-use licence, are yours: this server never installs or requires
+Fusion, and printer tools work without it.
+
+Install exactly commit `19b9f1e95192`. Copy the repository's `addon/` folder at
+that commit to `~/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns/Fusion360MCP`,
+set the add-in to **Run on Startup**, and add these settings next to the Blender
+ones in your env file:
+
+```bash
+FUSION_MCP_COMMAND=uvx
+FUSION_MCP_ARGS='["--from","git+https://github.com/faust-machines/fusion360-mcp-server@19b9f1e95192","fusion360-mcp-server","--mode","socket"]'
+FUSION_MCP_TIMEOUT_MS=180000
+FUSION_MCP_HOST=localhost
+# The default here; Blender's MCP add-on holds the add-in's own default, 9876.
+FUSION_MCP_PORT=9877
+```
+
+Don't use the PyPI release (0.1.0): it crashes under mcp 2.x (faust issue #30),
+and the pinned commit pins `mcp<2`. Without `FUSION_MCP_ARGS`, the bridge uses
+the pinned arguments above. `FUSION_MCP_HOST` and `FUSION_MCP_PORT` reach the
+server; the child process gets only `FUSION_*` settings, never printer access
+codes.
+
+The bridge uses port 9877 when `FUSION_MCP_PORT` is unset, as PRD §8.9 and
+Counterpart do. The add-in and the faust server default to 9876, which Blender's
+MCP add-on also uses, and while Blender holds that port the add-in can't listen
+there. The bridge passes the port to the faust server. The add-in reads
+`FUSION_MCP_PORT` from Fusion's environment, and Fusion started from the Dock or
+Finder gets none, so it falls back to 9876. `fusion_mcp_status` with
+`{"launch": true}` starts Fusion with `open -a "Autodesk Fusion" --env
+FUSION_MCP_PORT=<port>`. To start Fusion yourself, run the same command. If Fusion
+is already open on the default port, quit it first, because `--env` takes effect
+only when the app starts.
+
+1. `fusion_mcp_status` returns `{configured, connected, addinReachable, fusionRunning, tools[]}`,
+   plus `launched`, `pin`, the server's `server` info and any `error`.
+   `addinReachable` is true only when the `Fusion360MCP` add-in answers its own
+   `ping` on `FUSION_MCP_HOST:FUSION_MCP_PORT`; Blender's MCP add-on, which also
+   defaults to port 9876, doesn't count, so it can't hide a stopped Fusion.
+   `connected` is true only when the add-in answers the server's `ping`. With
+   `{"launch": true}`, it starts Fusion on macOS (`open -a "Autodesk Fusion" --env FUSION_MCP_PORT=<port>`)
+   when it is not running and waits up to 90 seconds for the add-in.
+2. `fusion_mcp_call` takes `{tool_name, arguments?, timeout_ms?}` and passes the
+   call to a discovered Fusion tool (`create_sketch`, `extrude`, `fillet`,
+   `create_parameter`, `set_parameter`, `check_interference`, `execute_code` and
+   the rest), returning its full content and errors. It is never retried, the
+   same contract as `blender_mcp_call`.
+3. `fusion_mcp_new_design` opens a new parametric design document through
+   `execute_code` with `app.documents.add(FusionDesignDocumentType)`. The Fusion
+   tools work on the open design, so a design pass calls this first. At the
+   pinned commit the add-in refuses every command, `execute_code` included,
+   until some design is open (faust issue #12). After Fusion starts at its Home
+   tab, open any design once.
+4. `fusion_mcp_export` takes `{output_dir, name, body_name?}`. It writes
+   `<name>.stl` (`export_stl` of one visible solid body), `<name>.f3d`
+   (`export_f3d`) and `<name>.parameters.json` (the user parameters, with the
+   fields `get_parameters` reports) into an existing directory, and returns their
+   absolute paths. Hidden and surface bodies are never exported. Without
+   `body_name` the design must have exactly one visible solid body. Fusion's
+   `export_stl` takes the first body with a name, hidden or not, so a name that
+   another body shares is refused. That includes hidden bodies, surface bodies
+   and copies of a component. It writes all three files
+   or none, never overwrites a file, and checks the STL is a finite triangle mesh.
+   The result also has:
+   - `boundingBox`: the STL's `{min, max, dimensions}` in its own units;
+   - `fusionSizeMm`: the body's size in Fusion, in mm;
+   - `stlUnits`: `mm`, `cm` or `unknown`, from comparing the two;
+   - `warnings`: present when the STL isn't in millimetres.
+
+   Fusion writes the files itself, so it must run on this computer. Slice the
+   STL like any other model.
+
+The stdio session stays open for the life of this server, so a design pass does
+not start a new `uvx` process and add-in connection for every call. A timeout,
+cancellation or transport failure closes it, and the next call starts a new one.
+An interrupted call may still be running in Fusion and is never replayed. At the
+pinned commit `measure_distance` is broken (faust issue #27); measure the
+exported STL with `get_stl_info` instead.
 
 </details>
 

@@ -10,6 +10,7 @@ import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { flattenForCli, detectProfilesRoot, resolveBblMachineProfile } from '../slicer/profile-flatten.js';
+import { applyProcessOverrides, type ProcessOverrides } from '../slicer/process-overrides.js';
 import { profileJsonFiles } from '../slicer/profile-files.js';
 import { materializeOrcaProfilesRoot, stageOrcaCliProfiles } from '../slicer/orca-profile-cache.js';
 import { sliceWithOrcaApi, validateRemoteSliceOptions } from '../slicer/remote-slicer.js';
@@ -182,6 +183,7 @@ export interface BambuSliceOptions {
   minSave?: boolean;           // --min-save: smaller output 3MF
   skipModifiedGcodes?: boolean;// --skip-modified-gcodes: ignore stale custom gcodes
   slicePlate?: number;         // --slice N: which plate (default: 0 = all)
+  processOverrides?: ProcessOverrides; // layer_height / wall_loops / sparse_infill_density over the resolved process preset
 }
 
 interface BambuSettingsBundle {
@@ -1696,6 +1698,10 @@ export class STLManipulator extends EventEmitter {
     const outputFileName = path.basename(stlFilePath, '.stl') + '.gcode';
     let outputFilePath = path.join(this.tempDir, outputFileName);
 
+    if (bambuOptions?.processOverrides && !['bambustudio', 'orcaslicer', 'orcaslicer-bambulab', 'orca-slicer-api'].includes(slicerType)) {
+      throw new Error(`layer_height, wall_loops and sparse_infill_density need a Bambu-compatible slicer (bambustudio, orcaslicer, orcaslicer-bambulab or orca-slicer-api), not ${slicerType}.`);
+    }
+
     let args: string[] = [];
     let cliResult: CliResultSource | undefined;
     const orcaTemporaryDirectories: string[] = [];
@@ -1793,6 +1799,22 @@ export class STLManipulator extends EventEmitter {
                   this.useAbsoluteExtrusionForOrca(this.readJsonFile(machinePath))),
                 this.writeTempJson(outputBase, 'process_orca_resolved',
                   this.sanitizeProcessForOrca(this.readJsonFile(processPath), printerPreset)),
+              ].join(';');
+            }
+            // Print-sheet quality settings go over the fully resolved process
+            // preset, after flattening and Orca normalization, so every
+            // Bambu-compatible route (local CLI, Orca cache staging, remote API)
+            // slices with them and the machine preset is untouched.
+            if (bambuOptions?.processOverrides) {
+              const [machinePath, processPath, ...rest] = settingsBundle.settingsArg?.split(';') ?? [];
+              if (!machinePath || !processPath) {
+                throw new Error('layer_height, wall_loops and sparse_infill_density need a resolved machine and process preset.');
+              }
+              settingsBundle.settingsArg = [
+                machinePath,
+                this.writeTempJson(outputBase, 'process_override',
+                  applyProcessOverrides(this.readJsonFile(processPath), bambuOptions.processOverrides)),
+                ...rest,
               ].join(';');
             }
             let cliBundle = this.isolateMachineSettings(settingsBundle);

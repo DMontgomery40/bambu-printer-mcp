@@ -84,7 +84,15 @@ function normalizeToolFailure(result: CallToolResult): CallToolResult {
   return failed ? { ...result, isError: true } : result;
 }
 
-async function regularStl(filePath: string): Promise<{ bytes: number; triangles: number }> {
+export type StlBoundingBox = { min: [number, number, number]; max: [number, number, number]; dimensions: [number, number, number] };
+
+export async function regularStl(filePath: string): Promise<{ bytes: number; triangles: number }> {
+  const { bytes, triangles } = await stlMetadata(filePath);
+  return { bytes, triangles };
+}
+
+/** regularStl plus the mesh's bounding box in the STL's own units (rounded to 1e-4). */
+export async function stlMetadata(filePath: string): Promise<{ bytes: number; triangles: number; bounding_box: StlBoundingBox }> {
   const stat = await fs.lstat(filePath).catch(() => { throw new BlenderError("STL file does not exist or is not readable."); });
   if (!stat.isFile() || stat.size === 0 || stat.size > MAX_STL_BYTES) throw new BlenderError("STL must be a non-empty regular file of at most 256 MiB.");
   const buffer = await fs.readFile(filePath);
@@ -94,10 +102,21 @@ async function regularStl(filePath: string): Promise<{ bytes: number; triangles:
     const positions = geometry.getAttribute("position");
     if (!positions || positions.count < 3 || positions.count % 3 !== 0) throw new Error("invalid vertices");
     // Scan the typed array in place; boxing a large mesh can exhaust the JS heap.
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
     for (let index = 0; index < positions.array.length; index++) {
-      if (!Number.isFinite(positions.array[index])) throw new Error("invalid vertices");
+      const value = positions.array[index];
+      if (!Number.isFinite(value)) throw new Error("invalid vertices");
+      const axis = index % 3;
+      if (value < min[axis]) min[axis] = value;
+      if (value > max[axis]) max[axis] = value;
     }
-    return { bytes: stat.size, triangles: positions.count / 3 };
+    const round = (value: number) => Math.round(value * 1e4) / 1e4;
+    const bounding_box: StlBoundingBox = {
+      min: [round(min[0]), round(min[1]), round(min[2])],
+      max: [round(max[0]), round(max[1]), round(max[2])],
+      dimensions: [round(max[0] - min[0]), round(max[1] - min[1]), round(max[2] - min[2])],
+    };
+    return { bytes: stat.size, triangles: positions.count / 3, bounding_box };
   } catch { throw new BlenderError("STL contains no valid finite triangle mesh."); }
   finally { geometry?.dispose(); }
 }

@@ -99,9 +99,9 @@ export const PAGES = [
   {
     group: 'Reference',
     route: 'reference/blender',
-    title: 'Blender MCP',
-    description: 'Drive a standard Blender MCP server for advanced mesh edits.',
-    toolGroup: 'Blender',
+    title: 'Blender and Fusion MCP',
+    description: 'Drive a standard Blender MCP server for mesh edits, or Autodesk Fusion for parametric design.',
+    toolGroup: 'Blender and Fusion',
     sources: [{ file: 'README.md', heading: 'Advanced Tools' }],
   },
   {
