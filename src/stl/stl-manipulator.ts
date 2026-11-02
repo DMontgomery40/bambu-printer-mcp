@@ -162,7 +162,7 @@ function configuredBambuProfileDirs(): string[] {
 // Bambu-compatible slicer CLI flags exposed via the slice_stl tool
 export interface BambuSliceOptions {
   uptodate?: boolean;          // --uptodate: update 3MF configs to latest presets
-  repetitions?: number;        // --repetitions N: print N copies
+  repetitions?: number;        // STL: --clone-objects N; 3MF: --repetitions N on the selected plate
   orient?: boolean;            // --orient 1: auto-orient for printability
   arrange?: boolean;           // --arrange 1: auto-arrange objects on plate
   ensureOnBed?: boolean;       // --ensure-on-bed: lift floating models onto bed
@@ -1906,8 +1906,8 @@ export class STLManipulator extends EventEmitter {
                 "Set arrange to false, or apply the transform in the slicer and export the project."
               );
             }
-            if (orcaCli && !is3mf && bambuOptions?.repetitions !== undefined && bambuOptions.cloneObjects) {
-              throw new Error("Use either repetitions or clone_objects for an STL with OrcaSlicer, not both.");
+            if (!is3mf && bambuOptions?.repetitions !== undefined && bambuOptions.cloneObjects) {
+              throw new Error("Use either repetitions or clone_objects for an STL, not both.");
             }
             const inputPath = meshTransform ? await this.transformMeshForCli(stlFilePath, bambuOptions!) : stlFilePath;
             if (inputPath !== stlFilePath) temporaryFiles.push(inputPath);
@@ -1939,8 +1939,9 @@ export class STLManipulator extends EventEmitter {
             if (bambuOptions?.orient !== undefined) args.push('--orient', bambuOptions.orient ? '1' : '0');
             if (bambuOptions?.arrange !== undefined) args.push('--arrange', bambuOptions.arrange ? '1' : '0');
             if (bambuOptions?.repetitions !== undefined) {
-              // OrcaSlicer counts copies of a single loaded STL with --clone-objects.
-              if (orcaCli && !is3mf) args.push('--clone-objects', String(bambuOptions.repetitions));
+              // Both Bambu Studio and Orca count STL copies with --clone-objects.
+              // --repetitions > 1 requires a selected existing plate and rejects --slice 0.
+              if (!is3mf) args.push('--clone-objects', String(bambuOptions.repetitions));
               else args.push('--repetitions', String(bambuOptions.repetitions));
             }
             if (!meshTransform) {
