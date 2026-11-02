@@ -5,9 +5,9 @@
  */
 import { BAMBU_STAGES } from "../printers/bambu-stages.js";
 import { HMS_MESSAGES, HMS_MESSAGES_SOURCE, PRINT_ERROR_MESSAGES, type HmsText } from "../safety/hms-messages.js";
-import { normalizeModel } from "../safety/limits.js";
+import { isDualNozzleModel, normalizeModel } from "../safety/limits.js";
 import { finiteNumber, hmsCode, isHiddenNotice } from "../safety/printer-state.js";
-import { COUNTERPART_CONTRACT, type PrintProgress, type PrintState, type Problem, type ProblemSeverity } from "./schemas.js";
+import { COUNTERPART_CONTRACT, type PrintProgress, type PrintState, type Problem, type ProblemSeverity, type Temperature } from "./schemas.js";
 
 /** print_error / fail_reason 0300400C: "The task was canceled." in every bundled Bambu Studio table. */
 export const TASK_CANCELLED = 0x0300400c;
@@ -119,24 +119,82 @@ function rgb(value: unknown): string | undefined {
     ? `#${value.replace(/^#/, "").slice(0, 6).toUpperCase()}` : undefined;
 }
 
-/** tray_now 0–253 is AMS slot amsId*4+trayId (the index ams_slots uses), 254 the external spool, 255 none. */
-function activeFilament(raw: Record<string, any>): PrintProgress["activeFilament"] {
-  const trayNow = finiteNumber(raw.ams?.tray_now);
-  if (trayNow === undefined || !Number.isInteger(trayNow) || trayNow < 0 || trayNow >= 255) return undefined;
-  let tray: Record<string, any> | undefined;
-  if (trayNow === 254) tray = raw.vt_tray;
-  else {
-    const units: any[] = Array.isArray(raw.ams?.ams) ? raw.ams.ams : [];
-    for (const [unitIndex, unit] of units.entries()) {
-      const amsId = finiteNumber(unit?.id) ?? unitIndex;
-      for (const [trayIndex, candidate] of (Array.isArray(unit?.tray) ? unit.tray : []).entries()) {
-        if (amsId * 4 + (finiteNumber(candidate?.id) ?? trayIndex) === trayNow) tray = candidate;
-      }
-    }
+/**
+ * The active extruder of a V2 report (H2D, H2C, X2D): Bambu Studio
+ * DevExtruderSystem.cpp ParseV2_0 reads its index from device.extruder.state
+ * bits 4-7 and that entry's packed temp and snow fields.
+ */
+function activeExtruder(raw: Record<string, any>): Record<string, any> | undefined {
+  const extruder = raw.device?.extruder;
+  const state = finiteNumber(extruder?.state);
+  if (!Array.isArray(extruder?.info) || state === undefined || !Number.isInteger(state) || state < 0) return undefined;
+  const current = (state >> 4) & 0xf;
+  return extruder.info.find((entry: any) => finiteNumber(entry?.id) === current);
+}
+
+function packed(value: unknown): number | undefined {
+  const number = finiteNumber(value);
+  return number !== undefined && Number.isInteger(number) && number >= 0 && number <= 0xffffffff ? number : undefined;
+}
+
+/** V2 reports pack the active nozzle's current temperature in the low 16 bits and its target in the high 16. */
+function nozzleTemperature(raw: Record<string, any>): Temperature | undefined {
+  const temp = packed(activeExtruder(raw)?.temp);
+  if (temp !== undefined) return { actual: temp & 0xffff, target: temp >>> 16 };
+  return temperature(raw.nozzle_temper, raw.nozzle_target_temper);
+}
+
+function amsTray(raw: Record<string, any>, amsId: number, slotId: number): Record<string, any> | undefined {
+  const units: any[] = Array.isArray(raw.ams?.ams) ? raw.ams.ams : [];
+  const unit = units.find((candidate, index) => (finiteNumber(candidate?.id) ?? index) === amsId);
+  const trays: any[] = Array.isArray(unit?.tray) ? unit.tray : [];
+  return trays.find((candidate, index) => (finiteNumber(candidate?.id) ?? index) === slotId);
+}
+
+/** The external spool's report: per-nozzle vir_slot entries (254 deputy/left, 255 main/right), else legacy vt_tray. */
+function externalTray(raw: Record<string, any>, id: number): Record<string, any> | undefined {
+  if (Array.isArray(raw.vir_slot)) {
+    const slot = raw.vir_slot.find((entry: any) => finiteNumber(entry?.id) === id) ?? (raw.vir_slot.length === 1 ? raw.vir_slot[0] : undefined);
+    if (slot) return slot;
   }
+  return raw.vt_tray && typeof raw.vt_tray === "object" ? raw.vt_tray : undefined;
+}
+
+function described(slot: string, tray: Record<string, any> | undefined): NonNullable<PrintProgress["activeFilament"]> {
   const material = text(tray?.tray_type);
   const color = material ? rgb(tray?.tray_color) : undefined;
-  return { slot: trayNow === 254 ? "ext" : String(trayNow), ...(material ? { material } : {}), ...(color ? { color } : {}) };
+  return { slot, ...(material ? { material } : {}), ...(color ? { color } : {}) };
+}
+
+/**
+ * The loaded filament. slot is the index ams_slots uses: amsId*4+tray for an
+ * AMS, the unit id (128+) for an AMS-HT, and "ext" for a single-nozzle
+ * printer's external spool ("254"/"255" per nozzle on dual-nozzle printers).
+ */
+function activeFilament(raw: Record<string, any>, model: string): PrintProgress["activeFilament"] {
+  const dualNozzle = isDualNozzleModel(model);
+  const extruder = activeExtruder(raw);
+  const snow = packed(extruder?.snow);
+  if (extruder && snow !== undefined) {
+    if (snow === 0xffff) return undefined;
+    const amsId = (snow >> 8) & 0xff, slotId = snow & 0xff;
+    if (amsId === 254 || amsId === 255) return described(dualNozzle ? String(amsId) : "ext", externalTray(raw, amsId));
+    if (amsId >= 0x80 && amsId <= 0x87) return described(String(amsId), amsTray(raw, amsId, slotId));
+    return described(String(amsId * 4 + slotId), amsTray(raw, amsId, slotId));
+  }
+  // V1 (DevExtruderSystem.cpp ParseV1_0): tray_now 255 none, 254 the external spool,
+  // 0x80-0x87 an AMS-HT unit, else amsId*4+tray.
+  const trayNow = finiteNumber(raw.ams?.tray_now);
+  if (trayNow === undefined || !Number.isInteger(trayNow) || trayNow < 0 || trayNow >= 255) return undefined;
+  if (trayNow === 254) return described("ext", externalTray(raw, 254));
+  if (trayNow >= 0x80 && trayNow <= 0x87) {
+    const units: any[] = Array.isArray(raw.ams?.ams) ? raw.ams.ams : [];
+    const unit = units.find(candidate => finiteNumber(candidate?.id) === trayNow);
+    const trays: any[] = Array.isArray(unit?.tray) ? unit.tray : [];
+    // An AMS-HT has one tray; Bambu Studio addresses it as tray_now & 3.
+    return described(String(trayNow), amsTray(raw, trayNow, trayNow & 0x3) ?? (trays.length === 1 ? trays[0] : undefined));
+  }
+  return described(String(trayNow), amsTray(raw, Math.floor(trayNow / 4), trayNow % 4));
 }
 
 function job(raw: Record<string, any>, state: PrintState): PrintProgress["job"] {
@@ -169,13 +227,13 @@ export function bambuProgress(raw: Record<string, any>, options: { receivedAt: n
   const result: PrintProgress = { contract: COUNTERPART_CONTRACT, observedAt: new Date(options.receivedAt).toISOString(), state, problems: [] };
   const printJob = job(raw, state);
   if (printJob) result.job = printJob;
-  const nozzle = temperature(raw.nozzle_temper, raw.nozzle_target_temper);
+  const nozzle = nozzleTemperature(raw);
   const bed = temperature(raw.bed_temper, raw.bed_target_temper);
   const chamberTemperature = chamber(raw, model);
   if (nozzle || bed || chamberTemperature !== undefined) {
     result.temps = { ...(nozzle ? { nozzle } : {}), ...(bed ? { bed } : {}), ...(chamberTemperature !== undefined ? { chamber: chamberTemperature } : {}) };
   }
-  const filament = activeFilament(raw);
+  const filament = activeFilament(raw, model);
   if (filament) result.activeFilament = filament;
   result.problems = bambuProblems(raw, options.serial, model);
   return result;

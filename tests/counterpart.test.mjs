@@ -327,3 +327,33 @@ test("counterpart_print_progress reports an unreachable printer as offline withi
   assert.deepEqual(result.structuredContent.problems, []);
   assert.ok(Date.now() - started < 15_000, "bounded");
 });
+
+test("an AMS-HT tray is addressed by its unit id, as Bambu Studio's V1 parser does", () => {
+  const ams = { tray_now: "128", ams: [{ id: "0", tray: [{ id: "0", tray_type: "PLA" }] }, { id: "128", tray: [{ id: "0", tray_type: "PETG-HF", tray_color: "112233FF" }] }] };
+  assert.deepEqual(progress({ gcode_state: "RUNNING", ams }).activeFilament, { slot: "128", material: "PETG-HF", color: "#112233" });
+});
+
+test("V2 reports take the active extruder's packed temperature and loaded filament, with the legacy fallback", () => {
+  const pack = (low, high) => (high * 65536) + low;
+  const ams = { tray_now: "255", ams: [{ id: "0", tray: [{ id: "0" }, { id: "1", tray_type: "PLA", tray_color: "FF0000FF" }] }, { id: "1", tray: [{ id: "0" }, { id: "1" }, { id: "2", tray_type: "ABS", tray_color: "0000FFFF" }] }] };
+  const vir_slot = [{ id: "255", tray_type: "PLA", tray_color: "FFFFFFFF" }, { id: "254", tray_type: "PETG", tray_color: "00FF00FF" }];
+  const report = (current, snows) => ({
+    gcode_state: "RUNNING", nozzle_temper: 99, nozzle_target_temper: 99, ams, vir_slot,
+    device: { extruder: { state: 2 | (current << 4), info: [{ id: 0, temp: pack(212, 220), snow: snows[0] }, { id: 1, temp: pack(25, 0), snow: snows[1] }] } },
+  });
+  // Right (main) nozzle 0 printing from AMS 1 slot 2.
+  const right = progress(report(0, [(1 << 8) | 2, 0xffff]), { serial: "094TEST", model: "h2d" });
+  assert.deepEqual(right.temps.nozzle, { actual: 212, target: 220 });
+  assert.deepEqual(right.activeFilament, { slot: "6", material: "ABS", color: "#0000FF" });
+  // Left (deputy) nozzle 1 on its external spool.
+  const left = progress(report(1, [(0 << 8) | 1, (254 << 8) | 0]), { serial: "094TEST", model: "h2d" });
+  assert.deepEqual(left.temps.nozzle, { actual: 25, target: 0 });
+  assert.deepEqual(left.activeFilament, { slot: "254", material: "PETG", color: "#00FF00" });
+  // Nothing loaded on the active nozzle.
+  assert.equal(progress(report(1, [(0 << 8) | 1, 0xffff]), { serial: "094TEST", model: "h2d" }).activeFilament, undefined);
+  // A single-nozzle V2 printer's external spool is "ext"; dual-nozzle X2D names the nozzle's slot.
+  assert.deepEqual(progress({ ...report(0, [(255 << 8) | 0]), vir_slot: [{ id: "254", tray_type: "TPU" }] }, { serial: "093TEST", model: "h2s" }).activeFilament, { slot: "ext", material: "TPU" });
+  assert.deepEqual(progress(report(0, [(255 << 8) | 0]), { serial: "20PTEST", model: "x2d" }).activeFilament, { slot: "255", material: "PLA", color: "#FFFFFF" });
+  // Without device.extruder, the legacy fields are used.
+  assert.deepEqual(progress({ gcode_state: "RUNNING", nozzle_temper: 205, nozzle_target_temper: 210, ams: { ...ams, tray_now: "1" } }).temps.nozzle, { actual: 205, target: 210 });
+});
