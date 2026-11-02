@@ -247,8 +247,6 @@ export const FUSION_STATUS_OUTPUT_SCHEMA = {
   required: ["configured", "connected", "addinReachable", "fusionRunning", "tools"],
 };
 
-/** fusion_mcp_call passes the remote result through: its structuredContent, else an empty object. */
-export const FUSION_CALL_OUTPUT_SCHEMA = { type: "object" as const };
 
 export const FUSION_NEW_DESIGN_OUTPUT_SCHEMA = {
   type: "object" as const,

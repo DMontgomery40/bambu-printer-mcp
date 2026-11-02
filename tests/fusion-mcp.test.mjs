@@ -81,11 +81,12 @@ async function start(t, mode = "normal", overrides = {}) {
   return { client, tools, directory, logPath };
 }
 
-test("Fusion tools are listed with output schemas and the pinned faust command", async (t) => {
+test("Fusion proxy preserves polymorphic content while typed tools advertise output schemas", async (t) => {
   const { tools } = await start(t);
-  for (const name of ["fusion_mcp_status", "fusion_mcp_call", "fusion_mcp_new_design", "fusion_mcp_export"]) {
+  for (const name of ["fusion_mcp_status", "fusion_mcp_new_design", "fusion_mcp_export"]) {
     assert.equal(tools.find((tool) => tool.name === name)?.outputSchema?.type, "object", name);
   }
+  assert.equal(tools.find((tool) => tool.name === "fusion_mcp_call").outputSchema, undefined);
   assert.equal(FUSION_MCP_PIN, "19b9f1e95192");
   assert.deepEqual(FUSION_MCP_DEFAULT_ARGS, ["--from", "git+https://github.com/faust-machines/fusion360-mcp-server@19b9f1e95192", "fusion360-mcp-server", "--mode", "socket"]);
   assert.match(tools.find((tool) => tool.name === "fusion_mcp_status").description, /19b9f1e95192/);
@@ -164,7 +165,7 @@ test("calls pass Fusion's content and errors through and share one long-lived se
   const { client, logPath } = await start(t);
   const first = await client.callTool({ name: "fusion_mcp_call", arguments: { tool_name: "create_sketch", arguments: { plane: "xy" } } });
   assert.equal(first.isError, undefined);
-  assert.deepEqual(first.structuredContent, {});
+  assert.equal(first.structuredContent, undefined, "do not mask real text with an empty structured reply");
   assert.match(text(first), /^\*\*create_sketch\*\* OK/);
   const second = await client.callTool({ name: "fusion_mcp_call", arguments: { tool_name: "set_parameter", arguments: { name: "width", value: 41 } } });
   assert.match(text(second), /set_parameter/);
@@ -172,7 +173,7 @@ test("calls pass Fusion's content and errors through and share one long-lived se
   // Arguments are checked against the discovered schema before anything is sent.
   const invalid = await client.callTool({ name: "fusion_mcp_call", arguments: { tool_name: "set_parameter", arguments: { name: "width" } } });
   assert.equal(invalid.isError, true);
-  assert.equal(invalid.structuredContent, undefined);
+  assert.equal(invalid.structuredContent?.status, "error");
   assert.match(text(invalid), /advertised input schema/);
   const unknown = await client.callTool({ name: "fusion_mcp_call", arguments: { tool_name: "measure_everything" } });
   assert.match(text(unknown), /does not advertise measure_everything/);
@@ -396,4 +397,11 @@ test("legacy bridges cannot silently accept a bound call or bound design", async
     assert.match(text(result), /document binding/);
   }
   assert.deepEqual(events(logPath).filter(e => e.event === "call"), []);
+});
+
+// Consumers may prefer structuredContent over text: never synthesize an empty object.
+test("Fusion proxy preserves upstream images and genuine structured results without duplication", async (t) => {
+  const {client} = await start(t, "mixed-content");
+  const reply = await client.callTool({name: "fusion_mcp_call", arguments: {tool_name: "create_sketch"}});
+  assert.deepEqual(reply, {content: [{type: "text", text: "Visible sketch result"}, {type: "image", mimeType: "image/png", data: "aW1hZ2U="}], structuredContent: {sketch: "Sketch1"}});
 });

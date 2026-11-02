@@ -42,7 +42,7 @@ import {
 } from "./bambu-native.js";
 import { importFileViaBambuConnect } from "./bambu-connect.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
-import { FUSION_CALL_OUTPUT_SCHEMA, FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFAULT_ARGS, FUSION_NEW_DESIGN_OUTPUT_SCHEMA, FUSION_STATUS_OUTPUT_SCHEMA, FusionMcpBridge } from "./fusion-mcp-bridge.js";
+import { FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFAULT_ARGS, FUSION_NEW_DESIGN_OUTPUT_SCHEMA, FUSION_STATUS_OUTPUT_SCHEMA, FusionMcpBridge } from "./fusion-mcp-bridge.js";
 import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue } from "./ams-mapping.js";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, parse3MF } from './3mf_parser.js';
 import type { ThreeMFAmsRequirements } from "./types.js";
@@ -104,7 +104,7 @@ const SERVER_INFO = {
 /** Tools that declare an outputSchema: they always return structuredContent, and errors carry none. */
 const OUTPUT_SCHEMA_TOOLS = new Set([
   "counterpart_printer_info", "counterpart_print_progress", "counterpart_make_3mf",
-  "fusion_mcp_status", "fusion_mcp_call", "fusion_mcp_new_design", "fusion_mcp_export",
+  "fusion_mcp_status", "fusion_mcp_new_design", "fusion_mcp_export",
   "camera_stream_start", "camera_frame", "camera_stream_stop",
 ]);
 
@@ -3366,8 +3366,7 @@ class BambuPrinterMCPServer {
               },
               required: ["tool_name"],
               additionalProperties: false
-            },
-            outputSchema: FUSION_CALL_OUTPUT_SCHEMA
+            }
           },
           {
             name: "fusion_mcp_new_design",
@@ -4676,9 +4675,9 @@ class BambuPrinterMCPServer {
             break;
 
           case "fusion_mcp_call": {
-            // The remote result passes through unchanged; its structuredContent satisfies the open schema.
-            const remote = await this.fusion.call(args ?? {}, extra.signal);
-            return { ...remote, structuredContent: remote.structuredContent ?? {} };
+            // Preserve polymorphic text/images/errors. An invented empty structured result
+            // masks useful text in clients that prefer structuredContent.
+            return await this.fusion.call(args ?? {}, extra.signal);
           }
 
           case "fusion_mcp_new_design":

@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Preserve Fusion tool text, images and genuine structured results without synthesizing an empty structured reply that hides modeling feedback in clients.
+
 - Support document-bound Fusion design passes: return an isolated document identity, optionally import an F3D revision into a new document, and preserve the identity across every modeling/export subcall. Older bridges fail closed when binding is requested; existing unbound callers remain compatible. Requires a configured Fusion bridge/add-in that advertises the binding protocol.
 
 ## [1.1.52] – 2026-11-02
