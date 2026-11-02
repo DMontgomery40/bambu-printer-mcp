@@ -2,6 +2,10 @@
 
 ## [1.1.52] – 2026-11-02
 
+### Fixed
+
+- Slice multiple STL copies with Bambu Studio's `--clone-objects`, matching the existing Orca route. Bambu rejects `--repetitions` greater than one with the default all-plates slice. Keep selected-plate 3MF repetitions unchanged and reject competing STL copy counts. The output retains every generated plate; each `print_3mf` call still prints only its selected plate.
+
 ### Added
 
 - Bundle the pinned native camera runtimes for supported desktop platforms in the generic MCPB extension; verify extracted release startup and JPEG processing on Linux, macOS and Windows before attaching the release asset.

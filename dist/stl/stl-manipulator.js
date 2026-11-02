@@ -1493,8 +1493,8 @@ export class STLManipulator extends EventEmitter {
                             throw new Error("OrcaSlicer's CLI crashes when scale above 1, rotate_x or rotate_y moves a 3MF object below the bed while arranging. " +
                                 "Set arrange to false, or apply the transform in the slicer and export the project.");
                         }
-                        if (orcaCli && !is3mf && bambuOptions?.repetitions !== undefined && bambuOptions.cloneObjects) {
-                            throw new Error("Use either repetitions or clone_objects for an STL with OrcaSlicer, not both.");
+                        if (!is3mf && bambuOptions?.repetitions !== undefined && bambuOptions.cloneObjects) {
+                            throw new Error("Use either repetitions or clone_objects for an STL, not both.");
                         }
                         const inputPath = meshTransform ? await this.transformMeshForCli(stlFilePath, bambuOptions) : stlFilePath;
                         if (inputPath !== stlFilePath)
@@ -1534,8 +1534,9 @@ export class STLManipulator extends EventEmitter {
                         if (bambuOptions?.arrange !== undefined)
                             args.push('--arrange', bambuOptions.arrange ? '1' : '0');
                         if (bambuOptions?.repetitions !== undefined) {
-                            // OrcaSlicer counts copies of a single loaded STL with --clone-objects.
-                            if (orcaCli && !is3mf)
+                            // Both Bambu Studio and Orca count STL copies with --clone-objects.
+                            // --repetitions > 1 requires a selected existing plate and rejects --slice 0.
+                            if (!is3mf)
                                 args.push('--clone-objects', String(bambuOptions.repetitions));
                             else
                                 args.push('--repetitions', String(bambuOptions.repetitions));

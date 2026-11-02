@@ -1177,7 +1177,7 @@ When `slicer_type` is `bambustudio` (the default), these additional parameters a
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `uptodate` | boolean | Update 3MF configs to latest BambuStudio presets |
-| `repetitions` | number | Number of copies to print |
+| `repetitions` | number | Total STL copies, using the CLI's `--clone-objects`; do not also pass `clone_objects`. Copies may span plates, and `print_3mf` prints one selected plate per call. For 3MF repetitions, choose `slice_plate` explicitly. |
 | `orient` | boolean | Auto-orient model for optimal printability |
 | `arrange` | boolean | Auto-arrange objects on the build plate |
 | `ensure_on_bed` | boolean | Lift floating models onto the bed |
