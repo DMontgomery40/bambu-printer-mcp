@@ -471,7 +471,7 @@ class BambuClientStore {
   }
 }
 
-/** What the human confirmed in confirmPrintPreflight, checked again before dispatch. */
+/** The preflight state, checked again before dispatch. */
 function printJobIdentity(raw: Record<string, any>): string {
   return JSON.stringify([raw.gcode_file, raw.subtask_name, raw.task_id, raw.subtask_id, raw.job_id]);
 }
@@ -538,9 +538,8 @@ export class BambuImplementation {
   }
 
   /**
-   * The human print confirmation. Its result goes to assertBedClearance at
-   * every later state check of the same print, which stops the print if the
-   * situation the human confirmed has changed.
+   * Record the current job and notices during preflight so a changed printer state
+   * is detected before dispatch.
    */
   async confirmPrintPreflight(serial: string, status: any, inspection: Awaited<ReturnType<typeof inspectPrintFile>>): Promise<PrintPreflight> {
     const finishedJob = this.finishedJobIdentity(status);
@@ -550,28 +549,24 @@ export class BambuImplementation {
     await this.confirmHardwareAction(
       `Start a checked print on ${inspection.model.toUpperCase()} (${serial})? Nozzles: ${inspection.nozzleDiameters.join(", ")} mm. ` +
       `Materials: ${inspection.materials.join(", ")}. Peak targets: nozzle ${inspection.maxNozzleTemperature}°C, bed ${inspection.maxBedTemperature}°C, chamber ${inspection.maxChamberTemperature}°C. ` +
-      `File SHA-256: ${inspection.sha256}. Confirm the physical spool labels and that the build plate is clear.` +
-      (finishedJob !== undefined ? (status.raw.gcode_state === "FAILED"
-        ? (isFinishedP1SJob(status.raw, inspection.model)
-          ? " The previous P1S job ended in FAILED and the printer now reports idle with no print or HMS errors. Remove the previous part and every detached part, support and strand from the plate and nozzle before confirming. No error-reset command is sent."
-          : " The previous X2D task was canceled (0300400C): remove every detached part, support and strand from the plate and nozzle before confirming. FAILED is the previous job's terminal state; no error-reset command is sent.")
-        : " The printer reports FINISH: remove the previous part and debris before confirming.") : "") +
+      `File SHA-256: ${inspection.sha256}. Confirm the physical spool labels.` +
+      (status.raw.gcode_state === "FAILED" && finishedJob !== undefined ? " The previous job reports FAILED; the current printer report meets the checked idle and error requirements. No error-reset command is sent." : "") +
       (cleared ? ` Previously cleared hardware codes: ${cleared.map(describeHmsKey).join(", ")}. Confirm their physical causes have been resolved.` : "") +
       (notices.length ? ` The printer also reports ${notices.join(", ")}, which Bambu lists for this model without text and never shows as a fault; ` +
         `${notices.length === 1 ? "it does" : "they do"} not block printing.` : "") +
       (unchipped.length ? ` Printer ${unchipped.length === 1 ? `nozzle ${unchipped[0]} reports` : `nozzles ${unchipped.join(" and ")} report`} no identity chip, ` +
         `so ${unchipped.length === 1 ? "its" : "their"} diameter and type are the printer's configured settings; confirm they match the installed ${unchipped.length === 1 ? "hotend" : "hotends"}.` : ""),
-      finishedJob !== undefined || !!cleared
+      !!cleared
     );
     return { finishedJob, serial, model: inspection.model, notices };
   }
 
   /** Stop a print whose confirmed situation changed: a newly finished job, or a hidden HMS notice the preflight did not name. */
-  assertBedClearance(status: any, preflight: PrintPreflight): void {
+  assertPrintPreflight(status: any, preflight: PrintPreflight): void {
     const current = this.finishedJobIdentity(status);
     if ((preflight.finishedJob !== undefined && printJobIdentity(status.raw) !== preflight.finishedJob)
         || (current !== undefined && preflight.finishedJob === undefined)) {
-      throw new Error("Printer reports a newly finished job. Confirm that its part and debris have been removed before retrying the print.");
+      throw new Error("Printer job changed during preflight. Review the current printer status and retry.");
     }
     // An X2D raises its hidden camera notice about 15 seconds after boot, so it
     // can appear after the human confirmed. Never pass a notice nobody was told about.
@@ -902,18 +897,18 @@ export class BambuImplementation {
     const initialStatus = await this.getSafetyStatus(host, serial, token);
     if (legacyContainer) requirements = this.validateLoadedGcodeState(initialStatus, inspection);
     else validatePrinterState(initialStatus, requirements);
-    const bedClearance = await this.confirmPrintPreflight(serial, initialStatus, inspection);
+    const preflight = await this.confirmPrintPreflight(serial, initialStatus, inspection);
     const confirmedStatus = await this.getSafetyStatus(host, serial, token);
     if (legacyContainer) requirements = this.validateLoadedGcodeState(confirmedStatus, inspection);
     else validatePrinterState(confirmedStatus, requirements);
-    this.assertBedClearance(confirmedStatus, bedClearance);
+    this.assertPrintPreflight(confirmedStatus, preflight);
     assertActive();
     await this.ftpUpload(host, token, options.filePath, remoteUploadPath);
     // Uploads can be long. Recheck current state before the command is dispatched.
     const dispatchStatus = await this.getSafetyStatus(host, serial, token);
     if (legacyContainer) requirements = this.validateLoadedGcodeState(dispatchStatus, inspection);
     else validatePrinterState(dispatchStatus, requirements);
-    this.assertBedClearance(dispatchStatus, bedClearance);
+    this.assertPrintPreflight(dispatchStatus, preflight);
     const printer = await this.getPrinter(host, serial, token);
     assertActive();
     if (legacyContainer) {
@@ -1543,16 +1538,16 @@ export class BambuImplementation {
     if (inspection.selectsAms) throw new Error("Raw G-code with AMS selection requires a .3mf project export with verified physical slot mappings.");
     const initialStatus = await this.getSafetyStatus(host, serial, token);
     let requirements = this.validateLoadedGcodeState(initialStatus, inspection);
-    const bedClearance = await this.confirmPrintPreflight(serial, initialStatus, inspection);
+    const preflight = await this.confirmPrintPreflight(serial, initialStatus, inspection);
     const confirmedStatus = await this.getSafetyStatus(host, serial, token);
     requirements = this.validateLoadedGcodeState(confirmedStatus, inspection);
-    this.assertBedClearance(confirmedStatus, bedClearance);
+    this.assertPrintPreflight(confirmedStatus, preflight);
     assertActive();
     const remotePath = path.posix.join(path.posix.dirname(filename), uniquePrintName(filename));
     await this.ftpUpload(host, token, filePath, `/${remotePath}`);
     const dispatchStatus = await this.getSafetyStatus(host, serial, token);
     requirements = this.validateLoadedGcodeState(dispatchStatus, inspection);
-    this.assertBedClearance(dispatchStatus, bedClearance);
+    this.assertPrintPreflight(dispatchStatus, preflight);
     const printer = await this.getPrinter(host, serial, token);
     assertActive();
     const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);

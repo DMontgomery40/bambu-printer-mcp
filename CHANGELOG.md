@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.1.47] – 2026-11-02
+
+- Remove the separate bed-clearance prompt from print preflight, including after completed and eligible failed jobs. Continue checking printer job identity and state before dispatch.
+
 ## [1.1.46] – 2026-11-01
 
 ### Fixed

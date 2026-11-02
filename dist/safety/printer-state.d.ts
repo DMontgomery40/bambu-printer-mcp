@@ -46,12 +46,12 @@ export interface ValidatedPrinterState {
  * calls 0300400C "The task was canceled."
  * Only this observed terminal condition qualifies, never an arbitrary failure.
  * Callers still validate HMS, identity, hardware and material configuration,
- * and print dispatch must obtain job-bound physical bed-clearance confirmation.
+ * and print dispatch rechecks the identity of the observed job.
  */
 export declare function isCancelledX2DJob(raw: Record<string, any>, model: string): boolean;
 /** Bambu Studio 2.8.2.61 marks FAILED as finished. Limit P1S recovery to
  * a named prior job explicitly reporting idle, no print error and no HMS.
- * Its bed still needs job-bound human clearance before every print. */
+ * Dispatch rechecks the observed job identity. */
 export declare function isFinishedP1SJob(raw: Record<string, any>, model: string): boolean;
 /** Nozzles whose reported diameter and type are configured settings rather than chip readings. */
 export declare function unchippedNozzles(raw: unknown): number[];

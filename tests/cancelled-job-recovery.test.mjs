@@ -39,26 +39,25 @@ test('the same canceled report from a matching non-X2D printer stays blocked', (
   }
 });
 
-test('a canceled job still requires a person to confirm bed clearance in headless mode', async t => {
+test('a canceled job adds no plate prompt in headless mode', async t => {
   const previous = process.env.BAMBU_REQUIRE_CONFIRMATION;
   process.env.BAMBU_REQUIRE_CONFIRMATION = '0';
   t.after(() => { if (previous === undefined) delete process.env.BAMBU_REQUIRE_CONFIRMATION; else process.env.BAMBU_REQUIRE_CONFIRMATION = previous; });
   const messages = [];
   const implementation = new BambuImplementation(async message => { messages.push(message); return false; });
-  await assert.rejects(implementation.confirmPrintPreflight(serial, fresh(canceled()), inspection), /confirmation.*declined/);
-  assert.equal(messages.length, 1);
-  assert.match(messages[0], /canceled.*0300400C.*remove every detached part/);
+  await implementation.confirmPrintPreflight(serial, fresh(canceled()), inspection);
+  assert.equal(messages.length, 0);
 });
 
 test('bed clearance stays bound to the canceled task across confirmation and dispatch', async () => {
   const implementation = new BambuImplementation(async () => true);
   const preflight = await implementation.confirmPrintPreflight(serial, fresh(canceled()), inspection);
-  assert.doesNotThrow(() => implementation.assertBedClearance(fresh(canceled()), preflight));
+  assert.doesNotThrow(() => implementation.assertPrintPreflight(fresh(canceled()), preflight));
   for (const overrides of [{ task_id: '2' }, { subtask_name: 'other' }, { job_id: '2' }, { subtask_id: '2' }, { gcode_file: 'cache/other.3mf' }]) {
-    assert.throws(() => implementation.assertBedClearance(fresh(canceled(overrides)), preflight), /newly finished job/);
+    assert.throws(() => implementation.assertPrintPreflight(fresh(canceled(overrides)), preflight), /job changed during preflight/i);
   }
   const idle = await implementation.confirmPrintPreflight(serial, fresh(canceled({ gcode_state: 'IDLE' })), inspection);
-  assert.throws(() => implementation.assertBedClearance(fresh(canceled()), idle), /newly finished job/);
+  assert.throws(() => implementation.assertPrintPreflight(fresh(canceled()), idle), /job changed during preflight/i);
 });
 
 for (const native of [false, true]) test(`error-clear confirmation rejects a job switch while the prompt is open (${native ? 'native' : 'MQTT'})`, async () => {
