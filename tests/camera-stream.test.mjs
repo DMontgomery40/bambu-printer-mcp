@@ -22,7 +22,11 @@ function fixture(t, {skipFirstFrame=false, idleTimeoutMs=10000, open}={}) {
   const options={transport:'tcp-6000',fps:2,idleTimeoutMs,skipFirstFrame,open:open??(h=>{opened++;handlers=h;return {close(){closed++;}};})};
   const {stream}=streams.start('one',options);
   return {streams,stream,options,get opened(){return opened},get closed(){return closed},get handlers(){return handlers},
-    async put(bytes){now+=501;handlers.onFrame(bytes);await new Promise(r=>setTimeout(r,15));}};
+    async put(bytes, wait=true, target=stream){
+      const before=await target.frame({changedOnly:false});
+      now+=501;handlers.onFrame(bytes);
+      if(wait)assert.equal((await target.frame({sinceSeq:before.seq,waitMs:2000,changedOnly:false})).status,'frame','native decode completed');
+    }};
 }
 
 test('one source per printer, stable unchanged cursor beyond16 frames, resize, and restart sequence',async t=>{
@@ -40,12 +44,12 @@ test('one source per printer, stable unchanged cursor beyond16 frames, resize, a
   const two=await pending;assert.equal(two.status,'frame');assert.ok(two.seq>one.seq);assert.ok(two.change>.5);
   f.streams.stop('one');assert.equal(f.closed,1);assert.equal((await f.stream.frame()).status,'stopped');
   const restart=f.streams.start('one',f.options);assert.equal(restart.status,'started');
-  await f.put(changed);assert.ok((await restart.stream.frame()).seq>two.seq);
+  await f.put(changed,true,restart.stream);assert.ok((await restart.stream.frame()).seq>two.seq);
 });
 
 test('P1/A1 repeated stale buffered frame is skipped before the live image',async t=>{
   const f=fixture(t,{skipFirstFrame:true});const old=await picture(10),live=await picture(90);
-  await f.put(old);await f.put(old);assert.equal((await f.stream.frame()).status,'unchanged');
+  await f.put(old,false);await f.put(old,false);assert.equal((await f.stream.frame()).status,'unchanged');
   await f.put(live);assert.equal((await f.stream.frame()).status,'frame');
 });
 

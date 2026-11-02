@@ -1,7 +1,7 @@
 # Camera stream tools
 
-Status: **implemented in the development branch; not published yet.** This is the contract for
-Counterpart's printer camera (PRD §8.6.1). Published 1.1.51 still exposes only `camera_snapshot`.
+Contract version: **Bambu 1.1.52 and newer.** This is the contract for
+Counterpart's printer camera (PRD §8.6.1). Version 1.1.51 exposes only `camera_snapshot`.
 Clients must discover the three tools before using this capability and retain their snapshot fallback.
 
 Goal: one camera connection per printer, only while someone is watching; frames held in memory;
