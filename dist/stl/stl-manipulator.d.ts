@@ -59,10 +59,14 @@ export type SliceOutput = {
     path: string;
     slicer_result?: SlicerResult;
 };
-/** A slicer failure that keeps the slicer's own result.json. */
+/**
+ * A slicer failure that keeps the slicer's own result.json. The message starts
+ * with the slicer's own words (`slicerText`), when it gave any, then `detail`.
+ */
 export declare class SlicerRunError extends Error {
     readonly slicerResult?: SlicerResult | undefined;
-    constructor(message: string, slicerResult?: SlicerResult | undefined);
+    readonly slicerText: string;
+    constructor(detail: string, slicerResult?: SlicerResult | undefined);
 }
 export declare class STLManipulator extends EventEmitter {
     private tempDir;

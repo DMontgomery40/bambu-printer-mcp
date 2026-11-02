@@ -3927,7 +3927,8 @@ class BambuPrinterMCPServer {
                 // MCP clients validate structuredContent against a declared outputSchema even on
                 // errors (SDK 1.32 Client.callTool), so those tools return the error as text only.
                 return {
-                    content: [{ type: "text", text: structured.slicer_result ? message : `Error: ${message}` }],
+                    // A slicer failure leads with the slicer's own words.
+                    content: [{ type: "text", text: error instanceof SlicerRunError && error.slicerText ? message : `Error: ${message}` }],
                     ...(OUTPUT_SCHEMA_TOOLS.has(name) ? {} : { structuredContent: structured }),
                     isError: true,
                 };

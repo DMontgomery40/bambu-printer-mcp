@@ -218,11 +218,17 @@ export type SlicerResult = Record<string, unknown>;
 /** A sliced file, with the slicer's own result.json when it wrote one. */
 export type SliceOutput = { path: string; slicer_result?: SlicerResult };
 
-/** A slicer failure that keeps the slicer's own result.json. */
+/**
+ * A slicer failure that keeps the slicer's own result.json. The message starts
+ * with the slicer's own words (`slicerText`), when it gave any, then `detail`.
+ */
 export class SlicerRunError extends Error {
-  constructor(message: string, readonly slicerResult?: SlicerResult) {
-    super(message);
+  readonly slicerText: string;
+  constructor(detail: string, readonly slicerResult?: SlicerResult) {
+    const slicerText = slicerResult ? slicerResultText(slicerResult) : "";
+    super(slicerText ? `${slicerText}\n${detail}` : detail);
     this.name = "SlicerRunError";
+    this.slicerText = slicerText;
   }
 }
 
@@ -1969,9 +1975,7 @@ export class STLManipulator extends EventEmitter {
               console.error(`Slicer Error: ${error.message}`);
               console.error(`Slicer Stderr: ${stderr}`);
               const slicerResult = cliResult ? readCliResult(cliResult) : undefined;
-              const slicerText = slicerResult ? slicerResultText(slicerResult) : "";
-              const detail = describeSlicerFailure(error, stdout, stderr, cliResult);
-              reject(new SlicerRunError(slicerText ? `${slicerText}\n${detail}` : detail, slicerResult));
+              reject(new SlicerRunError(describeSlicerFailure(error, stdout, stderr, cliResult), slicerResult));
             } else {
               console.error(`Slicer Stdout: ${stdout}`);
                if (stderr) {
@@ -2011,8 +2015,12 @@ export class STLManipulator extends EventEmitter {
       }
       
       const slicerResult = cliResult ? readCliResult(cliResult) : undefined;
+      if (cliResult && !slicerResult) {
+        // Older or Linux CLIs may write result.json only for handled errors.
+        console.error(`${slicerType} wrote no result.json for this slice, so its own checks are not available.`);
+      }
       if (typeof slicerResult?.return_code === "number" && slicerResult.return_code !== 0) {
-        throw new SlicerRunError(`${slicerResultText(slicerResult)}\nSlicer failed: the slicer exited with code 0, but its result.json reports return_code ${slicerResult.return_code}.`, slicerResult);
+        throw new SlicerRunError(`Slicer failed: the slicer exited with code 0, but its result.json reports return_code ${slicerResult.return_code}.`, slicerResult);
       }
 
       if (!fs.existsSync(outputFilePath)) {

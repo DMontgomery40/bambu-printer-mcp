@@ -8,6 +8,8 @@
   - The text result stays the sliced file's path.
   - A failed slice is an error result whose text starts with Studio's `error_string`, then each plate's `warning_message`, then the exit code and command output. Its `structuredContent` carries `slicer_result` too. Before, the text began "Error: Slicer failed: …" and the warnings were lost.
   - A `result.json` reporting a nonzero `return_code` fails the slice even when the CLI exits 0.
+  - Auto-slicing in `print_3mf` and `slice_with_template` fail the same way: Studio's words first, with `slicer_result` in the error's `structuredContent`.
+  - When the Bambu CLI writes no `result.json`, the server says so on stderr.
   - Slicers that write no `result.json` (PrusaSlicer, Cura, Slic3r, the remote OrcaSlicer API) return `structuredContent` `{path}` only.
   - Tested with real `result.json` files from Bambu Studio 02.08.02.61 slicing the Scan to Make stove gap filler for a P1S, and with the installed Studio CLI on macOS (skipped in CI).
 

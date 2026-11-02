@@ -2231,6 +2231,16 @@ test("a failed slice_stl starts with Bambu Studio's words and carries its result
   assert.ok(result.structuredContent.message.startsWith(studioWords));
 });
 
+// The CLI's own return code fails the slice even when the process exits 0.
+test("slice_stl fails when Bambu Studio's result.json reports an error but the CLI exits 0", async (t) => {
+  const result = await sliceWithFakeBambuSlicer(t, { result: "p1s-empty-layers.json" });
+  const expected = studioResult("p1s-empty-layers.json");
+  assert.equal(result.isError, true);
+  assert.deepEqual(result.structuredContent.slicer_result, expected);
+  assert.ok(result.content[0].text.startsWith(`${expected.error_string}\n`), result.content[0].text);
+  assert.match(result.content[0].text, /exited with code 0, but its result\.json reports return_code -100\.$/);
+});
+
 // A slicer that writes no result.json keeps the old shape: no slicer_result.
 test("slice_stl without a result.json returns the path and no slicer_result", async (t) => {
   const result = await sliceWithFakeBambuSlicer(t, {});
@@ -2259,7 +2269,7 @@ function boxesStl(boxes) {
 // The real Bambu Studio CLI, where it is installed (CI skips): a T standing on
 // its stem, its 60 mm cap 26 mm up, slices with a floating-cantilever warning.
 const installedStudio = process.env.BAMBU_STUDIO_CLI || "/Applications/BambuStudio.app/Contents/MacOS/BambuStudio";
-test("Bambu Studio's own floating-cantilever warning reaches slice_stl's slicer_result", {
+test("the installed Bambu Studio's floating-cantilever warning reaches sliceSTLWithResult's slicer_result", {
   skip: !fs.existsSync(installedStudio) && "Bambu Studio is not installed",
   timeout: 300_000,
 }, async (t) => {

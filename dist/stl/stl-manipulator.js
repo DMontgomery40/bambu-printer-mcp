@@ -113,12 +113,17 @@ const PROFILE_METADATA_KEYS = new Set([
     'name', 'type', 'from', 'inherits', 'instantiation', 'setting_id', 'version', 'is_custom_defined',
     'compatible_printers', 'compatible_printers_condition', 'compatible_prints', 'compatible_prints_condition',
 ]);
-/** A slicer failure that keeps the slicer's own result.json. */
+/**
+ * A slicer failure that keeps the slicer's own result.json. The message starts
+ * with the slicer's own words (`slicerText`), when it gave any, then `detail`.
+ */
 export class SlicerRunError extends Error {
-    constructor(message, slicerResult) {
-        super(message);
+    constructor(detail, slicerResult) {
+        const slicerText = slicerResult ? slicerResultText(slicerResult) : "";
+        super(slicerText ? `${slicerText}\n${detail}` : detail);
         this.slicerResult = slicerResult;
         this.name = "SlicerRunError";
+        this.slicerText = slicerText;
     }
 }
 /**
@@ -1571,9 +1576,7 @@ export class STLManipulator extends EventEmitter {
                             console.error(`Slicer Error: ${error.message}`);
                             console.error(`Slicer Stderr: ${stderr}`);
                             const slicerResult = cliResult ? readCliResult(cliResult) : undefined;
-                            const slicerText = slicerResult ? slicerResultText(slicerResult) : "";
-                            const detail = describeSlicerFailure(error, stdout, stderr, cliResult);
-                            reject(new SlicerRunError(slicerText ? `${slicerText}\n${detail}` : detail, slicerResult));
+                            reject(new SlicerRunError(describeSlicerFailure(error, stdout, stderr, cliResult), slicerResult));
                         }
                         else {
                             console.error(`Slicer Stdout: ${stdout}`);
@@ -1609,8 +1612,12 @@ export class STLManipulator extends EventEmitter {
                 throw new Error("Slicing operation cancelled after process finished");
             }
             const slicerResult = cliResult ? readCliResult(cliResult) : undefined;
+            if (cliResult && !slicerResult) {
+                // Older or Linux CLIs may write result.json only for handled errors.
+                console.error(`${slicerType} wrote no result.json for this slice, so its own checks are not available.`);
+            }
             if (typeof slicerResult?.return_code === "number" && slicerResult.return_code !== 0) {
-                throw new SlicerRunError(`${slicerResultText(slicerResult)}\nSlicer failed: the slicer exited with code 0, but its result.json reports return_code ${slicerResult.return_code}.`, slicerResult);
+                throw new SlicerRunError(`Slicer failed: the slicer exited with code 0, but its result.json reports return_code ${slicerResult.return_code}.`, slicerResult);
             }
             if (!fs.existsSync(outputFilePath)) {
                 throw new SlicerRunError(`Slicer finished but output file not found: ${outputFilePath}`, slicerResult);
