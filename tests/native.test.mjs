@@ -33,6 +33,7 @@ const event = { kind: 'helper', pid: process.pid, mode: process.argv[2], file: e
   projectName: e.BAMBU_NATIVE_PROJECT_NAME, presetName: e.BAMBU_NATIVE_PRESET_NAME,
   plateIndex: e.BAMBU_NATIVE_PLATE_INDEX, bedType: e.BAMBU_NATIVE_BED_TYPE,
   mapping: e.BAMBU_NATIVE_AMS_MAPPING, mapping2: e.BAMBU_NATIVE_AMS_MAPPING2,
+  printOptions: Object.fromEntries(["BED_LEVELING", "FLOW_CALIBRATION", "VIBRATION_CALIBRATION", "LAYER_INSPECT", "TIMELAPSE", "AUTO_BED_LEVELING", "AUTO_FLOW_CALI", "AUTO_OFFSET_CALI", "EXTRUDER_CALI_MANUAL_MODE"].map(key => [key, e["BAMBU_NATIVE_" + key]])),
   tryEmmc: e.BAMBU_NATIVE_TRY_EMMC_PRINT, plugin: e.BAMBU_NATIVE_PLUGIN, certDir: e.BAMBU_NATIVE_CERT_DIR, configDir: e.BAMBU_NATIVE_CONFIG_DIR,
   command: JSON.parse(e.BAMBU_NATIVE_COMMAND_JSON || '{}') };
 event.olderAlive = readFileSync(${JSON.stringify(eventsFile)}, 'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse)
@@ -184,6 +185,21 @@ for (const overrides of [{ fail_reason: 0x0300400d }, { print_error: 123 }, { hm
     assert.equal((await s.events()).some(e => e.kind === 'helper'), false);
   });
 }
+
+test("native X2D printing sends Bambu Studio's Send dialog options, and an explicit one wins", async t => {
+  const s = await server(t);
+  assert.notEqual((await s.print({ ams_slots: [128] })).isError, true);
+  // X2D bed leveling and flow calibration default to auto; a one-nozzle job turns nozzle offset calibration off.
+  const studio = {
+    BED_LEVELING: "false", FLOW_CALIBRATION: "false", VIBRATION_CALIBRATION: "false", LAYER_INSPECT: "true", TIMELAPSE: "false",
+    AUTO_BED_LEVELING: "2", AUTO_FLOW_CALI: "2", AUTO_OFFSET_CALI: "0", EXTRUDER_CALI_MANUAL_MODE: "0",
+  };
+  assert.deepEqual((await s.events()).find(e => e.kind === "helper").printOptions, studio);
+  const explicit = await server(t);
+  assert.notEqual((await explicit.print({ ams_slots: [128], bed_leveling: true, vibration_calibration: true })).isError, true);
+  assert.deepEqual((await explicit.events()).find(e => e.kind === "helper").printOptions,
+    { ...studio, BED_LEVELING: "true", AUTO_BED_LEVELING: "1", VIBRATION_CALIBRATION: "true" });
+});
 
 for (const connection_mode of [undefined, "lan_mqtt_ftps", "bambu_native"]) {
   test(`elicited X2D uses native print with ${connection_mode || "default"} routing`, async t => {

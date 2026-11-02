@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Send the print options Bambu Studio's Send dialog sends, on every print route: the BambuNetwork bridge, the native helper and LAN `project_file`. Before, the bridge sent its own defaults: for a P1S, vibration calibration on, first-layer inspection off, flow calibration on, and `auto_bed_leveling`, `auto_flow_cali`, `auto_offset_cali` 0 and `extruder_cali_manual_mode` -1. Each option the caller doesn't set now resolves as Studio 02.08.02.61 resolves it (`SelectMachine.cpp:3344-3356`, `load_option_vals`):
+  - the value the user saved in Studio's `BambuStudio.conf` for that printer type, if the printer offers it;
+  - else "auto" if offered, else "on".
+
+  Vibration calibration is off and first-layer inspection on, as Studio hard-codes them; `extruder_cali_manual_mode` is 0. For a P1S that is `task_bed_leveling: true`, `auto_bed_leveling: 1`, `task_flow_cali: false`, `auto_flow_cali: 2`, `auto_offset_cali: 2`. An explicit option still wins. `BAMBU_STUDIO_CONFIG` overrides the config path; empty means none.
+- `cancel_print` sends Bambu Studio's stop, `{"print":{"command":"stop","param":"","sequence_id":"<n>"}}`, at MQTT QoS 1 (`MachineObject::command_task_abort`), and waits up to 10 s for the printer's acknowledgement. Before, bambu-node sent the stop without `param`, at QoS 0. A stop that isn't acknowledged fails and closes its MQTT client, so it can't be sent late.
+
 ## [1.1.49] – 2026-11-02
 
 ### Removed

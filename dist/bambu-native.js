@@ -745,8 +745,13 @@ export async function printWithBambuNative(options, onUpdate, execution) {
         BAMBU_NATIVE_NOZZLES_INFO: options.nozzlesInfo || "",
         BAMBU_NATIVE_BED_LEVELING: boolEnv(options.bedLeveling, true),
         BAMBU_NATIVE_FLOW_CALIBRATION: boolEnv(options.flowCalibration, true),
-        BAMBU_NATIVE_VIBRATION_CALIBRATION: boolEnv(options.vibrationCalibration, true),
-        BAMBU_NATIVE_LAYER_INSPECT: boolEnv(options.layerInspect, false),
+        // Bambu Studio's Send dialog hard-codes these (SelectMachine.cpp:3344-3356).
+        BAMBU_NATIVE_VIBRATION_CALIBRATION: boolEnv(options.vibrationCalibration, false),
+        BAMBU_NATIVE_LAYER_INSPECT: boolEnv(options.layerInspect, true),
+        ...(options.autoBedLeveling === undefined ? {} : { BAMBU_NATIVE_AUTO_BED_LEVELING: String(options.autoBedLeveling) }),
+        ...(options.autoFlowCali === undefined ? {} : { BAMBU_NATIVE_AUTO_FLOW_CALI: String(options.autoFlowCali) }),
+        ...(options.autoOffsetCali === undefined ? {} : { BAMBU_NATIVE_AUTO_OFFSET_CALI: String(options.autoOffsetCali) }),
+        ...(options.extruderCaliManualMode === undefined ? {} : { BAMBU_NATIVE_EXTRUDER_CALI_MANUAL_MODE: String(options.extruderCaliManualMode) }),
         BAMBU_NATIVE_TIMELAPSE: boolEnv(options.timelapse, false),
         ...(options.externalStorage === undefined ? {} : { BAMBU_NATIVE_TRY_EMMC_PRINT: String(!options.externalStorage) }),
     }, 300000, onUpdate, execution);
@@ -793,8 +798,13 @@ export async function uploadWithBambuNative(options, onUpdate, execution) {
         BAMBU_NATIVE_NOZZLES_INFO: options.nozzlesInfo || "",
         BAMBU_NATIVE_BED_LEVELING: boolEnv(options.bedLeveling, true),
         BAMBU_NATIVE_FLOW_CALIBRATION: boolEnv(options.flowCalibration, true),
-        BAMBU_NATIVE_VIBRATION_CALIBRATION: boolEnv(options.vibrationCalibration, true),
-        BAMBU_NATIVE_LAYER_INSPECT: boolEnv(options.layerInspect, false),
+        // Bambu Studio's Send dialog hard-codes these (SelectMachine.cpp:3344-3356).
+        BAMBU_NATIVE_VIBRATION_CALIBRATION: boolEnv(options.vibrationCalibration, false),
+        BAMBU_NATIVE_LAYER_INSPECT: boolEnv(options.layerInspect, true),
+        ...(options.autoBedLeveling === undefined ? {} : { BAMBU_NATIVE_AUTO_BED_LEVELING: String(options.autoBedLeveling) }),
+        ...(options.autoFlowCali === undefined ? {} : { BAMBU_NATIVE_AUTO_FLOW_CALI: String(options.autoFlowCali) }),
+        ...(options.autoOffsetCali === undefined ? {} : { BAMBU_NATIVE_AUTO_OFFSET_CALI: String(options.autoOffsetCali) }),
+        ...(options.extruderCaliManualMode === undefined ? {} : { BAMBU_NATIVE_EXTRUDER_CALI_MANUAL_MODE: String(options.extruderCaliManualMode) }),
         BAMBU_NATIVE_TIMELAPSE: boolEnv(options.timelapse, false),
     }, 300000, onUpdate, execution);
     if (result.resultCode !== 0) {

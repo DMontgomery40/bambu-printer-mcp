@@ -12,6 +12,7 @@ import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, d
 import { describeHmsKey, hiddenHmsKeys, hiddenHmsNotices, reportedHmsKey, unchippedNozzles, validatePrinterState, manualHeatingRequirements, type PrinterStateRequirements } from "../safety/printer-state.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRemotePath, cancelPendingPrinterOperations } from "../safety/artifact.js";
 import { RTSP_CAMERA_MODELS, TCP_CAMERA_MODELS } from "./camera-models.js";
+import { resolveStudioPrintOptions, usedNozzleCount, type CallerPrintOptions } from "../studio-print-options.js";
 import { Client as FTPClient } from "basic-ftp";
 import * as mqtt from "mqtt";
 import {
@@ -46,6 +47,35 @@ function loadClientCreds(): { cert: Buffer; key: Buffer } | null {
 const CLIENT_CREDS = loadClientCreds();
 
 const COMMAND_SETTLE_MS = 300;
+/** How long a stop waits for the printer's MQTT PUBACK before its client is closed (BAMBU_STOP_ACK_MS for tests). */
+const stopAckMs = () => { const value = Number(process.env.BAMBU_STOP_ACK_MS); return Number.isInteger(value) && value > 0 ? value : 10_000; };
+
+/**
+ * Publish JSON exactly as Bambu Studio's MachineObject::publish_json does
+ * (DeviceManager.cpp:2462): the given message on device/<serial>/request at the
+ * given QoS. With QoS 1 it resolves on the printer's PUBACK. bambu-node's own
+ * publish has no QoS (MQTT.js defaults to 0).
+ */
+function publishStudioJson(client: BambuClient, message: Record<string, any>, qos: 0 | 1): Promise<void> {
+  const mqttClient = (client as any).mqttClient;
+  const serial = (client as any).config?.serialNumber;
+  if (!mqttClient || typeof mqttClient.publish !== "function" || typeof serial !== "string") return client.publish(message);
+  return new Promise((resolve, reject) => {
+    mqttClient.publish(`device/${serial}/request`, JSON.stringify(message), { qos }, (error?: Error) => {
+      if (error) reject(new Error(`Error publishing to device/${serial}/request: ${error.message}`));
+      else resolve();
+    });
+  });
+}
+
+/**
+ * Bambu Studio's stop, MachineObject::command_task_abort (DeviceManager.cpp:1418-1426):
+ * {"print":{"command":"stop","param":"","sequence_id":"<n>"}} at QoS 1. bambu-node's
+ * UpdateStateCommand sends no param, at QoS 0.
+ */
+const studioStopCommand = {
+  invoke: (client: BambuClient) => publishStudioJson(client, { print: { command: "stop", param: "", sequence_id: String(Date.now()) } }, 1),
+};
 /** A cached report older than this may be refreshed once with PushAll; see readProgressReport. */
 const STALE_REPORT_MS = 300_000;
 /** HMS 0500-0500-0001-0007: firmware 01.08.05+ rejected an unsigned MQTT command. */
@@ -114,6 +144,11 @@ interface BambuPrintOptionsInternal {
   flowCalibration?: boolean;
   vibrationCalibration?: boolean;
   layerInspect?: boolean;
+  /** Explicit Studio option values (0 off, 1 on, 2 auto); see studio-print-options.ts. */
+  autoBedLeveling?: number;
+  autoFlowCali?: number;
+  autoOffsetCali?: number;
+  extruderCaliManualMode?: number;
   timelapse?: boolean;
   amsMapping?: number[];
   /**
@@ -988,6 +1023,13 @@ export class BambuImplementation {
       model, nozzleDiameters: options.nozzleDiameters, plateIndex: options.plateIndex ?? 0, bedType: options.bedType,
     });
     const resumeFile = await checkedFile(inspection, options.filePath);
+    // The options Bambu Studio's Send dialog would send; explicit ones win.
+    const studio = resolveStudioPrintOptions(model, {
+      bedLeveling: options.bedLeveling, flowCalibration: options.flowCalibration,
+      vibrationCalibration: options.vibrationCalibration, layerInspect: options.layerInspect,
+      autoBedLeveling: options.autoBedLeveling, autoFlowCali: options.autoFlowCali,
+      autoOffsetCali: options.autoOffsetCali, extruderCaliManualMode: options.extruderCaliManualMode,
+    } satisfies CallerPrintOptions, { usedNozzles: usedNozzleCount(inspection) });
     const projectMetadata = await this.resolveProjectFileMetadata(
       options.filePath,
       options.plateIndex,
@@ -1160,16 +1202,16 @@ export class BambuImplementation {
           md5,
           bed_type: options.bedType || "auto",
           timelapse: b(options.timelapse),
-          bed_leveling: b(options.bedLeveling ?? true),
-          auto_bed_leveling: 1,
-          flow_cali: b(options.flowCalibration ?? false),
-          vibration_cali: b(options.vibrationCalibration ?? true),
-          layer_inspect: b(options.layerInspect ?? false),
+          bed_leveling: b(studio.task_bed_leveling),
+          auto_bed_leveling: studio.auto_bed_leveling,
+          flow_cali: b(studio.task_flow_cali),
+          vibration_cali: b(studio.task_vibration_cali),
+          layer_inspect: b(studio.task_layer_inspect),
           use_ams: options.useAMS !== false,
           cfg: "0",
           extrude_cali_flag: 0,
-          extrude_cali_manual_mode: 0,
-          nozzle_offset_cali: 2,
+          extrude_cali_manual_mode: studio.extruder_cali_manual_mode,
+          nozzle_offset_cali: studio.auto_offset_cali,
           subtask_name: subtaskName,
           profile_id: "0",
           project_id: submissionId,
@@ -1187,10 +1229,10 @@ export class BambuImplementation {
           url: projectUrl,
           subtask_name: subtaskName,
           md5,
-          flow_cali: options.flowCalibration ?? true,
-          layer_inspect: options.layerInspect ?? true,
-          vibration_cali: options.vibrationCalibration ?? true,
-          bed_leveling: options.bedLeveling ?? true,
+          flow_cali: studio.task_flow_cali,
+          layer_inspect: studio.task_layer_inspect,
+          vibration_cali: studio.task_vibration_cali,
+          bed_leveling: studio.task_bed_leveling,
           bed_type: options.bedType || "textured_plate",
           timelapse: options.timelapse ?? false,
           use_ams: options.useAMS !== false,
@@ -1234,9 +1276,17 @@ export class BambuImplementation {
 
     try {
       if (dispatch) return await dispatch();
-      else await invokeWithoutAck(printer!, new UpdateStateCommand({ state: "stop" }));
+      // A stop with no PUBACK must not stay queued in MQTT.js and reach a later job.
+      const ackMs = stopAckMs();
+      const deadline = new AbortController();
+      const timer = setTimeout(() => deadline.abort(Object.assign(new Error("stop not acknowledged"), { name: "TimeoutError" })), ackMs);
+      try { await this.invokeEmergencyCommand(printer!, studioStopCommand, deadline.signal); }
+      catch (error) {
+        if ((error as Error)?.name === "TimeoutError") throw new Error(`The printer did not acknowledge the stop within ${ackMs / 1000} s; its MQTT client was closed so the stop cannot be sent late. Check the printer.`);
+        throw error;
+      } finally { clearTimeout(timer); }
       this.checkedJobs.delete(`${host}\n${serial}`);
-      return { status: "success", message: "Cancel command sent successfully." };
+      return { status: "success", message: "Stop sent and acknowledged by the printer (MQTT QoS 1), as Bambu Studio sends it. Check get_printer_status to confirm the job stopped." };
     } catch (error) {
       throw new Error(`Failed to cancel print: ${(error as Error).message}`);
     }
@@ -1275,8 +1325,8 @@ export class BambuImplementation {
     signal?.throwIfAborted();
     const printer = await this.getPrinter(host, serial, token);
     signal?.throwIfAborted();
-    await this.invokeEmergencyCommand(printer, new UpdateStateCommand({ state: "stop" }), signal);
-    return { status: "success", message: "Cancel command sent over MQTT." };
+    await this.invokeEmergencyCommand(printer, studioStopCommand, signal);
+    return { status: "success", message: "Stop sent over MQTT and acknowledged by the printer (QoS 1)." };
   }
 
   /** Raw MQTT heater-off; switching off needs no material or model declaration. */

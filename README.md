@@ -713,7 +713,7 @@ If `filename` does not include a directory prefix, the server prepends `cache/` 
 
 #### cancel_print
 
-Cancel the currently running print job. Sends an `UpdateState` MQTT command with `state: "stop"`. Not resumable — use `pause_print` if you may want to continue.
+Cancel the currently running print job. Sends Bambu Studio's stop, `{"print":{"command":"stop","param":"","sequence_id":"<n>"}}`, at MQTT QoS 1, and waits up to 10 seconds for the printer to acknowledge it. A stop that isn't acknowledged returns an error, and its MQTT client is closed so it can't be sent late. Not resumable — use `pause_print` if you may want to continue.
 
 ```json
 {
@@ -908,6 +908,15 @@ Inspect a prepared sliced 3MF or textual G-code file offline before deciding wha
 `file_path` and explicit `bambu_model` are required; the model is never inferred from configuration. `plate_index` is zero-based and defaults to 0. Nozzle/bed checks are optional comparisons against file declarations, not observations of installed hardware. Only these five argument names are accepted; credentials, host and executable/bridge overrides are not part of this tool.
 
 The generic result has `receipt_version: "1"`, `evidence: "file-only"`, `dispatch_authorized: false`, `artifact` (`sha256`, `byte_length`, `file_format`), the requested `selection`, and the original `inspection` including declared model, nozzles, materials/used filament positions, internal plate path and checked temperature peaks. Hash and byte length identify the exact inspected snapshot; a consumer must compare them with its own artifact and selected plate. The temporary snapshot is removed, and its path is not a dispatch capability. The receipt does not prove printer readiness, physical material/nozzle contents, fit, full motion simulation or permission to print. Actual print routes still independently inspect the dispatched snapshot and require fresh hardware state and human preflight.
+
+#### Print options
+
+Every print route sends the options Bambu Studio's Send dialog sends (Bambu Studio 02.08.02.61, `SelectMachine.cpp:3344-3356`): bed leveling, flow calibration and nozzle offset calibration, vibration calibration, first-layer inspection and `extruder_cali_manual_mode`. That covers the BambuNetwork bridge, the native helper and LAN `project_file`. Each option you don't pass resolves as Studio resolves it:
+
+1. Studio's saved choice for that printer type in `BambuStudio.conf`, if the printer offers it. For example, a P1S offers only on/off for bed leveling, so a saved "auto" counts as unset.
+2. Otherwise "auto" if the printer offers it, else "on". On a P1S, flow calibration and nozzle offset calibration are hidden, so they stay "auto".
+
+Studio hard-codes vibration calibration off, first-layer inspection on and `extruder_cali_manual_mode` 0. For a P1S with nothing passed, the bridge sends `task_bed_leveling: true`, `auto_bed_leveling: 1`, `task_flow_cali: false`, `auto_flow_cali: 2`, `task_vibration_cali: false`, `task_layer_inspect: true`, `auto_offset_cali: 2` and `extruder_cali_manual_mode: 0`. An option you pass wins. `bed_leveling`/`flow_calibration` set "on" or "off", and `auto_bed_leveling`, `auto_flow_cali` and `auto_offset_cali` take 0 (off), 1 (on) or 2 (auto). Only the printer type's own section of `BambuStudio.conf` is read; the file also holds access codes. `BAMBU_STUDIO_CONFIG` names another file, and an empty value uses no saved choices.
 
 #### print_3mf
 

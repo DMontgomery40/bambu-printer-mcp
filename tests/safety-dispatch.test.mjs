@@ -1128,3 +1128,68 @@ test("bridge snapshots are retained only after handoff, including an uncertain r
   assert.deepEqual(await fs.readFile(dispatchedSnapshot), await fs.readFile(file));
   await fs.rm(path.dirname(dispatchedSnapshot), { recursive: true, force: true });
 });
+
+/** A BambuStudio.conf with David's saved P1S (C12) Send dialog options. */
+async function davidStudioConf(t) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "studio-conf-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "BambuStudio.conf");
+  await fs.writeFile(file, `${JSON.stringify({ C12: { bed_leveling: "on", flow_cali: "auto", nozzle_offset_cali: "auto", timelapse: "off" } }, null, 4)}\n# MD5 checksum 00\n`);
+  return file;
+}
+
+function withStudioConf(t, file) {
+  const previous = process.env.BAMBU_STUDIO_CONFIG;
+  process.env.BAMBU_STUDIO_CONFIG = file;
+  t.after(() => { if (previous === undefined) delete process.env.BAMBU_STUDIO_CONFIG; else process.env.BAMBU_STUDIO_CONFIG = previous; });
+}
+
+const optionFields = (print, keys) => Object.fromEntries(keys.map((key) => [key, print[key]]));
+
+for (const [label, useConf] of [["David's saved Studio options", true], ["no Studio config", false]]) {
+  test(`P1S project_file over MQTT sends Bambu Studio's options with ${label}`, async (t) => {
+    if (useConf) withStudioConf(t, await davidStudioConf(t));
+    const legacy = await fixture(t);
+    const file = legacy.replace(/\.gcode\.3mf$/, ".3mf");
+    await fs.copyFile(legacy, file);
+    const { printer, events } = isolatedPrinter();
+    await printer.print3mf(host, serial, token, { projectName: "studio", filePath: file, bambuModel: "p1s", useAMS: false });
+    const print = events.find(({ action }) => action === "publish").payload.print;
+    assert.equal(print.command, "project_file");
+    assert.deepEqual(optionFields(print, ["bed_leveling", "flow_cali", "vibration_cali", "layer_inspect", "timelapse"]),
+      { bed_leveling: true, flow_cali: false, vibration_cali: false, layer_inspect: true, timelapse: false });
+  });
+}
+
+test("an explicit print_3mf option still wins on the MQTT route", async (t) => {
+  withStudioConf(t, await davidStudioConf(t));
+  const legacy = await fixture(t);
+  const file = legacy.replace(/\.gcode\.3mf$/, ".3mf");
+  await fs.copyFile(legacy, file);
+  const { printer, events } = isolatedPrinter();
+  await printer.print3mf(host, serial, token, { projectName: "studio", filePath: file, bambuModel: "p1s", useAMS: false, bedLeveling: false, vibrationCalibration: true });
+  const print = events.find(({ action }) => action === "publish").payload.print;
+  assert.deepEqual(optionFields(print, ["bed_leveling", "flow_cali", "vibration_cali", "layer_inspect"]),
+    { bed_leveling: false, flow_cali: false, vibration_cali: true, layer_inspect: true });
+});
+
+test("H2D project_file over MQTT sends Bambu Studio's resolved options in its existing fields", async (t) => {
+  const h2d = { ...safetyStatus({ model: "h2d", nozzle: ["0.4", "0.4"], sn: "094TESTSAFETY" }), serial: "094TESTSAFETY" };
+  const file = await fixture(t, { model: "h2d", nozzleDiameters: [0.4, 0.4] });
+  const { printer, events } = isolatedPrinter(h2d);
+  await printer.print3mf(host, "094TESTSAFETY", token, { projectName: "studio", filePath: file, bambuModel: "h2d", useAMS: false });
+  const print = events.find(({ action }) => action === "publish").payload.print;
+  // H2D bed leveling and flow calibration default to auto; a one-nozzle job turns nozzle offset calibration off.
+  assert.deepEqual(optionFields(print, ["bed_leveling", "auto_bed_leveling", "flow_cali", "vibration_cali", "layer_inspect", "nozzle_offset_cali", "extrude_cali_manual_mode"]),
+    { bed_leveling: 0, auto_bed_leveling: 2, flow_cali: 0, vibration_cali: 0, layer_inspect: 1, nozzle_offset_cali: 0, extrude_cali_manual_mode: 0 });
+});
+
+test("the BambuNetwork bridge sends exactly the PrintParams Bambu Studio's Send dialog sends for a P1S", async (t) => {
+  withStudioConf(t, await davidStudioConf(t));
+  const server = await startBridgeJob(t);
+  assert.notEqual(server.result.isError, true, server.result.content?.[0]?.text);
+  assert.deepEqual(optionFields(server.params, ["task_bed_leveling", "task_flow_cali", "task_vibration_cali", "task_layer_inspect", "auto_bed_leveling", "auto_flow_cali", "auto_offset_cali", "extruder_cali_manual_mode", "task_record_timelapse"]), {
+    task_bed_leveling: true, task_flow_cali: false, task_vibration_cali: false, task_layer_inspect: true,
+    auto_bed_leveling: 1, auto_flow_cali: 2, auto_offset_cali: 2, extruder_cali_manual_mode: 0, task_record_timelapse: false,
+  });
+});

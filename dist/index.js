@@ -18,6 +18,7 @@ import { FUSION_CALL_OUTPUT_SCHEMA, FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFA
 import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue } from "./ams-mapping.js";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, parse3MF } from './3mf_parser.js';
 import { BambuImplementation, assertDirectPrintSupported, checkedFile } from "./printers/bambu.js";
+import { resolveStudioPrintOptions, usedNozzleCount } from "./studio-print-options.js";
 import { inspectPrintFile } from "./safety/print-file.js";
 import { SERIAL_MODELS, externalStorageState, validatePrinterState } from "./safety/printer-state.js";
 import { isDualNozzleModel } from "./safety/limits.js";
@@ -123,6 +124,29 @@ function assertUniformCliNozzles(args) {
     }
 }
 const VALID_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini", "h2d", "h2dpro", "h2s", "h2c", "x2d"];
+/** The Send dialog options a caller set explicitly; the rest resolve as Bambu Studio does (studio-print-options.ts). */
+function callerPrintOptions(args) {
+    const flag = (value) => value === undefined ? undefined : Boolean(value);
+    const int = (value, label) => {
+        if (value === undefined)
+            return undefined;
+        const number = Number(value);
+        if (!Number.isInteger(number))
+            throw new Error(`${label} must be an integer.`);
+        return number;
+    };
+    const options = {
+        bedLeveling: flag(args?.bed_leveling),
+        flowCalibration: flag(args?.flow_calibration),
+        vibrationCalibration: flag(args?.vibration_calibration),
+        layerInspect: flag(args?.layer_inspect),
+        autoBedLeveling: int(args?.auto_bed_leveling, "auto_bed_leveling"),
+        autoFlowCali: int(args?.auto_flow_cali, "auto_flow_cali"),
+        autoOffsetCali: int(args?.auto_offset_cali, "auto_offset_cali"),
+        extruderCaliManualMode: int(args?.extruder_cali_manual_mode, "extruder_cali_manual_mode"),
+    };
+    return Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined));
+}
 // X2D uses the same project_file/ams_mapping2 family of LAN print fields as
 // the dual-nozzle H2 path. Keep it in this gate so pre-sliced multi-filament
 // jobs take the correct branch instead of the legacy 5-slot mapping.
@@ -1231,6 +1255,8 @@ class BambuPrinterMCPServer {
         return withPrinterOperation(devIp, devId, assertActive => withPrintSnapshot(threeMFPath, async (snapshot, retainForDispatchedUpload) => {
             const inspection = await inspectPrintFile(snapshot, { model: printModel, nozzleDiameters: printNozzles, plateIndex, bedType: printBedType });
             const resumeFile = await checkedFile(inspection, snapshot);
+            // The options Bambu Studio's Send dialog would send; explicit ones win.
+            const studio = resolveStudioPrintOptions(printModel, callerPrintOptions(args), { usedNozzles: usedNozzleCount(inspection) });
             let mapping = finalAmsMapping?.slice();
             if (finalAmsSlots) {
                 if (finalAmsSlots.length !== inspection.usedFilamentPositions.length)
@@ -1295,18 +1321,18 @@ class BambuPrinterMCPServer {
                 use_ssl_for_mqtt: args?.use_ssl_for_mqtt !== undefined ? Boolean(args.use_ssl_for_mqtt) : true,
                 username: String(args?.username || "bblp"),
                 password,
-                task_bed_leveling: args?.bed_leveling !== undefined ? Boolean(args.bed_leveling) : true,
-                task_flow_cali: args?.flow_calibration !== undefined ? Boolean(args.flow_calibration) : true,
-                task_vibration_cali: args?.vibration_calibration !== undefined ? Boolean(args.vibration_calibration) : true,
-                task_layer_inspect: args?.layer_inspect !== undefined ? Boolean(args.layer_inspect) : false,
+                task_bed_leveling: studio.task_bed_leveling,
+                task_flow_cali: studio.task_flow_cali,
+                task_vibration_cali: studio.task_vibration_cali,
+                task_layer_inspect: studio.task_layer_inspect,
                 task_record_timelapse: args?.timelapse !== undefined ? Boolean(args.timelapse) : false,
                 task_use_ams: useAMS,
                 task_bed_type: printBedType,
                 extra_options: stringifyBridgeJson(args?.extra_options) || "",
-                auto_bed_leveling: args?.auto_bed_leveling !== undefined ? Number(args.auto_bed_leveling) : 0,
-                auto_flow_cali: args?.auto_flow_cali !== undefined ? Number(args.auto_flow_cali) : 0,
-                auto_offset_cali: args?.auto_offset_cali !== undefined ? Number(args.auto_offset_cali) : 0,
-                extruder_cali_manual_mode: args?.extruder_cali_manual_mode !== undefined ? Number(args.extruder_cali_manual_mode) : -1,
+                auto_bed_leveling: studio.auto_bed_leveling,
+                auto_flow_cali: studio.auto_flow_cali,
+                auto_offset_cali: studio.auto_offset_cali,
+                extruder_cali_manual_mode: studio.extruder_cali_manual_mode,
                 task_ext_change_assist: args?.external_change_assist !== undefined ? Boolean(args.external_change_assist) : false,
                 try_emmc_print: args?.try_emmc_print !== undefined ? Boolean(args.try_emmc_print) : false,
             };
@@ -1328,6 +1354,10 @@ class BambuPrinterMCPServer {
                     flowCalibration: params.task_flow_cali,
                     vibrationCalibration: params.task_vibration_cali,
                     layerInspect: params.task_layer_inspect,
+                    autoBedLeveling: studio.auto_bed_leveling,
+                    autoFlowCali: studio.auto_flow_cali,
+                    autoOffsetCali: studio.auto_offset_cali,
+                    extruderCaliManualMode: studio.extruder_cali_manual_mode,
                     timelapse: params.task_record_timelapse,
                     externalStorage,
                 }, native.onUpdate, { signal: native.signal, assertActive, beforeDispatch: async () => {
@@ -2150,10 +2180,10 @@ class BambuPrinterMCPServer {
                                 ams_mapping_info: { type: "string", description: "Raw JSON string for FULU PrintParams ams_mapping_info, matching OrcaSlicer-bambulab's detailed AMS mapping field." },
                                 nozzle_mapping: { type: "string", description: "Raw JSON string for FULU PrintParams nozzle_mapping." },
                                 nozzles_info: { type: "string", description: "Raw JSON string for FULU PrintParams nozzles_info." },
-                                bed_leveling: { type: "boolean", description: "Enable auto bed leveling in FULU PrintParams (default: true)." },
-                                flow_calibration: { type: "boolean", description: "Enable flow calibration in FULU PrintParams (default: true)." },
-                                vibration_calibration: { type: "boolean", description: "Enable vibration calibration in FULU PrintParams (default: true)." },
-                                layer_inspect: { type: "boolean", description: "Enable first-layer inspection where supported (default: false for BambuNetwork bridge)." },
+                                bed_leveling: { type: "boolean", description: "Auto bed leveling on or off. Omit to send what Bambu Studio's Send dialog would: the choice saved in BambuStudio.conf for this printer, else Studio's default." },
+                                flow_calibration: { type: "boolean", description: "Flow calibration on or off. Omit to send what Bambu Studio's Send dialog would (auto on P1/P1S)." },
+                                vibration_calibration: { type: "boolean", description: "Vibration calibration (default false, as Bambu Studio sends)." },
+                                layer_inspect: { type: "boolean", description: "First-layer inspection where supported (default true, as Bambu Studio sends)." },
                                 timelapse: { type: "boolean", description: "Enable timelapse recording in FULU PrintParams (default: false)." },
                                 use_ssl_for_ftp: { type: "boolean", description: "Whether FULU local print should use SSL for FTP (default: true)." },
                                 use_ssl_for_mqtt: { type: "boolean", description: "Whether FULU local print should use SSL for MQTT (default: true)." },
@@ -2585,9 +2615,9 @@ class BambuPrinterMCPServer {
                                     type: "boolean",
                                     description: "When true, match the sliced 3MF's tray_info_idx requirements against live AMS inventory and use the resulting ams_slots. Ignored when ams_mapping or ams_slots is provided."
                                 },
-                                bed_leveling: { type: "boolean", description: "Enable auto bed leveling (default: true)" },
-                                flow_calibration: { type: "boolean", description: "Enable flow calibration (default: true)" },
-                                vibration_calibration: { type: "boolean", description: "Enable vibration calibration (default: true)" },
+                                bed_leveling: { type: "boolean", description: "Auto bed leveling on or off. Omit to send what Bambu Studio's Send dialog would: the choice saved in BambuStudio.conf for this printer, else Studio's default." },
+                                flow_calibration: { type: "boolean", description: "Flow calibration on or off. Omit to send what Bambu Studio's Send dialog would (auto on P1/P1S)." },
+                                vibration_calibration: { type: "boolean", description: "Vibration calibration (default false, as Bambu Studio sends)." },
                                 timelapse: { type: "boolean", description: "Enable timelapse recording (default: false)" },
                                 slicer_profile: { type: "string", description: "Path to the slicer profile/config file for auto-slicing (optional)." },
                                 template_3mf_path: { type: "string", description: "Optional template 3MF whose embedded Bambu slicer settings should be reused when auto-slicing this print job." },
@@ -2621,9 +2651,9 @@ class BambuPrinterMCPServer {
                                     enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"],
                                     description: "Bed plate type currently installed (default: textured_plate)"
                                 },
-                                bed_leveling: { type: "boolean", description: "Enable auto bed leveling (default: true)" },
-                                flow_calibration: { type: "boolean", description: "Enable flow calibration (default: true)" },
-                                vibration_calibration: { type: "boolean", description: "Enable vibration calibration (default: true)" },
+                                bed_leveling: { type: "boolean", description: "Auto bed leveling on or off. Omit to send what Bambu Studio's Send dialog would: the choice saved in BambuStudio.conf for this printer, else Studio's default." },
+                                flow_calibration: { type: "boolean", description: "Flow calibration on or off. Omit to send what Bambu Studio's Send dialog would (auto on P1/P1S)." },
+                                vibration_calibration: { type: "boolean", description: "Vibration calibration (default false, as Bambu Studio sends)." },
                                 timelapse: { type: "boolean", description: "Enable timelapse recording (default: false)" },
                                 slicer_profile: { type: "string", description: "Path to the slicer profile/config file for auto-slicing (optional)." },
                                 nozzle_diameter: { type: "string", description: "Nozzle diameter in mm for auto-slicing (default: 0.4)" }
@@ -3749,10 +3779,7 @@ class BambuPrinterMCPServer {
                             amsMapping: finalAmsMapping,
                             amsSlots: finalAmsSlots,
                             bedType: printBedType,
-                            bedLeveling: args?.bed_leveling !== undefined ? Boolean(args.bed_leveling) : undefined,
-                            flowCalibration: args?.flow_calibration !== undefined ? Boolean(args.flow_calibration) : undefined,
-                            vibrationCalibration: args?.vibration_calibration !== undefined ? Boolean(args.vibration_calibration) : undefined,
-                            layerInspect: args?.layer_inspect !== undefined ? Boolean(args.layer_inspect) : undefined,
+                            ...callerPrintOptions(args),
                             timelapse: args?.timelapse !== undefined ? Boolean(args.timelapse) : undefined,
                         });
                         // Report what the printer did, not merely that a command was published.
@@ -3786,9 +3813,7 @@ class BambuPrinterMCPServer {
                             useAMS: true,
                             amsSlots: collarAnalysis.amsSlots,
                             bedType: printBedType,
-                            bedLeveling: args?.bed_leveling !== undefined ? Boolean(args.bed_leveling) : true,
-                            flowCalibration: args?.flow_calibration !== undefined ? Boolean(args.flow_calibration) : true,
-                            vibrationCalibration: args?.vibration_calibration !== undefined ? Boolean(args.vibration_calibration) : true,
+                            ...callerPrintOptions(args),
                             timelapse: args?.timelapse !== undefined ? Boolean(args.timelapse) : false,
                         });
                         result = {

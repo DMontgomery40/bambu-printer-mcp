@@ -18,6 +18,11 @@ export type BambuNativePrintOptions = {
     flowCalibration?: boolean;
     vibrationCalibration?: boolean;
     layerInspect?: boolean;
+    /** Bambu Studio's PrintParams auto_* values (0 off, 1 on, 2 auto) and extruder_cali_manual_mode. */
+    autoBedLeveling?: number;
+    autoFlowCali?: number;
+    autoOffsetCali?: number;
+    extruderCaliManualMode?: number;
     timelapse?: boolean;
     /** true: the SD card or USB stick; false: internal storage (eMMC); unset: BAMBU_NATIVE_TRY_EMMC_PRINT or internal. Reported as the requested storage. */
     externalStorage?: boolean;
