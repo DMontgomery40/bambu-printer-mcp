@@ -7,20 +7,47 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { FUSION_MCP_DEFAULT_ARGS, FUSION_MCP_PIN, FusionMcpBridge } from "../dist/fusion-mcp-bridge.js";
+import { FUSION_MCP_DEFAULT_ARGS, FUSION_MCP_PIN, FusionMcpBridge, defaultFusionSystem } from "../dist/fusion-mcp-bridge.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = path.join(root, "tests/fixtures/fusion-mcp-server.mjs");
 const text = (result) => result.content?.filter((item) => item.type === "text").map((item) => item.text).join("\n") ?? "";
 const events = (logPath) => fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line)) : [];
 
-/** A TCP listener standing in for the Fusion360MCP add-in's port. */
-async function addin(t) {
-  const server = net.createServer((socket) => socket.end());
+/** A TCP listener on a free port; onLine gets each newline-delimited request. */
+async function listener(t, onLine) {
+  const sockets = new Set();
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      for (let newline = buffer.indexOf("\n"); newline >= 0; newline = buffer.indexOf("\n")) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        onLine(socket, line);
+      }
+    });
+  });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => server.close());
+  t.after(() => { for (const socket of sockets) socket.destroy(); server.close(); });
   return server.address().port;
 }
+
+/** The Fusion360MCP add-in's socket protocol at the pin: newline-delimited JSON, ping answers pong. */
+const addin = (t) => listener(t, (socket, line) => {
+  const command = JSON.parse(line);
+  socket.write(`${JSON.stringify(command.type === "ping"
+    ? { status: "success", result: { pong: true, ok: true } }
+    : { status: "error", error_kind: "UNKNOWN_COMMAND", message: `Unknown command: ${command.type}` })}\n`);
+});
+
+/** Blender's MCP add-on, which also defaults to port 9876: unknown commands get an unframed error. */
+const blenderAddon = (t) => listener(t, (socket, line) => {
+  socket.write(JSON.stringify({ status: "error", message: `Unknown command type: ${JSON.parse(line).type}` }));
+});
 
 async function closedPort() {
   const server = net.createServer();
@@ -89,6 +116,34 @@ test("status is connected only when the add-in answers, and the child gets Fusio
   assert.equal(spawn.printerTokenPresent, false);
   assert.equal(spawn.fusionHost, "127.0.0.1");
   assert.equal(spawn.commandPresent, false, "the bridge's own command settings stay with the bridge");
+});
+
+test("the add-in probe needs the add-in's own pong, not just an open port", async (t) => {
+  const probe = (port, timeoutMs = 1_000) => defaultFusionSystem.addinAnswers("127.0.0.1", port, timeoutMs);
+  const requests = [];
+  const faust = await listener(t, (socket, line) => {
+    requests.push(JSON.parse(line));
+    socket.write(`${JSON.stringify({ status: "success", result: { pong: true, ok: true } })}\n`);
+  });
+  assert.equal(await probe(faust), true);
+  assert.deepEqual(requests, [{ type: "ping", params: {} }]);
+  assert.equal(await probe(await blenderAddon(t)), false, "Blender's add-on on the port is not Fusion");
+  assert.equal(await probe(await listener(t, (socket) => socket.write(`${JSON.stringify({ status: "success", result: { ok: true } })}\n`))), false, "success without pong");
+  assert.equal(await probe(await listener(t, (socket) => socket.write("not json\n"))), false, "a line that is not JSON");
+  assert.equal(await probe(await listener(t, (socket) => socket.end())), false, "a listener that hangs up");
+  assert.equal(await probe(await closedPort()), false, "nothing listening");
+  const started = Date.now();
+  assert.equal(await probe(await listener(t, (socket) => { const drip = setInterval(() => socket.write(" "), 20); socket.on("close", () => clearInterval(drip)); }), 200), false, "a listener that never answers");
+  assert.ok(Date.now() - started < 1_500, "the deadline is total, not idle");
+});
+
+test("status with Blender's add-on on the Fusion port is not reachable and sends no ping", async (t) => {
+  const port = await blenderAddon(t);
+  const { client, logPath } = await start(t, "normal", { FUSION_MCP_PORT: String(port) });
+  const result = await client.callTool({ name: "fusion_mcp_status", arguments: {} });
+  assert.equal(result.structuredContent.addinReachable, false);
+  assert.equal(result.structuredContent.connected, false);
+  assert.deepEqual(events(logPath).filter((event) => event.event === "call"), []);
 });
 
 test("status with the add-in down lists tools but is not connected and sends no ping", async (t) => {
@@ -199,7 +254,7 @@ function fakeSystem(overrides = {}) {
   let open = false;
   const system = {
     platform: "darwin", launchWaitMs: 5_000,
-    portOpen: async () => { calls.probes++; return open; },
+    addinAnswers: async () => { calls.probes++; return open; },
     fusionRunning: async () => false,
     launch: async () => { calls.launch++; setTimeout(() => { open = true; }, 30); },
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 10))),

@@ -6,8 +6,8 @@ type Arguments = Record<string, unknown>;
 /** The machine-facing seams: tests replace them with fakes. */
 export type FusionSystem = {
     platform: NodeJS.Platform;
-    /** Whether something accepts TCP connections on the add-in's port. */
-    portOpen(host: string, port: number, timeoutMs: number): Promise<boolean>;
+    /** Whether the Fusion360MCP add-in answers its ping on host:port within timeoutMs. */
+    addinAnswers(host: string, port: number, timeoutMs: number): Promise<boolean>;
     /** Whether an Autodesk Fusion process is running. */
     fusionRunning(): Promise<boolean>;
     /** Start Autodesk Fusion. */

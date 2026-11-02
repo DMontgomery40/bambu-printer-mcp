@@ -11,7 +11,7 @@
 - Add `layer_height`, `wall_loops` and `sparse_infill_density` to `slice_stl`. They are written as a process override on top of the resolved machine and process preset, on every Bambu-compatible route including remote slicing. PrusaSlicer, Slic3r and Cura refuse them.
 - Return `subtaskName` from `print_3mf` when it starts a 3MF with the LAN `project_file` command, and `taskId` on H2 and P2S. These are the values sent as `subtask_name`/`task_id`, so clients can match a progress report to their own print. Pre-sliced `.gcode.3mf` files on P1, X1 and A1 mini, and the X2D native, BambuNetwork and Bambu Connect routes, don't return them yet.
 - Add an optional Autodesk Fusion bridge through [faust-machines/fusion360-mcp-server](https://github.com/faust-machines/fusion360-mcp-server), pinned to commit `19b9f1e95192` and configured with `FUSION_MCP_COMMAND`, `FUSION_MCP_ARGS`, `FUSION_MCP_TIMEOUT_MS` and `FUSION_MCP_HOST`.
-  - `fusion_mcp_status` reports whether Fusion is configured, running and reachable; `launch: true` starts it on macOS and waits up to 90 s for the add-in.
+  - `fusion_mcp_status` reports whether Fusion is configured, running and reachable; `launch: true` starts it on macOS and waits up to 90 s for the add-in. The add-in counts as reachable only when it answers its own ping, so Blender's MCP add-on on the same default port (9876) isn't mistaken for Fusion.
   - `fusion_mcp_call` passes a call through to a discovered Fusion tool, the same contract as `blender_mcp_call`.
   - `fusion_mcp_new_design` opens a new parametric design.
   - `fusion_mcp_export` writes `<name>.stl`, `<name>.f3d` and `<name>.parameters.json` together, never overwriting a file.

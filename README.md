@@ -1294,6 +1294,9 @@ codes.
 
 1. `fusion_mcp_status` returns `{configured, connected, addinReachable, fusionRunning, tools[]}`,
    plus `launched`, `pin`, the server's `server` info and any `error`.
+   `addinReachable` is true only when the `Fusion360MCP` add-in answers its own
+   `ping` on `FUSION_MCP_HOST:FUSION_MCP_PORT`; Blender's MCP add-on, which also
+   defaults to port 9876, doesn't count, so it can't hide a stopped Fusion.
    `connected` is true only when the add-in answers the server's `ping`. With
    `{"launch": true}`, it starts Fusion on macOS (`open -a "Autodesk Fusion"`)
    when it is not running and waits up to 90 seconds for the add-in.
