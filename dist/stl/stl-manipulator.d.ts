@@ -207,7 +207,21 @@ export declare class STLManipulator extends EventEmitter {
      */
     centerModel(stlFilePath: string, progressCallback?: ProgressCallback): Promise<string>;
     /**
-     * Rotate the model so its largest flat face lies on the XY plane (Z=0).
+     * Rotate the model so a face rests on the bed, in the pose with the least
+     * part and support material per mm² of bed contact, then move it down to
+     * Z=0. Returns the new file's path, or the input path when no pose qualifies.
      */
     layFlat(stlFilePath: string, progressCallback?: ProgressCallback): Promise<string>;
+    /**
+     * layFlat with its outcome. A pose qualifies only when some face, turned to
+     * face down, lies on the rotated mesh's lowest plane; `laid_flat` is false
+     * and the model is unchanged when none does.
+     */
+    layFlatWithResult(stlFilePath: string, progressCallback?: ProgressCallback): Promise<LayFlatResult>;
 }
+export type LayFlatResult = {
+    /** The laid-flat STL, or the unchanged input when `laid_flat` is false. */
+    path: string;
+    laid_flat: boolean;
+    message: string;
+};
