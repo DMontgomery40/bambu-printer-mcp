@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "path";
 import { createServer as createHttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { STLManipulator, SLICER_TYPES, normalizeSlicerType, } from "./stl/stl-manipulator.js";
+import { STLManipulator, SLICER_TYPES, normalizeSlicerType, SlicerRunError, } from "./stl/stl-manipulator.js";
 import { BambuNetworkBridge, describeBambuNetworkPrintError } from "./bambu-network-bridge.js";
 import { assertBambuNativeAvailable, bambuNativeControlsAvailable, bambuNativeUnavailableReason, interruptNativeOperations, validateBambuNativeMetadata, buildBambuNativeFanCommand, buildBambuNativeTemperatureCommand, printWithBambuNative, sendCommandWithBambuNative, uploadWithBambuNative, } from "./bambu-native.js";
 import { importFileViaBambuConnect } from "./bambu-connect.js";
@@ -2011,7 +2011,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "slice_stl",
-                        description: "Slice an STL or 3MF file using a slicer to generate printable G-code or sliced 3MF. IMPORTANT: bambu_model must be specified to ensure the slicer generates safe G-code for the correct printer.",
+                        description: "Slice an STL or 3MF file using a slicer to generate printable G-code or sliced 3MF. IMPORTANT: bambu_model must be specified to ensure the slicer generates safe G-code for the correct printer. The text result is the sliced file's path. When Bambu Studio or OrcaSlicer writes a result.json, structuredContent.slicer_result carries it verbatim, success or error: error_string, return_code and each sliced_plates[].warning_message, such as a floating cantilever. A failed slice's text starts with those words.",
                         inputSchema: {
                             type: "object",
                             properties: {
@@ -3611,9 +3611,11 @@ class BambuPrinterMCPServer {
                                 console.warn("Could not resolve live printer filaments for slicing:", filamentError);
                             }
                         }
-                        result = await this.stlManipulator.sliceSTL(String(args.stl_path), slicerType, slicerPath, activeSlicerProfile, undefined, // progressCallback
+                        const sliced = await this.stlManipulator.sliceSTLWithResult(String(args.stl_path), slicerType, slicerPath, activeSlicerProfile, undefined, // progressCallback
                         printerPreset, sliceBambuOptions);
-                        break;
+                        await progressNotifications;
+                        // The text stays the sliced file's path; slicer_result is the slicer's own result.json, verbatim.
+                        return { content: [{ type: "text", text: sliced.path }], structuredContent: sliced };
                     }
                     case "print_3mf": {
                         if (!args?.three_mf_path) {
@@ -3919,11 +3921,13 @@ class BambuPrinterMCPServer {
                         : `Check parameters and try again. Error: ${message}`,
                     message,
                     tool: name,
+                    // The slicer's own result.json; the message starts with its error_string and warnings.
+                    ...(error instanceof SlicerRunError && error.slicerResult ? { slicer_result: error.slicerResult } : {}),
                 };
                 // MCP clients validate structuredContent against a declared outputSchema even on
                 // errors (SDK 1.32 Client.callTool), so those tools return the error as text only.
                 return {
-                    content: [{ type: "text", text: `Error: ${message}` }],
+                    content: [{ type: "text", text: structured.slicer_result ? message : `Error: ${message}` }],
                     ...(OUTPUT_SCHEMA_TOOLS.has(name) ? {} : { structuredContent: structured }),
                     isError: true,
                 };

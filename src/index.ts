@@ -21,6 +21,7 @@ import {
   STLManipulator,
   SLICER_TYPES,
   normalizeSlicerType,
+  SlicerRunError,
   type BambuSliceOptions,
   type SlicerType,
 } from "./stl/stl-manipulator.js";
@@ -933,6 +934,7 @@ type StructuredToolError = {
   suggestion: string;
   message: string;
   tool: string;
+  slicer_result?: Record<string, unknown>;
 };
 
 type UploadGcodeSource = {
@@ -2540,7 +2542,7 @@ class BambuPrinterMCPServer {
           },
           {
             name: "slice_stl",
-            description: "Slice an STL or 3MF file using a slicer to generate printable G-code or sliced 3MF. IMPORTANT: bambu_model must be specified to ensure the slicer generates safe G-code for the correct printer.",
+            description: "Slice an STL or 3MF file using a slicer to generate printable G-code or sliced 3MF. IMPORTANT: bambu_model must be specified to ensure the slicer generates safe G-code for the correct printer. The text result is the sliced file's path. When Bambu Studio or OrcaSlicer writes a result.json, structuredContent.slicer_result carries it verbatim, success or error: error_string, return_code and each sliced_plates[].warning_message, such as a floating cantilever. A failed slice's text starts with those words.",
             inputSchema: {
               type: "object",
               properties: {
@@ -4269,14 +4271,16 @@ class BambuPrinterMCPServer {
               }
             }
 
-            result = await this.stlManipulator.sliceSTL(
+            const sliced = await this.stlManipulator.sliceSTLWithResult(
               String(args.stl_path), slicerType, slicerPath,
               activeSlicerProfile,
               undefined, // progressCallback
               printerPreset,
               sliceBambuOptions
             );
-            break;
+            await progressNotifications;
+            // The text stays the sliced file's path; slicer_result is the slicer's own result.json, verbatim.
+            return { content: [{ type: "text", text: sliced.path }], structuredContent: sliced };
           }
 
           case "print_3mf": {
@@ -4686,12 +4690,14 @@ class BambuPrinterMCPServer {
             : `Check parameters and try again. Error: ${message}`,
           message,
           tool: name,
+          // The slicer's own result.json; the message starts with its error_string and warnings.
+          ...(error instanceof SlicerRunError && error.slicerResult ? { slicer_result: error.slicerResult } : {}),
         };
 
         // MCP clients validate structuredContent against a declared outputSchema even on
         // errors (SDK 1.32 Client.callTool), so those tools return the error as text only.
         return {
-          content: [{ type: "text", text: `Error: ${message}` }],
+          content: [{ type: "text", text: structured.slicer_result ? message : `Error: ${message}` }],
           ...(OUTPUT_SCHEMA_TOOLS.has(name) ? {} : { structuredContent: structured }),
           isError: true,
         };

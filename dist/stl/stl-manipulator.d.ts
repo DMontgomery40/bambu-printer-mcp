@@ -52,6 +52,18 @@ export interface BambuSliceOptions {
     slicePlate?: number;
     processOverrides?: ProcessOverrides;
 }
+/** Bambu Studio's or OrcaSlicer's own result.json, parsed verbatim. */
+export type SlicerResult = Record<string, unknown>;
+/** A sliced file, with the slicer's own result.json when it wrote one. */
+export type SliceOutput = {
+    path: string;
+    slicer_result?: SlicerResult;
+};
+/** A slicer failure that keeps the slicer's own result.json. */
+export declare class SlicerRunError extends Error {
+    readonly slicerResult?: SlicerResult | undefined;
+    constructor(message: string, slicerResult?: SlicerResult | undefined);
+}
 export declare class STLManipulator extends EventEmitter {
     private tempDir;
     private activeOperations;
@@ -172,6 +184,12 @@ export declare class STLManipulator extends EventEmitter {
      * @returns Path to the generated G-code or sliced 3MF file
      */
     sliceSTL(stlFilePath: string, slicerType: SlicerType, slicerPath: string, slicerProfile?: string, progressCallback?: ProgressCallback, printerPreset?: string, bambuOptions?: BambuSliceOptions): Promise<string>;
+    /**
+     * sliceSTL with the Bambu-compatible CLI's own result.json, parsed verbatim.
+     * A failure throws SlicerRunError, whose message starts with the slicer's
+     * error_string and plate warnings.
+     */
+    sliceSTLWithResult(stlFilePath: string, slicerType: SlicerType, slicerPath: string, slicerProfile?: string, progressCallback?: ProgressCallback, printerPreset?: string, bambuOptions?: BambuSliceOptions): Promise<SliceOutput>;
     /**
      * Enhanced version of confirmTemperatures with better error handling
      * @param gcodePath Path to the G-code file

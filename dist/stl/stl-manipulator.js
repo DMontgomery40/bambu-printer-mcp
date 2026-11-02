@@ -113,6 +113,37 @@ const PROFILE_METADATA_KEYS = new Set([
     'name', 'type', 'from', 'inherits', 'instantiation', 'setting_id', 'version', 'is_custom_defined',
     'compatible_printers', 'compatible_printers_condition', 'compatible_prints', 'compatible_prints_condition',
 ]);
+/** A slicer failure that keeps the slicer's own result.json. */
+export class SlicerRunError extends Error {
+    constructor(message, slicerResult) {
+        super(message);
+        this.slicerResult = slicerResult;
+        this.name = "SlicerRunError";
+    }
+}
+/**
+ * The result.json this run wrote. Bambu Studio 02.08.02.61 writes it on macOS
+ * for successes and failures alike; an older file must not describe this run.
+ */
+function readCliResult(cli) {
+    try {
+        if (fs.statSync(cli.resultPath).mtimeMs < cli.startedAt)
+            return undefined;
+        const result = JSON.parse(fs.readFileSync(cli.resultPath, "utf8"));
+        return result && typeof result === "object" && !Array.isArray(result) ? result : undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+/** The slicer's own words: error_string, then each plate's warning_message. */
+function slicerResultText(result) {
+    const plates = Array.isArray(result.sliced_plates) ? result.sliced_plates : [];
+    return [
+        result.error_string,
+        ...plates.map(plate => plate && typeof plate === "object" ? plate.warning_message : undefined),
+    ].filter((text) => typeof text === "string" && text.trim() !== "").map(text => text.trim()).join("\n");
+}
 function describeSlicerFailure(error, stdout, stderr, cli) {
     const status = typeof error.signal === "string" && error.signal
         ? `crashed with ${error.signal}`
@@ -122,7 +153,7 @@ function describeSlicerFailure(error, stdout, stderr, cli) {
     return `Slicer failed: the slicer ${status}${reason ? ` (${reason})` : ""}. ${error.message.trim()}${output ? `\nSlicer output: ${output}` : ""}`;
 }
 // Bambu Studio and OrcaSlicer CLI errors (libslic3r/Utils.hpp). The process
-// exits with the low byte of the code; on Linux result.json names the error.
+// exits with the low byte of the code; result.json names the error.
 const BAMBU_CLI_ERRORS = {
     [-2]: "invalid parameters to the slicer",
     [-3]: "input files not found",
@@ -145,16 +176,9 @@ const BAMBU_CLI_ERRORS = {
     [-102]: "G-code in an unprintable area",
 };
 function bambuCliFailureReason(exitCode, cli) {
-    try {
-        if (fs.statSync(cli.resultPath).mtimeMs >= cli.startedAt) {
-            const result = JSON.parse(fs.readFileSync(cli.resultPath, "utf8"));
-            if (typeof result.error_string === "string" && result.error_string.trim()) {
-                return `${result.error_string.trim()} [${result.return_code}]`;
-            }
-        }
-    }
-    catch {
-        // result.json is written only on Linux and only for handled errors.
+    const result = readCliResult(cli);
+    if (typeof result?.error_string === "string" && result.error_string.trim()) {
+        return `${result.error_string.trim()} [${result.return_code}]`;
     }
     if (typeof exitCode !== "number")
         return undefined;
@@ -1305,6 +1329,14 @@ export class STLManipulator extends EventEmitter {
      * @returns Path to the generated G-code or sliced 3MF file
      */
     async sliceSTL(stlFilePath, slicerType, slicerPath, slicerProfile, progressCallback, printerPreset, bambuOptions) {
+        return (await this.sliceSTLWithResult(stlFilePath, slicerType, slicerPath, slicerProfile, progressCallback, printerPreset, bambuOptions)).path;
+    }
+    /**
+     * sliceSTL with the Bambu-compatible CLI's own result.json, parsed verbatim.
+     * A failure throws SlicerRunError, whose message starts with the slicer's
+     * error_string and plate warnings.
+     */
+    async sliceSTLWithResult(stlFilePath, slicerType, slicerPath, slicerProfile, progressCallback, printerPreset, bambuOptions) {
         const operationId = this.generateOperationId();
         this.activeOperations.set(operationId, true);
         if (slicerType !== 'orca-slicer-api' && isPathLikeExecutable(slicerPath) && !fs.existsSync(slicerPath)) {
@@ -1538,7 +1570,10 @@ export class STLManipulator extends EventEmitter {
                         if (error) {
                             console.error(`Slicer Error: ${error.message}`);
                             console.error(`Slicer Stderr: ${stderr}`);
-                            reject(new Error(describeSlicerFailure(error, stdout, stderr, cliResult)));
+                            const slicerResult = cliResult ? readCliResult(cliResult) : undefined;
+                            const slicerText = slicerResult ? slicerResultText(slicerResult) : "";
+                            const detail = describeSlicerFailure(error, stdout, stderr, cliResult);
+                            reject(new SlicerRunError(slicerText ? `${slicerText}\n${detail}` : detail, slicerResult));
                         }
                         else {
                             console.error(`Slicer Stdout: ${stdout}`);
@@ -1573,8 +1608,12 @@ export class STLManipulator extends EventEmitter {
                 // This check might be redundant if the promise rejected on kill, but good safety
                 throw new Error("Slicing operation cancelled after process finished");
             }
+            const slicerResult = cliResult ? readCliResult(cliResult) : undefined;
+            if (typeof slicerResult?.return_code === "number" && slicerResult.return_code !== 0) {
+                throw new SlicerRunError(`${slicerResultText(slicerResult)}\nSlicer failed: the slicer exited with code 0, but its result.json reports return_code ${slicerResult.return_code}.`, slicerResult);
+            }
             if (!fs.existsSync(outputFilePath)) {
-                throw new Error(`Slicer finished but output file not found: ${outputFilePath}`);
+                throw new SlicerRunError(`Slicer finished but output file not found: ${outputFilePath}`, slicerResult);
             }
             if (progressCallback)
                 progressCallback(100, "Slicing completed successfully");
@@ -1584,7 +1623,7 @@ export class STLManipulator extends EventEmitter {
                 success: true,
                 output: outputFilePath
             });
-            return outputFilePath;
+            return slicerResult ? { path: outputFilePath, slicer_result: slicerResult } : { path: outputFilePath };
         }
         catch (error) {
             console.error(`Slicing failed for ${stlFilePath}:`, error);
