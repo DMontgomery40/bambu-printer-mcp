@@ -131,6 +131,12 @@ export declare class FusionMcpBridge {
     /** Close the stdio session, if any; the next call reconnects. */
     close(): Promise<void>;
     private open;
+    /**
+     * The live session, starting one if needed. A start is shared by every caller
+     * that arrives while it runs, so it has its own deadline (the longer of the
+     * caller's and FUSION_MCP_TIMEOUT_MS) and no caller's signal; each caller
+     * waits on it with its own deadline and cancellation.
+     */
     private session;
     /** One request with a deadline. An interrupted request is never retried; the session is closed instead. */
     private request;

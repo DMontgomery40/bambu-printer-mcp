@@ -453,6 +453,8 @@ export class BambuImplementation {
     constructor(confirm) {
         this.confirm = confirm;
         this.checkedJobs = new Map();
+        /** In-flight counterpart_print_progress reads, one per printer. */
+        this.progressReads = new Map();
         this.clearedErrors = new Map();
         this.printerStore = new BambuClientStore();
     }
@@ -598,56 +600,69 @@ export class BambuImplementation {
      * On a held session it comes from the cache with no printer traffic. PushAll
      * is sent only to fill a cold cache, or at most once per STALE_REPORT_MS when
      * the printer has been quiet for longer than that (P1-series firmware lags
-     * when asked often). Returns null when no report arrives within timeoutMs:
-     * the MQTT connect to an unreachable printer keeps retrying, so it must not
-     * hold the call. Display data only; safety checks use getSafetyStatus.
+     * when asked often). The whole read, connection and publish included, is
+     * bounded by timeoutMs: the MQTT connect to an unreachable printer keeps
+     * retrying, so it must not hold the call. Then the result is null, or a stale
+     * report that could not be refreshed in time. Display data only; safety
+     * checks use getSafetyStatus.
      */
     async readProgressReport(host, serial, token, timeoutMs = 8000) {
         const cached = this.printerStore.getCachedReportWithTime(host, serial, token);
-        if (cached && typeof cached.raw.gcode_state === "string") {
-            if (Date.now() - cached.receivedAt <= STALE_REPORT_MS || !this.printerStore.claimRefresh(host, serial, token, STALE_REPORT_MS))
-                return cached;
-            try {
-                await invokeWithoutAck(await this.getPrinter(host, serial, token), new PushAllCommand());
-                const deadline = Date.now() + 2000;
-                while (Date.now() < deadline) {
-                    const latest = this.printerStore.getCachedReportWithTime(host, serial, token);
-                    if (latest && latest.receivedAt > cached.receivedAt)
-                        return latest;
-                    await sleep(50);
-                }
-            }
-            catch {
-                // A failed refresh leaves the cached report, which still carries its own time.
-            }
-            return this.printerStore.getCachedReportWithTime(host, serial, token) ?? cached;
+        const warm = cached !== null && typeof cached.raw.gcode_state === "string";
+        if (warm && (Date.now() - cached.receivedAt <= STALE_REPORT_MS || !this.printerStore.claimRefresh(host, serial, token, STALE_REPORT_MS)))
+            return cached;
+        // One first read or refresh per printer at a time. Callers that gave up share
+        // it, so a printer that comes back gets one PushAll, not one per expired poll.
+        const key = getPrinterKey(host, serial, token);
+        let read = this.progressReads.get(key);
+        if (!read) {
+            const started = warm ? this.refreshProgressReport(host, serial, token, cached) : this.firstProgressReport(host, serial, token);
+            read = started.finally(() => { if (this.progressReads.get(key) === read)
+                this.progressReads.delete(key); });
+            read.catch(() => { });
+            this.progressReads.set(key, read);
         }
-        const read = (async () => {
-            const printer = await this.getPrinter(host, serial, token);
-            try {
-                await invokeWithoutAck(printer, new PushAllCommand());
-            }
-            catch { /* the printer pushes on its own too */ }
-            await this.printerStore.waitForInitialReport(host, serial, token, Math.min(timeoutMs, 4000));
-            // A connected printer whose report still lacks gcode_state is busy, not offline.
-            return this.printerStore.getCachedReportWithTime(host, serial, token);
-        })();
-        read.catch(() => { });
+        const latest = () => warm ? this.printerStore.getCachedReportWithTime(host, serial, token) ?? cached : null;
         let timer;
         const expired = new Promise(resolve => { timer = setTimeout(() => resolve(null), timeoutMs); });
         try {
-            return await Promise.race([read, expired]);
+            return (await Promise.race([read, expired])) ?? latest();
         }
         catch {
-            return null;
+            return latest();
         }
         finally {
             clearTimeout(timer);
         }
     }
-    /** Cached report of an already-connected printer, without connecting or sending anything. */
-    cachedReport(host, serial, token) {
-        return this.printerStore.getCachedReportWithTime(host, serial, token)?.raw ?? null;
+    async firstProgressReport(host, serial, token) {
+        const printer = await this.getPrinter(host, serial, token);
+        // The printer may already have pushed its full status while connecting.
+        if (typeof this.printerStore.getCachedReportWithTime(host, serial, token)?.raw.gcode_state !== "string") {
+            try {
+                await invokeWithoutAck(printer, new PushAllCommand());
+            }
+            catch { /* the printer pushes on its own too */ }
+        }
+        await this.printerStore.waitForInitialReport(host, serial, token, 4000);
+        // A connected printer whose report still lacks gcode_state is busy, not offline.
+        return this.printerStore.getCachedReportWithTime(host, serial, token);
+    }
+    async refreshProgressReport(host, serial, token, cached) {
+        try {
+            await invokeWithoutAck(await this.getPrinter(host, serial, token), new PushAllCommand());
+            const deadline = Date.now() + 2000;
+            while (Date.now() < deadline) {
+                const latest = this.printerStore.getCachedReportWithTime(host, serial, token);
+                if (latest && latest.receivedAt > cached.receivedAt)
+                    return latest;
+                await sleep(50);
+            }
+        }
+        catch {
+            // A failed refresh leaves the cached report, which still carries its own time.
+        }
+        return this.printerStore.getCachedReportWithTime(host, serial, token) ?? cached;
     }
     async getStatus(host, serial, token) {
         try {

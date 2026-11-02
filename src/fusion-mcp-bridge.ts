@@ -231,7 +231,7 @@ export class FusionMcpBridge {
     await live.transport.close().catch(() => {});
   }
 
-  private async open(timeout: number, signal?: AbortSignal): Promise<Live> {
+  private async open(timeout: number): Promise<Live> {
     const config = configuration();
     const client = new Client({ name: "bambu-printer-mcp-fusion", version: "1.0.0" });
     const transport = new StdioClientTransport({ ...config, env: fusionEnvironment(), stderr: "pipe" });
@@ -242,7 +242,7 @@ export class FusionMcpBridge {
       live.closed = true;
       if (this.live === live) this.live = undefined;
     };
-    const options = { signal, timeout };
+    const options = { timeout };
     try {
       await client.connect(transport, options);
       const cursors = new Set<string>();
@@ -263,14 +263,31 @@ export class FusionMcpBridge {
     }
   }
 
-  private async session(timeout: number, signal?: AbortSignal): Promise<Live> {
+  /**
+   * The live session, starting one if needed. A start is shared by every caller
+   * that arrives while it runs, so it has its own deadline (the longer of the
+   * caller's and FUSION_MCP_TIMEOUT_MS) and no caller's signal; each caller
+   * waits on it with its own deadline and cancellation.
+   */
+  private async session(timeout: number, signal: AbortSignal): Promise<Live> {
     if (this.live && !this.live.closed) return this.live;
     if (!this.connecting) {
-      this.connecting = this.open(timeout, signal)
+      const connecting = this.open(Math.max(timeout, timeoutMilliseconds(undefined)))
         .then(live => { this.live = live; return live; })
-        .finally(() => { this.connecting = undefined; });
+        .finally(() => { if (this.connecting === connecting) this.connecting = undefined; });
+      connecting.catch(() => {});
+      this.connecting = connecting;
     }
-    return this.connecting;
+    const shared = this.connecting;
+    if (signal.aborted) throw new DOMException("The operation was aborted.", "AbortError");
+    return new Promise<Live>((resolve, reject) => {
+      const abort = () => reject(new DOMException("The operation was aborted.", "AbortError"));
+      signal.addEventListener("abort", abort, { once: true });
+      shared.then(
+        live => { signal.removeEventListener("abort", abort); resolve(live); },
+        error => { signal.removeEventListener("abort", abort); reject(error); },
+      );
+    });
   }
 
   /** One request with a deadline. An interrupted request is never retried; the session is closed instead. */

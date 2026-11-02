@@ -231,3 +231,25 @@ test("launch starts Fusion when it is not running and waits for the add-in", asy
   await assert.rejects(new FusionMcpBridge(fakeSystem({ platform: "linux" }).system).status({ launch: true }), /macOS only/);
   await assert.rejects(new FusionMcpBridge(fake.system).status({ launch: "yes" }), /boolean/);
 });
+
+test("callers sharing a slow start each keep their own deadline", { timeout: 60_000 }, async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-fusion-shared-"));
+  const saved = Object.fromEntries(["FUSION_MCP_COMMAND", "FUSION_MCP_ARGS", "FUSION_MCP_TIMEOUT_MS", "FUSION_MCP_PORT"].map((key) => [key, process.env[key]]));
+  Object.assign(process.env, { FUSION_MCP_COMMAND: process.execPath, FUSION_MCP_ARGS: JSON.stringify([fixture, "slow-start", path.join(directory, "peer.jsonl")]), FUSION_MCP_TIMEOUT_MS: "30000", FUSION_MCP_PORT: String(await closedPort()) });
+  const bridge = new FusionMcpBridge();
+  t.after(async () => {
+    await bridge.close();
+    for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    fs.rmSync(directory, { recursive: true, force: true });
+  });
+  const slow = bridge.status({ timeout_ms: 30000 });
+  const started = Date.now();
+  await assert.rejects(bridge.call({ tool_name: "create_sketch", timeout_ms: 200 }), /timed out during connection/);
+  assert.ok(Date.now() - started < 2500, "the short request did not wait for the shared start");
+  const cancel = new AbortController();
+  setTimeout(() => cancel.abort(), 100);
+  await assert.rejects(bridge.call({ tool_name: "create_sketch" }, cancel.signal), /cancelled/);
+  const status = await slow;
+  assert.ok(status.tools.length > 0, "the shared start still completes for the caller that can wait");
+  assert.equal(events(path.join(directory, "peer.jsonl")).filter((event) => event.event === "spawn").length, 1);
+});

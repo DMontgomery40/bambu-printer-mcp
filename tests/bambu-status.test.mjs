@@ -153,3 +153,48 @@ test("a cold progress read connects, asks once, and returns the first full repor
   assert.equal(report.raw.gcode_state, "FINISH");
   assert.equal(published.length, 1);
 });
+
+test("a stale refresh whose publish never completes still returns the cached report within the bound", async () => {
+  const bambu = new BambuImplementation();
+  const key = "127.0.0.1-01PTEST-test";
+  const { printer } = heldSession(bambu, key, { gcode_state: "RUNNING", mc_percent: 40 }, 600_000);
+  // MQTT disconnected after connecting: the queued publish never settles.
+  printer.publish = () => new Promise(() => {});
+  bambu.getPrinter = async () => printer;
+  const started = Date.now();
+  const report = await bambu.readProgressReport("127.0.0.1", "01PTEST", "test", 200);
+  assert.equal(report.raw.mc_percent, 40, "the stale report keeps its own observedAt");
+  assert.ok(Date.now() - started < 1000);
+});
+
+test("progress polls of an unreachable printer share one read and send one PushAll when it returns", async () => {
+  const bambu = new BambuImplementation();
+  const key = "127.0.0.1-01PTEST-test";
+  const store = bambu.printerStore;
+  const published = [];
+  const printer = { publish: async (message) => { published.push(message); } };
+  let connect;
+  let connects = 0;
+  const connected = new Promise((resolve) => { connect = resolve; });
+  bambu.getPrinter = () => { connects++; return connected; };
+  for (let poll = 0; poll < 4; poll++) assert.equal(await bambu.readProgressReport("127.0.0.1", "01PTEST", "test", 30), null);
+  assert.equal(connects, 1, "expired polls do not start more reads");
+  store.printers.set(key, printer);
+  connect(printer);
+  setTimeout(() => store.updateReportSnapshot(key, { gcode_state: "IDLE" }), 50);
+  const report = await bambu.readProgressReport("127.0.0.1", "01PTEST", "test", 5000);
+  assert.equal(report.raw.gcode_state, "IDLE");
+  assert.equal(published.length, 1, "one PushAll for all the expired polls");
+
+  // A printer that already pushed its full status while connecting is not asked again.
+  const quiet = new BambuImplementation();
+  const quietPublished = [];
+  const quietPrinter = { publish: async (message) => { quietPublished.push(message); } };
+  quiet.getPrinter = async () => {
+    quiet.printerStore.printers.set(key, quietPrinter);
+    quiet.printerStore.updateReportSnapshot(key, { gcode_state: "RUNNING" });
+    return quietPrinter;
+  };
+  assert.equal((await quiet.readProgressReport("127.0.0.1", "01PTEST", "test", 5000)).raw.gcode_state, "RUNNING");
+  assert.deepEqual(quietPublished, []);
+});

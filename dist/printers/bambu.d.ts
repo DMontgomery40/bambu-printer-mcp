@@ -26,6 +26,11 @@ interface BambuPrintOptionsInternal {
     amsSlots?: number[];
     md5?: string;
 }
+/** A merged MQTT report and when it last arrived (ms since epoch). */
+export type ProgressReport = {
+    raw: Record<string, any>;
+    receivedAt: number;
+};
 export type PrintPreflight = {
     finishedJob?: string;
     serial: string;
@@ -41,6 +46,8 @@ export declare class BambuImplementation {
     private readonly confirm?;
     private printerStore;
     private checkedJobs;
+    /** In-flight counterpart_print_progress reads, one per printer. */
+    private progressReads;
     private clearedErrors;
     constructor(confirm?: ((message: string) => Promise<boolean>) | undefined);
     confirmHardwareAction(message: string, physicalCheck?: boolean): Promise<void>;
@@ -64,16 +71,15 @@ export declare class BambuImplementation {
      * On a held session it comes from the cache with no printer traffic. PushAll
      * is sent only to fill a cold cache, or at most once per STALE_REPORT_MS when
      * the printer has been quiet for longer than that (P1-series firmware lags
-     * when asked often). Returns null when no report arrives within timeoutMs:
-     * the MQTT connect to an unreachable printer keeps retrying, so it must not
-     * hold the call. Display data only; safety checks use getSafetyStatus.
+     * when asked often). The whole read, connection and publish included, is
+     * bounded by timeoutMs: the MQTT connect to an unreachable printer keeps
+     * retrying, so it must not hold the call. Then the result is null, or a stale
+     * report that could not be refreshed in time. Display data only; safety
+     * checks use getSafetyStatus.
      */
-    readProgressReport(host: string, serial: string, token: string, timeoutMs?: number): Promise<{
-        raw: Record<string, any>;
-        receivedAt: number;
-    } | null>;
-    /** Cached report of an already-connected printer, without connecting or sending anything. */
-    cachedReport(host: string, serial: string, token: string): Record<string, any> | null;
+    readProgressReport(host: string, serial: string, token: string, timeoutMs?: number): Promise<ProgressReport | null>;
+    private firstProgressReport;
+    private refreshProgressReport;
     getStatus(host: string, serial: string, token: string): Promise<any>;
     print3mf(host: string, serial: string, token: string, options: BambuPrintOptionsInternal): Promise<any>;
     private print3mfPrepared;

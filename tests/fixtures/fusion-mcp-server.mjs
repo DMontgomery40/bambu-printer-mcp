@@ -32,6 +32,7 @@ const reader = readline.createInterface({ input: process.stdin });
 reader.on("line", (line) => {
   const request = JSON.parse(line);
   if (request.method === "initialize") {
+    if (mode === "slow-start") return setTimeout(() => send(request.id, { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "fusion360-mcp-server", version: "0.1.0" } }), 3000);
     return send(request.id, { protocolVersion: request.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "fusion360-mcp-server", version: "0.1.0" } });
   }
   if (request.method === "tools/list") return send(request.id, { tools });
