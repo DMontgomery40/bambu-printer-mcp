@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- `fusion_mcp_status` reports the Fusion360MCP add-in as reachable. The pinned add-in answers a ping on its fast path with `{"ok":true,"status":"pong"}`, and the bridge accepted only `{"pong":true}`, so it reported `connected: false` with a running add-in.
 - Send the print options Bambu Studio's Send dialog sends, on every print route: the BambuNetwork bridge, the native helper and LAN `project_file`. Before, the bridge sent its own defaults: for a P1S, vibration calibration on, first-layer inspection off, flow calibration on, and `auto_bed_leveling`, `auto_flow_cali`, `auto_offset_cali` 0 and `extruder_cali_manual_mode` -1. Each option the caller doesn't set now resolves as Studio 02.08.02.61 resolves it (`SelectMachine.cpp:3344-3356`, `load_option_vals`):
   - the value the user saved in Studio's `BambuStudio.conf` for that printer type, if the printer offers it;
   - else "auto" if offered, else "on".

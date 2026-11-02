@@ -36,11 +36,11 @@ async function listener(t, onLine) {
   return server.address().port;
 }
 
-/** The Fusion360MCP add-in's socket protocol at the pin: newline-delimited JSON, ping answers pong. */
+/** The Fusion360MCP add-in's socket protocol at the pin: newline-delimited JSON; ping takes the fast path in event_bridge.py. */
 const addin = (t) => listener(t, (socket, line) => {
   const command = JSON.parse(line);
   socket.write(`${JSON.stringify(command.type === "ping"
-    ? { status: "success", result: { pong: true, ok: true } }
+    ? { status: "success", result: { ok: true, status: "pong" } }
     : { status: "error", error_kind: "UNKNOWN_COMMAND", message: `Unknown command: ${command.type}` })}\n`);
 });
 
@@ -123,10 +123,12 @@ test("the add-in probe needs the add-in's own pong, not just an open port", asyn
   const requests = [];
   const faust = await listener(t, (socket, line) => {
     requests.push(JSON.parse(line));
-    socket.write(`${JSON.stringify({ status: "success", result: { pong: true, ok: true } })}\n`);
+    socket.write(`${JSON.stringify({ status: "success", result: { ok: true, status: "pong" } })}\n`);
   });
-  assert.equal(await probe(faust), true);
+  assert.equal(await probe(faust), true, "the pinned add-in's fast-path pong");
   assert.deepEqual(requests, [{ type: "ping", params: {} }]);
+  assert.equal(await probe(await listener(t, (socket) => socket.write(`${JSON.stringify({ status: "success", result: { pong: true } })}\n`))), true, "the command handler's pong");
+  assert.equal(await probe(await listener(t, (socket) => socket.write(`${JSON.stringify({ status: "success", result: { ok: true, status: "busy" } })}\n`))), false, "a status that is not pong");
   assert.equal(await probe(await blenderAddon(t)), false, "Blender's add-on on the port is not Fusion");
   assert.equal(await probe(await listener(t, (socket) => socket.write(`${JSON.stringify({ status: "success", result: { ok: true } })}\n`))), false, "success without pong");
   assert.equal(await probe(await listener(t, (socket) => socket.write("not json\n"))), false, "a line that is not JSON");
