@@ -209,6 +209,7 @@ test("export writes STL, F3D and parameters into the directory and returns absol
   assert.deepEqual(result.structuredContent, {
     status: "exported", stl: path.join(real, "bracket.stl"), f3d: path.join(real, "bracket.f3d"), parameters: path.join(real, "bracket.parameters.json"),
     body: "Bracket", triangles: 1, bytes: 134, parameterCount: 1,
+    boundingBox: { min: [0, 0, 0], max: [10, 10, 0], dimensions: [10, 10, 0] }, stlUnits: "mm", fusionSizeMm: [10, 10, 0],
   });
   assert.deepEqual(JSON.parse(fs.readFileSync(result.structuredContent.parameters, "utf8")).parameters[0], { name: "width", value: 4, expression: "40 mm", unit: "mm", comment: "it's \"wide\"\nreally" });
   assert.deepEqual(fs.readdirSync(output).sort(), ["bracket.f3d", "bracket.parameters.json", "bracket.stl"], "no staged files are left");
@@ -221,12 +222,39 @@ test("export writes STL, F3D and parameters into the directory and returns absol
   assert.match(text(await client.callTool({ name: "fusion_mcp_export", arguments: { output_dir: path.join(directory, "missing"), name: "x" } })), /existing directory/);
 });
 
-test("export needs body_name when the design has several bodies", async (t) => {
+test("export chooses among visible solid bodies only, and needs body_name when there are several", async (t) => {
   const { client, directory } = await start(t, "multi-body");
   const result = await client.callTool({ name: "fusion_mcp_export", arguments: { output_dir: directory, name: "assembly" } });
-  assert.match(text(result), /2 bodies \(Bracket, Insert\); pass body_name/);
+  assert.match(text(result), /2 visible solid bodies \(Bracket, Insert\); pass body_name/);
   const chosen = await client.callTool({ name: "fusion_mcp_export", arguments: { output_dir: directory, name: "insert", body_name: "Insert" } });
   assert.equal(chosen.structuredContent.body, "Insert");
+  for (const hidden of ["Hidden", "Skin"]) {
+    assert.match(text(await client.callTool({ name: "fusion_mcp_export", arguments: { output_dir: directory, name: hidden, body_name: hidden } })),
+      /No visible solid body named .*Visible solid bodies: Bracket, Insert/, hidden);
+  }
+});
+
+test("export refuses two visible solid bodies with the same name", async (t) => {
+  const { client, directory } = await start(t, "duplicate-body");
+  const result = await client.callTool({ name: "fusion_mcp_export", arguments: { output_dir: directory, name: "dup", body_name: "Bracket" } });
+  assert.match(text(result), /Several visible solid bodies are named "Bracket"/);
+  assert.deepEqual(fs.readdirSync(directory).filter((name) => !name.endsWith(".jsonl")), []);
+});
+
+test("export reports an STL written in centimetres", async (t) => {
+  const { client, directory } = await start(t, "cm-stl");
+  const result = await client.callTool({ name: "fusion_mcp_export", arguments: { output_dir: directory, name: "bracket" } });
+  assert.equal(result.isError, undefined, text(result));
+  assert.equal(result.structuredContent.stlUnits, "cm");
+  assert.deepEqual(result.structuredContent.fusionSizeMm, [100, 100, 0]);
+  assert.match(result.structuredContent.warnings.join(" "), /centimetres.*Scale it by 10/);
+});
+
+test("with FUSION_MCP_PORT unset, the bridge and the faust child both use 9877", async (t) => {
+  const { client, logPath } = await start(t, "normal", { FUSION_MCP_PORT: "" });
+  const status = await client.callTool({ name: "fusion_mcp_status", arguments: {} });
+  assert.equal(status.structuredContent.configured, true);
+  assert.equal(events(logPath).find((event) => event.event === "spawn").fusionPort, "9877");
 });
 
 test("an export Fusion wrote somewhere else publishes nothing", async (t) => {

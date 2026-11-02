@@ -1,7 +1,7 @@
 /**
  * Autodesk Fusion through faust-machines/fusion360-mcp-server (PRD §8.9).
  *
- * MCP client (this) ─stdio─▶ fusion360-mcp-server ─TCP localhost:9876─▶ the
+ * MCP client (this) ─stdio─▶ fusion360-mcp-server ─TCP localhost:9877─▶ the
  * Fusion360MCP add-in ─▶ Fusion's main thread. Configured like Blender, with
  * trusted FUSION_MCP_COMMAND / FUSION_MCP_ARGS, but the stdio session is kept
  * for the life of this server, because a design pass makes many calls and each
@@ -19,12 +19,14 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import { promisify } from "node:util";
-import { regularStl } from "./blender-mcp-bridge.js";
+import { stlMetadata } from "./blender-mcp-bridge.js";
 
 const execFileAsync = promisify(execFile);
 
 /** The faust-machines commit the setup installs; move it only after the PRD §8.9 acceptance check passes. */
 export const FUSION_MCP_PIN = "19b9f1e95192";
+/** PRD §8.9: Blender's MCP add-on holds the add-in's own default, 9876, so Counterpart's Fusion uses 9877. */
+export const FUSION_ADDIN_DEFAULT_PORT = 9877;
 export const FUSION_MCP_DEFAULT_ARGS = Object.freeze([
   "--from", `git+https://github.com/faust-machines/fusion360-mcp-server@${FUSION_MCP_PIN}`,
   "fusion360-mcp-server", "--mode", "socket",
@@ -68,8 +70,8 @@ export function fusionLaunchArguments(port: number): string[] {
 export const defaultFusionSystem: FusionSystem = {
   platform: process.platform,
   /**
-   * An open port is not enough: Blender's MCP add-on also defaults to
-   * localhost:9876. The add-in speaks newline-delimited JSON
+   * An open port is not enough: Blender's MCP add-on defaults to
+   * localhost:9876, the add-in's own default. The add-in speaks newline-delimited JSON
    * (addon/server/socket_server.py) and answers {"type":"ping"} with
    * {"status":"success","result":{"pong":true}} without touching Fusion's API;
    * Blender's add-on answers an unknown command with an error.
@@ -156,8 +158,8 @@ function configuration(): { command: string; args: string[] } {
 /** Where the add-in listens: faust reads FUSION_MCP_HOST and FUSION_MCP_PORT too. */
 function addinAddress(): { host: string; port: number } {
   const host = process.env.FUSION_MCP_HOST?.trim() || "localhost";
-  const port = Number(process.env.FUSION_MCP_PORT?.trim() || "9876");
-  return { host, port: Number.isInteger(port) && port > 0 && port < 65536 ? port : 9876 };
+  const port = Number(process.env.FUSION_MCP_PORT?.trim() || FUSION_ADDIN_DEFAULT_PORT);
+  return { host, port: Number.isInteger(port) && port > 0 && port < 65536 ? port : FUSION_ADDIN_DEFAULT_PORT };
 }
 
 function fusionEnvironment(): Record<string, string> {
@@ -166,6 +168,8 @@ function fusionEnvironment(): Record<string, string> {
   for (const [key, value] of Object.entries(process.env)) {
     if (key.startsWith("FUSION_") && value !== undefined && key !== "FUSION_MCP_COMMAND" && key !== "FUSION_MCP_ARGS") env[key] = value;
   }
+  // faust defaults to 9876 (src/fusion360_mcp/connection.py), so it is told the port this bridge probes and launches with.
+  env.FUSION_MCP_PORT = String(addinAddress().port);
   return env;
 }
 
@@ -200,9 +204,24 @@ new_design = adsk.fusion.Design.cast(doc.products.itemByProductType("DesignProdu
 new_design.designType = adsk.fusion.DesignTypes.ParametricDesignType
 json.dumps({"document": doc.name, "parametric": new_design.designType == adsk.fusion.DesignTypes.ParametricDesignType})`;
 
+// Every body in every component, with its bounding box in Fusion's internal centimetres;
+// the bridge exports only visible solid ones.
 const BODIES_CODE = `# BAMBU_FUSION bodies
 import json
-json.dumps([b.name for b in component.bRepBodies] + [b.name for o in component.allOccurrences for b in o.bRepBodies])`;
+json.dumps([{"name": b.name, "solid": b.isSolid, "visible": b.isVisible, "size_cm": [bb.maxPoint.x - bb.minPoint.x, bb.maxPoint.y - bb.minPoint.y, bb.maxPoint.z - bb.minPoint.z]} for c in design.allComponents for b in c.bRepBodies for bb in [b.boundingBox]])`;
+
+type FusionBody = { name: string; size_cm: [number, number, number] };
+
+function visibleSolidBodies(value: unknown): FusionBody[] {
+  if (!Array.isArray(value)) throw new FusionError("Fusion returned an unreadable body list.");
+  return value.flatMap((entry: any) => {
+    const size = entry?.size_cm;
+    if (typeof entry?.name !== "string" || !Array.isArray(size) || size.length !== 3 || size.some((part: unknown) => typeof part !== "number" || !Number.isFinite(part) || part < 0)) {
+      throw new FusionError("Fusion returned an unreadable body list.");
+    }
+    return entry.solid === true && entry.visible === true ? [{ name: entry.name, size_cm: size as [number, number, number] }] : [];
+  });
+}
 
 // The fields faust's get_parameters reports, as JSON instead of its Python-repr text.
 const PARAMETERS_CODE = `# BAMBU_FUSION parameters
@@ -214,7 +233,7 @@ export const FUSION_STATUS_OUTPUT_SCHEMA = {
   properties: {
     configured: { type: "boolean", description: "FUSION_MCP_COMMAND is set." },
     connected: { type: "boolean", description: "The Fusion MCP server started and the add-in answered its ping." },
-    addinReachable: { type: "boolean", description: "The Fusion360MCP add-in answered a ping on FUSION_MCP_HOST:FUSION_MCP_PORT (default localhost:9876) within 2 s. Another program on that port, such as Blender's MCP add-on, does not count." },
+    addinReachable: { type: "boolean", description: "The Fusion360MCP add-in answered a ping on FUSION_MCP_HOST:FUSION_MCP_PORT (default localhost:9877) within 2 s. Another program on that port, such as Blender's MCP add-on, does not count." },
     fusionRunning: { type: "boolean" },
     tools: { type: "array", items: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
     launched: { type: "boolean", description: "This call started Fusion." },
@@ -250,6 +269,10 @@ export const FUSION_EXPORT_OUTPUT_SCHEMA = {
     triangles: { type: "integer", minimum: 1 },
     bytes: { type: "integer", minimum: 1 },
     parameterCount: { type: "integer", minimum: 0 },
+    boundingBox: { type: "object", description: "Measured from the written STL, in its own units: min, max and dimensions." },
+    stlUnits: { type: "string", enum: ["mm", "cm", "unknown"], description: "The STL's units, from its size against the Fusion body's." },
+    fusionSizeMm: { type: "array", items: { type: "number" }, description: "The Fusion body's bounding-box size in mm." },
+    warnings: { type: "array", items: { type: "string" } },
   },
   required: ["status", "stl", "f3d", "parameters", "body", "triangles", "parameterCount"],
 };
@@ -462,21 +485,32 @@ export class FusionMcpBridge {
     const staged = { stl: path.join(directory, `.fusion-${id}.stl`), f3d: path.join(directory, `.fusion-${id}.f3d`), parameters: path.join(directory, `.fusion-${id}.parameters.json`) };
     try {
       const exported = await this.request({ timeout, signal }, async (live, options, dispatched) => {
-        let body = bodyName;
+        // Hidden and surface bodies are never chosen: only what would print.
+        const bodies = visibleSolidBodies(codeJson(await this.must(live, options, dispatched, "execute_code", { code: BODIES_CODE })));
+        const names = bodies.map(entry => entry.name);
+        const body = bodyName ? bodies.find(entry => entry.name === bodyName) : bodies.length === 1 ? bodies[0] : undefined;
         if (!body) {
-          const bodies = codeJson(await this.must(live, options, dispatched, "execute_code", { code: BODIES_CODE }));
-          if (!Array.isArray(bodies) || bodies.some(entry => typeof entry !== "string")) throw new FusionError("Fusion returned an unreadable body list.");
-          if (bodies.length !== 1) throw new FusionError(bodies.length ? `The design has ${bodies.length} bodies (${bodies.slice(0, 20).join(", ")}); pass body_name to choose the one to export.` : "The design has no bodies to export.");
-          body = bodies[0];
+          if (bodyName) throw new FusionError(`No visible solid body named "${bodyName}". Visible solid bodies: ${names.slice(0, 20).join(", ") || "none"}.`);
+          throw new FusionError(bodies.length
+            ? `The design has ${bodies.length} visible solid bodies (${names.slice(0, 20).join(", ")}); pass body_name to choose the one to export.`
+            : "The design has no visible solid body to export.");
         }
-        await this.must(live, options, dispatched, "export_stl", { body_name: body, file_path: staged.stl });
+        if (names.filter(entry => entry === body.name).length > 1) throw new FusionError(`Several visible solid bodies are named "${body.name}"; rename them in Fusion so the export is unambiguous.`);
+        await this.must(live, options, dispatched, "export_stl", { body_name: body.name, file_path: staged.stl });
         await this.must(live, options, dispatched, "export_f3d", { file_path: staged.f3d });
         const parameters = codeJson(await this.must(live, options, dispatched, "execute_code", { code: PARAMETERS_CODE })) as { parameters?: unknown; count?: unknown };
         if (!parameters || !Array.isArray(parameters.parameters)) throw new FusionError("Fusion returned unreadable parameters.");
         return { body, parameters };
       });
       // Fusion writes the files itself, so it must share this filesystem (FUSION_MCP_HOST on another machine cannot export here).
-      const mesh = await regularStl(staged.stl).catch(() => { throw new FusionError("Fusion did not write a valid STL here. Fusion and this server must share the filesystem."); });
+      const mesh = await stlMetadata(staged.stl).catch(() => { throw new FusionError("Fusion did not write a valid STL here. Fusion and this server must share the filesystem."); });
+      // Fusion measures in centimetres; the STL's own numbers show which unit it was written in.
+      const largestCm = Math.max(...exported.body.size_cm);
+      const ratio = largestCm > 0 ? Math.max(...mesh.bounding_box.dimensions) / largestCm : NaN;
+      const stlUnits = Math.abs(ratio - 10) < 0.5 ? "mm" : Math.abs(ratio - 1) < 0.05 ? "cm" : "unknown";
+      const warnings: string[] = [];
+      if (stlUnits === "cm") warnings.push("The STL is in centimetres; slicers read STL numbers as millimetres. Scale it by 10 before slicing.");
+      if (stlUnits === "unknown") warnings.push("The STL's size does not match the Fusion body's size in mm or cm; check it before slicing.");
       const archive = await fs.lstat(staged.f3d).catch(() => undefined);
       if (!archive?.isFile() || archive.size === 0) throw new FusionError("Fusion did not write the F3D archive here. Fusion and this server must share the filesystem.");
       await fs.writeFile(staged.parameters, `${JSON.stringify(exported.parameters, null, 2)}\n`, { flag: "wx" });
@@ -493,9 +527,12 @@ export class FusionMcpBridge {
         throw error;
       }
       return {
-        status: "exported", ...outputs, body: exported.body,
+        status: "exported", ...outputs, body: exported.body.name,
         triangles: mesh.triangles, bytes: mesh.bytes,
         parameterCount: (exported.parameters.parameters as unknown[]).length,
+        boundingBox: mesh.bounding_box, stlUnits,
+        fusionSizeMm: exported.body.size_cm.map(value => Math.round(value * 10 * 1e4) / 1e4),
+        ...(warnings.length ? { warnings } : {}),
       };
     } finally {
       for (const file of Object.values(staged)) await fs.rm(file, { force: true }).catch(() => {});

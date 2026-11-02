@@ -16,6 +16,8 @@ export declare function tableText(table: Readonly<Record<string, HmsText>>, code
 export declare function stageWords(raw: Record<string, any>): string | undefined;
 /** print_error and hms[] as problems, in report order, without duplicates. */
 export declare function bambuProblems(raw: Record<string, any>, serial: string, model: string): Problem[];
+/** A printer file path's basename (the jobName raw G-code prints return), as KAN-216 reads it. */
+export declare function remoteJobName(value: unknown): string | undefined;
 /** One merged MQTT report and the time it arrived → counterpart/1 progress. */
 export declare function bambuProgress(raw: Record<string, any>, options: {
     receivedAt: number;

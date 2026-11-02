@@ -72,7 +72,9 @@ test("job id is the reported task id unless it is the LAN placeholder 0; idle an
   assert.equal(progress({ gcode_state: "RUNNING", subtask_name: "a", task_id: "0" }).job.id, undefined);
   assert.equal(progress({ gcode_state: "RUNNING", subtask_name: "a", task_id: "1793576906" }).job.id, "1793576906");
   assert.equal(progress({ gcode_state: "RUNNING", subtask_name: "a", task_id: 987 }).job.id, "987");
-  assert.equal(progress({ gcode_state: "RUNNING", subtask_name: "", gcode_file: "cache/a.3mf" }).job.name, "cache/a.3mf");
+  // A raw G-code print reports only its file path; job.name is its basename, the jobName the print returned.
+  assert.equal(progress({ gcode_state: "RUNNING", subtask_name: "", gcode_file: "cache/a.3mf" }).job.name, "a.3mf");
+  assert.equal(progress({ gcode_state: "RUNNING", gcode_file: "/sdcard/cache/checked-1-job.gcode" }).job.name, "checked-1-job.gcode");
   assert.equal(progress({ gcode_state: "RUNNING" }).job, undefined);
   assert.equal(progress({ gcode_state: "IDLE", subtask_name: "last job" }).job, undefined);
   assert.equal(progress({ gcode_state: "INIT", subtask_name: "last job" }).job, undefined);

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { isFinishedP1SJob, isCancelledX2DJob, readFreshPrinterStatus } from "../safety/printer-state.js";
 import fs from "node:fs/promises";
-import { readFileSync, existsSync } from "node:fs";
+import { createReadStream, readFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { Readable } from "node:stream";
@@ -233,7 +233,9 @@ function ftpsSecureOptions(host) {
     return opts;
 }
 class BambuClientStore {
-    constructor() {
+    /** Sees every merged report, so a resume record notices a job ending even when nobody polls. */
+    constructor(onReport) {
+        this.onReport = onReport;
         this.printers = new Map();
         this.initialConnectionPromises = new Map();
         this.reportSnapshots = new Map();
@@ -271,6 +273,15 @@ class BambuClientStore {
         this.reportSnapshots.set(key, { ...previous, ...update });
         this.reportTimes.set(key, Date.now());
         this.resolveInitialReport(key);
+    }
+    reportObserved(host, serial, key) {
+        const report = this.reportSnapshots.get(key);
+        if (!report || !this.onReport)
+            return;
+        try {
+            this.onReport(host, serial, report);
+        }
+        catch { /* an observer never breaks report handling */ }
     }
     clearPrinterState(key) {
         this.printers.delete(key);
@@ -356,6 +367,7 @@ class BambuClientStore {
                 const printMessage = parsed?.print;
                 if (printMessage && typeof printMessage === "object") {
                     this.updateReportSnapshot(key, printMessage);
+                    this.reportObserved(host, serial, key);
                 }
             }
             catch {
@@ -364,6 +376,7 @@ class BambuClientStore {
         });
         printer.on("printer:dataUpdate", (data) => {
             this.updateReportSnapshot(key, data);
+            this.reportObserved(host, serial, key);
         });
         printer.on("client:connect", () => {
             this.printers.set(key, printer);
@@ -418,6 +431,31 @@ class BambuClientStore {
 function printJobIdentity(raw) {
     return JSON.stringify([raw.gcode_file, raw.subtask_name, raw.task_id, raw.subtask_id, raw.job_id]);
 }
+const ACTIVE_JOB_STATES = new Set(["PREPARE", "SLICING", "RUNNING", "PAUSE"]);
+/** Reports after which a started job can no longer be resumed. */
+const ENDED_JOB_STATES = new Set(["FINISH", "FAILED", "IDLE"]);
+const jobStem = (value) => path.posix.basename(value.replace(/\\/g, "/")).replace(/(?:\.gcode)?\.3mf$|\.gcode$/i, "");
+const reportedJobNames = (raw) => [raw.gcode_file, raw.subtask_name].filter((value) => typeof value === "string" && value.trim() !== "");
+/** Whether a report names the job stored at remotePath (subtask_name for projects, gcode_file for raw G-code). */
+function reportsJob(raw, remotePath) {
+    return reportedJobNames(raw).some(value => jobStem(value) === jobStem(remotePath));
+}
+/** What a resume needs to know about a started file: its bytes, limits and used materials. */
+export function checkedFile(inspection) {
+    const used = inspection.usedFilamentPositions.map(position => inspection.materials[position]).filter(Boolean);
+    return {
+        sha256: inspection.sha256, model: inspection.model,
+        maxNozzleTemperature: inspection.maxNozzleTemperature, maxBedTemperature: inspection.maxBedTemperature, maxChamberTemperature: inspection.maxChamberTemperature,
+        materials: [...new Set(used.length ? used : inspection.materials)],
+    };
+}
+/** The name counterpart_print_progress reports for the job: subtask_name, else the G-code file's basename. */
+function reportedJobName(raw) {
+    const subtask = typeof raw.subtask_name === "string" ? raw.subtask_name.trim() : "";
+    if (subtask)
+        return subtask;
+    return typeof raw.gcode_file === "string" ? path.posix.basename(raw.gcode_file.replace(/\\/g, "/").replace(/^\d+:/, "")) || undefined : undefined;
+}
 /**
  * Split the A1/P1 camera stream on port 6000 into JPEG frames. Each frame is
  * a 16-byte header (payload size LE, itrack, flags, reserved) and the JPEG.
@@ -452,11 +490,16 @@ export function cameraFrameParser(onFrame, onError) {
 export class BambuImplementation {
     constructor(confirm) {
         this.confirm = confirm;
+        /**
+         * The job each printer may resume, keyed host and serial. Cancel, a report
+         * that it ended after it was seen running, or another job seen in its place
+         * retires it, so a later job that reuses the name is never resumed.
+         */
         this.checkedJobs = new Map();
         /** In-flight counterpart_print_progress reads, one per printer. */
         this.progressReads = new Map();
         this.clearedErrors = new Map();
-        this.printerStore = new BambuClientStore();
+        this.printerStore = new BambuClientStore((host, serial, report) => this.observeReport(host, serial, report));
     }
     async confirmHardwareAction(message, physicalCheck = false) {
         if (!physicalCheck && process.env.BAMBU_REQUIRE_CONFIRMATION === "0")
@@ -515,10 +558,35 @@ export class BambuImplementation {
     async getPrinter(host, serial, token) {
         return this.printerStore.getPrinter(host, serial, token);
     }
-    /** Internal handoff from a successful inspected transport; never exposed as an MCP tool. */
-    recordCheckedJob(host, serial, remotePath, requirements) {
-        this.checkedJobs.set(`${host}\n${serial}`, { remotePath, requirements: structuredClone(requirements) });
+    /**
+     * Internal handoff from a successful inspected transport; never exposed as
+     * an MCP tool. uploadedHere is false for the plug-in routes, where Bambu's
+     * plug-in or cloud put the file on the printer at a path this server has not
+     * verified: a resume then re-reads it if it can and otherwise matches the
+     * unique name, as KAN-216 does for firmware that cannot download a file.
+     */
+    recordCheckedJob(host, serial, remotePath, requirements, file, uploadedHere = true) {
+        if (!/^[a-f0-9]{64}$/.test(file?.sha256 ?? ""))
+            throw new Error("A started job needs the SHA-256 of its inspected bytes.");
+        this.checkedJobs.set(`${host}\n${serial}`, {
+            ...structuredClone(file), remotePath, requirements: structuredClone(requirements), seenRunning: false, uploadedHere,
+        });
         this.clearedErrors.delete(serial);
+    }
+    /** Feed one merged report to the resume record (internal; the client store calls it for every report). */
+    observeReport(host, serial, raw) {
+        const key = `${host}\n${serial}`;
+        const checked = this.checkedJobs.get(key);
+        if (!checked || !raw || typeof raw.gcode_state !== "string")
+            return;
+        const state = raw.gcode_state.toUpperCase();
+        if (ACTIVE_JOB_STATES.has(state) && reportsJob(raw, checked.remotePath)) {
+            checked.seenRunning = true;
+            return;
+        }
+        if (checked.seenRunning && (ENDED_JOB_STATES.has(state) || (ACTIVE_JOB_STATES.has(state) && reportedJobNames(raw).length > 0))) {
+            this.checkedJobs.delete(key);
+        }
     }
     validateLoadedGcodeState(status, inspection) {
         const usedMaterials = inspection.usedFilamentPositions.map(position => inspection.materials[position]);
@@ -883,7 +951,7 @@ export class BambuImplementation {
                 watcher.dispose();
                 throw error;
             }
-            this.recordCheckedJob(host, serial, remoteProjectPath, requirements);
+            this.recordCheckedJob(host, serial, remoteProjectPath, requirements, checkedFile(inspection));
             const dispatch = await watcher.settled();
             return {
                 status: "success", dispatch, remoteProjectPath,
@@ -964,7 +1032,7 @@ export class BambuImplementation {
             watcher.dispose();
             throw error;
         }
-        this.recordCheckedJob(host, serial, remoteProjectPath, requirements);
+        this.recordCheckedJob(host, serial, remoteProjectPath, requirements, checkedFile(inspection));
         await new Promise((resolve) => setTimeout(resolve, 300));
         const dispatch = await watcher.settled();
         return {
@@ -1056,32 +1124,83 @@ export class BambuImplementation {
             throw new Error(`Failed to pause print: ${error.message}`);
         }
     }
+    /**
+     * Resume reheats and moves the printer, so it is gated like a print start:
+     * only the job this server inspected and started, while a fresh report shows
+     * it paused, with its bytes re-read over FTPS and compared, and after human
+     * confirmation (unless BAMBU_REQUIRE_CONFIRMATION=0). The record must still
+     * be current at every check, including the native helper's last one.
+     */
     async resumeJob(host, serial, token, dispatch) {
         return withPrinterOperation(host, serial, async (assertActive) => {
-            const checked = this.checkedJobs.get(`${host}\n${serial}`);
+            const key = `${host}\n${serial}`;
+            const checked = this.checkedJobs.get(key);
             if (!checked)
                 throw new Error("Resume requires a job inspected and started by this server instance. Verify other jobs on the printer before resuming them there.");
-            const beforeDispatch = async () => {
+            let jobName = path.posix.basename(checked.remotePath);
+            const pausedJob = async () => {
                 assertActive();
                 const status = await this.getSafetyStatus(host, serial, token);
+                this.observeReport(host, serial, status.raw);
+                if (this.checkedJobs.get(key) !== checked) {
+                    throw new Error(`${jobName} is no longer the job this server started: it was cancelled, it ended, or another job took its place. Nothing was sent; check the printer and resume it there.`);
+                }
                 validatePrinterState(status, { ...checked.requirements, requireIdle: false });
                 if (status.raw.gcode_state !== "PAUSE")
                     throw new Error("Resume requires a freshly reported paused job.");
-                const stem = (value) => path.posix.basename(value).replace(/(?:\.gcode)?\.3mf$|\.gcode$/i, "");
-                const names = [status.raw.gcode_file, status.raw.subtask_name].filter(value => typeof value === "string");
-                if (!names.some(value => stem(value) === stem(checked.remotePath)))
+                if (!reportsJob(status.raw, checked.remotePath))
                     throw new Error("Paused job identity does not match this server's inspected artifact.");
+                jobName = reportedJobName(status.raw) ?? jobName;
                 assertActive();
             };
-            await beforeDispatch();
+            await pausedJob();
+            let sha256;
+            let unread;
+            try {
+                sha256 = await this.remoteSha256(host, token, checked.remotePath);
+            }
+            catch (error) {
+                unread = error.message;
+                if (checked.uploadedHere) {
+                    throw new Error(`Could not re-read ${jobName} from the printer over FTPS to confirm it is the inspected file (${unread}). Nothing was sent; resume it at the printer.`);
+                }
+            }
+            if (sha256 !== undefined && sha256 !== checked.sha256) {
+                if (this.checkedJobs.get(key) === checked)
+                    this.checkedJobs.delete(key);
+                throw new Error(`${jobName} on the printer is no longer the file this server inspected (SHA-256 changed). Nothing was sent, and this job can no longer be resumed from here.`);
+            }
+            const bytesVerified = sha256 !== undefined;
+            assertActive();
+            await this.confirmHardwareAction(`Resume ${jobName} on ${checked.model.toUpperCase()} (${serial})? It reheats to its targets (peak nozzle ${checked.maxNozzleTemperature}°C, ` +
+                `bed ${checked.maxBedTemperature}°C, chamber ${checked.maxChamberTemperature}°C) and moves. Materials: ${checked.materials.length ? checked.materials.join(", ") : "none declared"}. ` +
+                `File SHA-256: ${checked.sha256}${bytesVerified ? " (re-read from the printer)" : ` (Bambu's plug-in placed the file, and it could not be re-read over FTPS: ${unread}; matched by its unique name)`}. ` +
+                "Confirm the nozzle path is clear and the filament is still loaded.");
+            // The job may have been resumed, stopped or replaced at the printer while the prompt was open.
+            await pausedJob();
             const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
             assertActive();
             if (dispatch)
-                await dispatch(assertActive, beforeDispatch);
+                await dispatch(assertActive, pausedJob);
             else
                 await invokeWithoutAck(printer, new UpdateStateCommand({ state: "resume" }));
-            return { status: "success", message: "Resume command sent successfully." };
+            return { status: "success", message: `Resume command sent for ${jobName}.`, jobName, bytesVerified };
         });
+    }
+    /** SHA-256 of a printer file, streamed from an FTPS download into a private directory. */
+    async remoteSha256(host, token, remotePath) {
+        const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-resume-check-"));
+        try {
+            const localPath = path.join(directory, "job");
+            await this.ftpDownload(host, token, remotePath, localPath);
+            const hash = createHash("sha256");
+            for await (const chunk of createReadStream(localPath))
+                hash.update(chunk);
+            return hash.digest("hex");
+        }
+        finally {
+            await fs.rm(directory, { recursive: true, force: true });
+        }
     }
     async clearHmsErrors(host, serial, token, dispatch) {
         return withPrinterOperation(host, serial, async (assertActive) => {
@@ -1467,10 +1586,12 @@ export class BambuImplementation {
             watcher.dispose();
             throw error;
         }
-        this.recordCheckedJob(host, serial, remotePath, requirements);
+        this.recordCheckedJob(host, serial, remotePath, requirements, checkedFile(inspection));
         const dispatch = await watcher.settled();
         return {
             status: "success", uploaded: true, printRequested: true, dispatch, remotePath,
+            // counterpart_print_progress reports this as job.name (the printer reports no subtask_name for raw G-code).
+            jobName: path.posix.basename(remotePath),
             message: dispatch === "started"
                 ? `The printer accepted and started ${remotePath}.`
                 : `Sent the print command for ${remotePath}; the printer has not reported starting yet. Check get_printer_status before assuming it is printing.`,

@@ -737,7 +737,16 @@ Pause the currently running print job. Sends an `UpdateState` MQTT command with 
 
 #### resume_print
 
-Resume a paused print job. Sends an `UpdateState` MQTT command with `state: "resume"`.
+Resume a paused print job that this server inspected and started. Resume reheats and moves the printer, so it is checked like a print start:
+
+1. A fresh report must show that job paused, with the inspected nozzle and filament still in place.
+2. The server downloads the job's file from the printer over FTPS and compares its SHA-256 with the inspected bytes. A different file refuses the resume, and the job can no longer be resumed from here.
+3. A person confirms through MCP elicitation: the prompt names the job, its peak temperatures, materials and SHA-256. `BAMBU_REQUIRE_CONFIRMATION=0` skips this prompt, as it does for print and heating prompts.
+4. The printer is read again after the prompt, and on X2D and H2 the native helper rechecks it once more right before sending. Only then does the server send `UpdateState` with `state: "resume"`.
+
+The server keeps one resume record per printer. Cancelling the job ends it, and so does a report that the job finished, failed or went idle after it was seen running, or another job seen in its place. A later job with the same name, such as the same file reprinted from the touchscreen, is never resumed. The server watches every MQTT report it receives, not just its own reads. It doesn't see reports while its MQTT session is disconnected.
+
+The result is `{status, message, jobName, bytesVerified}`, where `jobName` is the name `counterpart_print_progress` reports. On the BambuNetwork and X2D native routes, Bambu's plug-in puts the file on the printer, so its FTPS path isn't verified. If the file can't be read back there, the resume matches the job by its unique name and returns `bytesVerified: false`, and the prompt says so. On every other route, a file that can't be re-read refuses the resume.
 
 ```json
 {
@@ -1050,7 +1059,7 @@ If the project does not match those assumptions, the tool fails fast with a stru
 - **`counterpart_printer_info`** returns `{contract, server: {name, version}, printer: {kind: "bambu", model, serial, host}, capabilities}`. `capabilities` lists progress, layers, the camera transport (`bambu-tcp` for A1/P1, `rtsp` for X1, P2S, H2 and X2D, `none` without a model), `filaments: "ams"`, pause, resume, cancel, `print3mf` and `gcode` (false on X2D). It sends nothing to the printer and never returns the access code.
 - **`counterpart_print_progress`** returns `{contract, observedAt, state, job?, temps?, activeFilament?, problems}` from the printer's MQTT reports, which this server keeps while it is connected. A held session is answered from that cache without any printer traffic, and `observedAt` is when the printer sent the report. The server asks the printer for a full report only to fill an empty cache, and at most once every five minutes after the printer has been quiet that long. A printer that sends no report within 8 seconds is `offline`.
   - `state`: `IDLE` is `idle`, `PREPARE`/`SLICING` `preparing`, `RUNNING` `printing`, `PAUSE` `paused`, `FINISH` `finished` and `FAILED` `failed`. A `FAILED` job with `0300400C` ("The task was canceled.") in `print_error`, or in X2D's `fail_reason`, is `cancelled`. Any other or missing `gcode_state` on a connected printer is `busy`.
-  - `job` (not for idle, busy or offline): `name` is `subtask_name` (else `gcode_file`); `id` is `task_id`, omitted when it is the LAN placeholder `"0"`; `progress` is `mc_percent`; `remainingSec` is `mc_remaining_time` (minutes) × 60; `layer`/`totalLayers` appear once the printer reports a total; `stage` is Bambu Studio's words for `stg_cur` ("Heatbed preheating", "Auto bed leveling").
+  - `job` (not for idle, busy or offline): `name` is `subtask_name`, else the basename of `gcode_file` (a raw G-code print reports only its file path; that basename is the `jobName` the print returns); `id` is `task_id`, omitted when it is the LAN placeholder `"0"`; `progress` is `mc_percent`; `remainingSec` is `mc_remaining_time` (minutes) × 60; `layer`/`totalLayers` appear once the printer reports a total; `stage` is Bambu Studio's words for `stg_cur` ("Heatbed preheating", "Auto bed leveling").
   - `temps`: nozzle and bed `{actual, target}`, and `chamber` from the H2 chamber controller or the X1 sensor. On H2 and X2D the nozzle is the active extruder's, from `device.extruder`. P1 and A1 printers have no chamber sensor, so it is omitted.
   - `activeFilament`: the loaded spool's `material` and `#RRGGBB` `color`. `slot` is the index `ams_slots` uses: `amsId × 4 + tray` for an AMS, the unit id (128 and up) for an AMS-HT, and `"ext"` for the external spool, or `"254"` (left) / `"255"` (right) on dual-nozzle H2D, H2C and X2D. On H2 and X2D it comes from the active extruder's report.
   - `problems`: a non-zero `print_error` as 8 hex digits, such as `07008011`, and each HMS entry as `AAAA_BBBB_CCCC_DDDD`, such as `0300_1800_0001_0003`. Severity follows Bambu's HMS level: fatal is `fatal`, serious `error`, common `warning` and info `info`. Each HMS problem links to Bambu's page for that code. Messages come from the English HMS tables bundled with the pinned Bambu Studio release; `scripts/generate-hms-messages.mjs` turns them into `src/safety/hms-messages.ts` and the stage words into `src/printers/bambu-stages.ts`. A model without its own table, such as the P1S, gets the text the other tables share. Codes that Bambu lists for a printer without text are reported as `info`.
@@ -1269,7 +1278,7 @@ configuration is an error when execution is requested. Per-call legacy
 
 Design a part from scratch in Autodesk Fusion through
 [faust-machines/fusion360-mcp-server](https://github.com/faust-machines/fusion360-mcp-server)
-(MIT). It is a stdio MCP server that talks TCP on `localhost:9876` to its
+(MIT). It is a stdio MCP server that talks TCP on `localhost:9877` here to its
 `Fusion360MCP` add-in inside Fusion. Fusion and its licence, including Autodesk's
 free personal-use licence, are yours: this server never installs or requires
 Fusion, and printer tools work without it.
@@ -1284,7 +1293,7 @@ FUSION_MCP_COMMAND=uvx
 FUSION_MCP_ARGS='["--from","git+https://github.com/faust-machines/fusion360-mcp-server@19b9f1e95192","fusion360-mcp-server","--mode","socket"]'
 FUSION_MCP_TIMEOUT_MS=180000
 FUSION_MCP_HOST=localhost
-# Blender's MCP add-on holds the add-in's default port, 9876.
+# The default here; Blender's MCP add-on holds the add-in's own default, 9876.
 FUSION_MCP_PORT=9877
 ```
 
@@ -1294,14 +1303,16 @@ the pinned arguments above. `FUSION_MCP_HOST` and `FUSION_MCP_PORT` reach the
 server; the child process gets only `FUSION_*` settings, never printer access
 codes.
 
-Set `FUSION_MCP_PORT=9877`, as Counterpart does. The add-in and the faust server
-both default to 9876, which Blender's MCP add-on also uses. While Blender holds
-that port the add-in can't listen there. The add-in reads `FUSION_MCP_PORT` from
-Fusion's environment, and Fusion started from the Dock or Finder gets none, so it
-falls back to 9876. `fusion_mcp_status` with `{"launch": true}` starts Fusion with
-`open -a "Autodesk Fusion" --env FUSION_MCP_PORT=<port>`. To start Fusion
-yourself, run the same command. If Fusion is already open on the default port,
-quit it first, because `--env` takes effect only when the app starts.
+The bridge uses port 9877 when `FUSION_MCP_PORT` is unset, as PRD §8.9 and
+Counterpart do. The add-in and the faust server default to 9876, which Blender's
+MCP add-on also uses, and while Blender holds that port the add-in can't listen
+there. The bridge passes the port to the faust server. The add-in reads
+`FUSION_MCP_PORT` from Fusion's environment, and Fusion started from the Dock or
+Finder gets none, so it falls back to 9876. `fusion_mcp_status` with
+`{"launch": true}` starts Fusion with `open -a "Autodesk Fusion" --env
+FUSION_MCP_PORT=<port>`. To start Fusion yourself, run the same command. If Fusion
+is already open on the default port, quit it first, because `--env` takes effect
+only when the app starts.
 
 1. `fusion_mcp_status` returns `{configured, connected, addinReachable, fusionRunning, tools[]}`,
    plus `launched`, `pin`, the server's `server` info and any `error`.
@@ -1323,13 +1334,21 @@ quit it first, because `--env` takes effect only when the app starts.
    until some design is open (faust issue #12). After Fusion starts at its Home
    tab, open any design once.
 4. `fusion_mcp_export` takes `{output_dir, name, body_name?}`. It writes
-   `<name>.stl` (`export_stl` of the design's body; pass `body_name` when there
-   are several), `<name>.f3d` (`export_f3d`) and `<name>.parameters.json` (the
-   user parameters, with the fields `get_parameters` reports) into an existing
-   directory, and returns their absolute paths. It writes all three or none,
-   never overwrites a file, and checks the STL is a finite triangle mesh. Fusion
-   writes the files itself, so it must run on this computer. Slice the STL like
-   any other model.
+   `<name>.stl` (`export_stl` of one visible solid body), `<name>.f3d`
+   (`export_f3d`) and `<name>.parameters.json` (the user parameters, with the
+   fields `get_parameters` reports) into an existing directory, and returns their
+   absolute paths. Hidden and surface bodies are never exported. Without
+   `body_name` the design must have exactly one visible solid body, and two
+   visible solid bodies with the same name are refused. It writes all three files
+   or none, never overwrites a file, and checks the STL is a finite triangle mesh.
+   The result also has:
+   - `boundingBox`: the STL's `{min, max, dimensions}` in its own units;
+   - `fusionSizeMm`: the body's size in Fusion, in mm;
+   - `stlUnits`: `mm`, `cm` or `unknown`, from comparing the two;
+   - `warnings`: present when the STL isn't in millimetres.
+
+   Fusion writes the files itself, so it must run on this computer. Slice the
+   STL like any other model.
 
 The stdio session stays open for the life of this server, so a design pass does
 not start a new `uvx` process and add-in connection for every call. A timeout,

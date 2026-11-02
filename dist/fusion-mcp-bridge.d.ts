@@ -1,6 +1,8 @@
 import { type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 /** The faust-machines commit the setup installs; move it only after the PRD §8.9 acceptance check passes. */
 export declare const FUSION_MCP_PIN = "19b9f1e95192";
+/** PRD §8.9: Blender's MCP add-on holds the add-in's own default, 9876, so Counterpart's Fusion uses 9877. */
+export declare const FUSION_ADDIN_DEFAULT_PORT = 9877;
 export declare const FUSION_MCP_DEFAULT_ARGS: readonly string[];
 type Arguments = Record<string, unknown>;
 /** The machine-facing seams: tests replace them with fakes. */
@@ -126,6 +128,28 @@ export declare const FUSION_EXPORT_OUTPUT_SCHEMA: {
         parameterCount: {
             type: string;
             minimum: number;
+        };
+        boundingBox: {
+            type: string;
+            description: string;
+        };
+        stlUnits: {
+            type: string;
+            enum: string[];
+            description: string;
+        };
+        fusionSizeMm: {
+            type: string;
+            items: {
+                type: string;
+            };
+            description: string;
+        };
+        warnings: {
+            type: string;
+            items: {
+                type: string;
+            };
         };
     };
     required: string[];

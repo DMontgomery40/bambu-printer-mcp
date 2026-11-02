@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
 import { test } from "node:test";
 import { BambuImplementation } from "../dist/printers/bambu.js";
 
@@ -62,22 +64,36 @@ test("heating rechecks the currently loaded spool material at helper dispatch", 
   assert.equal(sent, false);
 });
 
-for (const [label, changed, error] of [
-  ["job identity", { gcode_file: "cache/other.3mf" }, /identity|artifact/i],
-  ["nozzle", { nozzle_diameter: ["0.6", "0.4"] }, /nozzle|diameter/i],
-  ["paused state", { gcode_state: "RUNNING" }, /paused|PAUSE/i],
-]) test(`native resume rechecks ${label} at helper dispatch`, async t => {
-  const s = setup(t, { gcode_state: "PAUSE", gcode_file: "cache/checked.3mf" });
+/** A checked X2D job on the printer at cache/checked.3mf, whose bytes FTPS re-reads. */
+function checkedNativeJob(s) {
+  const bytes = Buffer.from("inspected 3mf bytes");
+  s.printer.ftpDownload = async (_host, _token, remote, destination) => {
+    assert.equal(remote, "cache/checked.3mf");
+    await fs.writeFile(destination, bytes);
+  };
   s.printer.recordCheckedJob(host, serial, "cache/checked.3mf", {
     model: "x2d", nozzleDiameters: [0.4, 0.4], materials: ["PLA"], usedFilamentPositions: [0], filamentNozzleIndices: [0], amsMapping: [255], useAMS: false,
-  });
+  }, { sha256: createHash("sha256").update(bytes).digest("hex"), model: "x2d", maxNozzleTemperature: 220, maxBedTemperature: 60, maxChamberTemperature: 0, materials: ["PLA"] });
+}
+
+for (const [label, change, error] of [
+  // Seen paused before, so another paused job also retires the record.
+  ["job identity", s => Object.assign(s.report, { gcode_file: "cache/other.3mf" }), /no longer the job/],
+  ["nozzle", s => Object.assign(s.report, { nozzle_diameter: ["0.6", "0.4"] }), /nozzle|diameter/i],
+  ["paused state", s => Object.assign(s.report, { gcode_state: "RUNNING" }), /paused|PAUSE/i],
+  // The job ended and the same file paused again between the post-prompt check and the helper's.
+  ["that the confirmed record is still current", s => s.printer.observeReport(host, serial, { gcode_state: "FINISH", gcode_file: "cache/checked.3mf" }), /no longer the job/],
+]) test(`native resume rechecks ${label} at helper dispatch`, async t => {
+  const s = setup(t, { gcode_state: "PAUSE", gcode_file: "cache/checked.3mf" });
+  checkedNativeJob(s);
   let sent = false;
   await assert.rejects(s.printer.resumeJob(host, serial, token, async (_active, beforeDispatch) => {
-    Object.assign(s.report, changed);
+    change(s);
     await beforeDispatch?.();
     sent = true;
   }), error);
   assert.equal(sent, false);
+  assert.equal(s.confirmations(), 1, "resume asked once, before the helper ran");
 });
 
 test("native error clearing rejects codes that changed after confirmation at helper dispatch", async t => {

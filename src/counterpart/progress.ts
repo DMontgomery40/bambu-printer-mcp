@@ -3,6 +3,7 @@
  * to the counterpart/1 result (PRD §8.4, Bambu row). Pure, so tests and the
  * tool share it. Display data only: never a safety decision.
  */
+import path from "node:path";
 import { BAMBU_STAGES } from "../printers/bambu-stages.js";
 import { HMS_MESSAGES, HMS_MESSAGES_SOURCE, PRINT_ERROR_MESSAGES, type HmsText } from "../safety/hms-messages.js";
 import { isDualNozzleModel, normalizeModel } from "../safety/limits.js";
@@ -197,9 +198,17 @@ function activeFilament(raw: Record<string, any>, model: string): PrintProgress[
   return described(String(trayNow), amsTray(raw, Math.floor(trayNow / 4), trayNow % 4));
 }
 
+/** A printer file path's basename (the jobName raw G-code prints return), as KAN-216 reads it. */
+export function remoteJobName(value: unknown): string | undefined {
+  const name = text(value);
+  if (!name) return undefined;
+  return path.posix.basename(name.replace(/\\/g, "/").replace(/^\d+:/, "")) || undefined;
+}
+
 function job(raw: Record<string, any>, state: PrintState): PrintProgress["job"] {
   if (state === "idle" || state === "busy" || state === "offline") return undefined;
-  const name = text(raw.subtask_name) ?? text(raw.gcode_file);
+  // subtask_name is the project name; a raw G-code print reports only its file path.
+  const name = text(raw.subtask_name) ?? remoteJobName(raw.gcode_file);
   if (!name) return undefined;
   const result: NonNullable<PrintProgress["job"]> = { name };
   // LAN prints on P1/X1/A1 report task_id "0"; that identifies no job.

@@ -27,7 +27,7 @@ function triangleStl() {
   stl.writeFloatLE(5, 124);
   return stl;
 }
-log({ event: "spawn", pid: process.pid, printerTokenPresent: Boolean(process.env.BAMBU_TOKEN), fusionHost: process.env.FUSION_MCP_HOST ?? null, commandPresent: Boolean(process.env.FUSION_MCP_COMMAND) });
+log({ event: "spawn", pid: process.pid, printerTokenPresent: Boolean(process.env.BAMBU_TOKEN), fusionHost: process.env.FUSION_MCP_HOST ?? null, fusionPort: process.env.FUSION_MCP_PORT ?? null, commandPresent: Boolean(process.env.FUSION_MCP_COMMAND) });
 const reader = readline.createInterface({ input: process.stdin });
 reader.on("line", (line) => {
   const request = JSON.parse(line);
@@ -45,7 +45,14 @@ reader.on("line", (line) => {
   if (name === "execute_code") {
     const marker = /^# BAMBU_FUSION (\w+)/.exec(args.code)?.[1];
     const result = marker === "new_design" ? { document: "Untitled", parametric: true }
-      : marker === "bodies" ? (mode === "multi-body" ? ["Bracket", "Insert"] : ["Bracket"])
+      // The fixture STL is a flat 10 x 10 x 0 triangle; Fusion reports centimetres. Hidden and surface bodies are never exported.
+      : marker === "bodies" ? [
+        { name: "Bracket", solid: true, visible: true, size_cm: mode === "cm-stl" ? [10, 10, 0] : [1, 1, 0] },
+        { name: "Hidden", solid: true, visible: false, size_cm: [2, 2, 2] },
+        { name: "Skin", solid: false, visible: true, size_cm: [3, 3, 0] },
+        ...(mode === "multi-body" ? [{ name: "Insert", solid: true, visible: true, size_cm: [1, 1, 0.5] }] : []),
+        ...(mode === "duplicate-body" ? [{ name: "Bracket", solid: true, visible: true, size_cm: [1, 1, 0.5] }] : []),
+      ]
       : marker === "parameters" ? { parameters: [{ name: "width", value: 4, expression: "40 mm", unit: "mm", comment: "it's \"wide\"\nreally" }], count: 1 }
       : "done";
     return ok(request.id, name, { executed: "True", result: typeof result === "string" ? result : JSON.stringify(result), output: "" });

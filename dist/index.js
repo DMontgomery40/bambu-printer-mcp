@@ -17,7 +17,7 @@ import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
 import { FUSION_CALL_OUTPUT_SCHEMA, FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFAULT_ARGS, FUSION_NEW_DESIGN_OUTPUT_SCHEMA, FUSION_STATUS_OUTPUT_SCHEMA, FusionMcpBridge } from "./fusion-mcp-bridge.js";
 import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue } from "./ams-mapping.js";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, parse3MF } from './3mf_parser.js';
-import { BambuImplementation, assertDirectPrintSupported } from "./printers/bambu.js";
+import { BambuImplementation, assertDirectPrintSupported, checkedFile } from "./printers/bambu.js";
 import { inspectPrintFile } from "./safety/print-file.js";
 import { SERIAL_MODELS, externalStorageState, validatePrinterState } from "./safety/printer-state.js";
 import { isDualNozzleModel } from "./safety/limits.js";
@@ -1340,7 +1340,7 @@ class BambuPrinterMCPServer {
                         assertActive();
                     } });
                 assertActive();
-                this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements);
+                this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements, checkedFile(inspection), false);
                 return { ...nativeResult, autoSliced, projectName, plateIndex, useAMS, amsMapping: mapping };
             }
             const bridgeOptions = {
@@ -1380,7 +1380,7 @@ class BambuPrinterMCPServer {
                     (reported ? ` Plug-in reported: ${reported}.` : ""));
             }
             assertActive();
-            this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements);
+            this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements, checkedFile(inspection), false);
             return {
                 status: "success",
                 message: `FULU BambuNetwork ${bridgePrintMethod} command for ${threeMfFilename} sent successfully.`,
@@ -2313,7 +2313,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "resume_print",
-                        description: "Resume a paused print job on the Bambu Lab printer",
+                        description: "Resume a paused job that this server inspected and started. It re-downloads the job's file over FTPS and compares its SHA-256, asks a person to confirm (unless BAMBU_REQUIRE_CONFIRMATION=0), and reads the printer again before sending. A job that was cancelled, ended or replaced is never resumed. Returns jobName and bytesVerified.",
                         inputSchema: {
                             type: "object",
                             properties: {

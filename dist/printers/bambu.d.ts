@@ -1,4 +1,4 @@
-import { inspectPrintFile } from "../safety/print-file.js";
+import { inspectPrintFile, type PrintFileInspection } from "../safety/print-file.js";
 import { type PrinterStateRequirements } from "../safety/printer-state.js";
 export declare function assertDirectPrintSupported(model: string | undefined, serial?: string): void;
 interface BambuPrintOptionsInternal {
@@ -31,6 +31,17 @@ export type ProgressReport = {
     raw: Record<string, any>;
     receivedAt: number;
 };
+/** The inspected bytes and limits of a started job, for the resume prompt and byte check. */
+export type CheckedFile = {
+    sha256: string;
+    model: string;
+    maxNozzleTemperature: number;
+    maxBedTemperature: number;
+    maxChamberTemperature: number;
+    materials: string[];
+};
+/** What a resume needs to know about a started file: its bytes, limits and used materials. */
+export declare function checkedFile(inspection: PrintFileInspection): CheckedFile;
 export type PrintPreflight = {
     finishedJob?: string;
     serial: string;
@@ -45,6 +56,11 @@ export declare function cameraFrameParser(onFrame: (jpeg: Buffer) => void, onErr
 export declare class BambuImplementation {
     private readonly confirm?;
     private printerStore;
+    /**
+     * The job each printer may resume, keyed host and serial. Cancel, a report
+     * that it ended after it was seen running, or another job seen in its place
+     * retires it, so a later job that reuses the name is never resumed.
+     */
     private checkedJobs;
     /** In-flight counterpart_print_progress reads, one per printer. */
     private progressReads;
@@ -60,8 +76,16 @@ export declare class BambuImplementation {
     /** Stop a print whose confirmed situation changed: a newly finished job, or a hidden HMS notice the preflight did not name. */
     assertPrintPreflight(status: any, preflight: PrintPreflight): void;
     private getPrinter;
-    /** Internal handoff from a successful inspected transport; never exposed as an MCP tool. */
-    recordCheckedJob(host: string, serial: string, remotePath: string, requirements: PrinterStateRequirements): void;
+    /**
+     * Internal handoff from a successful inspected transport; never exposed as
+     * an MCP tool. uploadedHere is false for the plug-in routes, where Bambu's
+     * plug-in or cloud put the file on the printer at a path this server has not
+     * verified: a resume then re-reads it if it can and otherwise matches the
+     * unique name, as KAN-216 does for firmware that cannot download a file.
+     */
+    recordCheckedJob(host: string, serial: string, remotePath: string, requirements: PrinterStateRequirements, file: CheckedFile, uploadedHere?: boolean): void;
+    /** Feed one merged report to the resume record (internal; the client store calls it for every report). */
+    observeReport(host: string, serial: string, raw: Record<string, any> | undefined): void;
     private validateLoadedGcodeState;
     private resolveProjectFileMetadata;
     /** Safety reads never use the display cache or configured-serial model inference. */
@@ -90,7 +114,16 @@ export declare class BambuImplementation {
     /** Raw MQTT heater-off; switching off needs no material or model declaration. */
     sendHeaterOffOverMqtt(host: string, serial: string, token: string, heater: "bed" | "nozzle", signal?: AbortSignal): Promise<any>;
     pauseJob(host: string, serial: string, token: string, dispatch?: () => Promise<any>): Promise<any>;
+    /**
+     * Resume reheats and moves the printer, so it is gated like a print start:
+     * only the job this server inspected and started, while a fresh report shows
+     * it paused, with its bytes re-read over FTPS and compared, and after human
+     * confirmation (unless BAMBU_REQUIRE_CONFIRMATION=0). The record must still
+     * be current at every check, including the native helper's last one.
+     */
     resumeJob(host: string, serial: string, token: string, dispatch?: (assertActive: () => void, beforeDispatch: () => Promise<void>) => Promise<any>): Promise<any>;
+    /** SHA-256 of a printer file, streamed from an FTPS download into a private directory. */
+    private remoteSha256;
     clearHmsErrors(host: string, serial: string, token: string, dispatch?: (assertActive: () => void, beforeDispatch: () => Promise<void>) => Promise<any>): Promise<any>;
     setPrintSpeed(host: string, serial: string, token: string, speedMode: string | number): Promise<any>;
     setAirductMode(host: string, serial: string, token: string, mode: string): Promise<any>;
@@ -144,6 +177,7 @@ export declare class BambuImplementation {
         printRequested: boolean;
         dispatch: "started" | "unconfirmed";
         remotePath: string;
+        jobName: string;
         message: string;
     }>;
     private printRawPrepared;
@@ -160,6 +194,7 @@ export declare class BambuImplementation {
         printRequested: boolean;
         dispatch: "started" | "unconfirmed";
         remotePath: string;
+        jobName: string;
         message: string;
     }>;
     private ftpDownload;
