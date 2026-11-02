@@ -14,6 +14,7 @@ import { BambuNetworkBridge, describeBambuNetworkPrintError } from "./bambu-netw
 import { assertBambuNativeAvailable, bambuNativeControlsAvailable, bambuNativeUnavailableReason, interruptNativeOperations, validateBambuNativeMetadata, buildBambuNativeFanCommand, buildBambuNativeTemperatureCommand, printWithBambuNative, sendCommandWithBambuNative, uploadWithBambuNative, } from "./bambu-native.js";
 import { importFileViaBambuConnect } from "./bambu-connect.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
+import { FUSION_CALL_OUTPUT_SCHEMA, FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFAULT_ARGS, FUSION_NEW_DESIGN_OUTPUT_SCHEMA, FUSION_STATUS_OUTPUT_SCHEMA, FusionMcpBridge } from "./fusion-mcp-bridge.js";
 import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue } from "./ams-mapping.js";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, parse3MF } from './3mf_parser.js';
 import { BambuImplementation, assertDirectPrintSupported } from "./printers/bambu.js";
@@ -66,7 +67,10 @@ const SERVER_INFO = {
     version: String(JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version),
 };
 /** Tools that declare an outputSchema: they always return structuredContent, and errors carry none. */
-const OUTPUT_SCHEMA_TOOLS = new Set(["counterpart_printer_info", "counterpart_print_progress", "counterpart_make_3mf"]);
+const OUTPUT_SCHEMA_TOOLS = new Set([
+    "counterpart_printer_info", "counterpart_print_progress", "counterpart_make_3mf",
+    "fusion_mcp_status", "fusion_mcp_call", "fusion_mcp_new_design", "fusion_mcp_export",
+]);
 /** Bound for each Linux X2D emergency MQTT send (BAMBU_EMERGENCY_MQTT_TIMEOUT_MS, 1–60000 ms). */
 function withEmergencyMqttTimeout(send) {
     const raw = Number(process.env.BAMBU_EMERGENCY_MQTT_TIMEOUT_MS?.trim() || 15000);
@@ -925,6 +929,7 @@ if (!fs.existsSync(TEMP_DIR)) {
 class BambuPrinterMCPServer {
     constructor() {
         this.blender = new BlenderMcpBridge();
+        this.fusion = new FusionMcpBridge();
         this.shuttingDown = false;
         this.confirmationTimeoutMs = parseConfirmationTimeout(process.env.BAMBU_CONFIRMATION_TIMEOUT_MS);
         this.runtimeConfig = readRuntimeConfig();
@@ -2769,6 +2774,62 @@ class BambuPrinterMCPServer {
                             additionalProperties: false
                         },
                         outputSchema: MAKE_3MF_OUTPUT_SCHEMA
+                    },
+                    {
+                        name: "fusion_mcp_status",
+                        description: `Check Autodesk Fusion through the configured Fusion MCP server (faust-machines/fusion360-mcp-server): whether it is configured, Fusion is running, the Fusion360MCP add-in answers on its port, and the server's tools and schemas. connected is true only when the add-in answers. With launch: true, starts Fusion on macOS when it is not running and waits up to 90 s for the add-in. Configure FUSION_MCP_COMMAND (uvx) and FUSION_MCP_ARGS (${JSON.stringify(FUSION_MCP_DEFAULT_ARGS)}).`,
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                launch: { type: "boolean", description: "Start Autodesk Fusion (open -a \"Autodesk Fusion\") when it is not running, then wait up to 90 s for the add-in." },
+                                timeout_ms: { type: "integer", minimum: 100, maximum: 600000, description: "Connection and discovery deadline in milliseconds; defaults to FUSION_MCP_TIMEOUT_MS or 180000." }
+                            },
+                            additionalProperties: false
+                        },
+                        outputSchema: FUSION_STATUS_OUTPUT_SCHEMA
+                    },
+                    {
+                        name: "fusion_mcp_call",
+                        description: "Call a discovered tool on the configured Fusion MCP server, such as create_sketch, extrude, fillet, create_parameter, set_parameter, check_interference or execute_code, preserving its full MCP content and errors. Discover tool schemas with fusion_mcp_status first. Calls change the open Fusion design and are never automatically retried. Most tools need an open design: call fusion_mcp_new_design first.",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                tool_name: { type: "string", description: "Exact tool name advertised by the Fusion MCP server." },
+                                arguments: { type: "object", description: "Arguments matching the remote tool's discovered input schema." },
+                                timeout_ms: { type: "integer", minimum: 100, maximum: 600000, description: "Total deadline in milliseconds; defaults to FUSION_MCP_TIMEOUT_MS or 180000." }
+                            },
+                            required: ["tool_name"],
+                            additionalProperties: false
+                        },
+                        outputSchema: FUSION_CALL_OUTPUT_SCHEMA
+                    },
+                    {
+                        name: "fusion_mcp_new_design",
+                        description: "Open a new parametric design document in Fusion (execute_code with app.documents.add(FusionDesignDocumentType)). The Fusion MCP tools work on the open design, so a design pass calls this first.",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                timeout_ms: { type: "integer", minimum: 100, maximum: 600000, description: "Total deadline in milliseconds; defaults to FUSION_MCP_TIMEOUT_MS or 180000." }
+                            },
+                            additionalProperties: false
+                        },
+                        outputSchema: FUSION_NEW_DESIGN_OUTPUT_SCHEMA
+                    },
+                    {
+                        name: "fusion_mcp_export",
+                        description: "Export the open Fusion design into an existing directory as <name>.stl (export_stl of one body), <name>.f3d (export_f3d) and <name>.parameters.json (its user parameters), and return their absolute paths. The STL is checked as a finite triangle mesh; slice it like any other model. Fusion must run on this computer, and existing files are never overwritten.",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                output_dir: { type: "string", description: "Existing directory for the three files." },
+                                name: { type: "string", description: "File name without extension, such as bracket." },
+                                body_name: { type: "string", description: "The body to export as STL. Optional when the design has exactly one body." },
+                                timeout_ms: { type: "integer", minimum: 100, maximum: 600000, description: "Total deadline in milliseconds; defaults to FUSION_MCP_TIMEOUT_MS or 180000." }
+                            },
+                            required: ["output_dir", "name"],
+                            additionalProperties: false
+                        },
+                        outputSchema: FUSION_EXPORT_OUTPUT_SCHEMA
                     }
                 ]
             };
@@ -3792,6 +3853,20 @@ class BambuPrinterMCPServer {
                     case "counterpart_make_3mf":
                         result = await makeCounterpart3mf(args ?? {});
                         break;
+                    case "fusion_mcp_status":
+                        result = await this.fusion.status(args ?? {}, extra.signal);
+                        break;
+                    case "fusion_mcp_call": {
+                        // The remote result passes through unchanged; its structuredContent satisfies the open schema.
+                        const remote = await this.fusion.call(args ?? {}, extra.signal);
+                        return { ...remote, structuredContent: remote.structuredContent ?? {} };
+                    }
+                    case "fusion_mcp_new_design":
+                        result = await this.fusion.newDesign(args ?? {}, extra.signal);
+                        break;
+                    case "fusion_mcp_export":
+                        result = await this.fusion.export(args ?? {}, extra.signal);
+                        break;
                     default:
                         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
                 }
@@ -3842,6 +3917,7 @@ class BambuPrinterMCPServer {
         try {
             // Closing the MCP transport aborts its active requests before exit cleanup.
             await this.server.close();
+            await this.fusion.close();
             this.httpRuntime?.httpServer.close();
         }
         catch (error) {

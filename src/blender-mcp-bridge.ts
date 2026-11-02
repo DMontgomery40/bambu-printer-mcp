@@ -84,7 +84,7 @@ function normalizeToolFailure(result: CallToolResult): CallToolResult {
   return failed ? { ...result, isError: true } : result;
 }
 
-async function regularStl(filePath: string): Promise<{ bytes: number; triangles: number }> {
+export async function regularStl(filePath: string): Promise<{ bytes: number; triangles: number }> {
   const stat = await fs.lstat(filePath).catch(() => { throw new BlenderError("STL file does not exist or is not readable."); });
   if (!stat.isFile() || stat.size === 0 || stat.size > MAX_STL_BYTES) throw new BlenderError("STL must be a non-empty regular file of at most 256 MiB.");
   const buffer = await fs.readFile(filePath);

@@ -10,6 +10,13 @@
 - Generate `src/safety/hms-messages.ts` and `src/printers/bambu-stages.ts` with `scripts/generate-hms-messages.mjs`, from the same pinned Bambu Studio v02.08.02.61 tables and commit as `hidden-hms.ts`. Bambu bundles no P1S, X1 or A1 table at that tag, so those printers get the text the bundled tables share; that covers about 98% of the HMS codes in the P1S table Bambu Studio downloads.
 - Add `layer_height`, `wall_loops` and `sparse_infill_density` to `slice_stl`. They are written as a process override on top of the resolved machine and process preset, on every Bambu-compatible route including remote slicing. PrusaSlicer, Slic3r and Cura refuse them.
 - Return `subtaskName` from `print_3mf` on the direct LAN route, and `taskId` on H2 and P2S. These are the values sent as `subtask_name`/`task_id`, so clients can match a progress report to their own print.
+- Add an optional Autodesk Fusion bridge through [faust-machines/fusion360-mcp-server](https://github.com/faust-machines/fusion360-mcp-server), pinned to commit `19b9f1e95192` and configured with `FUSION_MCP_COMMAND`, `FUSION_MCP_ARGS`, `FUSION_MCP_TIMEOUT_MS` and `FUSION_MCP_HOST`.
+  - `fusion_mcp_status` reports whether Fusion is configured, running and reachable; `launch: true` starts it on macOS and waits up to 90 s for the add-in.
+  - `fusion_mcp_call` passes a call through to a discovered Fusion tool, the same contract as `blender_mcp_call`.
+  - `fusion_mcp_new_design` opens a new parametric design.
+  - `fusion_mcp_export` writes `<name>.stl`, `<name>.f3d` and `<name>.parameters.json` together, never overwriting a file.
+
+  The stdio session stays open across calls. A timeout or cancellation closes it, and an interrupted call is never replayed. The child process gets only `FUSION_*` settings. At that commit the add-in refuses every command until some design is open (faust issue #12), so after Fusion starts at its Home tab a design must be opened once by hand. Verified with a stdio fixture shaped like the pinned server; no live Fusion was available.
 
 ### Changed
 - `slice_stl` refuses `load_filament_ids` for 3MF input with an explanation. Bambu Studio's CLI rejects that combination itself with only "invalid parameters".

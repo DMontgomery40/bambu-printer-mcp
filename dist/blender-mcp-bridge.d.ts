@@ -1,5 +1,9 @@
 import { type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 type Arguments = Record<string, unknown>;
+export declare function regularStl(filePath: string): Promise<{
+    bytes: number;
+    triangles: number;
+}>;
 export declare class BlenderMcpBridge {
     private session;
     private invoke;

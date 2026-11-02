@@ -1265,6 +1265,65 @@ their results explicitly report `output_verified: false`. A missing executable
 configuration is an error when execution is requested. Per-call legacy
 `bridge_command` overrides remain disabled unless `MCP_ALLOW_EXECUTABLE_ARG=1`.
 
+#### Fusion MCP
+
+Design a part from scratch in Autodesk Fusion through
+[faust-machines/fusion360-mcp-server](https://github.com/faust-machines/fusion360-mcp-server)
+(MIT). It is a stdio MCP server that talks TCP on `localhost:9876` to its
+`Fusion360MCP` add-in inside Fusion. Fusion and its licence, including Autodesk's
+free personal-use licence, are yours: this server never installs or requires
+Fusion, and printer tools work without it.
+
+Install exactly commit `19b9f1e95192`. Copy the repository's `addon/` folder at
+that commit to `~/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns/Fusion360MCP`,
+set the add-in to **Run on Startup**, and add these settings next to the Blender
+ones in your env file:
+
+```bash
+FUSION_MCP_COMMAND=uvx
+FUSION_MCP_ARGS='["--from","git+https://github.com/faust-machines/fusion360-mcp-server@19b9f1e95192","fusion360-mcp-server","--mode","socket"]'
+FUSION_MCP_TIMEOUT_MS=180000
+FUSION_MCP_HOST=localhost
+```
+
+Don't use the PyPI release (0.1.0): it crashes under mcp 2.x (faust issue #30),
+and the pinned commit pins `mcp<2`. Without `FUSION_MCP_ARGS`, the bridge uses
+the pinned arguments above. `FUSION_MCP_HOST` and `FUSION_MCP_PORT` reach the
+server; the child process gets only `FUSION_*` settings, never printer access
+codes.
+
+1. `fusion_mcp_status` returns `{configured, connected, addinReachable, fusionRunning, tools[]}`,
+   plus `launched`, `pin`, the server's `server` info and any `error`.
+   `connected` is true only when the add-in answers the server's `ping`. With
+   `{"launch": true}`, it starts Fusion on macOS (`open -a "Autodesk Fusion"`)
+   when it is not running and waits up to 90 seconds for the add-in.
+2. `fusion_mcp_call` takes `{tool_name, arguments?, timeout_ms?}` and passes the
+   call to a discovered Fusion tool (`create_sketch`, `extrude`, `fillet`,
+   `create_parameter`, `set_parameter`, `check_interference`, `execute_code` and
+   the rest), returning its full content and errors. It is never retried, the
+   same contract as `blender_mcp_call`.
+3. `fusion_mcp_new_design` opens a new parametric design document through
+   `execute_code` with `app.documents.add(FusionDesignDocumentType)`. The Fusion
+   tools work on the open design, so a design pass calls this first. At the
+   pinned commit the add-in refuses every command, `execute_code` included,
+   until some design is open (faust issue #12). After Fusion starts at its Home
+   tab, open any design once.
+4. `fusion_mcp_export` takes `{output_dir, name, body_name?}`. It writes
+   `<name>.stl` (`export_stl` of the design's body; pass `body_name` when there
+   are several), `<name>.f3d` (`export_f3d`) and `<name>.parameters.json` (the
+   user parameters, with the fields `get_parameters` reports) into an existing
+   directory, and returns their absolute paths. It writes all three or none,
+   never overwrites a file, and checks the STL is a finite triangle mesh. Fusion
+   writes the files itself, so it must run on this computer. Slice the STL like
+   any other model.
+
+The stdio session stays open for the life of this server, so a design pass does
+not start a new `uvx` process and add-in connection for every call. A timeout,
+cancellation or transport failure closes it, and the next call starts a new one.
+An interrupted call may still be running in Fusion and is never replayed. At the
+pinned commit `measure_distance` is broken (faust issue #27); measure the
+exported STL with `get_stl_info` instead.
+
 </details>
 
 </details>

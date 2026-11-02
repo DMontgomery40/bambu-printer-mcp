@@ -40,7 +40,9 @@
                 "BAMBU_MODEL": "${user_config.bambu_model}",
                 "SLICER_PATH": "${user_config.slicer_path}",
                 "BLENDER_MCP_COMMAND": "${user_config.blender_mcp_command}",
-                "BLENDER_MCP_ARGS": "${user_config.blender_mcp_args}"
+                "BLENDER_MCP_ARGS": "${user_config.blender_mcp_args}",
+                "FUSION_MCP_COMMAND": "${user_config.fusion_mcp_command}",
+                "FUSION_MCP_ARGS": "${user_config.fusion_mcp_args}"
             }
         }
     },
@@ -80,6 +82,18 @@
             "type": "string",
             "title": "Blender MCP arguments (optional)",
             "description": "JSON array of arguments for the executable, for example [\"blender-mcp\"]. Enable the matching MCP addon inside Blender before editing.",
+            "required": false
+        },
+        "fusion_mcp_command": {
+            "type": "string",
+            "title": "Fusion MCP executable (optional)",
+            "description": "Executable for the Autodesk Fusion MCP server, normally the full path to uvx. Leave empty to use printer tools without Fusion.",
+            "required": false
+        },
+        "fusion_mcp_args": {
+            "type": "string",
+            "title": "Fusion MCP arguments (optional)",
+            "description": "JSON array of arguments for the executable. Leave empty for the pinned faust-machines/fusion360-mcp-server commit 19b9f1e95192. Run its Fusion360MCP add-in inside Fusion.",
             "required": false
         },
         "slicer_path": {
