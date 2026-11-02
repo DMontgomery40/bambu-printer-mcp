@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.1.48] – 2026-11-02
 
 ### Added
 - Add the Counterpart contract (`counterpart/1`) shared with mcp-3D-printer-server. Each tool declares an `outputSchema` and returns `structuredContent` plus the same JSON as text, whatever `MCP_HTTP_JSON_RESPONSE` says. Errors from these tools are text only, because MCP SDK 1.32 clients validate `structuredContent` against the schema even on errors.
