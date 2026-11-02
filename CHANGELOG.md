@@ -6,7 +6,7 @@
 
 - `slice_stl` returns Bambu Studio's and OrcaSlicer's own checks. When the CLI writes `result.json` (Bambu Studio 02.08.02.61 writes it on macOS on success too), `structuredContent.slicer_result` carries it parsed and unchanged: `error_string`, `return_code` and each `sliced_plates[].warning_message`. Before, `slice_stl` returned only the path and dropped warnings such as "It seems object … has floating cantilever. Please re-orient the object or enable support generation."
   - The text result stays the sliced file's path.
-  - A failed slice is an error result whose text starts with Studio's `error_string`, then each plate's `warning_message`, then the exit code and command output. Its `structuredContent` carries `slicer_result` too. Before, the text began "Error: Slicer failed: …" and the warnings were lost.
+  - A failed slice is an error result whose text starts with Studio's `error_string` (unless it reports success), then each plate's `warning_message`, then the exit code and command output. Its `structuredContent` carries `slicer_result` too. Before, the text began "Error: Slicer failed: …" and the warnings were lost.
   - A `result.json` reporting a nonzero `return_code` fails the slice even when the CLI exits 0.
   - Auto-slicing in `print_3mf` and `slice_with_template` fail the same way: Studio's words first, with `slicer_result` in the error's `structuredContent`.
   - When the Bambu CLI writes no `result.json`, the server says so on stderr.

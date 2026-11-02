@@ -141,11 +141,14 @@ function readCliResult(cli) {
         return undefined;
     }
 }
-/** The slicer's own words: error_string, then each plate's warning_message. */
+/**
+ * The slicer's own words: its error_string when it reports a failing
+ * return_code (not "Success."), then each plate's warning_message.
+ */
 function slicerResultText(result) {
     const plates = Array.isArray(result.sliced_plates) ? result.sliced_plates : [];
     return [
-        result.error_string,
+        result.return_code === 0 ? undefined : result.error_string,
         ...plates.map(plate => plate && typeof plate === "object" ? plate.warning_message : undefined),
     ].filter((text) => typeof text === "string" && text.trim() !== "").map(text => text.trim()).join("\n");
 }
