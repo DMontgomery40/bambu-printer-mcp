@@ -1404,7 +1404,7 @@ export class BambuImplementation {
       ]);
       const confirmedJob = jobIdentity(initialStatus.raw);
       const jobName = initialStatus.raw.subtask_name || initialStatus.raw.gcode_file;
-      await this.confirmHardwareAction(`Clear reported hardware errors on ${serial}: ${codes.map(describeHmsKey).join(", ")}?${jobName ? ` Current job: ${String(jobName)}.` : ""} Inspect the printer and resolve the physical cause first. Confirm only after removing obstructions and correcting the fault.`, true);
+      await this.confirmHardwareAction(`Clear reported hardware errors on ${serial}: ${codes.map(describeHmsKey).join(", ")}?${jobName ? ` Current job: ${String(jobName)}.` : ""} Inspect the printer and resolve the physical cause first. Confirm only after correcting the fault.`, true);
       const beforeDispatch = async () => {
         assertActive();
         const currentStatus = await this.getSafetyStatus(host, serial, token);

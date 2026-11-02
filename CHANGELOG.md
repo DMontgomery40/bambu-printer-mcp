@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.49] – 2026-11-02
+
+### Removed
+
+- Remove the last bed-clearance wording. The hardware-error clear prompt no longer mentions removing obstructions, and the rules and README no longer describe a bed check. The printer detects an occupied bed itself during bed leveling; print confirmations keep their spool and file checks.
+
 ## [1.1.48] – 2026-11-02
 
 ### Added

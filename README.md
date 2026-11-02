@@ -94,7 +94,7 @@ If your agent is always on, such as OpenClaw or Hermes Agent running on a comput
 
 ### Before you print
 
-- **"Take a picture and make sure the bed is clear, then start the bracket I sliced last night."**\
+- **"Start the bracket I sliced last night."**\
   It checks the camera image before it sends the job.
 - **"What's loaded in the AMS? Print this in whatever black I have."**\
   It reads the live AMS inventory and matches the file's filaments to your trays.
