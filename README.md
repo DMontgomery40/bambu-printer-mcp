@@ -746,7 +746,7 @@ Resume a paused print job that this server inspected and started. Resume reheats
 
 The server keeps one resume record per printer. Cancelling the job ends it, and so does a report that the job finished, failed or went idle after it was seen running, or another job seen in its place. A later job with the same name, such as the same file reprinted from the touchscreen, is never resumed. The server watches every MQTT report it receives, not just its own reads. It doesn't see reports while its MQTT session is disconnected.
 
-The result is `{status, message, jobName, bytesVerified}`, where `jobName` is the name `counterpart_print_progress` reports. On the BambuNetwork and X2D native routes, Bambu's plug-in puts the file on the printer, so its FTPS path isn't verified. If the file can't be read back there, the resume matches the job by its unique name and returns `bytesVerified: false`, and the prompt says so. On every other route, a file that can't be re-read refuses the resume.
+The result is `{status, message, jobName, bytesVerified}`, where `jobName` is the name `counterpart_print_progress` reports. On the BambuNetwork and X2D native routes, Bambu's plug-in puts the file on the printer, so its FTPS path isn't verified. If the file can't be read back there, the resume matches the job by its unique name and returns `bytesVerified: false`, and the prompt says so. That prompt always appears, even with `BAMBU_REQUIRE_CONFIRMATION=0`, which skips only prompts for resumes whose bytes were verified. On every other route, a file that can't be re-read refuses the resume.
 
 ```json
 {

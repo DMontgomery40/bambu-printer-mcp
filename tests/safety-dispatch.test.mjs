@@ -464,6 +464,47 @@ test("a plug-in route job the printer cannot re-read is matched by its unique na
   assert.equal(job.published().length, 1);
 });
 
+test("an unverified plug-in route resume always asks a person, even with BAMBU_REQUIRE_CONFIRMATION=0", async (t) => {
+  const previous = process.env.BAMBU_REQUIRE_CONFIRMATION;
+  process.env.BAMBU_REQUIRE_CONFIRMATION = "0";
+  t.after(() => { if (previous === undefined) delete process.env.BAMBU_REQUIRE_CONFIRMATION; else process.env.BAMBU_REQUIRE_CONFIRMATION = previous; });
+  let answer = true;
+  const job = await pausedJob(t, { confirm: async () => answer });
+  const record = job.printer.checkedJobs.get(`${host}\n${serial}`);
+  job.printer.recordCheckedJob(host, serial, record.remotePath, record.requirements, record, false);
+  const saved = new Map(job.files);
+  job.files.clear();
+  answer = false;
+  await assert.rejects(job.printer.resumeJob(host, serial, token), /could not be re-read, so this resume always needs a person.*BAMBU_REQUIRE_CONFIRMATION=0/);
+  assert.equal(job.prompts.length, 1);
+  assert.deepEqual(job.published(), []);
+  answer = true;
+  const result = await job.printer.resumeJob(host, serial, token);
+  assert.equal(result.bytesVerified, false);
+  assert.equal(job.prompts.length, 2);
+  assert.equal(job.published().length, 1);
+  // The same route with readable, matching bytes may skip the prompt under the opt-out.
+  for (const [remote, bytes] of saved) job.files.set(remote, bytes);
+  job.report = { ...job.report, state: "PAUSE" };
+  assert.equal((await job.printer.resumeJob(host, serial, token)).bytesVerified, true);
+  assert.equal(job.prompts.length, 2, "no prompt when the bytes were verified");
+});
+
+test("an unverified plug-in route resume without an elicitation client is refused under the opt-out", async (t) => {
+  const previous = process.env.BAMBU_REQUIRE_CONFIRMATION;
+  process.env.BAMBU_REQUIRE_CONFIRMATION = "0";
+  t.after(() => { if (previous === undefined) delete process.env.BAMBU_REQUIRE_CONFIRMATION; else process.env.BAMBU_REQUIRE_CONFIRMATION = previous; });
+  const job = await pausedJob(t);
+  const record = job.printer.checkedJobs.get(`${host}\n${serial}`);
+  const headless = new BambuImplementation();
+  headless.getSafetyStatus = job.printer.getSafetyStatus;
+  headless.ftpDownload = async () => { throw new Error("550 no such file"); };
+  headless.getPrinter = job.printer.getPrinter;
+  headless.recordCheckedJob(host, serial, record.remotePath, record.requirements, record, false);
+  await assert.rejects(headless.resumeJob(host, serial, token), /confirmation is unavailable.*always needs a person/);
+  assert.deepEqual(job.published(), []);
+});
+
 test("a plug-in route job whose re-read file differs is still refused", async (t) => {
   const job = await pausedJob(t);
   const record = job.printer.checkedJobs.get(`${host}\n${serial}`);

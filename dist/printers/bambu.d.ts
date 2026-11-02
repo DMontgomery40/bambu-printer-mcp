@@ -71,7 +71,12 @@ export declare class BambuImplementation {
     private progressReads;
     private clearedErrors;
     constructor(confirm?: ((message: string) => Promise<boolean>) | undefined);
-    confirmHardwareAction(message: string, physicalCheck?: boolean): Promise<void>;
+    /**
+     * Ask a person through MCP elicitation. BAMBU_REQUIRE_CONFIRMATION=0 skips
+     * ordinary prompts; a physical check, or a prompt with requiredBecause (why
+     * this one cannot be skipped), always asks.
+     */
+    confirmHardwareAction(message: string, physicalCheck?: boolean, requiredBecause?: string): Promise<void>;
     private finishedJobIdentity;
     /**
      * Record the current job and notices during preflight so a changed printer state
