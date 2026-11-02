@@ -256,6 +256,8 @@ export const FUSION_NEW_DESIGN_OUTPUT_SCHEMA = {
     status: { type: "string", const: "created" },
     document: { type: "string" },
     parametric: { type: "boolean" },
+    document_id: { type: "string" },
+    document_binding: { type: "integer", const: 1 },
   },
   required: ["status", "document", "parametric"],
 };
@@ -451,16 +453,35 @@ export class FusionMcpBridge {
     return result;
   }
 
+  private boundArguments(live: Live, name: string, args: Arguments, documentId: unknown): Arguments {
+    if (documentId === undefined) return args;
+    const id = textArgument(documentId, "document_id");
+    const schema = live.tools.find(tool => tool.name === name)?.inputSchema;
+    if (!schema?.properties?.document_id) throw new FusionError("This Fusion MCP does not support document binding for this tool; update the configured bridge and add-in first.");
+    if (Object.prototype.hasOwnProperty.call(args, "document_id")) throw new FusionError("Pass document_id once, outside arguments.");
+    return {...args, document_id: id};
+  }
+
   async call(args: Arguments, signal?: AbortSignal): Promise<CallToolResult> {
-    allowedArguments(args, ["tool_name", "arguments", "timeout_ms"]);
+    allowedArguments(args, ["tool_name", "arguments", "timeout_ms", "document_id"]);
     const name = textArgument(args.tool_name, "tool_name");
     const toolArgs = argumentObject(args.arguments ?? {}, "arguments");
-    return this.request({ timeout: timeoutMilliseconds(args.timeout_ms), signal }, (live, options, dispatched) => this.invoke(live, options, dispatched, name, toolArgs));
+    return this.request({ timeout: timeoutMilliseconds(args.timeout_ms), signal }, (live, options, dispatched) => this.invoke(live, options, dispatched, name, this.boundArguments(live, name, toolArgs, args.document_id)));
   }
 
   async newDesign(args: Arguments, signal?: AbortSignal): Promise<Record<string, unknown>> {
-    allowedArguments(args, ["timeout_ms"]);
+    allowedArguments(args, ["timeout_ms", "bind_document", "source_f3d"]);
+    if (args.bind_document !== undefined && typeof args.bind_document !== "boolean") throw new FusionError("bind_document must be a boolean.");
+    if (args.source_f3d !== undefined && args.bind_document !== true) throw new FusionError("Importing a revision requires document binding.");
     return this.request({ timeout: timeoutMilliseconds(args.timeout_ms), signal }, async (live, options, dispatched) => {
+      if (args.bind_document === true) {
+        if (!live.tools.some(tool => tool.name === "new_document")) throw new FusionError("This Fusion MCP does not support document binding; update the configured bridge and add-in first.");
+        const imported = args.source_f3d === undefined ? {} : {source_f3d: textArgument(args.source_f3d, "source_f3d")};
+        const result = await this.must(live, options, dispatched, "new_document", imported);
+        const id = resultField(result, "document_id"), document = resultField(result, "document");
+        if (!id || !document || resultField(result, "document_binding") !== "1") throw new FusionError("Fusion did not confirm document binding for the new design.");
+        return {status: "created", document, document_id: id, document_binding: 1, parametric: resultField(result, "parametric") === "True"};
+      }
       const created = codeJson(await this.must(live, options, dispatched, "execute_code", { code: NEW_DESIGN_CODE })) as Record<string, unknown>;
       if (!created || typeof created.document !== "string") throw new FusionError("Fusion did not report the new design document.");
       return { status: "created", document: created.document, parametric: created.parametric === true };
@@ -468,7 +489,7 @@ export class FusionMcpBridge {
   }
 
   async export(args: Arguments, signal?: AbortSignal): Promise<Record<string, unknown>> {
-    allowedArguments(args, ["output_dir", "name", "body_name", "timeout_ms"]);
+    allowedArguments(args, ["output_dir", "name", "body_name", "timeout_ms", "document_id"]);
     const name = textArgument(args.name, "name").trim();
     if (!EXPORT_NAME.test(name) || name.includes("..")) throw new FusionError("name must be a plain file name (letters, digits, spaces, dot, dash, underscore), without a path.");
     const bodyName = args.body_name === undefined ? undefined : textArgument(args.body_name, "body_name");
@@ -487,8 +508,9 @@ export class FusionMcpBridge {
     const staged = { stl: path.join(directory, `.fusion-${id}.stl`), f3d: path.join(directory, `.fusion-${id}.f3d`), parameters: path.join(directory, `.fusion-${id}.parameters.json`) };
     try {
       const exported = await this.request({ timeout, signal }, async (live, options, dispatched) => {
+        const bound = (name: string, fields: Arguments) => this.boundArguments(live, name, fields, args.document_id);
         // Hidden and surface bodies are never chosen: only what would print.
-        const everyBody = fusionBodies(codeJson(await this.must(live, options, dispatched, "execute_code", { code: BODIES_CODE })));
+        const everyBody = fusionBodies(codeJson(await this.must(live, options, dispatched, "execute_code", bound("execute_code", { code: BODIES_CODE }))));
         const bodies = everyBody.filter(entry => entry.solid && entry.visible);
         const names = bodies.map(entry => entry.name);
         const body = bodyName ? bodies.find(entry => entry.name === bodyName) : bodies.length === 1 ? bodies[0] : undefined;
@@ -502,9 +524,9 @@ export class FusionMcpBridge {
         if (everyBody.filter(entry => entry.name === body.name).length > 1) {
           throw new FusionError(`Several bodies are named "${body.name}", counting hidden and surface bodies and copies of a component; Fusion's export_stl takes the first. Rename them in Fusion so the export is unambiguous.`);
         }
-        await this.must(live, options, dispatched, "export_stl", { body_name: body.name, file_path: staged.stl });
-        await this.must(live, options, dispatched, "export_f3d", { file_path: staged.f3d });
-        const parameters = codeJson(await this.must(live, options, dispatched, "execute_code", { code: PARAMETERS_CODE })) as { parameters?: unknown; count?: unknown };
+        await this.must(live, options, dispatched, "export_stl", bound("export_stl", { body_name: body.name, file_path: staged.stl }));
+        await this.must(live, options, dispatched, "export_f3d", bound("export_f3d", { file_path: staged.f3d }));
+        const parameters = codeJson(await this.must(live, options, dispatched, "execute_code", bound("execute_code", { code: PARAMETERS_CODE }))) as { parameters?: unknown; count?: unknown };
         if (!parameters || !Array.isArray(parameters.parameters)) throw new FusionError("Fusion returned unreadable parameters.");
         return { body, parameters };
       });

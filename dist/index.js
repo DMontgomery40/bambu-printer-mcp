@@ -2828,6 +2828,7 @@ class BambuPrinterMCPServer {
                         inputSchema: {
                             type: "object",
                             properties: {
+                                document_id: { type: "string", minLength: 1, description: "Session identity returned by a bound new design. Every operation targets this document, even if the user changes tabs." },
                                 tool_name: { type: "string", description: "Exact tool name advertised by the Fusion MCP server." },
                                 arguments: { type: "object", description: "Arguments matching the remote tool's discovered input schema." },
                                 timeout_ms: { type: "integer", minimum: 100, maximum: 600000, description: "Total deadline in milliseconds; defaults to FUSION_MCP_TIMEOUT_MS or 180000." }
@@ -2843,6 +2844,8 @@ class BambuPrinterMCPServer {
                         inputSchema: {
                             type: "object",
                             properties: {
+                                bind_document: { type: "boolean", description: "Create an isolated document and return its session identity, restoring the previously active document. Requires document-binding support in the configured bridge/add-in." },
+                                source_f3d: { type: "string", description: "With bind_document, import this absolute F3D path into a new document for revision." },
                                 timeout_ms: { type: "integer", minimum: 100, maximum: 600000, description: "Total deadline in milliseconds; defaults to FUSION_MCP_TIMEOUT_MS or 180000." }
                             },
                             additionalProperties: false
@@ -2855,6 +2858,7 @@ class BambuPrinterMCPServer {
                         inputSchema: {
                             type: "object",
                             properties: {
+                                document_id: { type: "string", minLength: 1, description: "Session identity returned by a bound new design. Every operation targets this document, even if the user changes tabs." },
                                 output_dir: { type: "string", description: "Existing directory for the three files." },
                                 name: { type: "string", description: "File name without extension, such as bracket." },
                                 body_name: { type: "string", description: "The body to export as STL. Optional when the design has exactly one body." },
