@@ -2083,7 +2083,9 @@ function writeTemplateJsonFixture(
   return templatePath;
 }
 
-async function createFakeBambuSlicer() {
+// `result` names a real Bambu Studio result.json in tests/fixtures/studio-result
+// for the fake CLI to write to its --outputdir; a nonzero `exitCode` fails the run.
+async function createFakeBambuSlicer({ result, exitCode = 0 } = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-mcp-template-slicer-"));
   const fakeSlicerPath = path.join(tempDir, "fake-slicer.mjs");
   const argsOutPath = path.join(tempDir, "args.json");
@@ -2113,6 +2115,8 @@ const outputDir = args[args.indexOf("--outputdir") + 1] || path.dirname(args[arg
 const exportArg = args[args.indexOf("--export-3mf") + 1];
 const outputPath = path.isAbsolute(exportArg) ? exportArg : path.join(outputDir, exportArg);
 fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+${result ? `fs.copyFileSync(${JSON.stringify(fileURLToPath(new URL(`./fixtures/studio-result/${result}`, import.meta.url)))}, path.join(outputDir, "result.json"));` : ""}
+${exitCode ? `process.exit(${exitCode});` : ""}
 fs.writeFileSync(outputPath, "fake sliced 3mf");
 `
   );
@@ -2168,6 +2172,117 @@ test("slice_with_template prefers named template settings over BAMBU_SLICER_PROF
   assert.equal(processSettings.name, "Template Process");
   assert.equal(processSettings.layer_height, "0.16");
   assert.ok(!settingsValue.includes(defaultProfilePath), "server-level BAMBU_SLICER_PROFILE must not override a named template");
+});
+
+async function sliceWithFakeBambuSlicer(t, options) {
+  const fakeSlicer = await createFakeBambuSlicer(options);
+  t.after(() => fs.rmSync(fakeSlicer.tempDir, { recursive: true, force: true }));
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [SERVER_ENTRY],
+    cwd: fakeSlicer.tempDir,
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "stdio",
+      BAMBU_MODEL: "p1s",
+      BAMBU_SERIAL: "",
+      BAMBU_TOKEN: "",
+      BAMBU_SLICER_PROFILE: "",
+      BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot,
+      TEMP_DIR: path.join(fakeSlicer.tempDir, "out"),
+      SLICER_TYPE: "bambustudio",
+      MCP_ALLOW_EXECUTABLE_ARG: "1",
+    },
+    stderr: "pipe",
+  });
+  const client = createClient();
+  t.after(async () => { await closeTransport(transport); });
+  await client.connect(transport);
+  return client.callTool({
+    name: "slice_stl",
+    arguments: { stl_path: SAMPLE_STL, bambu_model: "p1s", slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false },
+  });
+}
+
+const studioResult = (name) => JSON.parse(fs.readFileSync(new URL(`./fixtures/studio-result/${name}`, import.meta.url), "utf8"));
+
+// Bambu Studio 02.08.02.61 sliced the fin-down stove gap filler for a P1S and
+// warned about a floating cantilever; slice_stl used to drop that warning.
+test("slice_stl returns Bambu Studio's result.json, warnings included, in structuredContent", async (t) => {
+  const result = await sliceWithFakeBambuSlicer(t, { result: "p1s-floating-cantilever.json" });
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  assert.equal(result.content.length, 1);
+  assert.equal(result.content[0].text, result.structuredContent.path);
+  assert.match(result.structuredContent.path, /_sliced\.3mf$/);
+  assert.deepEqual(result.structuredContent.slicer_result, studioResult("p1s-floating-cantilever.json"));
+  assert.match(result.structuredContent.slicer_result.sliced_plates[0].warning_message, /floating cantilever/);
+});
+
+// Bambu Studio's auto-orient tilted the gap filler and failed with return
+// code -100 (exit 156) and an empty-layer list per plate.
+test("a failed slice_stl starts with Bambu Studio's words and carries its result.json", async (t) => {
+  const result = await sliceWithFakeBambuSlicer(t, { result: "p1s-empty-layers.json", exitCode: 156 });
+  const expected = studioResult("p1s-empty-layers.json");
+  assert.equal(result.isError, true);
+  assert.deepEqual(result.structuredContent.slicer_result, expected);
+  const studioWords = `${expected.error_string}\n${expected.sliced_plates[0].warning_message.trim()}\n`;
+  assert.ok(result.content[0].text.startsWith(studioWords), result.content[0].text);
+  assert.match(result.content[0].text, /Slicer failed: the slicer exited with code 156 \(Failed slicing the model\./);
+  assert.ok(result.structuredContent.message.startsWith(studioWords));
+});
+
+// The CLI's own return code fails the slice even when the process exits 0.
+test("slice_stl fails when Bambu Studio's result.json reports an error but the CLI exits 0", async (t) => {
+  const result = await sliceWithFakeBambuSlicer(t, { result: "p1s-empty-layers.json" });
+  const expected = studioResult("p1s-empty-layers.json");
+  assert.equal(result.isError, true);
+  assert.deepEqual(result.structuredContent.slicer_result, expected);
+  assert.ok(result.content[0].text.startsWith(`${expected.error_string}\n`), result.content[0].text);
+  assert.match(result.content[0].text, /exited with code 0, but its result\.json reports return_code -100\.$/);
+});
+
+// A slicer that writes no result.json keeps the old shape: no slicer_result.
+test("slice_stl without a result.json returns the path and no slicer_result", async (t) => {
+  const result = await sliceWithFakeBambuSlicer(t, {});
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  assert.deepEqual(result.structuredContent, { path: result.content[0].text });
+});
+
+// A closed binary STL of axis-aligned boxes, each its own shell.
+function boxesStl(boxes) {
+  const corners = ([x0, y0, z0], [x1, y1, z1]) => [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
+  const faces = [[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7], [0, 1, 5], [0, 5, 4], [1, 2, 6], [1, 6, 5], [2, 3, 7], [2, 7, 6], [3, 0, 4], [3, 4, 7]];
+  const buffer = Buffer.alloc(84 + boxes.length * faces.length * 50);
+  buffer.writeUInt32LE(boxes.length * faces.length, 80);
+  let offset = 84;
+  for (const [min, max] of boxes) {
+    const vertices = corners(min, max);
+    for (const face of faces) {
+      offset += 12;
+      for (const vertex of face) for (const value of vertices[vertex]) { buffer.writeFloatLE(value, offset); offset += 4; }
+      offset += 2;
+    }
+  }
+  return buffer;
+}
+
+// The real Bambu Studio CLI, where it is installed (CI skips): a T standing on
+// its stem, its 60 mm cap 26 mm up, slices with a floating-cantilever warning.
+const installedStudio = process.env.BAMBU_STUDIO_CLI || "/Applications/BambuStudio.app/Contents/MacOS/BambuStudio";
+test("the installed Bambu Studio's floating-cantilever warning reaches sliceSTLWithResult's slicer_result", {
+  skip: !fs.existsSync(installedStudio) && "Bambu Studio is not installed",
+  timeout: 300_000,
+}, async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "studio-result-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const tee = path.join(directory, "tee.stl");
+  fs.writeFileSync(tee, boxesStl([[[-2, 0, 0], [2, 40, 26]], [[-30, 0, 26], [30, 40, 30]]]));
+  const sliced = await new STLManipulator(directory).sliceSTLWithResult(
+    tee, "bambustudio", installedStudio, undefined, undefined, "Bambu Lab P1S 0.4 nozzle", { bedType: "textured_plate" });
+  assert.ok(fs.existsSync(sliced.path));
+  assert.equal(sliced.slicer_result.return_code, 0);
+  assert.deepEqual(sliced.slicer_result.sliced_plates.map(plate => plate.warning_message),
+    ["It seems object tee.stl has floating cantilever. Please re-orient the object or enable support generation."]);
 });
 
 test("relative TEMP_DIR and profile, filament and model paths reach the slicer as absolute paths", async (t) => {

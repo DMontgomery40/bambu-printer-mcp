@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.1.51] – 2026-11-02
+
+### Fixed
+
+- `lay_flat` rests a model on a face that is its real bottom. Before, it turned the face-normal group with the largest area to face down and moved the lowest point to Z=0, without checking that those faces were the lowest. The stove gap filler from Scan to Make (six T strips) printed upside down: its cap undersides' 23,838 mm² face down but sit 12 mm above the fin tips, so it stood on its fins. Bambu Studio warned that it "has floating cantilever".
+  - A pose qualifies only when some face, turned down, lies on the rotated model's lowest plane, within 0.5% of its height and at most 0.2 mm. The candidate poses are the 64 largest face groups and the model's six axes, so a domed part can flip exactly.
+  - Among qualifying poses, `lay_flat` picks the one with the least part and support volume per mm² of bed contact. Support is the overhang more than 45° from vertical, times its height above the bed. Ties go to the larger contact, then to the face that already points down.
+  - When no pose qualifies, the model is unchanged. The text result is still the STL path, and the new `structuredContent` `{path, laid_flat, message}` says why.
+  - The gap filler now comes out cap-down, fin tips 14.4 mm up. Bambu Studio 02.08.02.61 slices it for a P1S 0.4 with return code 0 and no warning. The fin-down pose gave the floating-cantilever warning. That check runs on macOS where Bambu Studio is installed; CI skips it.
+- `slice_stl` returns Bambu Studio's and OrcaSlicer's own checks. When the CLI writes `result.json` (Bambu Studio 02.08.02.61 writes it on macOS on success too), `structuredContent.slicer_result` carries it parsed and unchanged: `error_string`, `return_code` and each `sliced_plates[].warning_message`. Before, `slice_stl` returned only the path and dropped warnings such as "It seems object … has floating cantilever. Please re-orient the object or enable support generation."
+  - The text result stays the sliced file's path.
+  - A failed slice is an error result whose text starts with Studio's `error_string` (unless it reports success), then each plate's `warning_message`, then the exit code and command output. Its `structuredContent` carries `slicer_result` too. Before, the text began "Error: Slicer failed: …" and the warnings were lost.
+  - A `result.json` reporting a nonzero `return_code` fails the slice even when the CLI exits 0.
+  - Auto-slicing in `print_3mf` and `slice_with_template` fail the same way: Studio's words first, with `slicer_result` in the error's `structuredContent`.
+  - When the Bambu CLI writes no `result.json`, the server says so on stderr.
+  - Slicers that write no `result.json` (PrusaSlicer, Cura, Slic3r, the remote OrcaSlicer API) return `structuredContent` `{path}` only.
+  - Tested with real `result.json` files from Bambu Studio 02.08.02.61 slicing the Scan to Make stove gap filler for a P1S, and with the installed Studio CLI on macOS (skipped in CI).
+
 ## [1.1.50] – 2026-11-02
 
 ### Fixed

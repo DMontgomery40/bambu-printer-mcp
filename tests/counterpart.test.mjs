@@ -319,6 +319,19 @@ test("counterpart errors are text only, so an MCP client's outputSchema check ca
   assert.equal(other.structuredContent.status, "error");
 });
 
+test("lay_flat returns the STL path as its only text and says in structuredContent that it laid the model flat", async t => {
+  const { client, directory } = await server(t);
+  const input = path.join(directory, "standing.stl");
+  fs.writeFileSync(input, boxStl([0, 0, 0], [2, 20, 30]));
+  const result = await client.callTool({ name: "lay_flat", arguments: { stl_path: input } });
+  assert.equal(result.isError, undefined);
+  assert.equal(result.content.length, 1);
+  assert.equal(result.content[0].text, result.structuredContent.path);
+  assert.equal(result.structuredContent.laid_flat, true);
+  assert.notEqual(result.structuredContent.path, input);
+  assert.match(result.structuredContent.message, /600\.0 mm² of bed contact/);
+});
+
 test("counterpart_print_progress reports an unreachable printer as offline within its bound", { timeout: 30_000 }, async t => {
   // Nothing listens on port 8883 here; the MQTT client keeps retrying, which must not hold the call.
   const { client } = await server(t);

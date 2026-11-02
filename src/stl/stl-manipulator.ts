@@ -209,8 +209,54 @@ const PROFILE_METADATA_KEYS = new Set([
  * segfaults with no output), so name the signal or exit code and add the end
  * of stdout instead.
  */
-/** Where a Bambu-style CLI records its error on Linux, and when this run started. */
+/** Where a Bambu-style CLI writes result.json, and when this run started. */
 type CliResultSource = { resultPath: string; startedAt: number };
+
+/** Bambu Studio's or OrcaSlicer's own result.json, parsed verbatim. */
+export type SlicerResult = Record<string, unknown>;
+
+/** A sliced file, with the slicer's own result.json when it wrote one. */
+export type SliceOutput = { path: string; slicer_result?: SlicerResult };
+
+/**
+ * A slicer failure that keeps the slicer's own result.json. The message starts
+ * with the slicer's own words (`slicerText`), when it gave any, then `detail`.
+ */
+export class SlicerRunError extends Error {
+  readonly slicerText: string;
+  constructor(detail: string, readonly slicerResult?: SlicerResult) {
+    const slicerText = slicerResult ? slicerResultText(slicerResult) : "";
+    super(slicerText ? `${slicerText}\n${detail}` : detail);
+    this.name = "SlicerRunError";
+    this.slicerText = slicerText;
+  }
+}
+
+/**
+ * The result.json this run wrote. Bambu Studio 02.08.02.61 writes it on macOS
+ * for successes and failures alike; an older file must not describe this run.
+ */
+function readCliResult(cli: CliResultSource): SlicerResult | undefined {
+  try {
+    if (fs.statSync(cli.resultPath).mtimeMs < cli.startedAt) return undefined;
+    const result: unknown = JSON.parse(fs.readFileSync(cli.resultPath, "utf8"));
+    return result && typeof result === "object" && !Array.isArray(result) ? result as SlicerResult : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The slicer's own words: its error_string when it reports a failing
+ * return_code (not "Success."), then each plate's warning_message.
+ */
+function slicerResultText(result: SlicerResult): string {
+  const plates = Array.isArray(result.sliced_plates) ? result.sliced_plates : [];
+  return [
+    result.return_code === 0 ? undefined : result.error_string,
+    ...plates.map(plate => plate && typeof plate === "object" ? (plate as Record<string, unknown>).warning_message : undefined),
+  ].filter((text): text is string => typeof text === "string" && text.trim() !== "").map(text => text.trim()).join("\n");
+}
 
 function describeSlicerFailure(
   error: { message: string; code?: unknown; signal?: unknown },
@@ -227,7 +273,7 @@ function describeSlicerFailure(
 }
 
 // Bambu Studio and OrcaSlicer CLI errors (libslic3r/Utils.hpp). The process
-// exits with the low byte of the code; on Linux result.json names the error.
+// exits with the low byte of the code; result.json names the error.
 const BAMBU_CLI_ERRORS: Record<number, string> = {
   [-2]: "invalid parameters to the slicer",
   [-3]: "input files not found",
@@ -251,15 +297,9 @@ const BAMBU_CLI_ERRORS: Record<number, string> = {
 };
 
 function bambuCliFailureReason(exitCode: unknown, cli: CliResultSource): string | undefined {
-  try {
-    if (fs.statSync(cli.resultPath).mtimeMs >= cli.startedAt) {
-      const result = JSON.parse(fs.readFileSync(cli.resultPath, "utf8"));
-      if (typeof result.error_string === "string" && result.error_string.trim()) {
-        return `${result.error_string.trim()} [${result.return_code}]`;
-      }
-    }
-  } catch {
-    // result.json is written only on Linux and only for handled errors.
+  const result = readCliResult(cli);
+  if (typeof result?.error_string === "string" && result.error_string.trim()) {
+    return `${result.error_string.trim()} [${result.return_code}]`;
   }
   if (typeof exitCode !== "number") return undefined;
   const code = Object.keys(BAMBU_CLI_ERRORS).map(Number).find(value => (value & 0xff) === exitCode);
@@ -1684,6 +1724,23 @@ export class STLManipulator extends EventEmitter {
     printerPreset?: string,
     bambuOptions?: BambuSliceOptions
   ): Promise<string> {
+    return (await this.sliceSTLWithResult(stlFilePath, slicerType, slicerPath, slicerProfile, progressCallback, printerPreset, bambuOptions)).path;
+  }
+
+  /**
+   * sliceSTL with the Bambu-compatible CLI's own result.json, parsed verbatim.
+   * A failure throws SlicerRunError, whose message starts with the slicer's
+   * error_string and plate warnings.
+   */
+  async sliceSTLWithResult(
+    stlFilePath: string,
+    slicerType: SlicerType,
+    slicerPath: string,
+    slicerProfile?: string,
+    progressCallback?: ProgressCallback,
+    printerPreset?: string,
+    bambuOptions?: BambuSliceOptions
+  ): Promise<SliceOutput> {
     const operationId = this.generateOperationId();
     this.activeOperations.set(operationId, true);
 
@@ -1920,7 +1977,8 @@ export class STLManipulator extends EventEmitter {
             if (error) {
               console.error(`Slicer Error: ${error.message}`);
               console.error(`Slicer Stderr: ${stderr}`);
-              reject(new Error(describeSlicerFailure(error, stdout, stderr, cliResult)));
+              const slicerResult = cliResult ? readCliResult(cliResult) : undefined;
+              reject(new SlicerRunError(describeSlicerFailure(error, stdout, stderr, cliResult), slicerResult));
             } else {
               console.error(`Slicer Stdout: ${stdout}`);
                if (stderr) {
@@ -1959,8 +2017,17 @@ export class STLManipulator extends EventEmitter {
         throw new Error("Slicing operation cancelled after process finished");
       }
       
+      const slicerResult = cliResult ? readCliResult(cliResult) : undefined;
+      if (cliResult && !slicerResult) {
+        // Older or Linux CLIs may write result.json only for handled errors.
+        console.error(`${slicerType} wrote no result.json for this slice, so its own checks are not available.`);
+      }
+      if (typeof slicerResult?.return_code === "number" && slicerResult.return_code !== 0) {
+        throw new SlicerRunError(`Slicer failed: the slicer exited with code 0, but its result.json reports return_code ${slicerResult.return_code}.`, slicerResult);
+      }
+
       if (!fs.existsSync(outputFilePath)) {
-          throw new Error(`Slicer finished but output file not found: ${outputFilePath}`);
+          throw new SlicerRunError(`Slicer finished but output file not found: ${outputFilePath}`, slicerResult);
       }
 
       if (progressCallback) progressCallback(100, "Slicing completed successfully");
@@ -1972,7 +2039,7 @@ export class STLManipulator extends EventEmitter {
         output: outputFilePath
       });
 
-      return outputFilePath;
+      return slicerResult ? { path: outputFilePath, slicer_result: slicerResult } : { path: outputFilePath };
     } catch (error) {
       console.error(`Slicing failed for ${stlFilePath}:`, error);
       this.emit('operationError', {
@@ -2200,12 +2267,26 @@ export class STLManipulator extends EventEmitter {
   }
 
   /**
-   * Rotate the model so its largest flat face lies on the XY plane (Z=0).
+   * Rotate the model so a face rests on the bed, in the pose with the least
+   * part and support material per mm² of bed contact, then move it down to
+   * Z=0. Returns the new file's path, or the input path when no pose qualifies.
    */
   async layFlat(
     stlFilePath: string,
     progressCallback?: ProgressCallback
   ): Promise<string> {
+    return (await this.layFlatWithResult(stlFilePath, progressCallback)).path;
+  }
+
+  /**
+   * layFlat with its outcome. A pose qualifies only when some face, turned to
+   * face down, lies on the rotated mesh's lowest plane; `laid_flat` is false
+   * and the model is unchanged when none does.
+   */
+  async layFlatWithResult(
+    stlFilePath: string,
+    progressCallback?: ProgressCallback
+  ): Promise<LayFlatResult> {
     const operationId = this.generateOperationId();
     this.activeOperations.set(operationId, true);
 
@@ -2220,100 +2301,98 @@ export class STLManipulator extends EventEmitter {
       const positionAttribute = geometry.getAttribute('position');
       if (!positionAttribute) throw new Error("Geometry has no position attribute.");
 
-      const faces: { normal: THREE.Vector3; area: number; vertices: THREE.Vector3[] }[] = [];
+      const faceCount = Math.floor(positionAttribute.count / 3);
+      if (faceCount === 0) throw new Error("No faces found in geometry.");
+      const mesh: LayFlatMesh = {
+        positions: new Float64Array(faceCount * 9),
+        normals: new Float64Array(faceCount * 3),
+        areas: new Float64Array(faceCount),
+        volume: 0,
+      };
+      const center = new THREE.Vector3();
+      boundingBox.getCenter(center);
       const vA = new THREE.Vector3();
       const vB = new THREE.Vector3();
       const vC = new THREE.Vector3();
-      const faceNormal = new THREE.Vector3();
       const cb = new THREE.Vector3(), ab = new THREE.Vector3();
+      const fromA = new THREE.Vector3(), fromB = new THREE.Vector3(), fromC = new THREE.Vector3();
 
-      // Iterate through faces (triangles)
-      for (let i = 0; i < positionAttribute.count; i += 3) {
-          vA.fromBufferAttribute(positionAttribute, i);
-          vB.fromBufferAttribute(positionAttribute, i + 1);
-          vC.fromBufferAttribute(positionAttribute, i + 2);
+      for (let face = 0; face < faceCount; face++) {
+          vA.fromBufferAttribute(positionAttribute, face * 3);
+          vB.fromBufferAttribute(positionAttribute, face * 3 + 1);
+          vC.fromBufferAttribute(positionAttribute, face * 3 + 2);
+          vA.toArray(mesh.positions, face * 9);
+          vB.toArray(mesh.positions, face * 9 + 3);
+          vC.toArray(mesh.positions, face * 9 + 6);
+          // Signed tetrahedron volumes about the center sum to the enclosed volume.
+          fromA.subVectors(vA, center);
+          fromB.subVectors(vB, center);
+          fromC.subVectors(vC, center);
+          mesh.volume += fromA.dot(fromB.cross(fromC)) / 6;
 
-          // Calculate face normal
+          // The cross product's direction is the outward normal; half its length is the area.
           cb.subVectors(vC, vB);
           ab.subVectors(vA, vB);
           cb.cross(ab);
-          faceNormal.copy(cb).normalize();
-
-          // Calculate face area (using cross product magnitude / 2)
-          const area = cb.length() / 2;
-          
-          faces.push({
-              normal: faceNormal.clone(),
-              area: area,
-              vertices: [vA.clone(), vB.clone(), vC.clone()] // Store vertices if needed for center calculation
-          });
+          mesh.areas[face] = cb.length() / 2;
+          cb.normalize().toArray(mesh.normals, face * 3);
       }
 
-      if (faces.length === 0) throw new Error("No faces found in geometry.");
+      mesh.volume = Math.abs(mesh.volume);
 
       if (!this.activeOperations.get(operationId)) throw new Error("Operation cancelled");
       if (progressCallback) progressCallback(65, "Grouping faces by normal...");
 
       // Group faces by similar normal vectors (tolerance for floating point errors)
-      const normalGroups: Map<string, { totalArea: number; representativeNormal: THREE.Vector3 }> = new Map();
-      const tolerance = 1e-5; 
+      const normalGroups: { totalArea: number; representativeNormal: THREE.Vector3 }[] = [];
+      const tolerance = 1e-5;
+      const faceNormal = new THREE.Vector3();
 
-      for (const face of faces) {
-          let foundGroup = false;
-          for (const [key, group] of normalGroups.entries()) {
-              if (face.normal.distanceToSquared(group.representativeNormal) < tolerance) {
-                  group.totalArea += face.area;
-                  // Optional: Average the normal? For now, just use the first one.
-                  foundGroup = true;
-                  break;
-              }
-          }
-          if (!foundGroup) {
-              const key = `${face.normal.x.toFixed(5)},${face.normal.y.toFixed(5)},${face.normal.z.toFixed(5)}`;
-              if (!normalGroups.has(key)) { // Ensure unique key even if floats slightly differ after toFixed
-                   normalGroups.set(key, { totalArea: face.area, representativeNormal: face.normal });
-              }
-          }
+      for (let face = 0; face < faceCount; face++) {
+          if (!(mesh.areas[face] > 0)) continue;
+          faceNormal.fromArray(mesh.normals, face * 3);
+          const group = normalGroups.find(candidate => faceNormal.distanceToSquared(candidate.representativeNormal) < tolerance);
+          if (group) group.totalArea += mesh.areas[face];
+          else normalGroups.push({ totalArea: mesh.areas[face], representativeNormal: faceNormal.clone() });
       }
-      
-      if (normalGroups.size === 0) throw new Error("Could not group faces by normal.");
 
       if (!this.activeOperations.get(operationId)) throw new Error("Operation cancelled");
-      if (progressCallback) progressCallback(75, "Finding largest flat surface...");
+      if (progressCallback) progressCallback(75, "Finding the pose that rests on the bed...");
 
-      // Include already-horizontal faces: excluding Z-aligned normals can
-      // stand a flat model on its edge, including on a repeated layFlat call.
-      let largestArea = 0;
-      let targetNormal: THREE.Vector3 | null = null;
-      const downVector = new THREE.Vector3(0, 0, -1); // Target normal (pointing down)
-
-      // Faces are grouped by direction, so a part whose flat faces are all
-      // horizontal has equal up- and down-facing areas. On a tie, keep the
-      // face that already points down so a seated part is not flipped.
-      for (const group of normalGroups.values()) {
-          const tied = targetNormal !== null && Math.abs(group.totalArea - largestArea) <= largestArea * 1e-6;
-          if (tied ? group.representativeNormal.z < targetNormal!.z : group.totalArea > largestArea) {
-              largestArea = group.totalArea;
-              targetNormal = group.representativeNormal;
-          }
+      // Candidate directions to turn down: the largest face groups, plus the
+      // model's own axes so a part with a domed side can be flipped exactly.
+      const candidates = normalGroups
+        .sort((a, b) => b.totalArea - a.totalArea)
+        .slice(0, LAY_FLAT_MAX_GROUP_CANDIDATES)
+        .map(group => group.representativeNormal);
+      for (const axis of [[0, 0, -1], [0, 0, 1], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]]) {
+          const normal = new THREE.Vector3(axis[0], axis[1], axis[2]);
+          if (!candidates.some(candidate => candidate.distanceToSquared(normal) < tolerance)) candidates.push(normal);
       }
 
-      if (!targetNormal) {
-          // Only a mesh without any face area reaches this.
-          console.warn("Could not find a suitable large flat face to lay down. No changes made.");
-          this.emit('operationComplete', { operationId, type: 'layFlat', success: true, output: stlFilePath, message: "No suitable flat face found." });
-          return stlFilePath;
+      let best: LayFlatPose | null = null;
+      for (const normal of candidates) {
+          const pose = evaluateLayFlatPose(mesh, normal);
+          if (pose && (!best || isBetterLayFlatPose(pose, best))) best = pose;
       }
-      
+
+      if (!best) {
+          const message = "No face lies on the model's lowest plane in any candidate orientation, so the model is unchanged.";
+          console.error(`lay_flat: ${message}`);
+          this.emit('operationComplete', { operationId, type: 'layFlat', success: true, output: stlFilePath, message });
+          return { path: stlFilePath, laid_flat: false, message };
+      }
+
       if (progressCallback) progressCallback(80, "Calculating rotation...");
-      
-      // Calculate the rotation needed to align targetNormal with downVector
-      const quaternion = new THREE.Quaternion().setFromUnitVectors(targetNormal, downVector);
-      const rotationMatrix = new THREE.Matrix4().makeRotationFromQuaternion(quaternion);
+
+      // Turn the chosen normal to face straight down. Turning +Z down rotates
+      // half a turn about X, which keeps the model's X layout.
+      const downVector = new THREE.Vector3(0, 0, -1);
+      const rotationMatrix = best.normal.dot(downVector) < -1 + 1e-9
+        ? new THREE.Matrix4().makeRotationX(Math.PI)
+        : new THREE.Matrix4().makeRotationFromQuaternion(new THREE.Quaternion().setFromUnitVectors(best.normal, downVector));
 
       // Rotate around the model's center
-      const center = new THREE.Vector3();
-      boundingBox.getCenter(center);
       const toOriginMatrix = new THREE.Matrix4().makeTranslation(-center.x, -center.y, -center.z);
       const fromOriginMatrix = new THREE.Matrix4().makeTranslation(center.x, center.y, center.z);
 
@@ -2336,8 +2415,9 @@ export class STLManipulator extends EventEmitter {
 
       await this.saveSTL(geometry, outputFilePath, progressCallback); // 90-100% progress
 
-      this.emit('operationComplete', { operationId, type: 'layFlat', success: true, output: outputFilePath });
-      return outputFilePath;
+      const message = `Rests on ${best.contactArea.toFixed(1)} mm² of bed contact; overhangs more than 45° from vertical need about ${best.supportVolume.toFixed(0)} mm³ of support.`;
+      this.emit('operationComplete', { operationId, type: 'layFlat', success: true, output: outputFilePath, message });
+      return { path: outputFilePath, laid_flat: true, message };
 
     } catch (error) {
       this.emit('operationError', { operationId, type: 'layFlat', error: error instanceof Error ? error.message : String(error) });
@@ -2346,4 +2426,76 @@ export class STLManipulator extends EventEmitter {
       this.activeOperations.delete(operationId);
     }
   }
+}
+
+export type LayFlatResult = {
+  /** The laid-flat STL, or the unchanged input when `laid_flat` is false. */
+  path: string;
+  laid_flat: boolean;
+  message: string;
+};
+
+/** Face corners (9 per face), outward unit normals (3 per face), areas, and the enclosed volume. */
+type LayFlatMesh = { positions: Float64Array; normals: Float64Array; areas: Float64Array; volume: number };
+
+/**
+ * A direction to turn down, with the bed contact and support it gives.
+ * `stackHeight` is the part and support volume over the contact area: the mean
+ * height of material standing on each mm² of bed. Standing a long part on its
+ * end, or resting a part on a fin under a wide cap, makes it tall.
+ */
+type LayFlatPose = { normal: THREE.Vector3; contactArea: number; supportVolume: number; stackHeight: number };
+
+const LAY_FLAT_MAX_GROUP_CANDIDATES = 64;
+/** Faces tilted more than 45° from vertical overhang and need support. */
+const LAY_FLAT_OVERHANG_COS = Math.SQRT1_2 + 1e-6;
+
+/**
+ * Score turning `normal` to face the bed. The bed is the mesh's lowest plane in
+ * that pose, its support plane. Faces lying on it, within 0.5% of the model's
+ * height there (at most 0.2 mm), are bed contact. Overhanging faces above it
+ * need support up from the bed: their projected area times their height.
+ * Returns null when no face lies on the bed: turning that normal down would
+ * rest the model on an edge or a point, not a face.
+ */
+function evaluateLayFlatPose(mesh: LayFlatMesh, normal: THREE.Vector3): LayFlatPose | null {
+  const { positions, normals, areas } = mesh;
+  const nx = normal.x, ny = normal.y, nz = normal.z;
+  // Distance along the normal grows toward the bed: the bed is at its maximum.
+  let bed = -Infinity, top = Infinity;
+  for (let index = 0; index < positions.length; index += 3) {
+    const along = positions[index] * nx + positions[index + 1] * ny + positions[index + 2] * nz;
+    if (along > bed) bed = along;
+    if (along < top) top = along;
+  }
+  const tolerance = Math.min(0.2, Math.max(0.005 * (bed - top), 1e-4));
+
+  let contactArea = 0;
+  let supportVolume = 0;
+  for (let face = 0; face < areas.length; face++) {
+    const facing = normals[face * 3] * nx + normals[face * 3 + 1] * ny + normals[face * 3 + 2] * nz;
+    if (!(facing > 0)) continue;
+    const base = face * 9;
+    let heightSum = 0, heightMax = 0;
+    for (let corner = base; corner < base + 9; corner += 3) {
+      const height = bed - (positions[corner] * nx + positions[corner + 1] * ny + positions[corner + 2] * nz);
+      heightSum += height;
+      if (height > heightMax) heightMax = height;
+    }
+    if (heightMax <= tolerance) contactArea += areas[face];
+    else if (facing > LAY_FLAT_OVERHANG_COS) supportVolume += areas[face] * facing * (heightSum / 3);
+  }
+  if (!(contactArea > 0)) return null;
+  return { normal, contactArea, supportVolume, stackHeight: (mesh.volume + supportVolume) / contactArea };
+}
+
+/**
+ * Prefer the pose with the lowest stack height, then the larger contact. On a
+ * tie, keep the face that already points down so a seated part is not flipped.
+ */
+function isBetterLayFlatPose(pose: LayFlatPose, best: LayFlatPose): boolean {
+  const same = (a: number, b: number) => Math.abs(a - b) <= 1e-9 + 1e-6 * Math.max(Math.abs(a), Math.abs(b));
+  if (!same(pose.stackHeight, best.stackHeight)) return pose.stackHeight < best.stackHeight;
+  if (!same(pose.contactArea, best.contactArea)) return pose.contactArea > best.contactArea;
+  return pose.normal.z < best.normal.z;
 }
