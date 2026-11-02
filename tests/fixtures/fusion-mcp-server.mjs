@@ -51,7 +51,8 @@ reader.on("line", (line) => {
         { name: "Hidden", solid: true, visible: false, size_cm: [2, 2, 2] },
         { name: "Skin", solid: false, visible: true, size_cm: [3, 3, 0] },
         ...(mode === "multi-body" ? [{ name: "Insert", solid: true, visible: true, size_cm: [1, 1, 0.5] }] : []),
-        ...(mode === "duplicate-body" ? [{ name: "Bracket", solid: true, visible: true, size_cm: [1, 1, 0.5] }] : []),
+        ...(mode === "duplicate-body" ? [{ name: "Bracket", solid: true, visible: true, size_cm: [1, 1, 0] }] : []),
+        ...(mode === "hidden-namesake" ? [{ name: "Bracket", solid: true, visible: false, size_cm: [4, 4, 4] }] : []),
       ]
       : marker === "parameters" ? { parameters: [{ name: "width", value: 4, expression: "40 mm", unit: "mm", comment: "it's \"wide\"\nreally" }], count: 1 }
       : "done";

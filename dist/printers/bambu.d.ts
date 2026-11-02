@@ -34,14 +34,19 @@ export type ProgressReport = {
 /** The inspected bytes and limits of a started job, for the resume prompt and byte check. */
 export type CheckedFile = {
     sha256: string;
+    /** A project's printed plate: its number and the SHA-256 of its Metadata/plate_<index>.gcode. */
+    plate?: {
+        index: number;
+        sha256: string;
+    };
     model: string;
     maxNozzleTemperature: number;
     maxBedTemperature: number;
     maxChamberTemperature: number;
     materials: string[];
 };
-/** What a resume needs to know about a started file: its bytes, limits and used materials. */
-export declare function checkedFile(inspection: PrintFileInspection): CheckedFile;
+/** What a resume needs to know about a started file (filePath, the inspected snapshot): its bytes, printed plate, limits and used materials. */
+export declare function checkedFile(inspection: PrintFileInspection, filePath: string): Promise<CheckedFile>;
 export type PrintPreflight = {
     finishedJob?: string;
     serial: string;
@@ -122,6 +127,12 @@ export declare class BambuImplementation {
      * be current at every check, including the native helper's last one.
      */
     resumeJob(host: string, serial: string, token: string, dispatch?: (assertActive: () => void, beforeDispatch: () => Promise<void>) => Promise<any>): Promise<any>;
+    /**
+     * Re-read a started job's bytes over FTPS: the uploaded file, else the plate
+     * G-code the printer extracted from the project to print it. The first file
+     * that can be read decides; a mismatch is reported as changed.
+     */
+    private rereadJob;
     /** SHA-256 of a printer file, streamed from an FTPS download into a private directory. */
     private remoteSha256;
     clearHmsErrors(host: string, serial: string, token: string, dispatch?: (assertActive: () => void, beforeDispatch: () => Promise<void>) => Promise<any>): Promise<any>;

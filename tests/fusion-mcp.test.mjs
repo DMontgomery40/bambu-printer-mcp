@@ -234,12 +234,19 @@ test("export chooses among visible solid bodies only, and needs body_name when t
   }
 });
 
-test("export refuses two visible solid bodies with the same name", async (t) => {
-  const { client, directory } = await start(t, "duplicate-body");
-  const result = await client.callTool({ name: "fusion_mcp_export", arguments: { output_dir: directory, name: "dup", body_name: "Bracket" } });
-  assert.match(text(result), /Several visible solid bodies are named "Bracket"/);
-  assert.deepEqual(fs.readdirSync(directory).filter((name) => !name.endsWith(".jsonl")), []);
-});
+for (const mode of ["duplicate-body", "hidden-namesake"]) {
+  test(`export refuses a body name export_stl could resolve to another body (${mode})`, async (t) => {
+    const { client, directory, logPath } = await start(t, mode);
+    for (const args of [{ body_name: "Bracket" }, {}]) {
+      const result = await client.callTool({ name: "fusion_mcp_export", arguments: { output_dir: directory, name: "dup", ...args } });
+      assert.match(text(result), mode === "duplicate-body" && !args.body_name
+        ? /2 visible solid bodies \(Bracket, Bracket\); pass body_name/
+        : /Several bodies are named "Bracket".*export_stl takes the first/s);
+    }
+    assert.deepEqual(events(logPath).filter((event) => event.event === "call" && event.name === "export_stl"), []);
+    assert.deepEqual(fs.readdirSync(directory).filter((name) => !name.endsWith(".jsonl")), []);
+  });
+}
 
 test("export reports an STL written in centimetres", async (t) => {
   const { client, directory } = await start(t, "cm-stl");

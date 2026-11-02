@@ -204,22 +204,22 @@ new_design = adsk.fusion.Design.cast(doc.products.itemByProductType("DesignProdu
 new_design.designType = adsk.fusion.DesignTypes.ParametricDesignType
 json.dumps({"document": doc.name, "parametric": new_design.designType == adsk.fusion.DesignTypes.ParametricDesignType})`;
 
-// Every body in every component, with its bounding box in Fusion's internal centimetres;
-// the bridge exports only visible solid ones.
+// The bodies export_stl looks a name up in, in its order (faust _body_by_name: root
+// bodies, then every occurrence's proxies), with bounding boxes in Fusion's centimetres.
 const BODIES_CODE = `# BAMBU_FUSION bodies
 import json
-json.dumps([{"name": b.name, "solid": b.isSolid, "visible": b.isVisible, "size_cm": [bb.maxPoint.x - bb.minPoint.x, bb.maxPoint.y - bb.minPoint.y, bb.maxPoint.z - bb.minPoint.z]} for c in design.allComponents for b in c.bRepBodies for bb in [b.boundingBox]])`;
+json.dumps([{"name": b.name, "solid": b.isSolid, "visible": b.isVisible, "size_cm": [bb.maxPoint.x - bb.minPoint.x, bb.maxPoint.y - bb.minPoint.y, bb.maxPoint.z - bb.minPoint.z]} for b in list(component.bRepBodies) + [p for o in component.allOccurrences for p in o.bRepBodies] for bb in [b.boundingBox]])`;
 
-type FusionBody = { name: string; size_cm: [number, number, number] };
+type FusionBody = { name: string; solid: boolean; visible: boolean; size_cm: [number, number, number] };
 
-function visibleSolidBodies(value: unknown): FusionBody[] {
+function fusionBodies(value: unknown): FusionBody[] {
   if (!Array.isArray(value)) throw new FusionError("Fusion returned an unreadable body list.");
-  return value.flatMap((entry: any) => {
+  return value.map((entry: any) => {
     const size = entry?.size_cm;
     if (typeof entry?.name !== "string" || !Array.isArray(size) || size.length !== 3 || size.some((part: unknown) => typeof part !== "number" || !Number.isFinite(part) || part < 0)) {
       throw new FusionError("Fusion returned an unreadable body list.");
     }
-    return entry.solid === true && entry.visible === true ? [{ name: entry.name, size_cm: size as [number, number, number] }] : [];
+    return { name: entry.name, solid: entry.solid === true, visible: entry.visible === true, size_cm: size as [number, number, number] };
   });
 }
 
@@ -486,7 +486,8 @@ export class FusionMcpBridge {
     try {
       const exported = await this.request({ timeout, signal }, async (live, options, dispatched) => {
         // Hidden and surface bodies are never chosen: only what would print.
-        const bodies = visibleSolidBodies(codeJson(await this.must(live, options, dispatched, "execute_code", { code: BODIES_CODE })));
+        const everyBody = fusionBodies(codeJson(await this.must(live, options, dispatched, "execute_code", { code: BODIES_CODE })));
+        const bodies = everyBody.filter(entry => entry.solid && entry.visible);
         const names = bodies.map(entry => entry.name);
         const body = bodyName ? bodies.find(entry => entry.name === bodyName) : bodies.length === 1 ? bodies[0] : undefined;
         if (!body) {
@@ -495,7 +496,10 @@ export class FusionMcpBridge {
             ? `The design has ${bodies.length} visible solid bodies (${names.slice(0, 20).join(", ")}); pass body_name to choose the one to export.`
             : "The design has no visible solid body to export.");
         }
-        if (names.filter(entry => entry === body.name).length > 1) throw new FusionError(`Several visible solid bodies are named "${body.name}"; rename them in Fusion so the export is unambiguous.`);
+        // export_stl takes the first body with the name, hidden or not, so the name must be unique among all of them.
+        if (everyBody.filter(entry => entry.name === body.name).length > 1) {
+          throw new FusionError(`Several bodies are named "${body.name}", counting hidden and surface bodies and copies of a component; Fusion's export_stl takes the first. Rename them in Fusion so the export is unambiguous.`);
+        }
         await this.must(live, options, dispatched, "export_stl", { body_name: body.name, file_path: staged.stl });
         await this.must(live, options, dispatched, "export_f3d", { file_path: staged.f3d });
         const parameters = codeJson(await this.must(live, options, dispatched, "execute_code", { code: PARAMETERS_CODE })) as { parameters?: unknown; count?: unknown };

@@ -1230,6 +1230,7 @@ class BambuPrinterMCPServer {
         const clientJobId = args?.client_job_id !== undefined ? Number(args.client_job_id) : Date.now();
         return withPrinterOperation(devIp, devId, assertActive => withPrintSnapshot(threeMFPath, async (snapshot, retainForDispatchedUpload) => {
             const inspection = await inspectPrintFile(snapshot, { model: printModel, nozzleDiameters: printNozzles, plateIndex, bedType: printBedType });
+            const resumeFile = await checkedFile(inspection, snapshot);
             let mapping = finalAmsMapping?.slice();
             if (finalAmsSlots) {
                 if (finalAmsSlots.length !== inspection.usedFilamentPositions.length)
@@ -1340,7 +1341,7 @@ class BambuPrinterMCPServer {
                         assertActive();
                     } });
                 assertActive();
-                this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements, checkedFile(inspection), false);
+                this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements, resumeFile, false);
                 return { ...nativeResult, autoSliced, projectName, plateIndex, useAMS, amsMapping: mapping };
             }
             const bridgeOptions = {
@@ -1380,7 +1381,7 @@ class BambuPrinterMCPServer {
                     (reported ? ` Plug-in reported: ${reported}.` : ""));
             }
             assertActive();
-            this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements, checkedFile(inspection), false);
+            this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements, resumeFile, false);
             return {
                 status: "success",
                 message: `FULU BambuNetwork ${bridgePrintMethod} command for ${threeMfFilename} sent successfully.`,

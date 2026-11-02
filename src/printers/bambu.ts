@@ -522,6 +522,8 @@ export type ProgressReport = { raw: Record<string, any>; receivedAt: number };
 /** The inspected bytes and limits of a started job, for the resume prompt and byte check. */
 export type CheckedFile = {
   sha256: string;
+  /** A project's printed plate: its number and the SHA-256 of its Metadata/plate_<index>.gcode. */
+  plate?: { index: number; sha256: string };
   model: string;
   maxNozzleTemperature: number;
   maxBedTemperature: number;
@@ -554,14 +556,33 @@ function reportsJob(raw: Record<string, any>, remotePath: string): boolean {
   return reportedJobNames(raw).some(value => jobStem(value) === jobStem(remotePath));
 }
 
-/** What a resume needs to know about a started file: its bytes, limits and used materials. */
-export function checkedFile(inspection: PrintFileInspection): CheckedFile {
+/** What a resume needs to know about a started file (filePath, the inspected snapshot): its bytes, printed plate, limits and used materials. */
+export async function checkedFile(inspection: PrintFileInspection, filePath: string): Promise<CheckedFile> {
   const used = inspection.usedFilamentPositions.map(position => inspection.materials[position]).filter(Boolean);
+  let plate: CheckedFile["plate"];
+  const plateNumber = /^Metadata\/plate_(\d+)\.gcode$/i.exec(inspection.plateInternalPath ?? "");
+  if (plateNumber && /\.3mf$/i.test(filePath)) {
+    const entry = (await readSafe3mfArchive(filePath)).zip.file(inspection.plateInternalPath!);
+    if (entry) plate = { index: Number(plateNumber[1]), sha256: createHash("sha256").update(await entry.async("nodebuffer")).digest("hex") };
+  }
   return {
-    sha256: inspection.sha256, model: inspection.model,
+    sha256: inspection.sha256, ...(plate ? { plate } : {}), model: inspection.model,
     maxNozzleTemperature: inspection.maxNozzleTemperature, maxBedTemperature: inspection.maxBedTemperature, maxChamberTemperature: inspection.maxChamberTemperature,
     materials: [...new Set(used.length ? used : inspection.materials)],
   };
+}
+
+/**
+ * Where a printer keeps the plate G-code it extracted from a project to print
+ * it. A P1S removes the uploaded 3MF once it starts and keeps
+ * cache/<name>_plate_<n>.gcode, byte-identical to the 3MF's
+ * Metadata/plate_<n>.gcode (checked on a P1S for project_file and legacy
+ * .gcode.3mf jobs).
+ */
+function extractedPlatePath(remotePath: string, index: number): string {
+  const directory = path.posix.dirname(remotePath);
+  const stem = path.posix.basename(remotePath).replace(/(?:\.gcode)?\.3mf$/i, "");
+  return `${directory === "." ? "" : `${directory}/`}${stem}_plate_${index}.gcode`;
 }
 
 /** The name counterpart_print_progress reports for the job: subtask_name, else the G-code file's basename. */
@@ -961,6 +982,7 @@ export class BambuImplementation {
     const inspection = await inspectPrintFile(options.filePath, {
       model, nozzleDiameters: options.nozzleDiameters, plateIndex: options.plateIndex ?? 0, bedType: options.bedType,
     });
+    const resumeFile = await checkedFile(inspection, options.filePath);
     const projectMetadata = await this.resolveProjectFileMetadata(
       options.filePath,
       options.plateIndex,
@@ -1103,7 +1125,7 @@ export class BambuImplementation {
     if (legacyContainer) {
       const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
       try { await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath })); } catch (error) { watcher.dispose(); throw error; }
-      this.recordCheckedJob(host, serial, remoteProjectPath, requirements, checkedFile(inspection));
+      this.recordCheckedJob(host, serial, remoteProjectPath, requirements, resumeFile);
       const dispatch = await watcher.settled();
       return {
         status: "success", dispatch, remoteProjectPath,
@@ -1179,7 +1201,7 @@ export class BambuImplementation {
 
     const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
     try { await printer.publish(projectFileCmd); } catch (error) { watcher.dispose(); throw error; }
-    this.recordCheckedJob(host, serial, remoteProjectPath, requirements, checkedFile(inspection));
+    this.recordCheckedJob(host, serial, remoteProjectPath, requirements, resumeFile);
     await new Promise((resolve) => setTimeout(resolve, 300));
     const dispatch = await watcher.settled();
 
@@ -1300,25 +1322,21 @@ export class BambuImplementation {
         assertActive();
       };
       await pausedJob();
-      let sha256: string | undefined;
-      let unread: string | undefined;
-      try { sha256 = await this.remoteSha256(host, token, checked.remotePath); }
-      catch (error) {
-        unread = (error as Error).message;
-        if (checked.uploadedHere) {
-          throw new Error(`Could not re-read ${jobName} from the printer over FTPS to confirm it is the inspected file (${unread}). Nothing was sent; resume it at the printer.`);
-        }
-      }
-      if (sha256 !== undefined && sha256 !== checked.sha256) {
+      const reread = await this.rereadJob(host, token, checked);
+      if ("changed" in reread) {
         if (this.checkedJobs.get(key) === checked) this.checkedJobs.delete(key);
-        throw new Error(`${jobName} on the printer is no longer the file this server inspected (SHA-256 changed). Nothing was sent, and this job can no longer be resumed from here.`);
+        throw new Error(`${jobName} on the printer is no longer the file this server inspected (SHA-256 of ${reread.changed} changed). Nothing was sent, and this job can no longer be resumed from here.`);
       }
-      const bytesVerified = sha256 !== undefined;
+      const unread = "unread" in reread ? reread.unread : undefined;
+      if (unread !== undefined && checked.uploadedHere) {
+        throw new Error(`Could not re-read ${jobName} from the printer over FTPS to confirm it is the inspected file (${unread}). Nothing was sent; resume it at the printer.`);
+      }
+      const bytesVerified = "verified" in reread;
       assertActive();
       await this.confirmHardwareAction(
         `Resume ${jobName} on ${checked.model.toUpperCase()} (${serial})? It reheats to its targets (peak nozzle ${checked.maxNozzleTemperature}°C, ` +
         `bed ${checked.maxBedTemperature}°C, chamber ${checked.maxChamberTemperature}°C) and moves. Materials: ${checked.materials.length ? checked.materials.join(", ") : "none declared"}. ` +
-        `File SHA-256: ${checked.sha256}${bytesVerified ? " (re-read from the printer)" : ` (Bambu's plug-in placed the file, and it could not be re-read over FTPS: ${unread}; matched by its unique name)`}. ` +
+        `File SHA-256: ${checked.sha256}${"verified" in reread ? ` (re-read from the printer${reread.verified === checked.remotePath ? "" : ` as its extracted plate ${reread.verified}`})` : ` (Bambu's plug-in placed the file, and it could not be re-read over FTPS: ${unread}; matched by its unique name)`}. ` +
         "Confirm the nozzle path is clear and the filament is still loaded."
       );
       // The job may have been resumed, stopped or replaced at the printer while the prompt was open.
@@ -1329,6 +1347,24 @@ export class BambuImplementation {
       else await invokeWithoutAck(printer!, new UpdateStateCommand({ state: "resume" }));
       return { status: "success", message: `Resume command sent for ${jobName}.`, jobName, bytesVerified };
     });
+  }
+
+  /**
+   * Re-read a started job's bytes over FTPS: the uploaded file, else the plate
+   * G-code the printer extracted from the project to print it. The first file
+   * that can be read decides; a mismatch is reported as changed.
+   */
+  private async rereadJob(host: string, token: string, checked: CheckedJob): Promise<{ verified: string } | { changed: string } | { unread: string }> {
+    const candidates = [{ remote: checked.remotePath, sha256: checked.sha256 }];
+    if (checked.plate) candidates.push({ remote: extractedPlatePath(checked.remotePath, checked.plate.index), sha256: checked.plate.sha256 });
+    const failures: string[] = [];
+    for (const candidate of candidates) {
+      let sha256: string;
+      try { sha256 = await this.remoteSha256(host, token, candidate.remote); }
+      catch (error) { failures.push(`${candidate.remote}: ${(error as Error).message}`); continue; }
+      return sha256 === candidate.sha256 ? { verified: candidate.remote } : { changed: candidate.remote };
+    }
+    return { unread: failures.join("; ") };
   }
 
   /** SHA-256 of a printer file, streamed from an FTPS download into a private directory. */
@@ -1779,6 +1815,7 @@ export class BambuImplementation {
     if (!model) throw new Error("A supported bambuModel is required before printing.");
     const inspection = await inspectPrintFile(filePath, { model });
     if (inspection.selectsAms) throw new Error("Raw G-code with AMS selection requires a .3mf project export with verified physical slot mappings.");
+    const resumeFile = await checkedFile(inspection, filePath);
     const initialStatus = await this.getSafetyStatus(host, serial, token);
     let requirements = this.validateLoadedGcodeState(initialStatus, inspection);
     const preflight = await this.confirmPrintPreflight(serial, initialStatus, inspection);
@@ -1795,7 +1832,7 @@ export class BambuImplementation {
     assertActive();
     const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
     try { await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remotePath })); } catch (error) { watcher.dispose(); throw error; }
-    this.recordCheckedJob(host, serial, remotePath, requirements, checkedFile(inspection));
+    this.recordCheckedJob(host, serial, remotePath, requirements, resumeFile);
     const dispatch = await watcher.settled();
     return {
       status: "success", uploaded: true, printRequested: true, dispatch, remotePath,

@@ -1645,6 +1645,7 @@ class BambuPrinterMCPServer {
 
     return withPrinterOperation(devIp, devId, assertActive => withPrintSnapshot(threeMFPath, async (snapshot, retainForDispatchedUpload) => {
       const inspection = await inspectPrintFile(snapshot, { model: printModel, nozzleDiameters: printNozzles, plateIndex, bedType: printBedType });
+      const resumeFile = await checkedFile(inspection, snapshot);
       let mapping = finalAmsMapping?.slice();
       if (finalAmsSlots) {
         if (finalAmsSlots.length !== inspection.usedFilamentPositions.length) throw new Error("ams_slots must supply exactly one physical tray per used filament.");
@@ -1755,7 +1756,7 @@ class BambuPrinterMCPServer {
           assertActive();
         } });
         assertActive();
-        this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements, checkedFile(inspection), false);
+        this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements, resumeFile, false);
         return { ...nativeResult, autoSliced, projectName, plateIndex, useAMS, amsMapping: mapping };
       }
       const bridgeOptions: BambuNetworkBridgeOptions = {
@@ -1801,7 +1802,7 @@ class BambuPrinterMCPServer {
       }
 
       assertActive();
-      this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements, checkedFile(inspection), false);
+      this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements, resumeFile, false);
 
       return {
         status: "success",

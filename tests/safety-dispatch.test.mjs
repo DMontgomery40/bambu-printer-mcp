@@ -365,7 +365,7 @@ test("a changed printer file refuses the resume and retires the record", async (
   const remote = job.started.remoteProjectPath.replace(/^\/+/, "");
   const original = job.files.get(remote);
   job.files.set(remote, Buffer.concat([original, Buffer.from("\n; changed")]));
-  await assert.rejects(job.printer.resumeJob(host, serial, token), /SHA-256 changed/);
+  await assert.rejects(job.printer.resumeJob(host, serial, token), /SHA-256 of .* changed/);
   assert.deepEqual(job.prompts, [], "nobody is asked about a file that is not the inspected one");
   job.files.set(remote, original);
   await assert.rejects(job.printer.resumeJob(host, serial, token), /inspected and started/);
@@ -381,6 +381,34 @@ test("a printer file that cannot be re-read refuses the resume but keeps the rec
   assert.deepEqual(job.published(), []);
   job.files.set(remote, original);
   assert.equal((await job.printer.resumeJob(host, serial, token)).status, "success");
+});
+
+/** What a P1S does once it starts a project: it removes the 3MF and keeps the extracted plate G-code. */
+async function extractPlate(job, plateBytes) {
+  const remote = job.started.remoteProjectPath.replace(/^\/+/, "");
+  const zip = await JSZip.loadAsync(job.files.get(remote));
+  job.files.delete(remote);
+  const plate = remote.replace(/(?:\.gcode)?\.3mf$/i, "_plate_1.gcode");
+  job.files.set(plate, plateBytes ?? await zip.file("Metadata/plate_1.gcode").async("nodebuffer"));
+  return plate;
+}
+
+test("a project the printer replaced with its extracted plate is verified against the inspected plate", async (t) => {
+  const job = await pausedJob(t);
+  const plate = await extractPlate(job);
+  const result = await job.printer.resumeJob(host, serial, token);
+  assert.equal(result.bytesVerified, true);
+  assert.deepEqual(job.events.filter(({ action }) => action === "download").map(({ remote }) => remote), [job.started.remoteProjectPath, plate]);
+  assert.match(job.prompts[0], new RegExp(`re-read from the printer as its extracted plate ${plate.replaceAll(".", "\\.")}`));
+  assert.equal(job.published().length, 1);
+});
+
+test("an extracted plate that differs from the inspected plate refuses the resume and retires the record", async (t) => {
+  const job = await pausedJob(t);
+  const plate = await extractPlate(job, Buffer.from("G28\nM104 S300\n"));
+  await assert.rejects(job.printer.resumeJob(host, serial, token), new RegExp(`SHA-256 of ${plate.replaceAll(".", "\\.")} changed`));
+  await assert.rejects(job.printer.resumeJob(host, serial, token), /inspected and started/);
+  assert.deepEqual(job.published(), []);
 });
 
 for (const [name, after] of [
@@ -432,7 +460,7 @@ test("a plug-in route job the printer cannot re-read is matched by its unique na
   job.files.clear();
   const result = await job.printer.resumeJob(host, serial, token);
   assert.equal(result.bytesVerified, false);
-  assert.match(job.prompts[0], /could not be re-read over FTPS: 550 .*no such file; matched by its unique name/);
+  assert.match(job.prompts[0], /could not be re-read over FTPS: .*550 .*no such file; matched by its unique name/);
   assert.equal(job.published().length, 1);
 });
 
@@ -442,7 +470,7 @@ test("a plug-in route job whose re-read file differs is still refused", async (t
   job.printer.recordCheckedJob(host, serial, record.remotePath, record.requirements, record, false);
   const remote = record.remotePath.replace(/^\/+/, "");
   job.files.set(remote, Buffer.from("not the inspected bytes"));
-  await assert.rejects(job.printer.resumeJob(host, serial, token), /SHA-256 changed/);
+  await assert.rejects(job.printer.resumeJob(host, serial, token), /SHA-256 of .* changed/);
   assert.deepEqual(job.published(), []);
 });
 

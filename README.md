@@ -740,7 +740,7 @@ Pause the currently running print job. Sends an `UpdateState` MQTT command with 
 Resume a paused print job that this server inspected and started. Resume reheats and moves the printer, so it is checked like a print start:
 
 1. A fresh report must show that job paused, with the inspected nozzle and filament still in place.
-2. The server downloads the job's file from the printer over FTPS and compares its SHA-256 with the inspected bytes. A different file refuses the resume, and the job can no longer be resumed from here.
+2. The server downloads the job's file from the printer over FTPS and compares its SHA-256 with the inspected bytes. A P1S deletes an uploaded project once it starts printing and keeps the plate G-code it extracted, `cache/<name>_plate_<n>.gcode`, which is byte-identical to the 3MF's `Metadata/plate_<n>.gcode`. When the project is gone, the server compares that file with the inspected plate. A different file refuses the resume, and the job can no longer be resumed from here.
 3. A person confirms through MCP elicitation: the prompt names the job, its peak temperatures, materials and SHA-256. `BAMBU_REQUIRE_CONFIRMATION=0` skips this prompt, as it does for print and heating prompts.
 4. The printer is read again after the prompt, and on X2D and H2 the native helper rechecks it once more right before sending. Only then does the server send `UpdateState` with `state: "resume"`.
 
@@ -1338,8 +1338,10 @@ only when the app starts.
    (`export_f3d`) and `<name>.parameters.json` (the user parameters, with the
    fields `get_parameters` reports) into an existing directory, and returns their
    absolute paths. Hidden and surface bodies are never exported. Without
-   `body_name` the design must have exactly one visible solid body, and two
-   visible solid bodies with the same name are refused. It writes all three files
+   `body_name` the design must have exactly one visible solid body. Fusion's
+   `export_stl` takes the first body with a name, hidden or not, so a name that
+   another body shares is refused. That includes hidden bodies, surface bodies
+   and copies of a component. It writes all three files
    or none, never overwrites a file, and checks the STL is a finite triangle mesh.
    The result also has:
    - `boundingBox`: the STL's `{min, max, dimensions}` in its own units;
