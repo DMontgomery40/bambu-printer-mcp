@@ -52,9 +52,11 @@ export const defaultFusionSystem = {
     /**
      * An open port is not enough: Blender's MCP add-on defaults to
      * localhost:9876, the add-in's own default. The add-in speaks newline-delimited JSON
-     * (addon/server/socket_server.py) and answers {"type":"ping"} with
-     * {"status":"success","result":{"pong":true}} without touching Fusion's API;
-     * Blender's add-on answers an unknown command with an error.
+     * (addon/server/socket_server.py) and answers {"type":"ping"} without touching
+     * Fusion's API: on its fast path (event_bridge.py) with
+     * {"status":"success","result":{"ok":true,"status":"pong"}}, and through its
+     * command handler with {"pong":true}. Blender's add-on answers an unknown command
+     * with an error.
      */
     addinAnswers: (host, port, timeoutMs) => new Promise(resolve => {
         const socket = net.connect({ host, port });
@@ -78,7 +80,7 @@ export const defaultFusionSystem = {
             const newline = buffer.indexOf("\n");
             try {
                 const reply = JSON.parse(newline >= 0 ? buffer.slice(0, newline) : buffer);
-                done(reply?.status === "success" && reply?.result?.pong === true);
+                done(reply?.status === "success" && (reply?.result?.status === "pong" || reply?.result?.pong === true));
             }
             catch {
                 if (newline >= 0)

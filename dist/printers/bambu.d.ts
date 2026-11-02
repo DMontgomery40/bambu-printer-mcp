@@ -13,6 +13,11 @@ interface BambuPrintOptionsInternal {
     flowCalibration?: boolean;
     vibrationCalibration?: boolean;
     layerInspect?: boolean;
+    /** Explicit Studio option values (0 off, 1 on, 2 auto); see studio-print-options.ts. */
+    autoBedLeveling?: number;
+    autoFlowCali?: number;
+    autoOffsetCali?: number;
+    extruderCaliManualMode?: number;
     timelapse?: boolean;
     amsMapping?: number[];
     /**

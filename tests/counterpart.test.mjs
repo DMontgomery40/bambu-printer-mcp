@@ -359,3 +359,31 @@ test("V2 reports take the active extruder's packed temperature and loaded filame
   // Without device.extruder, the legacy fields are used.
   assert.deepEqual(progress({ gcode_state: "RUNNING", nozzle_temper: 205, nozzle_target_temper: 210, ams: { ...ams, tray_now: "1" } }).temps.nozzle, { actual: 205, target: 210 });
 });
+
+test("an HMS or print_error code missing from the bundled tables uses the user's own Bambu Studio download, by serial prefix", (t) => {
+  // Bambu Studio keeps its downloaded tables in an hms folder next to BambuStudio.conf. Fixture text, not Bambu's.
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "studio-hms-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(directory, "hms"));
+  const table = (hms, errors) => JSON.stringify({ data: { device_hms: { en: hms, ver: 1 }, device_error: { en: errors, ver: 1 } }, result: 0, ver: 1 });
+  fs.writeFileSync(path.join(directory, "hms", "hms_en_01P.json"), table([{ ecode: "03000D0000020001", intro: "Fixture P1S heatbed text" }], [{ ecode: "0E010001", intro: "Fixture P1S error text" }]));
+  fs.writeFileSync(path.join(directory, "hms", "hms_en.json"), table([{ ecode: "0C00FFFF0001FFFE", intro: "Fixture generic text" }, { ecode: "03000D0000020001", intro: "Generic text that the prefix table overrides" }], []));
+  const raw = { gcode_state: "FAILED", print_error: 0x0e010001, hms: [{ attr: 0x03000d00, code: 0x00020001 }, { attr: 0x0c00ffff, code: 0x0001fffe }] };
+  const previous = process.env.BAMBU_STUDIO_CONFIG;
+  t.after(() => { if (previous === undefined) delete process.env.BAMBU_STUDIO_CONFIG; else process.env.BAMBU_STUDIO_CONFIG = previous; });
+
+  process.env.BAMBU_STUDIO_CONFIG = path.join(directory, "BambuStudio.conf");
+  const messages = Object.fromEntries(progress(raw).problems.map((problem) => [problem.code, problem.message]));
+  assert.deepEqual(messages, {
+    "0E010001": "Fixture P1S error text",
+    "0300_0D00_0002_0001": "Fixture P1S heatbed text",
+    "0C00_FFFF_0001_FFFE": "Fixture generic text",
+  });
+  // Another printer's serial skips the P1S table and uses only hms_en.json.
+  const x1 = Object.fromEntries(progress(raw, { serial: "00MTEST", model: "x1c" }).problems.map((problem) => [problem.code, problem.message]));
+  assert.equal(x1["0300_0D00_0002_0001"], "Generic text that the prefix table overrides");
+  assert.match(x1["0E010001"], /has no description/);
+
+  process.env.BAMBU_STUDIO_CONFIG = "";
+  assert.match(progress(raw).problems.find((problem) => problem.code === "0300_0D00_0002_0001").message, /has no description/);
+});

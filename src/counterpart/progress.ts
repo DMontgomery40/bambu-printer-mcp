@@ -6,6 +6,7 @@
 import path from "node:path";
 import { BAMBU_STAGES } from "../printers/bambu-stages.js";
 import { HMS_MESSAGES, HMS_MESSAGES_SOURCE, PRINT_ERROR_MESSAGES, type HmsText } from "../safety/hms-messages.js";
+import { studioDownloadedText } from "../studio-hms-text.js";
 import { isDualNozzleModel, normalizeModel } from "../safety/limits.js";
 import { finiteNumber, hmsCode, isHiddenNotice } from "../safety/printer-state.js";
 import { COUNTERPART_CONTRACT, type PrintProgress, type PrintState, type Problem, type ProblemSeverity, type Temperature } from "./schemas.js";
@@ -77,7 +78,7 @@ export function bambuProblems(raw: Record<string, any>, serial: string, model: s
   // 0300400C only records a cancel; it is the state, not a problem.
   if (error !== undefined && Number.isInteger(error) && error > 0 && error <= 0xffffffff && error !== TASK_CANCELLED) {
     const code = error.toString(16).padStart(8, "0").toUpperCase();
-    add({ code, severity: "error", message: tableText(PRINT_ERROR_MESSAGES, code, serial) ?? undocumented(code) });
+    add({ code, severity: "error", message: tableText(PRINT_ERROR_MESSAGES, code, serial) ?? studioDownloadedText("error", code, serial) ?? undocumented(code) });
   }
   for (const reported of Array.isArray(raw.hms) ? raw.hms : []) {
     const entry = hmsCode(reported);
@@ -93,7 +94,8 @@ export function bambuProblems(raw: Record<string, any>, serial: string, model: s
     add({
       code,
       severity: HMS_SEVERITIES[entry.severity] ?? "error",
-      message: tableText(HMS_MESSAGES, entry.hex, serial) ?? undocumented(code),
+      // The pinned tag bundles no P1, X1 or A1 table; the user's own Studio download may have the text.
+      message: tableText(HMS_MESSAGES, entry.hex, serial) ?? studioDownloadedText("hms", entry.hex, serial) ?? undocumented(code),
       url: hmsUrl(entry.hex),
     });
   }
