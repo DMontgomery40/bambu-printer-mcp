@@ -1284,6 +1284,8 @@ FUSION_MCP_COMMAND=uvx
 FUSION_MCP_ARGS='["--from","git+https://github.com/faust-machines/fusion360-mcp-server@19b9f1e95192","fusion360-mcp-server","--mode","socket"]'
 FUSION_MCP_TIMEOUT_MS=180000
 FUSION_MCP_HOST=localhost
+# Blender's MCP add-on holds the add-in's default port, 9876.
+FUSION_MCP_PORT=9877
 ```
 
 Don't use the PyPI release (0.1.0): it crashes under mcp 2.x (faust issue #30),
@@ -1292,13 +1294,22 @@ the pinned arguments above. `FUSION_MCP_HOST` and `FUSION_MCP_PORT` reach the
 server; the child process gets only `FUSION_*` settings, never printer access
 codes.
 
+Set `FUSION_MCP_PORT=9877`, as Counterpart does. The add-in and the faust server
+both default to 9876, which Blender's MCP add-on also uses. While Blender holds
+that port the add-in can't listen there. The add-in reads `FUSION_MCP_PORT` from
+Fusion's environment, and Fusion started from the Dock or Finder gets none, so it
+falls back to 9876. `fusion_mcp_status` with `{"launch": true}` starts Fusion with
+`open -a "Autodesk Fusion" --env FUSION_MCP_PORT=<port>`. To start Fusion
+yourself, run the same command. If Fusion is already open on the default port,
+quit it first, because `--env` takes effect only when the app starts.
+
 1. `fusion_mcp_status` returns `{configured, connected, addinReachable, fusionRunning, tools[]}`,
    plus `launched`, `pin`, the server's `server` info and any `error`.
    `addinReachable` is true only when the `Fusion360MCP` add-in answers its own
    `ping` on `FUSION_MCP_HOST:FUSION_MCP_PORT`; Blender's MCP add-on, which also
    defaults to port 9876, doesn't count, so it can't hide a stopped Fusion.
    `connected` is true only when the add-in answers the server's `ping`. With
-   `{"launch": true}`, it starts Fusion on macOS (`open -a "Autodesk Fusion"`)
+   `{"launch": true}`, it starts Fusion on macOS (`open -a "Autodesk Fusion" --env FUSION_MCP_PORT=<port>`)
    when it is not running and waits up to 90 seconds for the add-in.
 2. `fusion_mcp_call` takes `{tool_name, arguments?, timeout_ms?}` and passes the
    call to a discovered Fusion tool (`create_sketch`, `extrude`, `fillet`,

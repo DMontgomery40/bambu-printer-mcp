@@ -49,11 +49,21 @@ export type FusionSystem = {
   addinAnswers(host: string, port: number, timeoutMs: number): Promise<boolean>;
   /** Whether an Autodesk Fusion process is running. */
   fusionRunning(): Promise<boolean>;
-  /** Start Autodesk Fusion. */
-  launch(): Promise<void>;
+  /** Start Autodesk Fusion with its add-in listening on port. */
+  launch(port: number): Promise<void>;
   sleep(ms: number): Promise<void>;
   launchWaitMs: number;
 };
+
+/**
+ * The add-in reads FUSION_MCP_PORT from Fusion's environment at the pin
+ * (addon/Fusion360MCP.py), and an app started from the Dock gets no shell
+ * environment, so the launch passes the port the bridge probes. `open --env`
+ * applies only when it starts the app, which is the only time this runs.
+ */
+export function fusionLaunchArguments(port: number): string[] {
+  return ["-a", "Autodesk Fusion", "--env", `FUSION_MCP_PORT=${port}`];
+}
 
 export const defaultFusionSystem: FusionSystem = {
   platform: process.platform,
@@ -99,7 +109,7 @@ export const defaultFusionSystem: FusionSystem = {
       return true;
     } catch { return false; }
   },
-  launch: async () => { await execFileAsync("open", ["-a", "Autodesk Fusion"], { timeout: 30_000 }); },
+  launch: async port => { await execFileAsync("open", fusionLaunchArguments(port), { timeout: 30_000 }); },
   sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
   launchWaitMs: LAUNCH_WAIT_MS,
 };
@@ -387,8 +397,8 @@ export class FusionMcpBridge {
     let launched = false;
     if (args.launch === true && !fusionRunning) {
       if (this.system.platform !== "darwin") throw new FusionError("launch is supported on macOS only; start Fusion yourself.");
-      try { await this.system.launch(); }
-      catch { throw new FusionError("Could not start Autodesk Fusion with open -a \"Autodesk Fusion\". Is it installed?"); }
+      try { await this.system.launch(port); }
+      catch { throw new FusionError(`Could not start Autodesk Fusion with open -a "Autodesk Fusion" --env FUSION_MCP_PORT=${port}. Is it installed?`); }
       launched = true;
       fusionRunning = true;
       const until = Date.now() + this.system.launchWaitMs;

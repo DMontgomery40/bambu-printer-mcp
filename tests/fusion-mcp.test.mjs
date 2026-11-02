@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { FUSION_MCP_DEFAULT_ARGS, FUSION_MCP_PIN, FusionMcpBridge, defaultFusionSystem } from "../dist/fusion-mcp-bridge.js";
+import { FUSION_MCP_DEFAULT_ARGS, FUSION_MCP_PIN, FusionMcpBridge, defaultFusionSystem, fusionLaunchArguments } from "../dist/fusion-mcp-bridge.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const fixture = path.join(root, "tests/fixtures/fusion-mcp-server.mjs");
@@ -249,14 +249,33 @@ test("a timed-out call is reported as possibly running, never replayed, and the 
   assert.equal(log.filter((event) => event.event === "spawn").length, 2, "the cut-off session was closed and a new one started");
 });
 
+test("launch starts Fusion with the add-in on the port the bridge probes", async (t) => {
+  const saved = { command: process.env.FUSION_MCP_COMMAND, port: process.env.FUSION_MCP_PORT };
+  delete process.env.FUSION_MCP_COMMAND;
+  process.env.FUSION_MCP_PORT = "9877";
+  t.after(() => {
+    for (const [key, value] of [["FUSION_MCP_COMMAND", saved.command], ["FUSION_MCP_PORT", saved.port]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  });
+  const fake = fakeSystem();
+  const status = await new FusionMcpBridge(fake.system).status({ launch: true });
+  assert.equal(status.addinReachable, true);
+  assert.deepEqual(fake.calls.launchPorts, [9877]);
+  assert.ok(fake.calls.probePorts.length > 1 && fake.calls.probePorts.every((port) => port === 9877));
+  assert.deepEqual(fusionLaunchArguments(9877), ["-a", "Autodesk Fusion", "--env", "FUSION_MCP_PORT=9877"]);
+  const failing = fakeSystem({ launch: async () => { throw new Error("not installed"); } });
+  await assert.rejects(new FusionMcpBridge(failing.system).status({ launch: true }), /--env FUSION_MCP_PORT=9877/);
+});
+
 function fakeSystem(overrides = {}) {
-  const calls = { launch: 0, probes: 0 };
+  const calls = { launch: 0, probes: 0, launchPorts: [], probePorts: [] };
   let open = false;
   const system = {
     platform: "darwin", launchWaitMs: 5_000,
-    addinAnswers: async () => { calls.probes++; return open; },
+    addinAnswers: async (_host, port) => { calls.probes++; calls.probePorts.push(port); return open; },
     fusionRunning: async () => false,
-    launch: async () => { calls.launch++; setTimeout(() => { open = true; }, 30); },
+    launch: async (port) => { calls.launch++; calls.launchPorts.push(port); setTimeout(() => { open = true; }, 30); },
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 10))),
     ...overrides,
   };

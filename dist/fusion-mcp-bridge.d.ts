@@ -10,11 +10,18 @@ export type FusionSystem = {
     addinAnswers(host: string, port: number, timeoutMs: number): Promise<boolean>;
     /** Whether an Autodesk Fusion process is running. */
     fusionRunning(): Promise<boolean>;
-    /** Start Autodesk Fusion. */
-    launch(): Promise<void>;
+    /** Start Autodesk Fusion with its add-in listening on port. */
+    launch(port: number): Promise<void>;
     sleep(ms: number): Promise<void>;
     launchWaitMs: number;
 };
+/**
+ * The add-in reads FUSION_MCP_PORT from Fusion's environment at the pin
+ * (addon/Fusion360MCP.py), and an app started from the Dock gets no shell
+ * environment, so the launch passes the port the bridge probes. `open --env`
+ * applies only when it starts the app, which is the only time this runs.
+ */
+export declare function fusionLaunchArguments(port: number): string[];
 export declare const defaultFusionSystem: FusionSystem;
 export declare const FUSION_STATUS_OUTPUT_SCHEMA: {
     type: "object";
