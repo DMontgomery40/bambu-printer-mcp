@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Bundle the pinned native camera runtimes for supported desktop platforms in the generic MCPB extension; verify extracted release startup and JPEG processing on Linux, macOS and Windows before attaching the release asset.
+
+- Add `camera_stream_start`, `camera_frame`, and `camera_stream_stop`: one camera connection per watched printer (host and serial together), bounded long-poll reads, native 32×18 change detection, and viewer-sized JPEGs with an optional encoded-byte budget. A1/P1 reuse the existing TLS frame decoder; RTSP models use one ffmpeg MJPEG process. Idle and MCP shutdown close owned resources; `camera_snapshot` reuses an active stream.
+- Advertise the additive `capabilities.cameraStream` flag while keeping the existing camera transport field compatible. The implementation adapts the parked camera manager's contract with bounded native image processing and stable unchanged cursors.
+- Validate stream lifecycle, decoder/authentication reuse, RTSP process shutdown, concurrent waiters, resize, and actual MCP tool discovery with simulated transports. Real-device and sustained CPU/bandwidth acceptance are recorded separately; no physical-print behavior changes.
+
 ## [1.1.51] – 2026-11-02
 
 ### Fixed

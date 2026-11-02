@@ -1,3 +1,7 @@
+import { CameraStreams } from "./camera-stream.js";
+import { openTcpCameraSource, openRtspCameraSource } from "./camera-sources.js";
+import { cameraNumber } from "./camera-tools.js";
+import { cameraFrameParser, cameraAuth } from "./camera-wire.js";
 import { createHash } from "node:crypto";
 import { isFinishedP1SJob, isCancelledX2DJob, readFreshPrinterStatus } from "../safety/printer-state.js";
 import fs from "node:fs/promises";
@@ -506,40 +510,11 @@ function reportedJobName(raw) {
         return subtask;
     return typeof raw.gcode_file === "string" ? path.posix.basename(raw.gcode_file.replace(/\\/g, "/").replace(/^\d+:/, "")) || undefined : undefined;
 }
-/**
- * Split the A1/P1 camera stream on port 6000 into JPEG frames. Each frame is
- * a 16-byte header (payload size LE, itrack, flags, reserved) and the JPEG.
- */
-export function cameraFrameParser(onFrame, onError) {
-    let buffered = Buffer.alloc(0);
-    let failed = false;
-    return chunk => {
-        if (failed)
-            return;
-        buffered = Buffer.concat([buffered, chunk]);
-        while (buffered.length >= 16) {
-            const payloadSize = buffered.readUInt32LE(0);
-            if (payloadSize <= 0 || payloadSize > 5000000) {
-                failed = true;
-                onError(new Error(`camera_snapshot: unreasonable payload size ${payloadSize} from header; auth likely failed.`));
-                return;
-            }
-            if (buffered.length < 16 + payloadSize)
-                return;
-            const jpeg = buffered.subarray(16, 16 + payloadSize);
-            buffered = buffered.subarray(16 + payloadSize);
-            if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) {
-                failed = true;
-                onError(new Error(`camera_snapshot: payload does not start with JPEG SOI (FF D8); got ${jpeg[0].toString(16)} ${jpeg[1].toString(16)}.`));
-                return;
-            }
-            onFrame(Buffer.from(jpeg));
-        }
-    };
-}
+export { cameraFrameParser } from "./camera-wire.js";
 export class BambuImplementation {
     constructor(confirm) {
         this.confirm = confirm;
+        this.cameraStreams = new CameraStreams();
         /**
          * The job each printer may resume, keyed host and serial. Cancel, a report
          * that it ended after it was seen running, or another job seen in its place
@@ -1844,8 +1819,40 @@ export class BambuImplementation {
      *
      * Read-only; no confirm gate. Default 8s timeout for cold-start latency.
      */
+    cameraStreamStart(host, serial, token, options = {}) {
+        const fps = cameraNumber(options.fps, 1, 0.2, 2, "fps");
+        const idleTimeoutMs = cameraNumber(options.idleTimeoutMs, 30000, 5000, 120000, "idle_timeout_ms", true);
+        const model = normalizeModel(options.bambuModel) ?? "";
+        const tcp = TCP_CAMERA_MODELS.has(model);
+        if (!tcp && !RTSP_CAMERA_MODELS.has(model))
+            throw new Error("camera_stream_start requires a supported bambu_model or BAMBU_MODEL");
+        const { stream, status } = this.cameraStreams.start(JSON.stringify([host, serial]), { transport: tcp ? "tcp-6000" : "rtsps-322", fps, idleTimeoutMs,
+            skipFirstFrame: tcp, open: handlers => tcp ? openTcpCameraSource(host, token, handlers) : openRtspCameraSource(host, token, fps, handlers, options.ffmpegPath) });
+        return { status, transport: stream.transport, fps: stream.fps, startedAt: stream.startedAt };
+    }
+    async cameraStreamFrame(host, serial, options = {}) {
+        const sinceSeq = cameraNumber(options.sinceSeq, 0, 0, Number.MAX_SAFE_INTEGER, "since_seq", true);
+        const waitMs = cameraNumber(options.waitMs, 0, 0, 10000, "wait_ms", true);
+        const minChange = cameraNumber(options.minChange, 0.02, 0, 1, "min_change");
+        const maxWidth = options.maxWidth === undefined ? undefined : cameraNumber(options.maxWidth, 300, 1, 4096, "max_width", true);
+        const maxBytes = options.maxBytes === undefined ? undefined : cameraNumber(options.maxBytes, 42000, 4096, 5000000, "max_bytes", true);
+        if (options.changedOnly !== undefined && typeof options.changedOnly !== "boolean")
+            throw new Error("changed_only must be a boolean");
+        return this.cameraStreams.get(JSON.stringify([host, serial]))?.frame({ ...options, sinceSeq, waitMs, minChange, maxWidth, maxBytes }) ?? { status: "stopped", seq: 0 };
+    }
+    cameraStreamStop(host, serial) { this.cameraStreams.stop(JSON.stringify([host, serial])); return { status: "stopped" }; }
     async cameraSnapshot(host, _serial, token, options = {}) {
         const timeoutMs = options.timeoutMs ?? 8000;
+        const stream = this.cameraStreams.get(JSON.stringify([host, _serial]));
+        if (stream && !stream.stopped) {
+            const jpeg = await stream.latest(Math.min(timeoutMs, 10000));
+            if (!jpeg)
+                throw new Error("The active camera stream has not produced a live frame");
+            if (options.savePath)
+                await (await import("node:fs/promises")).writeFile(options.savePath, jpeg);
+            return { status: "success", format: "image/jpeg", sizeBytes: jpeg.length, base64: jpeg.toString("base64"), transport: stream.transport,
+                ...(options.savePath ? { savedTo: options.savePath } : {}) };
+        }
         const model = (options.bambuModel ?? "").toLowerCase();
         const RTSP_MODELS = RTSP_CAMERA_MODELS;
         if (!model) {
@@ -1984,12 +1991,7 @@ export class BambuImplementation {
      */
     async fetchTcpCameraFrame(host, token, timeoutMs, port = 6000) {
         const tls = await import("node:tls");
-        const auth = Buffer.alloc(80, 0);
-        auth.writeUInt32LE(0x40, 0); // payload size
-        auth.writeUInt32LE(0x3000, 4); // type
-        // flags=0, reserved=0 are already zero from Buffer.alloc.
-        auth.write("bblp", 16, 4, "ascii");
-        auth.write(token, 48, Math.min(32, Buffer.byteLength(token, "ascii")), "ascii");
+        const auth = cameraAuth(token);
         return new Promise((resolve, reject) => {
             let settled = false;
             let frames = 0;

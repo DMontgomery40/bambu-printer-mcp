@@ -1,3 +1,4 @@
+import { CameraStreams, type FrameOptions } from "./camera-stream.js";
 import { inspectPrintFile, type PrintFileInspection } from "../safety/print-file.js";
 import { type PrinterStateRequirements } from "../safety/printer-state.js";
 export declare function assertDirectPrintSupported(model: string | undefined, serial?: string): void;
@@ -58,14 +59,11 @@ export type PrintPreflight = {
     model: string;
     notices: string[];
 };
-/**
- * Split the A1/P1 camera stream on port 6000 into JPEG frames. Each frame is
- * a 16-byte header (payload size LE, itrack, flags, reserved) and the JPEG.
- */
-export declare function cameraFrameParser(onFrame: (jpeg: Buffer) => void, onError: (error: Error) => void): (chunk: Buffer) => void;
+export { cameraFrameParser } from "./camera-wire.js";
 export declare class BambuImplementation {
     private readonly confirm?;
     private printerStore;
+    readonly cameraStreams: CameraStreams;
     /**
      * The job each printer may resume, keyed host and serial. Cancel, a report
      * that it ended after it was seen running, or another job seen in its place
@@ -246,6 +244,24 @@ export declare class BambuImplementation {
      *
      * Read-only; no confirm gate. Default 8s timeout for cold-start latency.
      */
+    cameraStreamStart(host: string, serial: string, token: string, options?: {
+        bambuModel?: string;
+        fps?: number;
+        idleTimeoutMs?: number;
+        ffmpegPath?: string;
+    }): {
+        status: "started" | "running";
+        transport: import("./camera-stream.js").CameraTransport;
+        fps: number;
+        startedAt: string;
+    };
+    cameraStreamFrame(host: string, serial: string, options?: FrameOptions): Promise<import("./camera-stream.js").StreamFrameResult | {
+        status: string;
+        seq: number;
+    }>;
+    cameraStreamStop(host: string, serial: string): {
+        status: string;
+    };
     cameraSnapshot(host: string, _serial: string, token: string, options?: {
         savePath?: string;
         timeoutMs?: number;
@@ -336,4 +352,3 @@ export declare class BambuImplementation {
     private waitForTlsSession;
     disconnectAll(): Promise<void>;
 }
-export {};

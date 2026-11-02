@@ -643,6 +643,18 @@ Two transports are wired in, picked by `bambu_model`:
 
 Returns `{ status, format: "image/jpeg", sizeBytes, base64, savedTo?, transport }`. `transport` is `"tcp-6000"` or `"rtsps-322"` so callers can tell which path produced the frame. Pass `save_path` to also write the bytes to disk; otherwise only the base64 payload is returned.
 
+#### camera_stream_start, camera_frame, camera_stream_stop
+
+Development capability; discover these tools before using them with an installed server. Start one shared camera connection while a viewer is open, then request changed frames. The connection closes after 30 seconds without a viewer request. Snapshots reuse its latest frame. A1/P1 use the existing TLS protocol; X1/H2/P2S use one ffmpeg process for the stream lifetime.
+
+```json
+{"fps": 1, "idle_timeout_ms": 30000, "bambu_model": "p1s"}
+```
+
+Pass the usual optional `host`, `bambu_serial`, and `bambu_token` overrides to each tool. `camera_stream_start` returns `{status: "started" | "running", transport, fps, startedAt}`. Then call `camera_frame` with, for example, `{ "since_seq": 0, "wait_ms": 10000, "max_width": 300, "max_bytes": 20000 }`. A changed frame returns JPEG `base64`, `seq`, dimensions and capture time. Keep the last delivered `seq` on `unchanged`; those replies carry no image. `max_width` preserves aspect ratio; optional `max_bytes` caps JPEG bytes by downscaling further (base64 adds about one third), and `changed_only` defaults to true with a 0.02 normalized thumbnail threshold.
+
+Stop requests close the shared connection immediately, affecting every viewer of that printer; normally let idle expiry close it. Other printers keep their own connections. These tools send no motion, heating or print commands. See [the camera stream contract](docs/CAMERA-STREAM.md) for limits, cancellation, availability and lifecycle details.
+
 #### delete_printer_file
 
 Delete a single file from the printer's SD card via FTPS. **Destructive.** Requires `confirm: true` — without it the call returns `status: "skipped"` and does not contact the printer. Path traversal segments (`..`) are rejected. Only files under `cache/`, `timelapse/`, and `logs/` can be deleted.
@@ -1065,7 +1077,7 @@ If the project does not match those assumptions, the tool fails fast with a stru
 
 [Counterpart](https://github.com/DMontgomery40/scan-to-make) (Scan to Make) reads printers through a small contract that this server and [mcp-3D-printer-server](https://github.com/DMontgomery40/mcp-3D-printer-server) share. Each tool declares an `outputSchema` and returns `structuredContent`, plus the same JSON as text for older clients. An error is returned as text only, because MCP clients check `structuredContent` against the schema even on errors. `counterpart_printer_info` and `counterpart_print_progress` take the usual optional `host`, `bambu_serial`, `bambu_token` and `bambu_model` (default `BAMBU_MODEL`) arguments.
 
-- **`counterpart_printer_info`** returns `{contract, server: {name, version}, printer: {kind: "bambu", model, serial, host}, capabilities}`. `capabilities` lists progress, layers, the camera transport (`bambu-tcp` for A1/P1, `rtsp` for X1, P2S, H2 and X2D, `none` without a model), `filaments: "ams"`, pause, resume, cancel, `print3mf` and `gcode` (false on X2D). It sends nothing to the printer and never returns the access code.
+- **`counterpart_printer_info`** returns `{contract, server: {name, version}, printer: {kind: "bambu", model, serial, host}, capabilities}`. `capabilities` lists progress, layers, the camera transport (`bambu-tcp` for A1/P1, `rtsp` for X1, P2S, H2 and X2D, `none` without a model), `cameraStream: true` for supported camera models, `filaments: "ams"`, pause, resume, cancel, `print3mf` and `gcode` (false on X2D). It sends nothing to the printer and never returns the access code.
 - **`counterpart_print_progress`** returns `{contract, observedAt, state, job?, temps?, activeFilament?, problems}` from the printer's MQTT reports, which this server keeps while it is connected. A held session is answered from that cache without any printer traffic, and `observedAt` is when the printer sent the report. The server asks the printer for a full report only to fill an empty cache, and at most once every five minutes after the printer has been quiet that long. A printer that sends no report within 8 seconds is `offline`.
   - `state`: `IDLE` is `idle`, `PREPARE`/`SLICING` `preparing`, `RUNNING` `printing`, `PAUSE` `paused`, `FINISH` `finished` and `FAILED` `failed`. A `FAILED` job with `0300400C` ("The task was canceled.") in `print_error`, or in X2D's `fail_reason`, is `cancelled`. Any other or missing `gcode_state` on a connected printer is `busy`.
   - `job` (not for idle, busy or offline): `name` is `subtask_name`, else the basename of `gcode_file` (a raw G-code print reports only its file path; that basename is the `jobName` the print returns); `id` is `task_id`, omitted when it is the LAN placeholder `"0"`; `progress` is `mc_percent`; `remainingSec` is `mc_remaining_time` (minutes) × 60; `layer`/`totalLayers` appear once the printer reports a total; `stage` is Bambu Studio's words for `stg_cur` ("Heatbed preheating", "Auto bed leveling").

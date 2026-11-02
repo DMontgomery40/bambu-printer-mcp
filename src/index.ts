@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {CAMERA_STREAM_TOOLS} from "./printers/camera-tools.js";
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -104,6 +105,7 @@ const SERVER_INFO = {
 const OUTPUT_SCHEMA_TOOLS = new Set([
   "counterpart_printer_info", "counterpart_print_progress", "counterpart_make_3mf",
   "fusion_mcp_status", "fusion_mcp_call", "fusion_mcp_new_design", "fusion_mcp_export",
+  "camera_stream_start", "camera_frame", "camera_stream_stop",
 ]);
 
 /** Bound for each Linux X2D emergency MQTT send (BAMBU_EMERGENCY_MQTT_TIMEOUT_MS, 1–60000 ms). */
@@ -2726,6 +2728,7 @@ class BambuPrinterMCPServer {
               required: ["three_mf_path", "bambu_model"]
             }
           },
+          ...CAMERA_STREAM_TOOLS,
           {
             name: "camera_snapshot",
             description: "Capture a single JPEG frame from the printer's chamber camera. A1/P1 use TCP-on-6000; X1/P2S/H2/X2D use RTSP via ffmpeg. Returns JPEG as base64; pass save_path to also write the bytes to disk.",
@@ -3648,6 +3651,24 @@ class BambuPrinterMCPServer {
             result = await this.print3mfViaBambuNetwork(args as Record<string, any>, host, bambuSerial, bambuToken);
             break;
           }
+
+          case "camera_stream_start":
+            result = this.bambu.cameraStreamStart(host, bambuSerial, bambuToken, {
+              bambuModel: (args?.bambu_model as string | undefined) ?? process.env.BAMBU_MODEL ?? process.env.BAMBU_PRINTER_MODEL,
+              fps: args?.fps as number | undefined, idleTimeoutMs: args?.idle_timeout_ms as number | undefined,
+              ffmpegPath: this.runtimeConfig.ffmpegPath,
+            });
+            break;
+          case "camera_frame":
+            result = await this.bambu.cameraStreamFrame(host, bambuSerial, {
+              sinceSeq: args?.since_seq as number | undefined, waitMs: args?.wait_ms as number | undefined,
+              maxWidth: args?.max_width as number | undefined, maxBytes: args?.max_bytes as number | undefined, changedOnly: args?.changed_only as boolean | undefined,
+              minChange: args?.min_change as number | undefined, signal: extra.signal,
+            });
+            break;
+          case "camera_stream_stop":
+            result = this.bambu.cameraStreamStop(host, bambuSerial);
+            break;
 
           case "camera_snapshot": {
             const snapshotModel = (args?.bambu_model as string | undefined) ?? process.env.BAMBU_MODEL ?? process.env.BAMBU_PRINTER_MODEL;
@@ -4669,7 +4690,11 @@ class BambuPrinterMCPServer {
         }
 
         await progressNotifications;
-        const text = typeof result === "string" ? result : JSON.stringify(result, null, 2);
+        // A stream image belongs in structuredContent once. Repeating its base64 in text
+        // doubles the wire budget; text-only clients still receive useful frame metadata.
+        const textResult = name === "camera_frame" && result && typeof result === "object"
+          ? Object.fromEntries(Object.entries(result).filter(([key]) => key !== "base64")) : result;
+        const text = typeof textResult === "string" ? textResult : JSON.stringify(textResult, null, 2);
 
         // A declared outputSchema obliges structuredContent whatever MCP_HTTP_JSON_RESPONSE says.
         if ((this.runtimeConfig.enableJsonResponse || OUTPUT_SCHEMA_TOOLS.has(name)) && typeof result === "object") {
@@ -4720,6 +4745,8 @@ class BambuPrinterMCPServer {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
     try {
+      // Close camera sockets/processes first, waking any waiting frame requests.
+      this.bambu.cameraStreams.stopAll();
       // Closing the MCP transport aborts its active requests before exit cleanup.
       await this.server.close();
       await this.fusion.close();

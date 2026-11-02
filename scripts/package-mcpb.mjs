@@ -40,6 +40,44 @@ function runNpm(args, cwd) {
   }
 }
 
+function installCameraRuntimes(staging) {
+  // The one downloadable MCPB is built on Linux and installed without npm on Macs
+  // and Windows PCs. Ordinary npm ci only includes the build host's Sharp binaries.
+  const targets = ["darwin-arm64", "darwin-x64", "win32-arm64", "win32-x64", "linux-arm64", "linux-x64", "linuxmusl-arm64", "linuxmusl-x64"];
+  const lock = JSON.parse(fs.readFileSync(path.join(staging, "package-lock.json"), "utf8"));
+  const sharp = lock.packages["node_modules/sharp"];
+  const dependencies = {}, packages = {};
+  function include(name) {
+    if (dependencies[name]) return;
+    const entry = lock.packages[`node_modules/${name}`];
+    if (!entry?.integrity || !entry.resolved || sharp.optionalDependencies[name] !== entry.version) {
+      throw new Error(`Missing locked Sharp runtime: ${name}`);
+    }
+    dependencies[name] = entry.version;
+    // Required here so npm cannot silently omit a foreign-platform optional binary.
+    packages[`node_modules/${name}`] = {...entry, optional: false};
+    for (const dependency of Object.keys(entry.optionalDependencies ?? {})) include(dependency);
+  }
+  for (const target of targets) include(`@img/sharp-${target}`);
+  const manifest = {name: "bambu-camera-runtimes", version: "1.0.0", private: true, dependencies};
+  const native = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-mcpb-native-"));
+  try {
+    fs.writeFileSync(path.join(native, "package.json"), JSON.stringify(manifest));
+    fs.writeFileSync(path.join(native, "package-lock.json"), JSON.stringify({
+      name: manifest.name, version: manifest.version, lockfileVersion: 3, packages: {"": manifest, ...packages},
+    }));
+    // --force permits foreign OS/CPU packages only in this isolated payload install.
+    // Lockfile integrities still apply; no lifecycle scripts or version resolution run.
+    runNpm(["ci", "--force", "--ignore-scripts", "--no-audit", "--no-fund"], native);
+    for (const [name, version] of Object.entries(dependencies)) {
+      const source = path.join(native, "node_modules", name);
+      const installed = JSON.parse(fs.readFileSync(path.join(source, "package.json"), "utf8"));
+      if (installed.name !== name || installed.version !== version) throw new Error(`Wrong camera runtime: ${name}`);
+      copyReleaseInput(source, path.join(staging, "node_modules", name));
+    }
+  } finally { fs.rmSync(native, {recursive: true, force: true}); }
+}
+
 export function packageMcpb({ root = ROOT, outputPath = path.join(root, "bambu-printer-mcp.mcpb"), quiet = false } = {}) {
   root = path.resolve(root);
   outputPath = path.resolve(outputPath);
@@ -68,6 +106,7 @@ export function packageMcpb({ root = ROOT, outputPath = path.join(root, "bambu-p
     if (!quiet) console.log("Installing production dependencies in an isolated extension directory...");
     // The normal postinstall applies patches; developer node_modules is untouched.
     runNpm(["ci", "--omit=dev", "--no-audit", "--no-fund"], staging);
+    installCameraRuntimes(staging);
     const cli = ["exec", "--yes", `--package=@anthropic-ai/mcpb@${MCPB_VERSION}`, "--", "mcpb"];
     runNpm([...cli, "validate", "manifest.json"], staging);
     runNpm([...cli, "pack", ".", outputPath], staging);
