@@ -809,6 +809,8 @@ export async function sendCommandWithBambuNative(options: BambuNativeControlOpti
     throw new Error(`Native ${validated.command} requires a beforeDispatch fresh-state check.`);
   }
   if (isEmergencyCommand(validated.messageJson)) await interruptNativeOperations(options.serial);
+  // The plug-in creates its log folder inside the config folder, but not the config folder itself.
+  if (options.configDir) fs.mkdirSync(options.configDir, { recursive: true, mode: 0o700 });
   const qos = options.qos === undefined ? 0 : Math.trunc(options.qos);
   const flag = options.flag === undefined ? 0 : Math.trunc(options.flag);
   if (!Number.isFinite(qos) || !Number.isFinite(flag) || qos < 0 || qos > 1 || flag < 0 || flag > 1) {

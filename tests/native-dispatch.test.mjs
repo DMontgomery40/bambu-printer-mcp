@@ -156,9 +156,14 @@ test("a control the printer refuses fails with the printer's error, and an accep
 
 test("an accepted control is confirmed and a reply to another sequence_id is ignored", async t => {
   const events = await helper(t, { reply: { result: "success" } });
-  const accepted = await sendCommandWithBambuNative({ ...controlOptions({ command: "stop", param: "", sequence_id: "20124" }), configDir: "/tmp/plugin-config" });
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-native-config-"));
+  t.after(() => fs.rm(parent, { recursive: true, force: true }));
+  const configDir = path.join(parent, "bambu-native-control");
+  const accepted = await sendCommandWithBambuNative({ ...controlOptions({ command: "stop", param: "", sequence_id: "20124" }), configDir });
   assert.equal(accepted.confirmed, true);
-  assert.equal((await events())[0].configDir, "/tmp/plugin-config");
+  assert.equal((await events())[0].configDir, configDir);
+  // The plug-in only creates its log folder inside it: a missing config folder failed the first real Stop.
+  assert.ok((await fs.stat(configDir)).isDirectory());
 });
 
 test("a reply for another sequence_id neither confirms nor refuses", async t => {
