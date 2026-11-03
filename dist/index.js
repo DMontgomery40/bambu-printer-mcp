@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ListResourcesRequestSchema, ReadResourceRequestSchema, ListToolsRequestSchema, CallToolRequestSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import dotenv from "dotenv";
+import { PRINT_ROUTES, connectionForRoute, routeOf, writeEnvValues } from "./counterpart/route.js";
 import fs from "fs";
 import os from "node:os";
 import path from "path";
@@ -60,8 +61,9 @@ if (AUTOMATIC_TEMP_DIR) {
 const DEFAULT_BAMBU_MODEL = process.env.BAMBU_PRINTER_MODEL?.trim().toLowerCase() ||
     process.env.BAMBU_MODEL?.trim().toLowerCase() ||
     "";
-const DEFAULT_BAMBU_CONNECTION_MODE = process.env.BAMBU_DEFAULT_CONNECTION_MODE?.trim().toLowerCase() || "";
-const DEFAULT_BAMBU_CONNECTION_TYPE = process.env.BAMBU_DEFAULT_CONNECTION_TYPE?.trim().toLowerCase() || "";
+// counterpart_print_route changes these at run time (and in the .env file they came from).
+let DEFAULT_BAMBU_CONNECTION_MODE = process.env.BAMBU_DEFAULT_CONNECTION_MODE?.trim().toLowerCase() || "";
+let DEFAULT_BAMBU_CONNECTION_TYPE = process.env.BAMBU_DEFAULT_CONNECTION_TYPE?.trim().toLowerCase() || "";
 const CONNECTION_MODES = ["lan_mqtt_ftps", "bambu_native", "bambu_network", "bambu_connect"];
 /**
  * The one route decision for a printer: print_3mf and every print control
@@ -2790,6 +2792,17 @@ class BambuPrinterMCPServer {
                         annotations: { readOnlyHint: true }
                     },
                     {
+                        name: "counterpart_print_route",
+                        description: "Counterpart contract (counterpart/1): how this server reaches the printer for prints and for Stop/Pause/Resume. route is \"lan\" (the local network) or \"cloud\" (Bambu Cloud through FULU's BambuNetwork bridge); mode and type are BAMBU_DEFAULT_CONNECTION_MODE and BAMBU_DEFAULT_CONNECTION_TYPE as resolved. Pass route to change it: the change applies to the next print and control at once, and is saved to the .env file in this server's working directory when that file exists (savedTo; null otherwise). Sends nothing to the printer.",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                route: { type: "string", enum: ["lan", "cloud"], description: "Change the route. Omit to read it." }
+                            },
+                            additionalProperties: false
+                        }
+                    },
+                    {
                         name: "counterpart_print_progress",
                         description: "Counterpart contract (counterpart/1): the printer's state, current job (name, task id, percent, time left, layers, stage words), temperatures, active filament and problems with Bambu's HMS messages and links. Read from the MQTT report this server keeps, so a held session asks the printer nothing; observedAt is when the printer sent it. An unreachable printer reports state offline. Read-only; not a safety check.",
                         inputSchema: {
@@ -3930,6 +3943,28 @@ class BambuPrinterMCPServer {
                     case "counterpart_printer_info":
                         result = bambuPrinterInfo({ server: SERVER_INFO, host, serial: bambuSerial, model: this.displayModel(args, bambuSerial) });
                         break;
+                    case "counterpart_print_route": {
+                        let savedTo = null;
+                        if (args?.route !== undefined) {
+                            if (!PRINT_ROUTES.includes(args.route))
+                                throw new Error('route must be "lan" or "cloud".');
+                            const next = connectionForRoute(args.route, { mode: DEFAULT_BAMBU_CONNECTION_MODE, type: DEFAULT_BAMBU_CONNECTION_TYPE });
+                            // dotenv loaded .env from the working directory at start; a client's own env block has no file to update.
+                            const file = path.resolve(process.cwd(), ".env");
+                            if (fs.existsSync(file)) {
+                                writeEnvValues(file, {
+                                    ...(next.mode ? { BAMBU_DEFAULT_CONNECTION_MODE: next.mode } : {}),
+                                    ...(next.type ? { BAMBU_DEFAULT_CONNECTION_TYPE: next.type } : {}),
+                                });
+                                savedTo = file;
+                            }
+                            DEFAULT_BAMBU_CONNECTION_MODE = next.mode;
+                            DEFAULT_BAMBU_CONNECTION_TYPE = next.type;
+                        }
+                        const connection = resolveConnection({}, this.displayModel(args, bambuSerial));
+                        result = { route: routeOf(connection), mode: connection.mode, type: connection.type, choices: [...PRINT_ROUTES], savedTo };
+                        break;
+                    }
                     case "counterpart_print_progress": {
                         const report = await this.bambu.readProgressReport(host, bambuSerial, bambuToken);
                         result = report
