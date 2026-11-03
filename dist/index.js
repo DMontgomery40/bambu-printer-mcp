@@ -13,7 +13,7 @@ import { createServer as createHttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
 import { STLManipulator, SLICER_TYPES, normalizeSlicerType, SlicerRunError, } from "./stl/stl-manipulator.js";
 import { BambuNetworkBridge, describeBambuNetworkPrintError } from "./bambu-network-bridge.js";
-import { assertBambuNativeAvailable, bambuNativeControlsAvailable, bambuNativeUnavailableReason, interruptNativeOperations, validateBambuNativeMetadata, buildBambuNativeFanCommand, buildBambuNativeTemperatureCommand, printWithBambuNative, sendCommandWithBambuNative, uploadWithBambuNative, } from "./bambu-native.js";
+import { assertBambuNativeAvailable, bambuNativeControlsAvailable, bambuNativeUnavailableReason, bambuNativePluginControlUnavailableReason, interruptNativeOperations, validateBambuNativeMetadata, buildBambuNativeFanCommand, buildBambuNativeTemperatureCommand, printWithBambuNative, sendCommandWithBambuNative, uploadWithBambuNative, } from "./bambu-native.js";
 import { importFileViaBambuConnect } from "./bambu-connect.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
 import { FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFAULT_ARGS, FUSION_NEW_DESIGN_OUTPUT_SCHEMA, FUSION_STATUS_OUTPUT_SCHEMA, FusionMcpBridge } from "./fusion-mcp-bridge.js";
@@ -2972,6 +2972,18 @@ class BambuPrinterMCPServer {
                     throw new Error(nativeUnavailableReason());
                 if (route.mode !== "bambu_network")
                     return undefined;
+                if (route.type !== "cloud" && bambuNativePluginControlUnavailableReason() === undefined) {
+                    // FULU's plug-in (02.05) starts the print, but firmware with authorization control
+                    // refuses its Pause and Stop (P1S 01.10.00.00: err_code 0x0502400A); Bambu Studio's
+                    // plug-in is accepted. Same printer, same LAN session type, signed by the plug-in.
+                    // Its own config folder keeps Bambu Studio's login untouched.
+                    return (assertActive, beforeDispatch) => sendNativeCommand({
+                        host, serial: bambuSerial, token: bambuToken, qos: 1,
+                        configDir: process.env.BAMBU_NATIVE_CONFIG_DIR || path.join(os.homedir(), ".config", "bambu-printer-mcp", "bambu-native-control"),
+                        // A 32-bit sequence like Bambu Studio's own counter (from 20000).
+                        messageJson: JSON.stringify({ print: { command, param: "", sequence_id: String(20000 + (Date.now() % 1000000)) } }),
+                    }, { assertActive, ...(command === "resume" ? { beforeDispatch } : {}) });
+                }
                 return (assertActive, beforeDispatch) => {
                     const options = { assertDispatchAllowed: () => { extra.signal.throwIfAborted(); assertActive?.(); } };
                     return route.type === "cloud"

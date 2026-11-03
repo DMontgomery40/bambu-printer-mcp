@@ -32,6 +32,7 @@ import {
   assertBambuNativeAvailable,
   bambuNativeControlsAvailable,
   bambuNativeUnavailableReason,
+  bambuNativePluginControlUnavailableReason,
   interruptNativeOperations,
   validateBambuNativeMetadata,
   buildBambuNativeFanCommand,
@@ -3509,6 +3510,18 @@ class BambuPrinterMCPServer {
         const route = resolveConnection(args);
         if (route.mode === "bambu_native") throw new Error(nativeUnavailableReason()!);
         if (route.mode !== "bambu_network") return undefined;
+        if (route.type !== "cloud" && bambuNativePluginControlUnavailableReason() === undefined) {
+          // FULU's plug-in (02.05) starts the print, but firmware with authorization control
+          // refuses its Pause and Stop (P1S 01.10.00.00: err_code 0x0502400A); Bambu Studio's
+          // plug-in is accepted. Same printer, same LAN session type, signed by the plug-in.
+          // Its own config folder keeps Bambu Studio's login untouched.
+          return (assertActive?: () => void, beforeDispatch?: () => Promise<void>) => sendNativeCommand({
+            host, serial: bambuSerial, token: bambuToken, qos: 1,
+            configDir: process.env.BAMBU_NATIVE_CONFIG_DIR || path.join(os.homedir(), ".config", "bambu-printer-mcp", "bambu-native-control"),
+            // A 32-bit sequence like Bambu Studio's own counter (from 20000).
+            messageJson: JSON.stringify({ print: { command, param: "", sequence_id: String(20_000 + (Date.now() % 1_000_000)) } }),
+          }, { assertActive, ...(command === "resume" ? { beforeDispatch } : {}) });
+        }
         return (assertActive?: () => void, beforeDispatch?: () => Promise<void>) => {
           const options = { assertDispatchAllowed: () => { extra.signal.throwIfAborted(); assertActive?.(); } };
           return route.type === "cloud"

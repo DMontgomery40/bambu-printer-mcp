@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { controlReply } from "./bambu-network-bridge.js";
 function firstExistingExecutable(candidates) {
     return candidates.find((candidate) => {
         try {
@@ -195,6 +196,32 @@ export function assertBambuNativeAvailable() {
  */
 export function bambuNativeControlsAvailable() {
     return bambuNativeUnavailableReason() === undefined;
+}
+/** The plug-in the macOS helper loads when BAMBU_NATIVE_PLUGIN is unset (defaultPluginPath in the helper). */
+function macDefaultPluginPath() {
+    const connect = "/Applications/Bambu Connect.app/Contents/Resources/app.asar.unpacked/plugins/plugins-mac/libbambu_networking.dylib";
+    return isRegularFile(connect) ? connect : path.join(os.homedir(), "Library/Application Support/BambuStudio/plugins/libbambu_networking.dylib");
+}
+/**
+ * Why Pause, Resume and Stop for a FULU LAN printer cannot go through the native helper, or
+ * undefined when they can. Needs the built helper and a Bambu networking plug-in that firmware
+ * with authorization control accepts controls from (Bambu Studio's on macOS, the pinned 02.08
+ * build on Linux). FULU's 02.05 plug-in starts prints, but a P1S on 01.10.00.00 refuses its
+ * Pause and Stop (err_code 0x0502400A).
+ */
+export function bambuNativePluginControlUnavailableReason() {
+    try {
+        resolveNativeInstall();
+    }
+    catch (error) {
+        return error instanceof Error ? error.message : String(error);
+    }
+    if (process.platform === "darwin") {
+        const plugin = process.env.BAMBU_NATIVE_PLUGIN || macDefaultPluginPath();
+        if (!isRegularFile(plugin))
+            return `Bambu's networking plug-in is not installed at ${plugin}. Install Bambu Studio.`;
+    }
+    return undefined;
 }
 /** Why native X2D controls are not used on this host, or undefined when they are. */
 export function bambuNativeUnavailableReason() {
@@ -689,6 +716,7 @@ export async function sendCommandWithBambuNative(options, execution) {
         BAMBU_NATIVE_COMMAND_JSON: validated.messageJson,
         BAMBU_NATIVE_COMMAND_QOS: String(qos),
         BAMBU_NATIVE_COMMAND_FLAG: String(flag),
+        ...(options.configDir ? { BAMBU_NATIVE_CONFIG_DIR: options.configDir } : {}),
     }, 30000, undefined, execution);
     if (result.resultCode !== 0) {
         const detail = [
@@ -697,12 +725,22 @@ export async function sendCommandWithBambuNative(options, execution) {
         ]
             .filter((line) => line.startsWith("native_error=") || line.startsWith("native_command result=") || line.startsWith("local MQTT connection"))
             .join("; ");
-        throw new Error(`Bambu native X2D control failed (${result.resultCode})${detail ? `: ${detail}` : "."}`);
+        throw new Error(`Bambu native control failed (${result.resultCode})${detail ? `: ${detail}` : "."}`);
+    }
+    // The helper waits for the printer's answer to this sequence_id and prints it.
+    const replyLine = result.updates.find((line) => line.startsWith("native_reply="));
+    const reply = replyLine && typeof print?.command === "string" && print.sequence_id !== undefined
+        ? controlReply(replyLine.slice("native_reply=".length), print.command, String(print.sequence_id))
+        : undefined;
+    if (reply && !reply.accepted) {
+        const word = `${validated.command[0].toUpperCase()}${validated.command.slice(1)}`;
+        throw new Error(`The printer refused ${word} over the local network (error ${(reply.errCode >>> 0).toString(16).toUpperCase().padStart(8, "0")}). Nothing changed on the printer.`);
     }
     return {
         status: "success",
         route: "bambu:///local",
         command: validated.command,
+        confirmed: Boolean(reply),
         updates: result.updates,
     };
 }

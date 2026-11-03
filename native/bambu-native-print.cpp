@@ -287,6 +287,26 @@ struct LocalConnectionState {
 
 bool boolEnv(const char *name, bool fallback);
 
+// The printer answers a control on its report topic with the same command and
+// sequence_id (signed on firmware with authorization control). The helper waits
+// for that answer so the caller can tell an accepted control from a refused one.
+struct CommandReplyState {
+    std::mutex mutex;
+    std::condition_variable cv;
+    std::string sequenceNeedle;
+    std::string commandNeedle;
+    std::string reply;
+};
+
+std::string jsonStringField(const std::string &json, const std::string &field) {
+    const std::string key = "\"" + field + "\":\"";
+    const size_t start = json.find(key);
+    if (start == std::string::npos) return {};
+    const size_t valueStart = start + key.size();
+    const size_t end = json.find('"', valueStart);
+    return end == std::string::npos ? std::string{} : json.substr(valueStart, end - valueStart);
+}
+
 void runProbe(NativeApi &api) {
     const std::string host = envOr("BAMBU_NATIVE_HOST");
     const std::string token = envOr("BAMBU_NATIVE_ACCESS_CODE");
@@ -618,9 +638,25 @@ void runOperation(NativeApi &api, NativeOperation operation) {
         destroyAgent();
         throw std::runtime_error("set_on_message_fn failed: " + std::to_string(messageCallbackResult));
     }
+    auto commandReply = std::make_shared<CommandReplyState>();
+    if (commandOnly) {
+        const std::string sequenceId = jsonStringField(commandJson, "sequence_id");
+        const std::string command = jsonStringField(commandJson, "command");
+        if (!sequenceId.empty() && !command.empty()) {
+            commandReply->sequenceNeedle = "\"sequence_id\":\"" + sequenceId + "\"";
+            commandReply->commandNeedle = "\"command\":\"" + command + "\"";
+        }
+    }
     const int localMessageCallbackResult = api.setLocalMessage(
         agent,
-        [agent, serial, &api](std::string devId, std::string message) {
+        [agent, serial, &api, commandReply](std::string devId, std::string message) {
+            if (!commandReply->sequenceNeedle.empty() && (devId.empty() || devId == serial) &&
+                message.find(commandReply->sequenceNeedle) != std::string::npos &&
+                message.find(commandReply->commandNeedle) != std::string::npos) {
+                std::lock_guard<std::mutex> guard(commandReply->mutex);
+                if (commandReply->reply.empty()) commandReply->reply = message;
+                commandReply->cv.notify_all();
+            }
             // GUI_App::process_network_msg handles this exact signal by
             // installing the device certificate again. The plug-in emits it
             // after the async app-key request, which is the point where its
@@ -706,6 +742,24 @@ void runOperation(NativeApi &api, NativeOperation operation) {
             result = api.sendMessageToPrinter(agent, serial, commandJson, qos, flag);
         }
         outputLine("native_command result=" + std::to_string(result));
+        if (result == 0 && !commandReply->sequenceNeedle.empty()) {
+            // Disconnecting at once can drop the queued publish, and the
+            // printer's answer arrives after it: stay connected for both.
+            const int replyMs = std::clamp(intEnv("BAMBU_NATIVE_COMMAND_REPLY_MS", 6000), 0, 30000);
+            std::string reply;
+            {
+                std::unique_lock<std::mutex> lock(commandReply->mutex);
+                commandReply->cv.wait_for(lock, std::chrono::milliseconds(replyMs),
+                                          [&commandReply]() { return !commandReply->reply.empty(); });
+                reply = commandReply->reply;
+            }
+            if (reply.empty()) {
+                outputLine("native_reply_timeout ms=" + std::to_string(replyMs));
+            } else {
+                std::replace(reply.begin(), reply.end(), '\n', ' ');
+                outputLine("native_reply=" + reply);
+            }
+        }
         destroyAgent();
         exitNow(result == 0 ? 0 : 20);
     }

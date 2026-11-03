@@ -34,6 +34,8 @@ export type BambuNativeControlOptions = {
     messageJson: string;
     qos?: number;
     flag?: number;
+    /** The plug-in's config folder for this call; the helper otherwise uses Bambu Studio's own. */
+    configDir?: string;
 };
 export type BambuNativeUpdateCallback = (line: string) => void;
 export type BambuNativeExecution = {
@@ -105,6 +107,14 @@ export declare function assertBambuNativeAvailable(): void;
  * stop, pause and heater-off keep their MQTT route otherwise.
  */
 export declare function bambuNativeControlsAvailable(): boolean;
+/**
+ * Why Pause, Resume and Stop for a FULU LAN printer cannot go through the native helper, or
+ * undefined when they can. Needs the built helper and a Bambu networking plug-in that firmware
+ * with authorization control accepts controls from (Bambu Studio's on macOS, the pinned 02.08
+ * build on Linux). FULU's 02.05 plug-in starts prints, but a P1S on 01.10.00.00 refuses its
+ * Pause and Stop (err_code 0x0502400A).
+ */
+export declare function bambuNativePluginControlUnavailableReason(): string | undefined;
 /** Why native X2D controls are not used on this host, or undefined when they are. */
 export declare function bambuNativeUnavailableReason(): string | undefined;
 /**
