@@ -23,6 +23,20 @@ export declare function controlReply(msg: unknown, command: string, sequenceId: 
     accepted: boolean;
     errCode: number;
 } | undefined;
+/** Cloud session waits: connection and printer subscription, certificate, settle after the state requests. */
+export type CloudTiming = {
+    connectTimeoutMs: number;
+    pollMs: number;
+    settleMs: number;
+    certificateWaitMs: number;
+};
+export declare const CLOUD_PRINT_TIMING: Readonly<CloudTiming>;
+export type CloudSession = {
+    settle: (ms: number) => Promise<void>;
+    /** This printer's cloud messages, as they arrive. */
+    messages: string[];
+    jobUpdates: BridgeJobUpdate[];
+};
 export type LocalPrinter = {
     devId: string;
     devIp: string;
@@ -164,9 +178,23 @@ export declare class BambuNetworkBridge {
      */
     sendLocalPrintCommand(printer: LocalPrinter, command: "stop" | "pause" | "resume", options?: BambuNetworkBridgeOptions, beforeDispatch?: () => Promise<void>, timing?: Readonly<LocalControlTiming>): Promise<Record<string, unknown>>;
     /**
+     * Open the plug-in's Bambu Cloud session with a printer bound to the account, in the order
+     * Bambu Studio uses (GUI_App.cpp on_server_connected / on_printer_connected): wait for the
+     * cloud connection, select and subscribe to the printer, and when it connects request its
+     * state (pushall, get_version, get_access_code) and install its certificate for cloud use.
+     * Without that state the plug-in refuses a cloud print with -3140 (ENC_FLAG_NOT_READY).
+     * Shares the LAN session queue: one reader of the plug-in's events at a time.
+     */
+    withCloudSession<T>(devId: string, options: BambuNetworkBridgeOptions, assertActive: () => void, timing: Readonly<CloudTiming>, run: (session: CloudSession) => Promise<T>): Promise<T>;
+    /** A cloud print method (start_print) in a cloud session, so the plug-in has the printer's state. */
+    startCloudPrint(devId: string, method: string, payload: JsonObject, options?: BambuNetworkBridgeOptions, assertActive?: () => void, timing?: Readonly<CloudTiming>): Promise<{
+        result: unknown;
+        jobUpdates: BridgeJobUpdate[];
+    }>;
+    /**
      * A print control over Bambu Cloud: how Bambu Studio and FULU's slicer control a printer
      * bound to the account (MachineObject::publish_json → cloud_publish_json: send_message,
-     * qos 1, flag 0), after selecting and subscribing to it. Held open like the LAN control.
+     * qos 1, flag 0), in a cloud session. Held open like the LAN control.
      */
     sendCloudPrintCommand(devId: string, command: "stop" | "pause" | "resume", options?: BambuNetworkBridgeOptions, beforeDispatch?: () => Promise<void>, timing?: Readonly<LocalControlTiming>): Promise<Record<string, unknown>>;
     /** Appends control diagnostics to control-trace.log in the bridge's config folder. */

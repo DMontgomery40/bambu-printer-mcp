@@ -1491,12 +1491,31 @@ test("a cloud control is sent the way Bambu Studio sends it to a cloud-bound pri
   const {bridge, calls} = await fakeFuluBridge(t, {FAKE_FULU_LOGGED_IN: "1"});
   const result = await bridge.sendCloudPrintCommand("01PTEST", "stop", {}, undefined, FAST_CONTROL);
   assert.equal(result.confirmed, true);
-  const methods = calls().filter(c => c.method).map(c => c.method);
-  const send = methods.indexOf("net.send_message");
-  assert.ok(methods.indexOf("net.set_user_selected_machine") < send && methods.indexOf("net.add_subscribe") < send);
-  const sent = calls().find(c => c.method === "net.send_message").payload;
-  assert.deepEqual([sent.dev_id, sent.qos, sent.flag, JSON.parse(sent.msg).print.command], ["01PTEST", 1, 0, "stop"]);
-  assert.equal(methods.includes("net.connect_printer"), false, "no LAN session for a cloud control");
+  const recorded = calls().filter(c => c.method);
+  const send = recorded.findIndex(c => c.method === "net.send_message" && JSON.parse(c.payload.msg).print?.command === "stop");
+  const before = method => recorded.findIndex(c => c.method === method);
+  assert.ok(before("net.set_user_selected_machine") < send && before("net.add_subscribe") < send);
+  assert.ok(recorded.findIndex(c => c.method === "net.install_device_cert" && c.payload.lan_only === false) < send, "cloud certificate before the control");
+  assert.ok(recorded.findIndex(c => c.method === "net.send_message" && JSON.parse(c.payload.msg).pushing?.command === "pushall") < send, "printer state requested first");
+  const sent = recorded[send].payload;
+  assert.deepEqual([sent.dev_id, sent.qos, sent.flag], ["01PTEST", 1, 0]);
+  assert.equal(recorded.some(c => c.method === "net.connect_printer"), false, "no LAN session for a cloud control");
+});
+
+// Nov 3, the real P1S: net.start_print returned -3140 (ENC_FLAG_NOT_READY) when called with no cloud session.
+test("a cloud print starts only after the printer's cloud session and certificate, as Bambu Studio does", async t => {
+  const {bridge, calls} = await fakeFuluBridge(t, {FAKE_FULU_LOGGED_IN: "1"});
+  await bridge.startCloudPrint("01PTEST", "net.start_print", {client_job_id: 7, params: {dev_id: "01PTEST"}}, {}, () => {}, {connectTimeoutMs: 2000, pollMs: 10, settleMs: 20, certificateWaitMs: 500});
+  const recorded = calls().filter(c => c.method);
+  const print = recorded.findIndex(c => c.method === "net.start_print");
+  assert.ok(print > recorded.findIndex(c => c.method === "net.install_device_cert" && c.payload.lan_only === false));
+  assert.ok(recorded.slice(0, print).some(c => c.method === "bridge.poll_events"));
+});
+
+test("a cloud print sends nothing when the plug-in is not signed in", async t => {
+  const {bridge, calls} = await fakeFuluBridge(t, {});
+  await assert.rejects(bridge.startCloudPrint("01PTEST", "net.start_print", {client_job_id: 7, params: {}}, {}, () => {}), /not signed in to Bambu Cloud/);
+  assert.equal(calls().some(c => c.method === "net.start_print"), false);
 });
 
 test("a cloud control refused by the printer fails with its error code", async t => {

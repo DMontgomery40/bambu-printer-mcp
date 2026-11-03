@@ -1830,7 +1830,7 @@ class BambuPrinterMCPServer {
           assertActive
         ));
       } else {
-        bridgeResult = await this.bambuNetwork.callWithAgent(bridgeMethod, { client_job_id: clientJobId, params }, bridgeOptions);
+        ({ result: bridgeResult, jobUpdates } = await this.bambuNetwork.startCloudPrint(devId, bridgeMethod, { client_job_id: clientJobId, params }, bridgeOptions, assertActive));
       }
 
       if (typeof bridgeResult === "object" && bridgeResult !== null && (bridgeResult as { ok?: unknown }).ok === false) {

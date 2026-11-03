@@ -66,7 +66,14 @@ function handle(method, payload) {
       if (!state.certFolder) crash();
       state.connected = false;
       return ok();
+    case "net.set_user_selected_machine":
+      if (process.env.FAKE_FULU_LOGGED_IN === "1") setTimeout(() => queue("on_printer_connected", { topic_str: payload.dev_id }), 10);
+      return ok();
     case "net.install_device_cert":
+      if (!payload.lan_only && process.env.FAKE_FULU_LOGGED_IN === "1") {
+        setTimeout(() => queue("on_message", { dev_id: payload.dev_id, msg: "device_cert_installed" }), 10);
+        return ok();
+      }
       if (state.connected) {
         state.certInstalled = true;
         if (state.onMessage && process.env.FAKE_FULU_CERT_EVENT !== "missing") setTimeout(() => {

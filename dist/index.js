@@ -1412,7 +1412,7 @@ class BambuPrinterMCPServer {
                 ({ result: bridgeResult, jobUpdates } = await this.bambuNetwork.startLocalPrint({ devId, devIp, username: String(params.username), password, useSsl: params.use_ssl_for_mqtt }, bridgeMethod, { client_job_id: clientJobId, params }, bridgeOptions, assertActive));
             }
             else {
-                bridgeResult = await this.bambuNetwork.callWithAgent(bridgeMethod, { client_job_id: clientJobId, params }, bridgeOptions);
+                ({ result: bridgeResult, jobUpdates } = await this.bambuNetwork.startCloudPrint(devId, bridgeMethod, { client_job_id: clientJobId, params }, bridgeOptions, assertActive));
             }
             if (typeof bridgeResult === "object" && bridgeResult !== null && bridgeResult.ok === false) {
                 throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} failed: ${String(bridgeResult.error || "unknown bridge error")}`);
