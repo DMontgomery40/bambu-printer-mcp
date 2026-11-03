@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Accept Bambu Studio 2.9 layer-temperature changes (`M104 M S<temperature>` with an optional `T` selector). Keep hardware and material temperature ceilings, tool validation, and rejection of numeric markers, other heater commands and extra parameters. Reproduced with isolated Studio 02.09.01.70 P1S single- and two-colour slices; no physical print was run.
+
 ## [1.1.51] – 2026-11-02
 
 ### Fixed
