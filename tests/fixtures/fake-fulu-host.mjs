@@ -71,6 +71,7 @@ function handle(method, payload) {
     case "net.send_message_to_printer": {
       if (!["stop", "pause", "resume"].includes(JSON.parse(payload.msg).print?.command)) return ok();
       if (process.env.FAKE_FULU_REQUIRE_CERT_READY && !state.certReady) return ok(-4);
+      if (Number(process.env.FAKE_FULU_CONTROL_FAILURES ?? 0) > (state.controlFailures ?? 0)) { state.controlFailures = (state.controlFailures ?? 0) + 1; return ok(-4); }
       return ok(state.connected && state.certInstalled ? Number(process.env.FAKE_FULU_CONTROL_RESULT ?? 0) : -4030);
     }
     case "net.start_local_print": {

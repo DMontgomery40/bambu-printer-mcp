@@ -25,8 +25,12 @@ const BAMBU_NETWORK_PRINT_ERRORS = {
 export function describeBambuNetworkPrintError(value) {
     return BAMBU_NETWORK_PRINT_ERRORS[value] ? ` (${BAMBU_NETWORK_PRINT_ERRORS[value]})` : "";
 }
-/** Waits from native/bambu-native-print.cpp, which prints through the same plug-in calls. */
 export const LOCAL_PRINT_TIMING = Object.freeze({ connectTimeoutMs: 30000, pollMs: 250, settleMs: 3000, retryWaitMs: 8000 });
+export const LOCAL_CONTROL_TIMING = Object.freeze({ ...LOCAL_PRINT_TIMING, settleMs: 1000, retryWaitMs: 1500, certificateWaitMs: 5000, attempts: 3 });
+/** Bounded event text for diagnostics, with any access code removed. */
+function traceText(text) {
+    return text.replace(/("?access_code"?\s*[:=]\s*"?)[^",}\s]*/gi, "$1[redacted]").slice(0, 160);
+}
 /**
  * The plug-in's certificate folder: BAMBU_NETWORK_CERT_DIR when set, else
  * Bambu's pinned public certificates written to the agent's config folder,
@@ -380,6 +384,8 @@ export class BambuNetworkBridge {
             const statuses = [];
             let waitInfo = false;
             for (const event of Array.isArray(polled?.events) ? polled.events : []) {
+                options.trace?.({ event: event?.name, devMatch: event?.payload?.dev_id === undefined ? "none" : event.payload.dev_id === printer.devId,
+                    ...(event?.payload?.status !== undefined ? { status: event.payload.status } : {}), ...(typeof event?.payload?.msg === "string" ? { msg: traceText(event.payload.msg) } : {}) });
                 if (event?.name === "job.update_status")
                     jobUpdates.push({ status: event.payload?.status, code: event.payload?.code, msg: event.payload?.msg });
                 const eventDev = event?.payload?.dev_id;
@@ -409,16 +415,16 @@ export class BambuNetworkBridge {
                 await new Promise(resolve => setTimeout(resolve, timing.pollMs));
             }
         };
-        const waitForCertificate = async () => {
-            const deadline = Date.now() + timing.connectTimeoutMs;
+        const certificateReadyWithin = async (ms) => {
+            const deadline = Date.now() + ms;
             do {
                 assertActive();
                 await pump();
                 if (certificateReady)
-                    return;
+                    return true;
                 await new Promise(resolve => setTimeout(resolve, timing.pollMs));
             } while (Date.now() < deadline);
-            throw new Error("FULU did not report this printer's certificate ready. No command was sent.");
+            return certificateReady;
         };
         await this.ensureAgent(options);
         assertActive();
@@ -471,7 +477,7 @@ export class BambuNetworkBridge {
                 await this.callWithAgent("net.send_message_to_printer", { dev_id: printer.devId, msg: JSON.stringify(message), qos, flag: 0 }, options);
             }
             await settle(timing.settleMs);
-            const result = await run({ installCertificate, settle, waitForCertificate, jobUpdates });
+            const result = await run({ installCertificate, settle, certificateReadyWithin, jobUpdates });
             await pump();
             return result;
         }
@@ -502,27 +508,56 @@ export class BambuNetworkBridge {
     }
     /**
      * A print control (stop, pause, resume) through the same authenticated LAN
-     * session as a FULU print. Sent once and never replayed; beforeDispatch runs
-     * last, after the session is ready, so a resume re-checks the paused job.
+     * session as a FULU print. FULU's own app sends controls exactly this way
+     * (send_message_to_printer, qos 1, flag 0) on a connection whose certificate
+     * is installed. A fresh connection can report SEND_MSG_FAILED (-4) or
+     * LP_PUBLISH_MSG_FAILED (-4030) while that exchange finishes: those returns
+     * mean nothing was sent, so the certificate is reinstalled and the control
+     * tried again, as the native X2D helper does. Any other return is final.
+     * beforeDispatch runs before every send, so a resume re-checks the paused job.
      */
-    async sendLocalPrintCommand(printer, command, options = {}, beforeDispatch, timing = LOCAL_PRINT_TIMING) {
+    async sendLocalPrintCommand(printer, command, options = {}, beforeDispatch, timing = LOCAL_CONTROL_TIMING) {
         const assertActive = () => options.assertDispatchAllowed?.("net.send_message_to_printer");
-        return this.withLocalSession(printer, options, assertActive, timing, async (session) => {
-            await session.waitForCertificate();
-            await beforeDispatch?.();
-            assertActive();
+        const trace = options.trace ?? this.controlTrace(options);
+        const traced = { ...options, trace };
+        return this.withLocalSession(printer, traced, assertActive, timing, async (session) => {
+            const ready = await session.certificateReadyWithin(timing.certificateWaitMs);
+            trace({ step: "certificate", ready });
             const method = "net.send_message_to_printer";
-            const result = await this.callWithAgent(method, {
-                dev_id: printer.devId,
-                msg: JSON.stringify({ print: { command, param: "", sequence_id: String(Date.now()) } }),
-                qos: 1, flag: 0,
-            }, options);
-            assertBridgeOk(result, method);
-            const code = bridgeValueAsNumber(result, method);
-            if (code !== 0)
-                throw new Error(`The printer did not accept ${command} over the authenticated FULU LAN connection (plug-in code ${code}).`);
-            return { status: "success", message: `${command[0].toUpperCase()}${command.slice(1)} submitted through the authenticated FULU LAN connection. Check printer status to confirm it took effect.` };
+            let code = 0;
+            for (let attempt = 1; attempt <= timing.attempts; attempt++) {
+                await beforeDispatch?.();
+                assertActive();
+                const result = await this.callWithAgent(method, {
+                    dev_id: printer.devId,
+                    msg: JSON.stringify({ print: { command, param: "", sequence_id: String(Date.now()) } }),
+                    qos: 1, flag: 0,
+                }, traced);
+                assertBridgeOk(result, method);
+                code = bridgeValueAsNumber(result, method);
+                trace({ step: "send", command, attempt, code });
+                if (code === 0) {
+                    return { status: "success", attempts: attempt,
+                        message: `${command[0].toUpperCase()}${command.slice(1)} submitted through the authenticated FULU LAN connection. Check printer status to confirm it took effect.` };
+                }
+                if ((code !== -4 && code !== -4030) || attempt === timing.attempts)
+                    break;
+                await session.settle(timing.retryWaitMs);
+                await session.installCertificate();
+                await session.certificateReadyWithin(timing.certificateWaitMs);
+            }
+            throw new Error(`The printer did not accept ${command} over the authenticated FULU LAN connection (plug-in code ${code}).`);
         });
+    }
+    /** Appends control diagnostics to control-trace.log in the bridge's config folder. */
+    controlTrace(options) {
+        const file = path.join(this.resolveConfigDir(options.configDir), "control-trace.log");
+        return entry => {
+            try {
+                fs.appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n", { mode: 0o600 });
+            }
+            catch { /* diagnostics only */ }
+        };
     }
     async callWithAgent(method, payload = {}, options = {}) {
         const { agent } = await this.ensureAgent(options);

@@ -1,12 +1,19 @@
 /** A parenthesized explanation of a plug-in print result, or "" when it names no known cause. */
 export declare function describeBambuNetworkPrintError(value: number): string;
 /** Waits from native/bambu-native-print.cpp, which prints through the same plug-in calls. */
-export declare const LOCAL_PRINT_TIMING: Readonly<{
-    connectTimeoutMs: 30000;
-    pollMs: 250;
-    settleMs: 3000;
-    retryWaitMs: 8000;
-}>;
+export type LocalTiming = {
+    connectTimeoutMs: number;
+    pollMs: number;
+    settleMs: number;
+    retryWaitMs: number;
+};
+export declare const LOCAL_PRINT_TIMING: Readonly<LocalTiming>;
+/** A control waits briefly for the certificate message, then sends; -4/-4030 returns are retried after a reinstall. */
+export type LocalControlTiming = LocalTiming & {
+    certificateWaitMs: number;
+    attempts: number;
+};
+export declare const LOCAL_CONTROL_TIMING: Readonly<LocalControlTiming>;
 export type LocalPrinter = {
     devId: string;
     devIp: string;
@@ -22,9 +29,12 @@ export type BridgeJobUpdate = {
 export type LocalSession = {
     installCertificate: () => Promise<void>;
     settle: (ms: number) => Promise<void>;
-    waitForCertificate: () => Promise<void>;
+    /** Waits up to ms for FULU's certificate-installed message for this printer; false if it never came. */
+    certificateReadyWithin: (ms: number) => Promise<boolean>;
     jobUpdates: BridgeJobUpdate[];
 };
+/** One line per FULU event or control send, for diagnosing controls. Never includes access codes. */
+export type BridgeTrace = (entry: Record<string, unknown>) => void;
 type JsonObject = Record<string, unknown>;
 export type BambuNetworkBridgeOptions = {
     bridgeCommand?: string;
@@ -35,6 +45,8 @@ export type BambuNetworkBridgeOptions = {
     /** Trusted in-process preflight; never populated from tool arguments. */
     beforeDispatch?: (method: string) => Promise<void>;
     assertDispatchAllowed?: (method: string) => void;
+    /** Diagnostics for a print control: every FULU event and send in its session. */
+    trace?: BridgeTrace;
     onDispatched?: (method: string) => void;
 };
 export type BambuNetworkBridgeStatus = {
@@ -117,7 +129,7 @@ export declare class BambuNetworkBridge {
      * cannot encrypt or publish project_file (-4030). The session is closed
      * after `run`, so printer reports stop accumulating in the host's queue.
      */
-    withLocalSession<T>(printer: LocalPrinter, options: BambuNetworkBridgeOptions, assertActive: () => void, timing: typeof LOCAL_PRINT_TIMING, run: (session: LocalSession) => Promise<T>): Promise<T>;
+    withLocalSession<T>(printer: LocalPrinter, options: BambuNetworkBridgeOptions, assertActive: () => void, timing: Readonly<LocalTiming>, run: (session: LocalSession) => Promise<T>): Promise<T>;
     private runLocalSession;
     /**
      * Run a LAN print method in a local session. A synchronous -4030 means the
@@ -125,21 +137,23 @@ export declare class BambuNetworkBridge {
      * exchange, as the native helper does; each attempt passes the caller's
      * fresh pre-dispatch checks.
      */
-    startLocalPrint(printer: LocalPrinter, method: string, payload: JsonObject, options?: BambuNetworkBridgeOptions, assertActive?: () => void, timing?: typeof LOCAL_PRINT_TIMING): Promise<{
+    startLocalPrint(printer: LocalPrinter, method: string, payload: JsonObject, options?: BambuNetworkBridgeOptions, assertActive?: () => void, timing?: Readonly<LocalTiming>): Promise<{
         result: unknown;
         jobUpdates: BridgeJobUpdate[];
     }>;
     /**
      * A print control (stop, pause, resume) through the same authenticated LAN
-     * session as a FULU print. Sent once and never replayed; beforeDispatch runs
-     * last, after the session is ready, so a resume re-checks the paused job.
+     * session as a FULU print. FULU's own app sends controls exactly this way
+     * (send_message_to_printer, qos 1, flag 0) on a connection whose certificate
+     * is installed. A fresh connection can report SEND_MSG_FAILED (-4) or
+     * LP_PUBLISH_MSG_FAILED (-4030) while that exchange finishes: those returns
+     * mean nothing was sent, so the certificate is reinstalled and the control
+     * tried again, as the native X2D helper does. Any other return is final.
+     * beforeDispatch runs before every send, so a resume re-checks the paused job.
      */
-    sendLocalPrintCommand(printer: LocalPrinter, command: "stop" | "pause" | "resume", options?: BambuNetworkBridgeOptions, beforeDispatch?: () => Promise<void>, timing?: Readonly<{
-        connectTimeoutMs: 30000;
-        pollMs: 250;
-        settleMs: 3000;
-        retryWaitMs: 8000;
-    }>): Promise<Record<string, unknown>>;
+    sendLocalPrintCommand(printer: LocalPrinter, command: "stop" | "pause" | "resume", options?: BambuNetworkBridgeOptions, beforeDispatch?: () => Promise<void>, timing?: Readonly<LocalControlTiming>): Promise<Record<string, unknown>>;
+    /** Appends control diagnostics to control-trace.log in the bridge's config folder. */
+    private controlTrace;
     callWithAgent(method: string, payload?: JsonObject, options?: BambuNetworkBridgeOptions): Promise<unknown>;
     stop(): Promise<void>;
     private ensureStarted;

@@ -1382,6 +1382,7 @@ test("BambuNetwork print rejects invalid ams_slots values before bridge payload"
 // the opt-in test below runs the real host when FULU_HOST_DIR is configured.
 const FAKE_FULU_HOST = path.join(__dirname, "fixtures", "fake-fulu-host.mjs");
 const FAST_LOCAL_PRINT = Object.freeze({ connectTimeoutMs: 2000, pollMs: 10, settleMs: 20, retryWaitMs: 20 });
+const FAST_CONTROL = Object.freeze({ ...FAST_LOCAL_PRINT, certificateWaitMs: 100, attempts: 3 });
 const LOCAL_PRINTER = Object.freeze({ devId: "01PTEST", devIp: "192.0.2.10", username: "bblp", password: "SECRET", useSsl: true });
 const shellQuoteArg = value => `'${String(value).replace(/'/g, "'\\''")}'`;
 
@@ -1390,7 +1391,7 @@ const shellQuoteArg = value => `'${String(value).replace(/'/g, "'\\''")}'`;
 const FAKE_FULU_ENV = ["BAMBU_NETWORK_BRIDGE_COMMAND", "BAMBU_NETWORK_CONFIG_DIR", "FAKE_FULU_LOG", "PJARCZAK_BAMBU_PLUGIN_DIR",
   "BAMBU_NETWORK_USER_INFO", "BAMBU_NETWORK_CERT_DIR", "PJARCZAK_BAMBU_NETWORK_SO", "PJARCZAK_BAMBU_SOURCE_SO",
   "FAKE_FULU_EXIT_CODE", "FAKE_FULU_PUBLISH_FAILURES", "FAKE_FULU_UNSUPPORTED", "FAKE_FULU_CONNECT_STATUS", "FAKE_FULU_CONTROL_RESULT",
-  "FAKE_FULU_CERT_EVENT", "FAKE_FULU_CERT_DELAY_MS", "FAKE_FULU_REQUIRE_CERT_READY"];
+  "FAKE_FULU_CERT_EVENT", "FAKE_FULU_CERT_DELAY_MS", "FAKE_FULU_REQUIRE_CERT_READY", "FAKE_FULU_CONTROL_FAILURES"];
 const fakeFuluEnvSnapshots = new WeakSet();
 
 async function fakeFuluBridge(t, env = {}, { wrapped = false } = {}) {
@@ -1421,17 +1422,53 @@ async function fakeFuluBridge(t, env = {}, { wrapped = false } = {}) {
   return { bridge, dir, calls, methods: () => calls().filter(entry => entry.method).map(entry => entry.method) };
 }
 
-test("FULU Stop waits for this printer's certificate callback before its only submission", async t => {
-  const {bridge, calls} = await fakeFuluBridge(t, {FAKE_FULU_REQUIRE_CERT_READY: "1", FAKE_FULU_CERT_DELAY_MS: "150"});
-  await bridge.sendLocalPrintCommand(LOCAL_PRINTER, "stop", {}, undefined, FAST_LOCAL_PRINT);
-  const stops = calls().filter(c => c.method === "net.send_message_to_printer" && JSON.parse(c.payload.msg).print?.command === "stop");
-  assert.equal(stops.length, 1);
+const controlSends = (calls, command = "stop") => calls().filter(c => c.method === "net.send_message_to_printer" && JSON.parse(c.payload.msg).print?.command === command);
+
+test("FULU Stop sends once when this printer's certificate is reported ready", async t => {
+  const {bridge, calls} = await fakeFuluBridge(t, {FAKE_FULU_REQUIRE_CERT_READY: "1", FAKE_FULU_CERT_DELAY_MS: "30"});
+  const result = await bridge.sendLocalPrintCommand(LOCAL_PRINTER, "stop", {}, undefined, FAST_CONTROL);
+  assert.equal(result.attempts, 1);
+  assert.equal(controlSends(calls).length, 1);
 });
 
-for (const event of ["missing", "other-printer"]) test(`FULU Stop sends nothing without its certificate callback (${event})`, async t => {
+// Nov 3 on the real P1S: FULU never sent device_cert_installed for a control session, and the
+// previous wait refused to send at all. FULU's own app just sends; a bridge that never says ready still gets one try.
+for (const event of ["missing", "other-printer"]) test(`FULU Stop still sends when no certificate message arrives (${event})`, async t => {
   const {bridge, calls} = await fakeFuluBridge(t, {FAKE_FULU_CERT_EVENT: event});
-  await assert.rejects(bridge.sendLocalPrintCommand(LOCAL_PRINTER, "stop", {}, undefined, {...FAST_LOCAL_PRINT, connectTimeoutMs: 300}), /certificate.*ready/i);
-  assert.equal(calls().filter(c => c.method === "net.send_message_to_printer" && JSON.parse(c.payload.msg).print?.command === "stop").length, 0);
+  const result = await bridge.sendLocalPrintCommand(LOCAL_PRINTER, "stop", {}, undefined, FAST_CONTROL);
+  assert.equal(result.status, "success");
+  assert.equal(controlSends(calls).length, 1);
+});
+
+test("a control refused with SEND_MSG_FAILED is retried only after the certificate is reinstalled", async t => {
+  const {bridge, calls} = await fakeFuluBridge(t, {FAKE_FULU_CONTROL_FAILURES: "1"});
+  const result = await bridge.sendLocalPrintCommand(LOCAL_PRINTER, "pause", {}, undefined, FAST_CONTROL);
+  assert.equal(result.attempts, 2);
+  const recorded = calls();
+  const sends = recorded.map((c, i) => [c, i]).filter(([c]) => c.method === "net.send_message_to_printer" && JSON.parse(c.payload.msg).print?.command === "pause").map(([, i]) => i);
+  assert.equal(sends.length, 2);
+  assert.ok(recorded.slice(sends[0], sends[1]).some(c => c.method === "net.install_device_cert"), "reinstalled between the two sends");
+});
+
+test("a control that keeps failing stops after three tries with the plug-in code", async t => {
+  const {bridge, calls} = await fakeFuluBridge(t, {FAKE_FULU_CONTROL_FAILURES: "9"});
+  await assert.rejects(bridge.sendLocalPrintCommand(LOCAL_PRINTER, "stop", {}, undefined, FAST_CONTROL), /did not accept stop .*plug-in code -4/);
+  assert.equal(controlSends(calls).length, 3);
+});
+
+test("any other plug-in return is final: the control is never replayed", async t => {
+  const {bridge, calls} = await fakeFuluBridge(t, {FAKE_FULU_CONTROL_RESULT: "-1"});
+  await assert.rejects(bridge.sendLocalPrintCommand(LOCAL_PRINTER, "stop", {}, undefined, FAST_CONTROL), /plug-in code -1/);
+  assert.equal(controlSends(calls).length, 1);
+});
+
+test("control diagnostics go to control-trace.log without the access code", async t => {
+  const {bridge, dir} = await fakeFuluBridge(t, {});
+  await bridge.sendLocalPrintCommand(LOCAL_PRINTER, "stop", {}, undefined, FAST_CONTROL);
+  const trace = fs.readFileSync(path.join(dir, "config", "control-trace.log"), "utf8");
+  assert.match(trace, /"step":"send","command":"stop","attempt":1,"code":0/);
+  assert.match(trace, /"step":"certificate"/);
+  assert.doesNotMatch(trace, new RegExp(LOCAL_PRINTER.password));
 });
 
 for (const [connection, stopResult] of [["0", "0"], ["1", "0"], ["0", "-4030"], ["0", "-4"]]) {
@@ -1462,7 +1499,8 @@ for (const [connection, stopResult] of [["0", "0"], ["1", "0"], ["0", "-4030"], 
     } else {
       assert.equal(result.isError, true);
       assert.match(JSON.stringify(result), connection === "1" ? /LAN connection/ : /did not accept stop over the authenticated FULU LAN connection/);
-      assert.equal(commands.length, connection === "1" ? 0 : 1, "a rejected stop is never replayed");
+      // -4 and -4030 mean the plug-in sent nothing: retried after a certificate reinstall, three tries in all.
+      assert.equal(commands.length, connection === "1" ? 0 : 3);
     }
   });
 }

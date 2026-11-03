@@ -6,7 +6,7 @@
 
 - One connection decision for print and control: `cancel_print`, `pause_print` and `resume_print` now use `BAMBU_DEFAULT_CONNECTION_MODE` (and the new `BAMBU_DEFAULT_CONNECTION_TYPE`) exactly as `print_3mf` does. Before, a server configured for FULU printed through the authenticated bridge but sent Stop and Pause as plain MQTT, which protected firmware rejects with HMS 0500_0500_0001_0007. Pause and Resume now travel the authenticated FULU LAN session like Stop. A FULU cloud route refuses controls instead of sending plain MQTT.
 
-- Authenticated LAN Stop listens for the FULU printer-certificate completion callback before one command submission, and reports missing readiness without sending or replaying Stop.
+- Authenticated LAN controls (Stop, Pause, Resume) wait briefly for FULU's certificate message but no longer refuse to send without it: on the real P1S it never arrived and Stop sent nothing. A synchronous SEND_MSG_FAILED (-4) or LP_PUBLISH_MSG_FAILED (-4030) means nothing was sent, so the certificate is reinstalled and the control tried again, up to three times, as the native X2D helper does; any other return is final. Each control's FULU events and sends are written to `control-trace.log` in the bridge config folder, without access codes.
 
 - Send Stop through the selected authenticated FULU LAN bridge on non-native printers. A protected P1S no longer receives an unsigned MQTT stop after an authenticated print. Bridge failures remain errors; no unauthenticated fallback or automatic replay is used.
 
