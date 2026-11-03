@@ -527,12 +527,13 @@ export class BambuImplementation {
         this.printerStore = new BambuClientStore((host, serial, report) => this.observeReport(host, serial, report));
     }
     /**
-     * Ask a person through MCP elicitation. BAMBU_REQUIRE_CONFIRMATION=0 skips
-     * ordinary prompts; a physical check, or a prompt with requiredBecause (why
-     * this one cannot be skipped), always asks.
+     * Ask a person through MCP elicitation, only for a physical check or a prompt with
+     * requiredBecause (why a person must accept it). Ordinary print, heating and resume
+     * starts do not ask: the client's own button is the yes, and the printer runs its
+     * own checks.
      */
     async confirmHardwareAction(message, physicalCheck = false, requiredBecause) {
-        if (!physicalCheck && requiredBecause === undefined && process.env.BAMBU_REQUIRE_CONFIRMATION === "0")
+        if (!physicalCheck && requiredBecause === undefined)
             return;
         if (!this.confirm) {
             throw new Error("Hardware safety confirmation is unavailable. Use an MCP client with elicitation support. No command was sent." + (requiredBecause ? ` ${requiredBecause}` : ""));
@@ -540,8 +541,7 @@ export class BambuImplementation {
         if (!(await this.confirm(message))) {
             throw new Error("Hardware safety confirmation was declined or cancelled in the MCP client. No command was sent. " + (physicalCheck
                 ? "This confirmation covers a physical check at the printer and always needs a person to accept it."
-                : requiredBecause ?? ("Some clients decline prompts automatically, for example in a non-interactive permission mode. " +
-                    "A deliberately headless setup that approves jobs another way can set BAMBU_REQUIRE_CONFIRMATION=0 to skip ordinary print and heating prompts.")));
+                : requiredBecause ?? "Some clients decline prompts automatically, for example in a non-interactive permission mode."));
         }
     }
     finishedJobIdentity(status) {
@@ -578,7 +578,7 @@ export class BambuImplementation {
             throw new Error("Printer job changed during preflight. Review the current printer status and retry.");
         }
         // An X2D raises its hidden camera notice about 15 seconds after boot, so it
-        // can appear after the human confirmed. Never pass a notice nobody was told about.
+        // can appear after the preflight. Never pass a notice the preflight did not name.
         const unnamed = hiddenHmsNotices(status?.raw, preflight.serial, preflight.model).filter(notice => !preflight.notices.includes(notice));
         if (unnamed.length) {
             throw new Error(`Printer reported ${unnamed.join(", ")} after the print confirmation. ` +
@@ -1183,8 +1183,8 @@ export class BambuImplementation {
     /**
      * Resume reheats and moves the printer, so it is gated like a print start:
      * only the job this server inspected and started, while a fresh report shows
-     * it paused, with its bytes re-read over FTPS and compared, and after human
-     * confirmation (unless BAMBU_REQUIRE_CONFIRMATION=0). The record must still
+     * it paused, with its bytes re-read over FTPS and compared. Only a file that
+     * could not be re-read asks a person. The record must still
      * be current at every check, including the native helper's last one.
      */
     async resumeJob(host, serial, token, dispatch) {
@@ -1226,8 +1226,8 @@ export class BambuImplementation {
                 `bed ${checked.maxBedTemperature}°C, chamber ${checked.maxChamberTemperature}°C) and moves. Materials: ${checked.materials.length ? checked.materials.join(", ") : "none declared"}. ` +
                 `File SHA-256: ${checked.sha256}${"verified" in reread ? ` (re-read from the printer${reread.verified === checked.remotePath ? "" : ` as its extracted plate ${reread.verified}`})` : ` (Bambu's plug-in placed the file, and it could not be re-read over FTPS: ${unread}; matched by its unique name)`}. ` +
                 "Confirm the nozzle path is clear and the filament is still loaded.", false, 
-            // The opt-out covers resumes whose bytes were checked; an unverified file always needs a person.
-            bytesVerified ? undefined : "The printer's copy of this file could not be re-read, so this resume always needs a person to accept it, even with BAMBU_REQUIRE_CONFIRMATION=0.");
+            // A resume whose bytes were checked does not ask; an unverified file always needs a person.
+            bytesVerified ? undefined : "The printer's copy of this file could not be re-read, so this resume always needs a person to accept it.");
             // The job may have been resumed, stopped or replaced at the printer while the prompt was open.
             await pausedJob();
             const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);

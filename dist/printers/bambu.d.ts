@@ -75,9 +75,10 @@ export declare class BambuImplementation {
     private clearedErrors;
     constructor(confirm?: ((message: string) => Promise<boolean>) | undefined);
     /**
-     * Ask a person through MCP elicitation. BAMBU_REQUIRE_CONFIRMATION=0 skips
-     * ordinary prompts; a physical check, or a prompt with requiredBecause (why
-     * this one cannot be skipped), always asks.
+     * Ask a person through MCP elicitation, only for a physical check or a prompt with
+     * requiredBecause (why a person must accept it). Ordinary print, heating and resume
+     * starts do not ask: the client's own button is the yes, and the printer runs its
+     * own checks.
      */
     confirmHardwareAction(message: string, physicalCheck?: boolean, requiredBecause?: string): Promise<void>;
     private finishedJobIdentity;
@@ -130,8 +131,8 @@ export declare class BambuImplementation {
     /**
      * Resume reheats and moves the printer, so it is gated like a print start:
      * only the job this server inspected and started, while a fresh report shows
-     * it paused, with its bytes re-read over FTPS and compared, and after human
-     * confirmation (unless BAMBU_REQUIRE_CONFIRMATION=0). The record must still
+     * it paused, with its bytes re-read over FTPS and compared. Only a file that
+     * could not be re-read asks a person. The record must still
      * be current at every check, including the native helper's last one.
      */
     resumeJob(host: string, serial: string, token: string, dispatch?: (assertActive: () => void, beforeDispatch: () => Promise<void>) => Promise<any>): Promise<any>;

@@ -1302,7 +1302,7 @@ class BambuPrinterMCPServer {
           throw new Error(`No hardware confirmation within ${describeDuration(this.confirmationTimeoutMs)}; nothing was sent to the printer. Retry when someone can check the printer, or raise BAMBU_CONFIRMATION_TIMEOUT_MS.`);
         }
         if (isElicitationUnsupported(error)) {
-          throw new Error("Human hardware confirmation requires an MCP client with elicitation support. For deliberately headless operation, BAMBU_REQUIRE_CONFIRMATION=0 disables ordinary print/heat prompts; hardware-error confirmation still requires elicitation.");
+          throw new Error("Human hardware confirmation requires an MCP client with elicitation support. Only clearing hardware errors, the first print after a clear, and resuming a file that could not be re-read ask.");
         }
         throw new Error(`Human hardware confirmation failed: ${error?.message ?? error}. Nothing was sent to the printer.`);
       }
@@ -2900,7 +2900,7 @@ class BambuPrinterMCPServer {
           },
           {
             name: "resume_print",
-            description: "Resume a paused job that this server inspected and started. It re-downloads the job's file over FTPS and compares its SHA-256, asks a person to confirm (unless BAMBU_REQUIRE_CONFIRMATION=0), and reads the printer again before sending. A job that was cancelled, ended or replaced is never resumed. Returns jobName and bytesVerified.",
+            description: "Resume a paused job that this server inspected and started. It re-downloads the job's file over FTPS and compares its SHA-256, asks a person to confirm only when the file could not be re-read, and reads the printer again before sending. A job that was cancelled, ended or replaced is never resumed. Returns jobName and bytesVerified.",
             inputSchema: {
               type: "object",
               properties: {

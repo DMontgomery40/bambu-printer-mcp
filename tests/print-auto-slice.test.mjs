@@ -108,6 +108,7 @@ BambuImplementation.prototype.getSafetyStatus = async function () {
     elicitations: () => fs.existsSync(elicitLog) ? fs.readFileSync(elicitLog, "utf8").trim().split("\n").map(JSON.parse) : [],
     print: (file, extra = {}) => client.callTool({ name: "print_3mf", arguments: { three_mf_path: file, bambu_model: "p1s", slicer_type: slicerType, slicer_profile: profile, bed_type: "textured_plate", use_ams: false, ...extra } }),
     cancel: () => client.callTool({ name: "cancel_print", arguments: {} }),
+    clear: () => client.callTool({ name: "clear_hms_errors", arguments: {} }),
     slice: (file) => client.callTool({ name: "slice_stl", arguments: { stl_path: file, bambu_model: "p1s", slicer_profile: profile, use_printer_filaments: false, bed_type: "textured_plate" } }),
     sliceWithoutModel: (file) => client.callTool({ name: "slice_stl", arguments: { stl_path: file, slicer_profile: profile, use_printer_filaments: false, bed_type: "textured_plate" } }),
   };
@@ -152,11 +153,19 @@ test("print_3mf uploads only the generated file after successful auto-slicing", 
   assert.equal(events.filter((event) => event.action === "publish").length, 1);
 });
 
-test("human print confirmation waits ten minutes by default instead of the SDK's 60 seconds", async (t) => {
-  const server = await start(t, { sliceSucceeds: true, elicitDelayMs: 500 });
+test("print_3mf starts without a prompt; the Print button in the client is the yes", async (t) => {
+  const server = await start(t, { sliceSucceeds: true, confirmation: false });
   const result = await server.print(await server.makeProject("unsliced.3mf"));
   assert.equal(result.isError, undefined, result.content?.[0]?.text);
-  assert.ok(server.elicitations().length > 0, "the print must ask for human confirmation");
+  assert.deepEqual(server.elicitations(), [], "an ordinary print must not ask for confirmation");
+  assert.equal(server.events().filter((event) => event.action === "publish").length, 1);
+});
+
+test("human hardware confirmation waits ten minutes by default instead of the SDK's 60 seconds", async (t) => {
+  const server = await start(t, { elicitDelayMs: 500 });
+  const result = await server.clear();
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  assert.ok(server.elicitations().length > 0, "clearing hardware errors must ask for human confirmation");
   assert.deepEqual([...new Set(server.elicitations().map((call) => call.timeout))], [600000]);
   assert.equal(server.events().filter((event) => event.action === "publish").length, 1);
 });
@@ -164,29 +173,29 @@ test("human print confirmation waits ten minutes by default instead of the SDK's
 for (const invalid of ["3000000000", "999", "3600001", "10.5", "soon"]) {
   test(`an out-of-range confirmation timeout (${invalid}) falls back to ten minutes`, async (t) => {
     // Node clamps timer delays above 2^31-1 ms to 1 ms, which would time out every prompt at once.
-    const server = await start(t, { sliceSucceeds: true, elicitDelayMs: 200, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: invalid } });
-    const result = await server.print(await server.makeProject("unsliced.3mf"));
+    const server = await start(t, { elicitDelayMs: 200, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: invalid } });
+    const result = await server.clear();
     assert.equal(result.isError, undefined, result.content?.[0]?.text);
     assert.deepEqual([...new Set(server.elicitations().map((call) => call.timeout))], [600000]);
   });
 }
 
-test("a late confirmation answered within the configured timeout still prints", async (t) => {
-  const server = await start(t, { sliceSucceeds: true, elicitDelayMs: 1000, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: "5000" } });
-  const result = await server.print(await server.makeProject("unsliced.3mf"));
+test("a late confirmation answered within the configured timeout still clears", async (t) => {
+  const server = await start(t, { elicitDelayMs: 1000, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: "5000" } });
+  const result = await server.clear();
   assert.equal(result.isError, undefined, result.content?.[0]?.text);
   assert.deepEqual([...new Set(server.elicitations().map((call) => call.timeout))], [5000]);
   assert.equal(server.events().filter((event) => event.action === "publish").length, 1);
 });
 
 test("an unanswered confirmation is reported as a timeout, not as missing elicitation support", async (t) => {
-  const server = await start(t, { sliceSucceeds: true, elicitDelayMs: 2500, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: "1000" } });
-  const result = await server.print(await server.makeProject("unsliced.3mf"));
+  const server = await start(t, { elicitDelayMs: 2500, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: "1000" } });
+  const result = await server.clear();
   assert.equal(result.isError, true);
   const message = JSON.stringify(result.content);
   assert.match(message, /No hardware confirmation within 1 second\(s\); nothing was sent to the printer/);
-  assert.doesNotMatch(message, /does not support|requires an MCP client with elicitation|BAMBU_REQUIRE_CONFIRMATION=0/);
-  assert.deepEqual(server.events().filter((event) => ["upload", "publish"].includes(event.action)), [], "a timed-out confirmation must not dispatch");
+  assert.doesNotMatch(message, /does not support|requires an MCP client with elicitation/);
+  assert.deepEqual(server.events().filter((event) => event.action === "publish"), [], "a timed-out confirmation must not dispatch");
 });
 
 test("an unanswered printer-model prompt is reported as a timeout", async (t) => {
@@ -200,11 +209,11 @@ test("an unanswered printer-model prompt is reported as a timeout", async (t) =>
 });
 
 test("a client without elicitation is still told it cannot confirm, not that it timed out", async (t) => {
-  const server = await start(t, { sliceSucceeds: true, elicitation: false, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: "1000" } });
-  const printed = JSON.stringify((await server.print(await server.makeProject("unsliced.3mf"))).content);
-  assert.match(printed, /requires an MCP client with elicitation support/);
-  assert.doesNotMatch(printed, /No hardware confirmation within/);
-  assert.deepEqual(server.events().filter((event) => ["upload", "publish"].includes(event.action)), [], "an unconfirmed print must not dispatch");
+  const server = await start(t, { elicitation: false, env: { BAMBU_CONFIRMATION_TIMEOUT_MS: "1000" } });
+  const cleared = JSON.stringify((await server.clear()).content);
+  assert.match(cleared, /requires an MCP client with elicitation support/);
+  assert.doesNotMatch(cleared, /No hardware confirmation within/);
+  assert.deepEqual(server.events().filter((event) => event.action === "publish"), [], "an unconfirmed clear must not dispatch");
 });
 
 test("a client without elicitation is told to configure the printer model", async (t) => {
@@ -291,8 +300,8 @@ for (const extension of ["3mf", "gcode.3mf"]) {
 }
 
 test('an accepted but unchecked hardware form explains missing confirmation and never dispatches', async t => {
-  const server=await start(t,{sliceSucceeds:true,confirmation:false});
-  const result=await server.print(await server.makeProject('unchecked.3mf'));
+  const server=await start(t,{confirmation:false});
+  const result=await server.clear();
   assert.equal(result.isError,true);
   assert.match(JSON.stringify(result.content),/checkbox|not checked/i);
   assert.doesNotMatch(JSON.stringify(result.content),/elicitation support|unavailable/i);

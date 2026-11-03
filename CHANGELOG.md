@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Print, heating and resume start without a prompt; clearing hardware errors and resuming a file that could not be re-read still ask a person. The client's own Print button is the yes, and the printer runs its own checks. The first print after a hardware clear still asks that the cleared causes are resolved. The `BAMBU_REQUIRE_CONFIRMATION` setting is removed and ignored if set.
+
 ### Fixed
 
 - One connection decision for print and control: `cancel_print`, `pause_print` and `resume_print` now use `BAMBU_DEFAULT_CONNECTION_MODE` (and the new `BAMBU_DEFAULT_CONNECTION_TYPE`) exactly as `print_3mf` does. Before, a server configured for FULU printed through the authenticated bridge but sent Stop and Pause as plain MQTT, which protected firmware rejects with HMS 0500_0500_0001_0007. Pause and Resume now travel the authenticated FULU LAN session like Stop. A FULU cloud route refuses controls instead of sending plain MQTT.
