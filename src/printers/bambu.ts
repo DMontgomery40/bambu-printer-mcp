@@ -5,7 +5,7 @@ import {cameraFrameParser, cameraAuth} from "./camera-wire.js";
 import { createHash } from "node:crypto";
 import { isFinishedP1SJob, isCancelledX2DJob, readFreshPrinterStatus } from "../safety/printer-state.js";
 import fs from "node:fs/promises";
-import { createReadStream, readFileSync, existsSync } from "node:fs";
+import { createReadStream, readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { Readable } from "node:stream";
@@ -583,6 +583,86 @@ type CheckedJob = CheckedFile & {
   uploadedHere: boolean;
 };
 
+/**
+ * Where each printer's resume record is kept so a restart of this server (a deploy, a crash, a reboot) during a
+ * pause can still resume the job it started: BAMBU_RESUME_STATE_DIR, else bambu-printer-mcp/resume in the
+ * config home. Resume runs every check on a reloaded record: a fresh paused report naming this exact job, the
+ * re-read bytes or its unique name, and a person for an unverified file.
+ */
+export function defaultResumeStateDir(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.BAMBU_RESUME_STATE_DIR) return env.BAMBU_RESUME_STATE_DIR;
+  const configHome = env.XDG_CONFIG_HOME || path.join(env.HOME || os.homedir(), ".config");
+  return path.join(configHome, "bambu-printer-mcp", "resume");
+}
+
+function isCheckedJob(value: any): value is CheckedJob {
+  return Boolean(value) && typeof value === "object" && /^[a-f0-9]{64}$/.test(value.sha256 ?? "") &&
+    typeof value.remotePath === "string" && value.remotePath !== "" && typeof value.model === "string" &&
+    Boolean(value.requirements) && typeof value.requirements === "object" && Array.isArray(value.materials) &&
+    typeof value.seenRunning === "boolean" && typeof value.uploadedHere === "boolean" &&
+    [value.maxNozzleTemperature, value.maxBedTemperature, value.maxChamberTemperature].every(Number.isFinite);
+}
+
+/**
+ * The resume record of each printer (keyed host and serial). With a folder, every change is written to that
+ * printer's own file (private, replaced atomically) and the file is read the first time the printer is asked
+ * about, so a new server process knows the job the previous one started. Without one it lives in memory only.
+ */
+class ResumeRecords {
+  private readonly jobs = new Map<string, CheckedJob>();
+  private readonly read = new Set<string>();
+  constructor(private readonly dir?: string) {}
+
+  get(key: string): CheckedJob | undefined {
+    if (!this.read.has(key)) {
+      this.read.add(key);
+      const saved = this.dir ? this.readFile(key) : undefined;
+      if (saved) this.jobs.set(key, saved);
+    }
+    return this.jobs.get(key);
+  }
+
+  set(key: string, job: CheckedJob): void {
+    this.read.add(key);
+    this.jobs.set(key, job);
+    this.save(key);
+  }
+
+  delete(key: string): boolean {
+    this.read.add(key);
+    const had = this.jobs.delete(key);
+    this.save(key);
+    return had;
+  }
+
+  /** Write this printer's record as it is now (or remove its file). A failed write never stops a print or a control. */
+  save(key: string): void {
+    if (!this.dir) return;
+    const file = this.file(key);
+    const job = this.jobs.get(key);
+    try {
+      if (!job) { rmSync(file, { force: true }); return; }
+      mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+      const temporary = `${file}.${process.pid}.tmp`;
+      writeFileSync(temporary, JSON.stringify({ version: 1, key, job }), { mode: 0o600 });
+      renameSync(temporary, file);
+    } catch (error) {
+      console.error(`Could not save the resume record for ${key.replace("\n", " ")}: ${(error as Error).message}. Resume still works until this server restarts.`);
+    }
+  }
+
+  private file(key: string): string {
+    return path.join(this.dir!, `${createHash("sha256").update(key).digest("hex").slice(0, 32)}.json`);
+  }
+
+  private readFile(key: string): CheckedJob | undefined {
+    try {
+      const saved = JSON.parse(readFileSync(this.file(key), "utf8"));
+      return saved?.version === 1 && saved.key === key && isCheckedJob(saved.job) ? saved.job : undefined;
+    } catch { return undefined; }
+  }
+}
+
 const ACTIVE_JOB_STATES = new Set(["PREPARE", "SLICING", "RUNNING", "PAUSE"]);
 /** Reports after which a started job can no longer be resumed. */
 const ENDED_JOB_STATES = new Set(["FINISH", "FAILED", "IDLE"]);
@@ -643,12 +723,13 @@ export class BambuImplementation {
    * that it ended after it was seen running, or another job seen in its place
    * retires it, so a later job that reuses the name is never resumed.
    */
-  private checkedJobs = new Map<string, CheckedJob>();
+  private readonly checkedJobs: ResumeRecords;
   /** In-flight counterpart_print_progress reads, one per printer. */
   private progressReads = new Map<string, Promise<ProgressReport | null>>();
   private clearedErrors = new Map<string, string[]>();
 
-  constructor(private readonly confirm?: (message: string) => Promise<boolean>) {
+  constructor(private readonly confirm?: (message: string) => Promise<boolean>, options: { resumeStateDir?: string } = {}) {
+    this.checkedJobs = new ResumeRecords(options.resumeStateDir);
     this.printerStore = new BambuClientStore((host, serial, report) => this.observeReport(host, serial, report));
   }
 
@@ -743,7 +824,7 @@ export class BambuImplementation {
     if (!checked || !raw || typeof raw.gcode_state !== "string") return;
     const state = raw.gcode_state.toUpperCase();
     if (ACTIVE_JOB_STATES.has(state) && reportsJob(raw, checked.remotePath)) {
-      checked.seenRunning = true;
+      if (!checked.seenRunning) { checked.seenRunning = true; this.checkedJobs.save(key); }
       return;
     }
     if (checked.seenRunning && (ENDED_JOB_STATES.has(state) || (ACTIVE_JOB_STATES.has(state) && reportedJobNames(raw).length > 0))) {

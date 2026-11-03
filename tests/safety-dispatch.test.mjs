@@ -47,12 +47,11 @@ async function fixture(t, { model = "p1s", nozzle = "0.4", nozzleDiameters, mate
   return file;
 }
 
-function isolatedPrinter(status = safetyStatus(), { confirm = async () => true } = {}) {
+function isolatedPrinter(status = safetyStatus(), { confirm = async () => true, resumeStateDir, files = new Map() } = {}) {
   const prompts = [];
-  const printer = new BambuImplementation(async (message) => { prompts.push(message); return confirm(message); });
+  const printer = new BambuImplementation(async (message) => { prompts.push(message); return confirm(message); }, { resumeStateDir });
   const events = [];
   // The printer's storage: uploads land here and FTPS downloads read them back.
-  const files = new Map();
   const stored = (remote) => remote.replace(/^\/+/, "");
   printer.ftpUpload = async (_host, _token, file, remote) => {
     const bytes = await fs.readFile(file);
@@ -303,10 +302,10 @@ test("resume refuses a job this server has not inspected before connecting", asy
 });
 
 /** A checked P1S job started by this server, then reported paused; confirm answers the prompts after the start. */
-async function pausedJob(t, { confirm = async () => true } = {}) {
+async function pausedJob(t, { confirm = async () => true, resumeStateDir } = {}) {
   const file = await fixture(t);
   let answer = async () => true;
-  const isolated = isolatedPrinter(undefined, { confirm: (message) => answer(message) });
+  const isolated = isolatedPrinter(undefined, { confirm: (message) => answer(message), resumeStateDir });
   const started = await isolated.printer.print3mf(host, serial, token, { projectName: "resume", filePath: file, bambuModel: "p1s", useAMS: false });
   answer = confirm;
   isolated.events.length = 0;
@@ -339,6 +338,65 @@ test("a matching inspected paused job resumes after its bytes are re-read and a 
   assert.equal(job.events[1].remote, job.started.remoteProjectPath);
   assert.equal(job.events[4].payload.print.command, "resume");
   assert.deepEqual(job.prompts, [], "a resume whose bytes were re-read does not ask");
+});
+
+/** The same printer, as a new server process sees it after a restart: same storage, same paused report, same record folder. */
+function restarted(job, resumeStateDir) {
+  const next = isolatedPrinter(undefined, { resumeStateDir, files: job.files });
+  next.printer.getSafetyStatus = async () => { next.events.push({ action: "status" }); return safetyStatus(job.report); };
+  return next;
+}
+
+async function recordFolder(t) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-resume-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+// Nov 3: the MCP restarted (companion restarts) while a P1S pick paused before layer 2; Resume from Counterpart was
+// refused for the rest of the print because the record of the job lived only in the old process.
+test("a server restarted during a pause still resumes the job it started, with every check", async (t) => {
+  const dir = await recordFolder(t);
+  const job = await pausedJob(t, { resumeStateDir: dir });
+  job.printer.printerStore.onReport(host, serial, { gcode_state: "RUNNING", gcode_file: job.started.remoteProjectPath, subtask_name: job.started.subtaskName });
+  const files = await fs.readdir(dir);
+  assert.equal(files.length, 1);
+  assert.equal((await fs.stat(path.join(dir, files[0]))).mode & 0o777, 0o600, "the record is private");
+  const next = restarted(job, dir);
+  const result = await next.printer.resumeJob(host, serial, token);
+  assert.equal(result.status, "success");
+  assert.equal(result.bytesVerified, true);
+  assert.deepEqual(next.events.map(({ action }) => action), ["status", "download", "status", "connect", "publish"]);
+  assert.equal(next.events.at(-1).payload.print.command, "resume");
+});
+
+test("after a restart, a job stopped before it or ended while the server was down is not resumed", async (t) => {
+  const dir = await recordFolder(t);
+  const stopped = await pausedJob(t, { resumeStateDir: dir });
+  await stopped.printer.cancelJob(host, serial, token, async () => ({ status: "success" }));
+  assert.deepEqual(await fs.readdir(dir), [], "Stop removes the record");
+  const afterStop = restarted(stopped, dir);
+  await assert.rejects(afterStop.printer.resumeJob(host, serial, token), /inspected and started/);
+  assert.deepEqual(afterStop.events, []);
+
+  const ended = await pausedJob(t, { resumeStateDir: dir });
+  ended.printer.printerStore.onReport(host, serial, { gcode_state: "RUNNING", gcode_file: ended.started.remoteProjectPath, subtask_name: ended.started.subtaskName });
+  const afterEnd = restarted(ended, dir);
+  // The first report the new server sees says the job finished; the same file then pauses again (a touchscreen reprint).
+  afterEnd.printer.printerStore.onReport(host, serial, { gcode_state: "FINISH", gcode_file: ended.started.remoteProjectPath, subtask_name: ended.started.subtaskName });
+  await assert.rejects(afterEnd.printer.resumeJob(host, serial, token), /inspected and started/);
+  assert.equal(afterEnd.events.filter(({ action }) => action === "publish").length, 0);
+});
+
+test("a damaged or foreign resume record is ignored", async (t) => {
+  const dir = await recordFolder(t);
+  const job = await pausedJob(t, { resumeStateDir: dir });
+  const [name] = await fs.readdir(dir);
+  const saved = JSON.parse(await fs.readFile(path.join(dir, name), "utf8"));
+  for (const damaged of ["{not json", JSON.stringify({ ...saved, key: "other-host\nother-serial" }), JSON.stringify({ ...saved, job: { ...saved.job, sha256: "nope" } })]) {
+    await fs.writeFile(path.join(dir, name), damaged);
+    await assert.rejects(restarted(job, dir).printer.resumeJob(host, serial, token), /inspected and started/);
+  }
 });
 
 test("an unverified resume asks a person first: a declined prompt sends nothing", async (t) => {
@@ -601,7 +659,9 @@ async function interceptedMcp(t, { blockBridgeInitialization = false, realBridge
       return ${JSON.stringify(bridgeResponse)};
     };`}
   `);
-  const transport = new StdioClientTransport({ command: process.execPath, args: ["--import", preload, path.join(root, "dist/index.js")], cwd: dir, stderr: "pipe", env: { ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "", BAMBU_PRINTER_MODEL: "", BAMBU_PRINTER_HOST: host, BAMBU_PRINTER_SERIAL: serial, BAMBU_SERIAL: serial, BAMBU_PRINTER_ACCESS_TOKEN: token, BAMBU_TOKEN: token, BAMBU_DEV_ID: serial, BAMBU_NETWORK_BRIDGE_COMMAND: "" } });
+  const transport = new StdioClientTransport({ command: process.execPath, args: ["--import", preload, path.join(root, "dist/index.js")], cwd: dir, stderr: "pipe", env: { ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "", BAMBU_PRINTER_MODEL: "", BAMBU_PRINTER_HOST: host, BAMBU_PRINTER_SERIAL: serial, BAMBU_SERIAL: serial, BAMBU_PRINTER_ACCESS_TOKEN: token, BAMBU_TOKEN: token, BAMBU_DEV_ID: serial, BAMBU_NETWORK_BRIDGE_COMMAND: "",
+    // Each server keeps its own resume records: a job another test started must never be resumable here.
+    BAMBU_RESUME_STATE_DIR: await fs.mkdtemp(path.join(os.tmpdir(), "bambu-resume-server-")) } });
   const client = new Client({ name: "safety-dispatch-tests", version: "1" }, { capabilities: { elicitation: { form: {} } } });
   client.setRequestHandler(ElicitRequestSchema, async () => ({ action: "accept", content: { confirmed: true } }));
   t.after(() => client.close());

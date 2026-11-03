@@ -51,6 +51,13 @@ export type CheckedFile = {
     maxChamberTemperature: number;
     materials: string[];
 };
+/**
+ * Where each printer's resume record is kept so a restart of this server (a deploy, a crash, a reboot) during a
+ * pause can still resume the job it started: BAMBU_RESUME_STATE_DIR, else bambu-printer-mcp/resume in the
+ * config home. Resume runs every check on a reloaded record: a fresh paused report naming this exact job, the
+ * re-read bytes or its unique name, and a person for an unverified file.
+ */
+export declare function defaultResumeStateDir(env?: NodeJS.ProcessEnv): string;
 /** What a resume needs to know about a started file (filePath, the inspected snapshot): its bytes, printed plate, limits and used materials. */
 export declare function checkedFile(inspection: PrintFileInspection, filePath: string): Promise<CheckedFile>;
 export type PrintPreflight = {
@@ -69,11 +76,13 @@ export declare class BambuImplementation {
      * that it ended after it was seen running, or another job seen in its place
      * retires it, so a later job that reuses the name is never resumed.
      */
-    private checkedJobs;
+    private readonly checkedJobs;
     /** In-flight counterpart_print_progress reads, one per printer. */
     private progressReads;
     private clearedErrors;
-    constructor(confirm?: ((message: string) => Promise<boolean>) | undefined);
+    constructor(confirm?: ((message: string) => Promise<boolean>) | undefined, options?: {
+        resumeStateDir?: string;
+    });
     /**
      * Ask a person through MCP elicitation, only for a physical check or a prompt with
      * requiredBecause (why a person must accept it). Ordinary print, heating and resume

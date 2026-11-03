@@ -126,7 +126,9 @@ console.log('native_print result=0');
       BAMBU_NATIVE_HELPER: installedHelper ? helper : "",
       BAMBU_NATIVE_HOME: installedPlugin ? createFakeNativeHome(dir, { tunnelLibrary }) : path.join(dir, "empty-native-home"),
       ...(unpinnedOptIn ? UNPINNED_PLUGIN_ENV : { BAMBU_NATIVE_ALLOW_UNPINNED_PLUGIN: "" }),
-      BAMBU_DEFAULT_CONNECTION_MODE: "", BAMBU_EMERGENCY_MQTT_TIMEOUT_MS: "500", BAMBU_NATIVE_TRY_EMMC_PRINT: undefined, ...env }, stderr: "pipe",
+      BAMBU_DEFAULT_CONNECTION_MODE: "", BAMBU_EMERGENCY_MQTT_TIMEOUT_MS: "500", BAMBU_NATIVE_TRY_EMMC_PRINT: undefined,
+      // Each server keeps its own resume records: a job another test started must never be resumable here.
+      BAMBU_RESUME_STATE_DIR: await fs.mkdtemp(path.join(os.tmpdir(), "bambu-resume-server-")), ...env }, stderr: "pipe",
   });
   const client = new Client({ name: "native-regression", version: "0" }, { capabilities: { elicitation: { form: {} } } });
   const prompts = [];
