@@ -32,7 +32,7 @@ export const LOCAL_PRINT_TIMING = Object.freeze({ connectTimeoutMs: 30_000, poll
 
 export type LocalPrinter = { devId: string; devIp: string; username: string; password: string; useSsl: boolean };
 export type BridgeJobUpdate = { status: unknown; code: unknown; msg: unknown };
-export type LocalSession = { installCertificate: () => Promise<void>; settle: (ms: number) => Promise<void>; jobUpdates: BridgeJobUpdate[] };
+export type LocalSession = { installCertificate: () => Promise<void>; settle: (ms: number) => Promise<void>; waitForCertificate: () => Promise<void>; jobUpdates: BridgeJobUpdate[] };
 
 type JsonObject = Record<string, unknown>;
 
@@ -488,6 +488,7 @@ export class BambuNetworkBridge {
     run: (session: LocalSession) => Promise<T>
   ): Promise<T> {
     const jobUpdates: BridgeJobUpdate[] = [];
+    let certificateReady = false;
     const installCertificate = async () => {
       await this.callWithAgent("net.install_device_cert", { dev_id: printer.devId, lan_only: true }, options);
       await this.callWithAgent("net.update_cert", {}, options);
@@ -503,6 +504,12 @@ export class BambuNetworkBridge {
         if (event?.name === "job.update_status") jobUpdates.push({ status: event.payload?.status, code: event.payload?.code, msg: event.payload?.msg });
         const eventDev = event?.payload?.dev_id;
         if (eventDev !== undefined && eventDev !== "" && eventDev !== printer.devId) continue;
+        // FULU v1.0.0 GUI_App's certificate-state callback. A connect callback
+        // alone does not establish that protected controls can be encrypted.
+        if (eventDev === printer.devId && (event?.name === "on_local_message" || event?.name === "on_message")) {
+          if (event.payload?.msg === "device_cert_installed") certificateReady = true;
+          if (event.payload?.msg === "device_cert_uninstalled") certificateReady = false;
+        }
         if (event?.name === "on_local_connect") statuses.push(event.payload.status);
         if ((event?.name === "on_local_message" || event?.name === "on_message") && event.payload?.msg === "wait_info") waitInfo = true;
       }
@@ -516,17 +523,28 @@ export class BambuNetworkBridge {
         await new Promise(resolve => setTimeout(resolve, timing.pollMs));
       }
     };
+    const waitForCertificate = async () => {
+      const deadline = Date.now() + timing.connectTimeoutMs;
+      do {
+        assertActive();
+        await pump();
+        if (certificateReady) return;
+        await new Promise(resolve => setTimeout(resolve, timing.pollMs));
+      } while (Date.now() < deadline);
+      throw new Error("FULU did not report this printer's certificate ready. No Stop command was sent.");
+    };
 
     await this.ensureAgent(options);
     assertActive();
     if (!this.localSessionReady) {
       throw new Error("FULU BambuNetwork bridge host did not accept the certificate folder or local-connection callbacks a LAN print needs. Update the FULU runtime; no print command was sent.");
     }
-    for (const callback of ["net.set_on_printer_connected_fn", "net.set_on_local_message_fn"]) {
+    for (const callback of ["net.set_on_printer_connected_fn", "net.set_on_message_fn", "net.set_on_local_message_fn"]) {
       assertBridgeOk(await this.callWithAgent(callback, {}, options), callback);
     }
     await this.callWithAgent("net.update_cert", {}, options);
     await pump();
+    certificateReady = false; // Ignore completion queued by an earlier session.
     assertActive();
     const requested = await this.callWithAgent("net.connect_printer", {
       dev_id: printer.devId, dev_ip: printer.devIp, username: printer.username, password: printer.password, use_ssl: printer.useSsl,
@@ -567,7 +585,7 @@ export class BambuNetworkBridge {
         await this.callWithAgent("net.send_message_to_printer", { dev_id: printer.devId, msg: JSON.stringify(message), qos, flag: 0 }, options);
       }
       await settle(timing.settleMs);
-      const result = await run({ installCertificate, settle, jobUpdates });
+      const result = await run({ installCertificate, settle, waitForCertificate, jobUpdates });
       await pump();
       return result;
     } finally {
@@ -604,9 +622,10 @@ export class BambuNetworkBridge {
   }
 
   /** Stop through the same authenticated LAN session as a FULU print. Never replay a stop. */
-  async stopLocalPrint(printer: LocalPrinter, options: BambuNetworkBridgeOptions = {}): Promise<Record<string, unknown>> {
+  async stopLocalPrint(printer: LocalPrinter, options: BambuNetworkBridgeOptions = {}, timing = LOCAL_PRINT_TIMING): Promise<Record<string, unknown>> {
     const assertActive = () => options.assertDispatchAllowed?.("net.send_message_to_printer");
-    return this.withLocalSession(printer, options, assertActive, LOCAL_PRINT_TIMING, async () => {
+    return this.withLocalSession(printer, options, assertActive, timing, async session => {
+      await session.waitForCertificate();
       assertActive();
       const method = "net.send_message_to_printer";
       const result = await this.callWithAgent(method, {

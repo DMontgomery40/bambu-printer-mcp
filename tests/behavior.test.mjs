@@ -1389,7 +1389,8 @@ const shellQuoteArg = value => `'${String(value).replace(/'/g, "'\\''")}'`;
 // cannot restore each other's values out of order.
 const FAKE_FULU_ENV = ["BAMBU_NETWORK_BRIDGE_COMMAND", "BAMBU_NETWORK_CONFIG_DIR", "FAKE_FULU_LOG", "PJARCZAK_BAMBU_PLUGIN_DIR",
   "BAMBU_NETWORK_USER_INFO", "BAMBU_NETWORK_CERT_DIR", "PJARCZAK_BAMBU_NETWORK_SO", "PJARCZAK_BAMBU_SOURCE_SO",
-  "FAKE_FULU_EXIT_CODE", "FAKE_FULU_PUBLISH_FAILURES", "FAKE_FULU_UNSUPPORTED", "FAKE_FULU_CONNECT_STATUS", "FAKE_FULU_STOP_RESULT"];
+  "FAKE_FULU_EXIT_CODE", "FAKE_FULU_PUBLISH_FAILURES", "FAKE_FULU_UNSUPPORTED", "FAKE_FULU_CONNECT_STATUS", "FAKE_FULU_STOP_RESULT",
+  "FAKE_FULU_CERT_EVENT", "FAKE_FULU_CERT_DELAY_MS", "FAKE_FULU_REQUIRE_CERT_READY"];
 const fakeFuluEnvSnapshots = new WeakSet();
 
 async function fakeFuluBridge(t, env = {}, { wrapped = false } = {}) {
@@ -1420,7 +1421,20 @@ async function fakeFuluBridge(t, env = {}, { wrapped = false } = {}) {
   return { bridge, dir, calls, methods: () => calls().filter(entry => entry.method).map(entry => entry.method) };
 }
 
-for (const [connection, stopResult] of [["0", "0"], ["1", "0"], ["0", "-4030"]]) {
+test("FULU Stop waits for this printer's certificate callback before its only submission", async t => {
+  const {bridge, calls} = await fakeFuluBridge(t, {FAKE_FULU_REQUIRE_CERT_READY: "1", FAKE_FULU_CERT_DELAY_MS: "150"});
+  await bridge.stopLocalPrint(LOCAL_PRINTER, {}, FAST_LOCAL_PRINT);
+  const stops = calls().filter(c => c.method === "net.send_message_to_printer" && JSON.parse(c.payload.msg).print?.command === "stop");
+  assert.equal(stops.length, 1);
+});
+
+for (const event of ["missing", "other-printer"]) test(`FULU Stop sends nothing without its certificate callback (${event})`, async t => {
+  const {bridge, calls} = await fakeFuluBridge(t, {FAKE_FULU_CERT_EVENT: event});
+  await assert.rejects(bridge.stopLocalPrint(LOCAL_PRINTER, {}, {...FAST_LOCAL_PRINT, connectTimeoutMs: 300}), /certificate.*ready/i);
+  assert.equal(calls().filter(c => c.method === "net.send_message_to_printer" && JSON.parse(c.payload.msg).print?.command === "stop").length, 0);
+});
+
+for (const [connection, stopResult] of [["0", "0"], ["1", "0"], ["0", "-4030"], ["0", "-4"]]) {
   test(`cancel_print uses the configured authenticated FULU session (connection ${connection}, stop ${stopResult})`, async t => {
     const { calls } = await fakeFuluBridge(t, { FAKE_FULU_CONNECT_STATUS: connection, FAKE_FULU_STOP_RESULT: stopResult });
     const module = new URL("../dist/printers/bambu.js", import.meta.url).href;

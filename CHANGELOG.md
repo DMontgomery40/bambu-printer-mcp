@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Authenticated LAN Stop listens for the FULU printer-certificate completion callback before one command submission, and reports missing readiness without sending or replaying Stop.
+
 - Send Stop through the selected authenticated FULU LAN bridge on non-native printers. A protected P1S no longer receives an unsigned MQTT stop after an authenticated print. Bridge failures remain errors; no unauthenticated fallback or automatic replay is used.
 
 - Preserve Fusion tool text, images and genuine structured results without synthesizing an empty structured reply that hides modeling feedback in clients.

@@ -22,6 +22,7 @@ export type BridgeJobUpdate = {
 export type LocalSession = {
     installCertificate: () => Promise<void>;
     settle: (ms: number) => Promise<void>;
+    waitForCertificate: () => Promise<void>;
     jobUpdates: BridgeJobUpdate[];
 };
 type JsonObject = Record<string, unknown>;
@@ -129,7 +130,12 @@ export declare class BambuNetworkBridge {
         jobUpdates: BridgeJobUpdate[];
     }>;
     /** Stop through the same authenticated LAN session as a FULU print. Never replay a stop. */
-    stopLocalPrint(printer: LocalPrinter, options?: BambuNetworkBridgeOptions): Promise<Record<string, unknown>>;
+    stopLocalPrint(printer: LocalPrinter, options?: BambuNetworkBridgeOptions, timing?: Readonly<{
+        connectTimeoutMs: 30000;
+        pollMs: 250;
+        settleMs: 3000;
+        retryWaitMs: 8000;
+    }>): Promise<Record<string, unknown>>;
     callWithAgent(method: string, payload?: JsonObject, options?: BambuNetworkBridgeOptions): Promise<unknown>;
     stop(): Promise<void>;
     private ensureStarted;
