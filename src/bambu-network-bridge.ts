@@ -36,7 +36,9 @@ export const LOCAL_CONTROL_TIMING: Readonly<LocalControlTiming> = Object.freeze(
 
 /** Bounded event text for diagnostics, with any access code removed. */
 function traceText(text: string): string {
-  return text.replace(/("?access_code"?\s*[:=]\s*"?)[^",}\s]*/gi, "$1[redacted]").slice(0, 160);
+  const clean = text.replace(/("?access_code"?\s*[:=]\s*"?)[^",}\s]*/gi, "$1[redacted]");
+  // A signed printer reply (a header, then its payload) is the printer's answer to a command: keep it whole.
+  return clean.startsWith('{"header"') ? clean.slice(0, 4000) : clean.slice(0, 160);
 }
 
 export type LocalPrinter = { devId: string; devIp: string; username: string; password: string; useSsl: boolean };
@@ -667,8 +669,11 @@ export class BambuNetworkBridge {
         assertActive();
         const result = await this.callWithAgent(method, {
           dev_id: printer.devId,
-          msg: JSON.stringify({ print: { command, param: "", sequence_id: String(Date.now()) } }),
-          qos: 1, flag: 0,
+          // A 32-bit sequence like FULU's own counter (from 20000). The P1S refused a 13-digit
+          // millisecond timestamp with err_code 84033546 (0x0502400A) on Nov 3.
+          msg: JSON.stringify({ print: { command, param: "", sequence_id: String(20_000 + (Date.now() % 1_000_000)) } }),
+          qos: 1, flag: 1, // MSG_SIGN: the P1S refuses unsigned controls (err_code 0x0502400A, Nov 3)
+
         }, traced);
         assertBridgeOk(result, method);
         code = bridgeValueAsNumber(result, method);
