@@ -31,8 +31,8 @@ export function describeBambuNetworkPrintError(value: number): string {
 export type LocalTiming = { connectTimeoutMs: number; pollMs: number; settleMs: number; retryWaitMs: number };
 export const LOCAL_PRINT_TIMING: Readonly<LocalTiming> = Object.freeze({ connectTimeoutMs: 30_000, pollMs: 250, settleMs: 3_000, retryWaitMs: 8_000 });
 /** A control waits briefly for the certificate message, then sends; -4/-4030 returns are retried after a reinstall. */
-export type LocalControlTiming = LocalTiming & { certificateWaitMs: number; attempts: number };
-export const LOCAL_CONTROL_TIMING: Readonly<LocalControlTiming> = Object.freeze({ ...LOCAL_PRINT_TIMING, settleMs: 1_000, retryWaitMs: 1_500, certificateWaitMs: 5_000, attempts: 3 });
+export type LocalControlTiming = LocalTiming & { certificateWaitMs: number; attempts: number; deliveryMs: number };
+export const LOCAL_CONTROL_TIMING: Readonly<LocalControlTiming> = Object.freeze({ ...LOCAL_PRINT_TIMING, settleMs: 1_000, retryWaitMs: 1_500, certificateWaitMs: 5_000, attempts: 3, deliveryMs: 5_000 });
 
 /** Bounded event text for diagnostics, with any access code removed. */
 function traceText(text: string): string {
@@ -674,6 +674,10 @@ export class BambuNetworkBridge {
         code = bridgeValueAsNumber(result, method);
         trace({ step: "send", command, attempt, code });
         if (code === 0) {
+          // The plug-in queues the publish; disconnecting at once dropped it (Nov 3: five accepted
+          // controls, printer never paused or stopped). Stay connected while it reaches the printer.
+          await session.settle(timing.deliveryMs);
+          trace({ step: "delivered", command, heldMs: timing.deliveryMs });
           return { status: "success", attempts: attempt,
             message: `${command[0].toUpperCase()}${command.slice(1)} submitted through the authenticated FULU LAN connection. Check printer status to confirm it took effect.` };
         }

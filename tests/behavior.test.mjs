@@ -1382,7 +1382,7 @@ test("BambuNetwork print rejects invalid ams_slots values before bridge payload"
 // the opt-in test below runs the real host when FULU_HOST_DIR is configured.
 const FAKE_FULU_HOST = path.join(__dirname, "fixtures", "fake-fulu-host.mjs");
 const FAST_LOCAL_PRINT = Object.freeze({ connectTimeoutMs: 2000, pollMs: 10, settleMs: 20, retryWaitMs: 20 });
-const FAST_CONTROL = Object.freeze({ ...FAST_LOCAL_PRINT, certificateWaitMs: 100, attempts: 3 });
+const FAST_CONTROL = Object.freeze({ ...FAST_LOCAL_PRINT, certificateWaitMs: 100, attempts: 3, deliveryMs: 50 });
 const LOCAL_PRINTER = Object.freeze({ devId: "01PTEST", devIp: "192.0.2.10", username: "bblp", password: "SECRET", useSsl: true });
 const shellQuoteArg = value => `'${String(value).replace(/'/g, "'\\''")}'`;
 
@@ -1423,6 +1423,15 @@ async function fakeFuluBridge(t, env = {}, { wrapped = false } = {}) {
 }
 
 const controlSends = (calls, command = "stop") => calls().filter(c => c.method === "net.send_message_to_printer" && JSON.parse(c.payload.msg).print?.command === command);
+
+test("an accepted control keeps the connection open while it reaches the printer, then disconnects", async t => {
+  const {bridge, calls} = await fakeFuluBridge(t, {});
+  await bridge.sendLocalPrintCommand(LOCAL_PRINTER, "stop", {}, undefined, {...FAST_CONTROL, deliveryMs: 200});
+  const recorded = calls(), sent = recorded.findIndex(c => c.method === "net.send_message_to_printer" && JSON.parse(c.payload.msg).print?.command === "stop");
+  const disconnect = recorded.findIndex(c => c.method === "net.disconnect_printer");
+  assert.ok(sent >= 0 && disconnect > sent);
+  assert.ok(recorded.slice(sent + 1, disconnect).filter(c => c.method === "bridge.poll_events").length >= 2, "still connected and reading the printer before disconnecting");
+});
 
 test("FULU Stop sends once when this printer's certificate is reported ready", async t => {
   const {bridge, calls} = await fakeFuluBridge(t, {FAKE_FULU_REQUIRE_CERT_READY: "1", FAKE_FULU_CERT_DELAY_MS: "30"});

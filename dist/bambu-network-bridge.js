@@ -26,7 +26,7 @@ export function describeBambuNetworkPrintError(value) {
     return BAMBU_NETWORK_PRINT_ERRORS[value] ? ` (${BAMBU_NETWORK_PRINT_ERRORS[value]})` : "";
 }
 export const LOCAL_PRINT_TIMING = Object.freeze({ connectTimeoutMs: 30000, pollMs: 250, settleMs: 3000, retryWaitMs: 8000 });
-export const LOCAL_CONTROL_TIMING = Object.freeze({ ...LOCAL_PRINT_TIMING, settleMs: 1000, retryWaitMs: 1500, certificateWaitMs: 5000, attempts: 3 });
+export const LOCAL_CONTROL_TIMING = Object.freeze({ ...LOCAL_PRINT_TIMING, settleMs: 1000, retryWaitMs: 1500, certificateWaitMs: 5000, attempts: 3, deliveryMs: 5000 });
 /** Bounded event text for diagnostics, with any access code removed. */
 function traceText(text) {
     return text.replace(/("?access_code"?\s*[:=]\s*"?)[^",}\s]*/gi, "$1[redacted]").slice(0, 160);
@@ -537,6 +537,10 @@ export class BambuNetworkBridge {
                 code = bridgeValueAsNumber(result, method);
                 trace({ step: "send", command, attempt, code });
                 if (code === 0) {
+                    // The plug-in queues the publish; disconnecting at once dropped it (Nov 3: five accepted
+                    // controls, printer never paused or stopped). Stay connected while it reaches the printer.
+                    await session.settle(timing.deliveryMs);
+                    trace({ step: "delivered", command, heldMs: timing.deliveryMs });
                     return { status: "success", attempts: attempt,
                         message: `${command[0].toUpperCase()}${command.slice(1)} submitted through the authenticated FULU LAN connection. Check printer status to confirm it took effect.` };
                 }

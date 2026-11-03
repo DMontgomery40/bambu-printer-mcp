@@ -12,6 +12,7 @@ export declare const LOCAL_PRINT_TIMING: Readonly<LocalTiming>;
 export type LocalControlTiming = LocalTiming & {
     certificateWaitMs: number;
     attempts: number;
+    deliveryMs: number;
 };
 export declare const LOCAL_CONTROL_TIMING: Readonly<LocalControlTiming>;
 export type LocalPrinter = {
