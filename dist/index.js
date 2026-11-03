@@ -2329,7 +2329,9 @@ class BambuPrinterMCPServer {
                             properties: {
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
-                                bambu_token: { type: "string", description: "Access token (default: value from env)" }
+                                bambu_token: { type: "string", description: "Access token (default: value from env)" },
+                                connection_mode: { type: "string", enum: ["lan_mqtt_ftps", "bambu_network", "bambu_native"], description: "The connection selected for this print. Defaults to the existing model-specific route." },
+                                connection_type: { type: "string", enum: ["lan", "cloud"], description: "BambuNetwork connection type used for the print. Authenticated Stop currently supports lan." }
                             }
                         }
                     },
@@ -3163,10 +3165,18 @@ class BambuPrinterMCPServer {
                         break;
                     }
                     case "cancel_print":
+                        if (args?.connection_mode !== undefined && !["lan_mqtt_ftps", "bambu_network", "bambu_native"].includes(String(args.connection_mode)))
+                            throw new Error("Unsupported Stop connection_mode.");
+                        if (args?.connection_mode === "bambu_network" && args?.connection_type !== "lan")
+                            throw new Error("Authenticated FULU Stop requires the print’s LAN connection_type.");
+                        if (args?.connection_mode === "bambu_native" && !nativeControls())
+                            throw new Error(nativeUnavailableReason());
                         result = await this.bambu.cancelJob(host, bambuSerial, bambuToken, nativeControls()
                             ? linuxEmergency(() => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
                                 messageJson: JSON.stringify({ print: { command: "stop", param: "", sequence_id: String(Date.now()) } }), qos: 1 }), signal => this.bambu.sendStopOverMqtt(host, bambuSerial, bambuToken, signal))
-                            : undefined);
+                            : args?.connection_mode === "bambu_network"
+                                ? () => this.bambuNetwork.stopLocalPrint({ devId: bambuSerial, devIp: host, username: "bblp", password: bambuToken, useSsl: true }, { assertDispatchAllowed: () => extra.signal.throwIfAborted() })
+                                : undefined);
                         break;
                     case "pause_print":
                         result = await this.bambu.pauseJob(host, bambuSerial, bambuToken, nativeControls()

@@ -59,6 +59,10 @@ function handle(method, payload) {
     case "net.install_device_cert":
       if (state.connected) state.certInstalled = true;
       return ok();
+    case "net.send_message_to_printer": {
+      if (JSON.parse(payload.msg).print?.command !== "stop") return ok();
+      return ok(state.connected && state.certInstalled ? Number(process.env.FAKE_FULU_STOP_RESULT ?? 0) : -4030);
+    }
     case "net.start_local_print": {
       const jobId = payload.client_job_id;
       queue("job.update_status", { job_id: jobId, status: 1, code: 100, msg: "0.0M/0.0M" });

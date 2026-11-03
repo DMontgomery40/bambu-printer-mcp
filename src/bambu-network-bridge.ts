@@ -603,6 +603,24 @@ export class BambuNetworkBridge {
     });
   }
 
+  /** Stop through the same authenticated LAN session as a FULU print. Never replay a stop. */
+  async stopLocalPrint(printer: LocalPrinter, options: BambuNetworkBridgeOptions = {}): Promise<Record<string, unknown>> {
+    const assertActive = () => options.assertDispatchAllowed?.("net.send_message_to_printer");
+    return this.withLocalSession(printer, options, assertActive, LOCAL_PRINT_TIMING, async () => {
+      assertActive();
+      const method = "net.send_message_to_printer";
+      const result = await this.callWithAgent(method, {
+        dev_id: printer.devId,
+        msg: JSON.stringify({ print: { command: "stop", param: "", sequence_id: String(Date.now()) } }),
+        qos: 1, flag: 0,
+      }, options);
+      assertBridgeOk(result, method);
+      const code = bridgeValueAsNumber(result, method);
+      if (code !== 0) throw new Error(`FULU authenticated stop was rejected (${code}).`);
+      return { status: "success", message: "Stop submitted through the authenticated FULU LAN connection. Check printer status to confirm it stopped." };
+    });
+  }
+
   async callWithAgent(
     method: string,
     payload: JsonObject = {},

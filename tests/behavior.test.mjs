@@ -1389,7 +1389,7 @@ const shellQuoteArg = value => `'${String(value).replace(/'/g, "'\\''")}'`;
 // cannot restore each other's values out of order.
 const FAKE_FULU_ENV = ["BAMBU_NETWORK_BRIDGE_COMMAND", "BAMBU_NETWORK_CONFIG_DIR", "FAKE_FULU_LOG", "PJARCZAK_BAMBU_PLUGIN_DIR",
   "BAMBU_NETWORK_USER_INFO", "BAMBU_NETWORK_CERT_DIR", "PJARCZAK_BAMBU_NETWORK_SO", "PJARCZAK_BAMBU_SOURCE_SO",
-  "FAKE_FULU_EXIT_CODE", "FAKE_FULU_PUBLISH_FAILURES", "FAKE_FULU_UNSUPPORTED", "FAKE_FULU_CONNECT_STATUS"];
+  "FAKE_FULU_EXIT_CODE", "FAKE_FULU_PUBLISH_FAILURES", "FAKE_FULU_UNSUPPORTED", "FAKE_FULU_CONNECT_STATUS", "FAKE_FULU_STOP_RESULT"];
 const fakeFuluEnvSnapshots = new WeakSet();
 
 async function fakeFuluBridge(t, env = {}, { wrapped = false } = {}) {
@@ -1419,6 +1419,54 @@ async function fakeFuluBridge(t, env = {}, { wrapped = false } = {}) {
   const calls = () => fs.existsSync(logPath) ? fs.readFileSync(logPath, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : [];
   return { bridge, dir, calls, methods: () => calls().filter(entry => entry.method).map(entry => entry.method) };
 }
+
+for (const [connection, stopResult] of [["0", "0"], ["1", "0"], ["0", "-4030"]]) {
+  test(`cancel_print uses the configured authenticated FULU session (connection ${connection}, stop ${stopResult})`, async t => {
+    const { calls } = await fakeFuluBridge(t, { FAKE_FULU_CONNECT_STATUS: connection, FAKE_FULU_STOP_RESULT: stopResult });
+    const module = new URL("../dist/printers/bambu.js", import.meta.url).href;
+    const preload = `import { BambuImplementation } from ${JSON.stringify(module)}; BambuImplementation.prototype.getPrinter = async () => { throw new Error("Legacy MQTT must not be used"); };`;
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, SERVER_ENTRY],
+      env: { ...process.env, MCP_TRANSPORT: "stdio", PRINTER_HOST: "127.0.0.1", BAMBU_SERIAL: "01PTEST", BAMBU_TOKEN: "DUMMY", BAMBU_MODEL: "p1s" },
+      stderr: "pipe",
+    });
+    t.after(async () => { await closeTransport(transport); });
+    const client = createClient();
+    await client.connect(transport);
+    const result = await client.callTool({ name: "cancel_print", arguments: { connection_mode: "bambu_network", connection_type: "lan" } });
+    const recorded = calls();
+    const commands = recorded.filter(c => c.method === "net.send_message_to_printer" && JSON.parse(c.payload.msg).print?.command === "stop");
+    if (connection === "0" && stopResult === "0") {
+      assert.notEqual(result.isError, true, JSON.stringify(result));
+      assert.equal(commands.length, 1);
+      assert.equal(commands[0].payload.qos, 1);
+      assert.equal(commands[0].payload.dev_id, "01PTEST");
+      assert.equal(commands[0].payload.flag, 0);
+      assert.equal(JSON.parse(commands[0].payload.msg).print.param, "");
+      assert.ok(recorded.findIndex(c => c.method === "net.install_device_cert") < recorded.indexOf(commands[0]));
+    } else {
+      assert.equal(result.isError, true);
+      assert.match(JSON.stringify(result), connection === "1" ? /LAN connection/ : /authenticated stop was rejected/);
+      assert.equal(commands.length, connection === "1" ? 0 : 1, "a rejected stop is never replayed");
+    }
+  });
+}
+
+test("an optional FULU install does not change default or explicitly direct Stop", async t => {
+  const { calls } = await fakeFuluBridge(t);
+  const module = new URL("../dist/printers/bambu.js", import.meta.url).href;
+  const preload = `import { BambuImplementation } from ${JSON.stringify(module)}; BambuImplementation.prototype.cancelJob = async (_h, _s, _t, dispatch) => dispatch ? dispatch() : {status: "success", route: "direct"};`;
+  const transport = new StdioClientTransport({command: process.execPath, args: ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, SERVER_ENTRY],
+    env: {...process.env, MCP_TRANSPORT: "stdio", PRINTER_HOST: "127.0.0.1", BAMBU_SERIAL: "01PTEST", BAMBU_TOKEN: "DUMMY", BAMBU_MODEL: "p1s"}, stderr: "pipe"});
+  t.after(async () => { await closeTransport(transport); });
+  const client = createClient(); await client.connect(transport);
+  for (const args of [{}, {connection_mode: "lan_mqtt_ftps"}]) {
+    const result = parseJsonResult(await client.callTool({name: "cancel_print", arguments: args}));
+    assert.equal(result.route, "direct");
+  }
+  assert.equal(calls().length, 0);
+});
 
 test("FULU host plug-in library paths are named in PJARCZAK_BAMBU_PLUGIN_DIR on Linux only", () => {
   assert.deepEqual(linuxPluginLibraryEnv({ PJARCZAK_BAMBU_PLUGIN_DIR: "/opt/fulu/plugins" }, "linux"), {

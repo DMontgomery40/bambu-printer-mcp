@@ -128,6 +128,8 @@ export declare class BambuNetworkBridge {
         result: unknown;
         jobUpdates: BridgeJobUpdate[];
     }>;
+    /** Stop through the same authenticated LAN session as a FULU print. Never replay a stop. */
+    stopLocalPrint(printer: LocalPrinter, options?: BambuNetworkBridgeOptions): Promise<Record<string, unknown>>;
     callWithAgent(method: string, payload?: JsonObject, options?: BambuNetworkBridgeOptions): Promise<unknown>;
     stop(): Promise<void>;
     private ensureStarted;
