@@ -114,6 +114,16 @@ export declare function bambuNetworkCertDir(configDir: string, env?: NodeJS.Proc
 export declare function prepareBambuNetworkCertDir(configDir: string, env?: NodeJS.ProcessEnv): string;
 export declare function defaultBambuNetworkConfigDir(): string;
 /**
+ * The client identity FULU's GUI gives the plug-in before agent start
+ * (GUI_App::init_http_extra_header). Through the Linux bridge FULU presents
+ * itself as Bambu Studio at the version its plug-in ABI belongs to
+ * (PJarczakLinuxBridgeConfig.cpp forced_client_version, "02.05.02.51").
+ * Bambu's cloud issues the printer-control certificate and creates print
+ * tasks for this client, so an agent started without it is an unknown client.
+ * The device id is kept in the config folder so it stays the same per install.
+ */
+export declare function bambuNetworkClientHeaders(configDir: string, env?: NodeJS.ProcessEnv): Record<string, string>;
+/**
  * FULU's Linux host opens its network and source libraries by bare name from
  * its working directory instead of PJARCZAK_BAMBU_PLUGIN_DIR
  * (FULU-Foundation/OrcaSlicer-bambulab#51), so name them in that directory

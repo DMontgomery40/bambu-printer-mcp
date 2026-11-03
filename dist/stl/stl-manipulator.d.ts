@@ -51,6 +51,8 @@ export interface BambuSliceOptions {
     skipModifiedGcodes?: boolean;
     slicePlate?: number;
     processOverrides?: ProcessOverrides;
+    pauseAtLayers?: number[];
+    customGcodesFile?: string;
 }
 /** Bambu Studio's or OrcaSlicer's own result.json, parsed verbatim. */
 export type SlicerResult = Record<string, unknown>;
@@ -194,6 +196,7 @@ export declare class STLManipulator extends EventEmitter {
      * error_string and plate warnings.
      */
     sliceSTLWithResult(stlFilePath: string, slicerType: SlicerType, slicerPath: string, slicerProfile?: string, progressCallback?: ProgressCallback, printerPreset?: string, bambuOptions?: BambuSliceOptions): Promise<SliceOutput>;
+    private sliceSTLOnce;
     /**
      * Enhanced version of confirmTemperatures with better error handling
      * @param gcodePath Path to the G-code file

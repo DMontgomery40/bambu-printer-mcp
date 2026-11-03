@@ -31,6 +31,7 @@ import { bambuProgress, offlineProgress } from "./counterpart/progress.js";
 import { makeCounterpart3mf } from "./counterpart/make-3mf.js";
 import { MAKE_3MF_OUTPUT_SCHEMA, PRINT_PROGRESS_OUTPUT_SCHEMA, PRINTER_INFO_OUTPUT_SCHEMA } from "./counterpart/schemas.js";
 import { parseProcessOverrides } from "./slicer/process-overrides.js";
+import { machinePauseGcode, parsePauseLayers, pausedLayers, readPlateGcode } from "./slicer/layer-pauses.js";
 dotenv.config();
 const DEFAULT_HOST = process.env.BAMBU_PRINTER_HOST || process.env.PRINTER_HOST || "localhost";
 const DEFAULT_BAMBU_SERIAL = process.env.BAMBU_PRINTER_SERIAL || process.env.BAMBU_SERIAL || "";
@@ -2026,6 +2027,7 @@ class BambuPrinterMCPServer {
                                 rotate_y: { type: "number", description: "Y-axis rotation in degrees." },
                                 min_save: { type: "boolean", description: "Produce smaller output 3MF." },
                                 skip_modified_gcodes: { type: "boolean", description: "Ignore stale custom gcodes in the 3MF." },
+                                pause_at_layers: { type: "array", items: { type: "integer", minimum: 2 }, description: "Pause before each of these layers (1-based, as Bambu Studio and OrcaSlicer number them in the preview), for example to drop in magnets or nuts. The slicer writes the printer's own pause G-code there (M400 U1 on Bambu printers); the printer stops by itself and waits for Resume. Bambu Studio or OrcaSlicer CLI only. Pauses already in a project 3MF are kept." },
                                 slice_plate: { type: "number", description: "Which plate index to slice. 0 = all plates." }
                             },
                             required: ["stl_path", "template_name", "bambu_model"]
@@ -2089,6 +2091,7 @@ class BambuPrinterMCPServer {
                                 rotate_y: { type: "number", description: "Rotate the model around the Y-axis by this many degrees before slicing. Useful for reorienting prints for better layer adhesion." },
                                 min_save: { type: "boolean", description: "Write a smaller output 3MF by omitting non-essential metadata. Reduces file size for faster FTP upload to the printer." },
                                 skip_modified_gcodes: { type: "boolean", description: "Strip custom start/end gcodes embedded in the 3MF. Recommended for downloaded 3MFs since custom gcodes from other users' profiles may be unsafe for your printer." },
+                                pause_at_layers: { type: "array", items: { type: "integer", minimum: 2 }, description: "Pause before each of these layers (1-based, as Bambu Studio and OrcaSlicer number them in the preview), for example to drop in magnets or nuts. The slicer writes the printer's own pause G-code there (M400 U1 on Bambu printers); the printer stops by itself and waits for Resume. Bambu Studio or OrcaSlicer CLI only. Pauses already in a project 3MF are kept." },
                                 slice_plate: { type: "number", description: "Which plate index to slice. 0 = all plates for local slicers; remote slicing defaults to plate 1 and rejects 0. Use 1, 2, etc. to slice only a specific plate in multi-plate 3MF projects." },
                                 layer_height: { type: "number", exclusiveMinimum: 0, description: "Layer height in mm, such as 0.28 (draft), 0.2 (standard) or 0.12 (fine). Written as the process preset's layer_height over the machine and process preset this tool resolves; at most the nozzle diameter. Bambu-compatible slicers only." },
                                 wall_loops: { type: "integer", minimum: 0, maximum: 1000, description: "Number of walls (perimeters), written as the process preset's wall_loops. Bambu-compatible slicers only." },
@@ -2585,6 +2588,7 @@ class BambuPrinterMCPServer {
                             type: "object",
                             properties: {
                                 three_mf_path: { type: "string", description: "Path to the 3MF file to print" },
+                                pause_at_layers: { type: "array", items: { type: "integer", minimum: 2 }, description: "Pause before each of these layers (1-based, as Bambu Studio and OrcaSlicer number them in the preview), for example to drop in magnets or nuts. The slicer writes the printer's own pause G-code there (M400 U1 on Bambu printers); the printer stops by itself and waits for Resume. Bambu Studio or OrcaSlicer CLI only. Used when the 3MF has no G-code yet; a sliced 3MF must already carry these pauses, or it is refused." },
                                 bambu_model: {
                                     type: "string",
                                     enum: [...VALID_BAMBU_MODELS],
@@ -3580,6 +3584,11 @@ class BambuPrinterMCPServer {
                             sliceBambuOptions.skipModifiedGcodes = Boolean(args.skip_modified_gcodes);
                         if (args?.slice_plate !== undefined)
                             sliceBambuOptions.slicePlate = Number(args.slice_plate);
+                        {
+                            const pauses = parsePauseLayers(args?.pause_at_layers);
+                            if (pauses)
+                                sliceBambuOptions.pauseAtLayers = pauses;
+                        }
                         const usePrinterFilaments = args?.use_printer_filaments !== undefined ? Boolean(args.use_printer_filaments) : true;
                         if (usePrinterFilaments &&
                             !explicitSlicerProfile &&
@@ -3661,6 +3670,11 @@ class BambuPrinterMCPServer {
                             sliceBambuOptions.skipModifiedGcodes = Boolean(args.skip_modified_gcodes);
                         if (args?.slice_plate !== undefined)
                             sliceBambuOptions.slicePlate = Number(args.slice_plate);
+                        {
+                            const pauses = parsePauseLayers(args?.pause_at_layers);
+                            if (pauses)
+                                sliceBambuOptions.pauseAtLayers = pauses;
+                        }
                         const processOverrides = parseProcessOverrides(args, Number(nozzleDiam));
                         if (processOverrides)
                             sliceBambuOptions.processOverrides = processOverrides;
@@ -3738,6 +3752,16 @@ class BambuPrinterMCPServer {
                         const zipData = fs.readFileSync(threeMFPath);
                         const zip = await JSZip.loadAsync(zipData);
                         const hasGcode = Object.values(zip.files).some(entry => !entry.dir && /\.gcode$/i.test(entry.name));
+                        const pauseLayers = parsePauseLayers(args?.pause_at_layers);
+                        if (hasGcode && pauseLayers) {
+                            // Already sliced: its G-code is what prints, so the pauses must already be in it.
+                            const gcode = await readPlateGcode(threeMFPath, Number(args?.plate_index ?? 0) + 1);
+                            const placed = gcode ? pausedLayers(gcode, machinePauseGcode(gcode)) : [];
+                            const missing = pauseLayers.filter(layer => !placed.includes(layer));
+                            if (missing.length) {
+                                throw new Error(`This 3MF is already sliced without a pause before layer ${missing.join(", ")}. Slice it again with pause_at_layers (slice_stl), or add the pause in Bambu Studio or OrcaSlicer.`);
+                            }
+                        }
                         if (!hasGcode) {
                             assertUniformCliNozzles(args);
                             if (printBedType === "supertack_plate") {
@@ -3751,6 +3775,7 @@ class BambuPrinterMCPServer {
                                 bedType: printBedType,
                                 nozzleType: resolveNozzleType(args?.nozzle_type),
                                 nozzleVolumeType: resolveNozzleVolumeType(args?.nozzle_volume_type),
+                                ...(pauseLayers ? { pauseAtLayers: pauseLayers } : {}),
                             };
                             if (!explicitSlicerProfile) {
                                 try {
