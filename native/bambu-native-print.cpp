@@ -20,6 +20,7 @@
 #include <unistd.h>
 #endif
 #include <thread>
+#include <vector>
 
 // This small adapter intentionally mirrors the public C++ ABI declarations
 // used by Bambu Studio's optional networking plug-in.  The plug-in is loaded
@@ -103,6 +104,13 @@ using SetMessageFn = int (*)(void *, std::function<void(std::string, std::string
 using SetLocalMessageFn = int (*)(void *, std::function<void(std::string, std::string)>);
 using SetQueueOnMainFn = int (*)(void *, std::function<void(std::function<void()>)>);
 using ConnectPrinterFn = int (*)(void *, std::string, std::string, std::string, std::string, bool);
+// Bambu Studio opens the plug-in's Bambu Cloud session at start (GUI_App on_init_network); the printer
+// certificate that signs Pause, Resume and Stop arrives through it ("device_cert_installed").
+using ConnectServerFn = int (*)(void *);
+using IsServerConnectedFn = bool (*)(void *);
+using IsUserLoginFn = bool (*)(void *);
+using SetUserSelectedMachineFn = int (*)(void *, std::string);
+using AddSubscribeFn = int (*)(void *, std::vector<std::string>);
 using SendMessageToPrinterFn = int (*)(void *, std::string, std::string, int, int);
 using InstallDeviceCertFn = void (*)(void *, std::string, bool);
 using UpdateCertFn = int (*)(void *);
@@ -209,6 +217,11 @@ T requiredSymbol(void *handle, const char *name) {
 
 struct NativeApi {
     void *handle = nullptr;
+    ConnectServerFn connectServer = nullptr;
+    IsServerConnectedFn isServerConnected = nullptr;
+    IsUserLoginFn isUserLogin = nullptr;
+    SetUserSelectedMachineFn setUserSelectedMachine = nullptr;
+    AddSubscribeFn addSubscribe = nullptr;
     CreateAgentFn createAgent = nullptr;
     DestroyAgentFn destroyAgent = nullptr;
     InitLogFn initLog = nullptr;
@@ -249,6 +262,12 @@ NativeApi loadApi() {
     NativeApi api;
     api.handle = handle;
     api.createAgent = requiredSymbol<CreateAgentFn>(handle, "bambu_network_create_agent");
+    // Optional: a plug-in without them still prints; controls then report native_server_connected=0.
+    api.connectServer = reinterpret_cast<ConnectServerFn>(dlsym(handle, "bambu_network_connect_server"));
+    api.isServerConnected = reinterpret_cast<IsServerConnectedFn>(dlsym(handle, "bambu_network_is_server_connected"));
+    api.isUserLogin = reinterpret_cast<IsUserLoginFn>(dlsym(handle, "bambu_network_is_user_login"));
+    api.setUserSelectedMachine = reinterpret_cast<SetUserSelectedMachineFn>(dlsym(handle, "bambu_network_set_user_selected_machine"));
+    api.addSubscribe = reinterpret_cast<AddSubscribeFn>(dlsym(handle, "bambu_network_add_subscribe"));
     api.destroyAgent = requiredSymbol<DestroyAgentFn>(handle, "bambu_network_destroy_agent");
     api.initLog = requiredSymbol<InitLogFn>(handle, "bambu_network_init_log");
     api.setConfigDir = requiredSymbol<SetConfigDirFn>(handle, "bambu_network_set_config_dir");
@@ -611,6 +630,27 @@ void runOperation(NativeApi &api, NativeOperation operation) {
     });
     if (result != 0) { destroyAgent(); throw std::runtime_error("set_queue_on_main_fn failed: " + std::to_string(result)); }
 
+    if (commandOnly && api.connectServer && api.isServerConnected) {
+        // As Bambu Studio and FULU do right after start: without the signed-in cloud session the
+        // plug-in never installs the printer certificate, and every protected control returns -4.
+        api.connectServer(agent);
+        const int serverWaitMs = std::clamp(intEnv("BAMBU_NATIVE_SERVER_WAIT_MS", 15000), 0, 60000);
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(serverWaitMs);
+        while (!api.isServerConnected(agent) && std::chrono::steady_clock::now() < deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+        const bool loggedIn = api.isUserLogin && api.isUserLogin(agent);
+        outputLine(std::string("native_server_connected=") + (api.isServerConnected(agent) ? "1" : "0") +
+                   " user_login=" + (loggedIn ? "1" : "0"));
+        // A printer bound to the account is selected and subscribed, as Studio does when it is chosen
+        // (and FULU's cloud session does); its certificate is installed after that.
+        if (loggedIn && api.setUserSelectedMachine && api.addSubscribe) {
+            const int selected = api.setUserSelectedMachine(agent, serial);
+            const int subscribed = api.addSubscribe(agent, std::vector<std::string>{serial});
+            outputLine("native_select result=" + std::to_string(selected) + " subscribe=" + std::to_string(subscribed));
+        }
+    }
+
     auto localConnection = std::make_shared<LocalConnectionState>();
     const int printerCallbackResult = api.setPrinterConnected(
         agent,
@@ -651,6 +691,7 @@ void runOperation(NativeApi &api, NativeOperation operation) {
         agent,
         [agent, serial, &api, certificate](std::string devId, std::string message) {
             if (devId.empty() || devId == serial) noteCertificate(certificate, message);
+            if (boolEnv("BAMBU_NATIVE_TRACE_MESSAGES", false) && message.size() < 200) outputLine("native_plugin_message dev=" + devId + " msg=" + message);
             if (message == "wait_info" && (devId.empty() || devId == serial)) {
                 outputLine("native_message dev=" + devId + " msg=wait_info");
                 api.installDeviceCert(agent, serial, boolEnv("BAMBU_NATIVE_LAN_ONLY", true));
