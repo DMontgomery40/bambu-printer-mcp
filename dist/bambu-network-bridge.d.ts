@@ -129,8 +129,12 @@ export declare class BambuNetworkBridge {
         result: unknown;
         jobUpdates: BridgeJobUpdate[];
     }>;
-    /** Stop through the same authenticated LAN session as a FULU print. Never replay a stop. */
-    stopLocalPrint(printer: LocalPrinter, options?: BambuNetworkBridgeOptions, timing?: Readonly<{
+    /**
+     * A print control (stop, pause, resume) through the same authenticated LAN
+     * session as a FULU print. Sent once and never replayed; beforeDispatch runs
+     * last, after the session is ready, so a resume re-checks the paused job.
+     */
+    sendLocalPrintCommand(printer: LocalPrinter, command: "stop" | "pause" | "resume", options?: BambuNetworkBridgeOptions, beforeDispatch?: () => Promise<void>, timing?: Readonly<{
         connectTimeoutMs: 30000;
         pollMs: 250;
         settleMs: 3000;

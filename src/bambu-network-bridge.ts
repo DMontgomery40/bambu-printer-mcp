@@ -531,7 +531,7 @@ export class BambuNetworkBridge {
         if (certificateReady) return;
         await new Promise(resolve => setTimeout(resolve, timing.pollMs));
       } while (Date.now() < deadline);
-      throw new Error("FULU did not report this printer's certificate ready. No Stop command was sent.");
+      throw new Error("FULU did not report this printer's certificate ready. No command was sent.");
     };
 
     await this.ensureAgent(options);
@@ -621,22 +621,28 @@ export class BambuNetworkBridge {
     });
   }
 
-  /** Stop through the same authenticated LAN session as a FULU print. Never replay a stop. */
-  async stopLocalPrint(printer: LocalPrinter, options: BambuNetworkBridgeOptions = {}, timing = LOCAL_PRINT_TIMING): Promise<Record<string, unknown>> {
+  /**
+   * A print control (stop, pause, resume) through the same authenticated LAN
+   * session as a FULU print. Sent once and never replayed; beforeDispatch runs
+   * last, after the session is ready, so a resume re-checks the paused job.
+   */
+  async sendLocalPrintCommand(printer: LocalPrinter, command: "stop" | "pause" | "resume", options: BambuNetworkBridgeOptions = {},
+    beforeDispatch?: () => Promise<void>, timing = LOCAL_PRINT_TIMING): Promise<Record<string, unknown>> {
     const assertActive = () => options.assertDispatchAllowed?.("net.send_message_to_printer");
     return this.withLocalSession(printer, options, assertActive, timing, async session => {
       await session.waitForCertificate();
+      await beforeDispatch?.();
       assertActive();
       const method = "net.send_message_to_printer";
       const result = await this.callWithAgent(method, {
         dev_id: printer.devId,
-        msg: JSON.stringify({ print: { command: "stop", param: "", sequence_id: String(Date.now()) } }),
+        msg: JSON.stringify({ print: { command, param: "", sequence_id: String(Date.now()) } }),
         qos: 1, flag: 0,
       }, options);
       assertBridgeOk(result, method);
       const code = bridgeValueAsNumber(result, method);
-      if (code !== 0) throw new Error(`FULU authenticated stop was rejected (${code}).`);
-      return { status: "success", message: "Stop submitted through the authenticated FULU LAN connection. Check printer status to confirm it stopped." };
+      if (code !== 0) throw new Error(`The printer did not accept ${command} over the authenticated FULU LAN connection (plug-in code ${code}).`);
+      return { status: "success", message: `${command[0].toUpperCase()}${command.slice(1)} submitted through the authenticated FULU LAN connection. Check printer status to confirm it took effect.` };
     });
   }
 

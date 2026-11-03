@@ -61,6 +61,24 @@ const DEFAULT_BAMBU_MODEL = process.env.BAMBU_PRINTER_MODEL?.trim().toLowerCase(
     process.env.BAMBU_MODEL?.trim().toLowerCase() ||
     "";
 const DEFAULT_BAMBU_CONNECTION_MODE = process.env.BAMBU_DEFAULT_CONNECTION_MODE?.trim().toLowerCase() || "";
+const DEFAULT_BAMBU_CONNECTION_TYPE = process.env.BAMBU_DEFAULT_CONNECTION_TYPE?.trim().toLowerCase() || "";
+const CONNECTION_MODES = ["lan_mqtt_ftps", "bambu_native", "bambu_network", "bambu_connect"];
+/**
+ * The one route decision for a printer: print_3mf and every print control
+ * (cancel, pause, resume) resolve it here, so a job is never controlled over a
+ * different connection than the one that started it. Arguments override the
+ * server's configured defaults; without either, X2D uses its native route and
+ * every other model direct LAN MQTT/FTPS.
+ */
+function resolveConnection(args, model) {
+    const mode = String(args?.connection_mode || DEFAULT_BAMBU_CONNECTION_MODE || (model === "x2d" ? "bambu_native" : "lan_mqtt_ftps")).trim().toLowerCase();
+    if (!CONNECTION_MODES.includes(mode))
+        throw new Error("Unsupported connection_mode.");
+    const type = String(args?.connection_type || DEFAULT_BAMBU_CONNECTION_TYPE || "cloud").trim().toLowerCase();
+    if (!["cloud", "lan"].includes(type))
+        throw new Error('connection_type must be "cloud" or "lan".');
+    return { mode, type };
+}
 const DEFAULT_BED_TYPE = process.env.BED_TYPE?.trim().toLowerCase() || "textured_plate";
 const DEFAULT_NOZZLE_DIAMETER = process.env.NOZZLE_DIAMETER?.trim() || "0.4";
 /** MCP initialize name/version; counterpart_printer_info reports the same values. */
@@ -1218,10 +1236,7 @@ class BambuPrinterMCPServer {
         if (!Number.isInteger(plateIndex) || plateIndex < 0) {
             throw new Error("plate_index must be a non-negative integer.");
         }
-        const connectionType = String(args?.connection_type || "cloud").trim().toLowerCase();
-        if (!["cloud", "lan"].includes(connectionType)) {
-            throw new Error('connection_type must be "cloud" or "lan".');
-        }
+        const connectionType = resolveConnection(args).type;
         const bridgePrintMethod = resolveBambuNetworkPrintMethod(args?.bambu_network_method !== undefined ? String(args.bambu_network_method) : undefined, connectionType);
         const bridgeMethod = toBridgeMethod(bridgePrintMethod);
         const isLocalBridgePrint = bridgePrintMethod !== "start_print";
@@ -2330,8 +2345,8 @@ class BambuPrinterMCPServer {
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
                                 bambu_token: { type: "string", description: "Access token (default: value from env)" },
-                                connection_mode: { type: "string", enum: ["lan_mqtt_ftps", "bambu_network", "bambu_native"], description: "The connection selected for this print. Defaults to the existing model-specific route." },
-                                connection_type: { type: "string", enum: ["lan", "cloud"], description: "BambuNetwork connection type used for the print. Authenticated Stop currently supports lan." }
+                                connection_mode: { type: "string", enum: ["lan_mqtt_ftps", "bambu_network", "bambu_native"], description: "The connection the print used. Defaults to BAMBU_DEFAULT_CONNECTION_MODE, the same default print_3mf uses, else the model's route." },
+                                connection_type: { type: "string", enum: ["lan", "cloud"], description: "FULU BambuNetwork connection type the print used. Defaults to BAMBU_DEFAULT_CONNECTION_TYPE, as for print_3mf. Authenticated controls support lan." }
                             }
                         }
                     },
@@ -2343,7 +2358,9 @@ class BambuPrinterMCPServer {
                             properties: {
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
-                                bambu_token: { type: "string", description: "Access token (default: value from env)" }
+                                bambu_token: { type: "string", description: "Access token (default: value from env)" },
+                                connection_mode: { type: "string", enum: ["lan_mqtt_ftps", "bambu_network", "bambu_native"], description: "The connection the print used. Defaults to BAMBU_DEFAULT_CONNECTION_MODE, the same default print_3mf uses, else the model's route." },
+                                connection_type: { type: "string", enum: ["lan", "cloud"], description: "FULU BambuNetwork connection type the print used. Defaults to BAMBU_DEFAULT_CONNECTION_TYPE, as for print_3mf. Authenticated controls support lan." }
                             }
                         }
                     },
@@ -2355,7 +2372,9 @@ class BambuPrinterMCPServer {
                             properties: {
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
                                 bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
-                                bambu_token: { type: "string", description: "Access token (default: value from env)" }
+                                bambu_token: { type: "string", description: "Access token (default: value from env)" },
+                                connection_mode: { type: "string", enum: ["lan_mqtt_ftps", "bambu_network", "bambu_native"], description: "The connection the print used. Defaults to BAMBU_DEFAULT_CONNECTION_MODE, the same default print_3mf uses, else the model's route." },
+                                connection_type: { type: "string", enum: ["lan", "cloud"], description: "FULU BambuNetwork connection type the print used. Defaults to BAMBU_DEFAULT_CONNECTION_TYPE, as for print_3mf. Authenticated controls support lan." }
                             }
                         }
                     },
@@ -2918,6 +2937,25 @@ class BambuPrinterMCPServer {
             // again once every older helper for this printer has exited, and only
             // that send counts. Either counted route succeeding is success. macOS
             // stays native-only.
+            // Print controls go over the same connection as the print (resolveConnection).
+            // undefined keeps the direct MQTT route in BambuImplementation.
+            const printerControl = (command) => {
+                const nativeCommand = (assertActive, beforeDispatch) => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
+                    messageJson: JSON.stringify({ print: { command, param: "", sequence_id: String(Date.now()) } }), qos: 1 }, command === "resume" ? { signal: extra.signal, assertActive, beforeDispatch } : undefined);
+                if (nativeControls()) {
+                    return command === "stop"
+                        ? linuxEmergency(() => nativeCommand(), signal => this.bambu.sendStopOverMqtt(host, bambuSerial, bambuToken, signal))
+                        : nativeCommand;
+                }
+                const route = resolveConnection(args);
+                if (route.mode === "bambu_native")
+                    throw new Error(nativeUnavailableReason());
+                if (route.mode !== "bambu_network")
+                    return undefined;
+                if (route.type !== "lan")
+                    throw new Error(`This print was sent over FULU's cloud connection, which cannot ${command === "stop" ? "stop" : command} it yet. Use connection_type lan for FULU printing.`);
+                return (assertActive, beforeDispatch) => this.bambuNetwork.sendLocalPrintCommand({ devId: bambuSerial, devIp: host, username: "bblp", password: bambuToken, useSsl: true }, command, { assertDispatchAllowed: () => { extra.signal.throwIfAborted(); assertActive?.(); } }, beforeDispatch);
+            };
             const linuxEmergency = (native, mqtt) => async () => {
                 if (process.platform !== "linux")
                     return native();
@@ -3165,30 +3203,13 @@ class BambuPrinterMCPServer {
                         break;
                     }
                     case "cancel_print":
-                        if (args?.connection_mode !== undefined && !["lan_mqtt_ftps", "bambu_network", "bambu_native"].includes(String(args.connection_mode)))
-                            throw new Error("Unsupported Stop connection_mode.");
-                        if (args?.connection_mode === "bambu_network" && args?.connection_type !== "lan")
-                            throw new Error("Authenticated FULU Stop requires the print’s LAN connection_type.");
-                        if (args?.connection_mode === "bambu_native" && !nativeControls())
-                            throw new Error(nativeUnavailableReason());
-                        result = await this.bambu.cancelJob(host, bambuSerial, bambuToken, nativeControls()
-                            ? linuxEmergency(() => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
-                                messageJson: JSON.stringify({ print: { command: "stop", param: "", sequence_id: String(Date.now()) } }), qos: 1 }), signal => this.bambu.sendStopOverMqtt(host, bambuSerial, bambuToken, signal))
-                            : args?.connection_mode === "bambu_network"
-                                ? () => this.bambuNetwork.stopLocalPrint({ devId: bambuSerial, devIp: host, username: "bblp", password: bambuToken, useSsl: true }, { assertDispatchAllowed: () => extra.signal.throwIfAborted() })
-                                : undefined);
+                        result = await this.bambu.cancelJob(host, bambuSerial, bambuToken, printerControl("stop"));
                         break;
                     case "pause_print":
-                        result = await this.bambu.pauseJob(host, bambuSerial, bambuToken, nativeControls()
-                            ? () => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
-                                messageJson: JSON.stringify({ print: { command: "pause", param: "", sequence_id: String(Date.now()) } }), qos: 1 })
-                            : undefined);
+                        result = await this.bambu.pauseJob(host, bambuSerial, bambuToken, printerControl("pause"));
                         break;
                     case "resume_print":
-                        result = await this.bambu.resumeJob(host, bambuSerial, bambuToken, nativeControls()
-                            ? (assertActive, beforeDispatch) => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
-                                messageJson: JSON.stringify({ print: { command: "resume", param: "", sequence_id: String(Date.now()) } }), qos: 1 }, { signal: extra.signal, assertActive, beforeDispatch })
-                            : undefined);
+                        result = await this.bambu.resumeJob(host, bambuSerial, bambuToken, printerControl("resume"));
                         break;
                     case "x2d_native_control": {
                         if (!args?.message_json) {
@@ -3657,11 +3678,7 @@ class BambuPrinterMCPServer {
                         const printModel = await this.resolveBambuModel(args.bambu_model);
                         const resolvedArgs = { ...args, bambu_model: printModel };
                         const requestedModel = printModel;
-                        const defaultConnectionMode = DEFAULT_BAMBU_CONNECTION_MODE ||
-                            (requestedModel === "x2d" ? "bambu_native" : "lan_mqtt_ftps");
-                        const connectionMode = String(args?.connection_mode || defaultConnectionMode).trim().toLowerCase();
-                        if (!["lan_mqtt_ftps", "bambu_native", "bambu_network", "bambu_connect"].includes(connectionMode))
-                            throw new Error("Unsupported connection_mode.");
+                        const connectionMode = resolveConnection(args, requestedModel).mode;
                         // X2D firmware accepts the Bambu Studio :6000/eMMC route but
                         // rejects the legacy direct FTPS STOR operation with 553. Keep
                         // an explicit old-mode request from re-entering that known-bad

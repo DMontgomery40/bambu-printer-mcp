@@ -69,9 +69,9 @@ function handle(method, payload) {
       }
       return ok();
     case "net.send_message_to_printer": {
-      if (JSON.parse(payload.msg).print?.command !== "stop") return ok();
+      if (!["stop", "pause", "resume"].includes(JSON.parse(payload.msg).print?.command)) return ok();
       if (process.env.FAKE_FULU_REQUIRE_CERT_READY && !state.certReady) return ok(-4);
-      return ok(state.connected && state.certInstalled ? Number(process.env.FAKE_FULU_STOP_RESULT ?? 0) : -4030);
+      return ok(state.connected && state.certInstalled ? Number(process.env.FAKE_FULU_CONTROL_RESULT ?? 0) : -4030);
     }
     case "net.start_local_print": {
       const jobId = payload.client_job_id;

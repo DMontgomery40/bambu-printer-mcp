@@ -1389,7 +1389,7 @@ const shellQuoteArg = value => `'${String(value).replace(/'/g, "'\\''")}'`;
 // cannot restore each other's values out of order.
 const FAKE_FULU_ENV = ["BAMBU_NETWORK_BRIDGE_COMMAND", "BAMBU_NETWORK_CONFIG_DIR", "FAKE_FULU_LOG", "PJARCZAK_BAMBU_PLUGIN_DIR",
   "BAMBU_NETWORK_USER_INFO", "BAMBU_NETWORK_CERT_DIR", "PJARCZAK_BAMBU_NETWORK_SO", "PJARCZAK_BAMBU_SOURCE_SO",
-  "FAKE_FULU_EXIT_CODE", "FAKE_FULU_PUBLISH_FAILURES", "FAKE_FULU_UNSUPPORTED", "FAKE_FULU_CONNECT_STATUS", "FAKE_FULU_STOP_RESULT",
+  "FAKE_FULU_EXIT_CODE", "FAKE_FULU_PUBLISH_FAILURES", "FAKE_FULU_UNSUPPORTED", "FAKE_FULU_CONNECT_STATUS", "FAKE_FULU_CONTROL_RESULT",
   "FAKE_FULU_CERT_EVENT", "FAKE_FULU_CERT_DELAY_MS", "FAKE_FULU_REQUIRE_CERT_READY"];
 const fakeFuluEnvSnapshots = new WeakSet();
 
@@ -1423,20 +1423,20 @@ async function fakeFuluBridge(t, env = {}, { wrapped = false } = {}) {
 
 test("FULU Stop waits for this printer's certificate callback before its only submission", async t => {
   const {bridge, calls} = await fakeFuluBridge(t, {FAKE_FULU_REQUIRE_CERT_READY: "1", FAKE_FULU_CERT_DELAY_MS: "150"});
-  await bridge.stopLocalPrint(LOCAL_PRINTER, {}, FAST_LOCAL_PRINT);
+  await bridge.sendLocalPrintCommand(LOCAL_PRINTER, "stop", {}, undefined, FAST_LOCAL_PRINT);
   const stops = calls().filter(c => c.method === "net.send_message_to_printer" && JSON.parse(c.payload.msg).print?.command === "stop");
   assert.equal(stops.length, 1);
 });
 
 for (const event of ["missing", "other-printer"]) test(`FULU Stop sends nothing without its certificate callback (${event})`, async t => {
   const {bridge, calls} = await fakeFuluBridge(t, {FAKE_FULU_CERT_EVENT: event});
-  await assert.rejects(bridge.stopLocalPrint(LOCAL_PRINTER, {}, {...FAST_LOCAL_PRINT, connectTimeoutMs: 300}), /certificate.*ready/i);
+  await assert.rejects(bridge.sendLocalPrintCommand(LOCAL_PRINTER, "stop", {}, undefined, {...FAST_LOCAL_PRINT, connectTimeoutMs: 300}), /certificate.*ready/i);
   assert.equal(calls().filter(c => c.method === "net.send_message_to_printer" && JSON.parse(c.payload.msg).print?.command === "stop").length, 0);
 });
 
 for (const [connection, stopResult] of [["0", "0"], ["1", "0"], ["0", "-4030"], ["0", "-4"]]) {
   test(`cancel_print uses the configured authenticated FULU session (connection ${connection}, stop ${stopResult})`, async t => {
-    const { calls } = await fakeFuluBridge(t, { FAKE_FULU_CONNECT_STATUS: connection, FAKE_FULU_STOP_RESULT: stopResult });
+    const { calls } = await fakeFuluBridge(t, { FAKE_FULU_CONNECT_STATUS: connection, FAKE_FULU_CONTROL_RESULT: stopResult });
     const module = new URL("../dist/printers/bambu.js", import.meta.url).href;
     const preload = `import { BambuImplementation } from ${JSON.stringify(module)}; BambuImplementation.prototype.getPrinter = async () => { throw new Error("Legacy MQTT must not be used"); };`;
     const transport = new StdioClientTransport({
@@ -1461,11 +1461,49 @@ for (const [connection, stopResult] of [["0", "0"], ["1", "0"], ["0", "-4030"], 
       assert.ok(recorded.findIndex(c => c.method === "net.install_device_cert") < recorded.indexOf(commands[0]));
     } else {
       assert.equal(result.isError, true);
-      assert.match(JSON.stringify(result), connection === "1" ? /LAN connection/ : /authenticated stop was rejected/);
+      assert.match(JSON.stringify(result), connection === "1" ? /LAN connection/ : /did not accept stop over the authenticated FULU LAN connection/);
       assert.equal(commands.length, connection === "1" ? 0 : 1, "a rejected stop is never replayed");
     }
   });
 }
+
+// The bug this guards: print_3mf honoured BAMBU_DEFAULT_CONNECTION_MODE while
+// every control ignored it, so a FULU-authenticated print got plain-MQTT Stop
+// and Pause that the printer rejected (HMS 0500_0500_0001_0007).
+for (const [tool, command] of [["cancel_print", "stop"], ["pause_print", "pause"]]) {
+  test(`${tool} follows the server's configured print route with no route arguments`, async t => {
+    const { calls } = await fakeFuluBridge(t);
+    const module = new URL("../dist/printers/bambu.js", import.meta.url).href;
+    const preload = `import { BambuImplementation } from ${JSON.stringify(module)}; BambuImplementation.prototype.getPrinter = async () => { throw new Error("Legacy MQTT must not be used"); };`;
+    const transport = new StdioClientTransport({command: process.execPath, args: ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, SERVER_ENTRY],
+      env: {...process.env, MCP_TRANSPORT: "stdio", PRINTER_HOST: "127.0.0.1", BAMBU_SERIAL: "01PTEST", BAMBU_TOKEN: "DUMMY", BAMBU_MODEL: "p1s",
+        BAMBU_DEFAULT_CONNECTION_MODE: "bambu_network", BAMBU_DEFAULT_CONNECTION_TYPE: "lan"}, stderr: "pipe"});
+    t.after(async () => { await closeTransport(transport); });
+    const client = createClient(); await client.connect(transport);
+    const result = await client.callTool({name: tool, arguments: {}});
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    const sent = calls().filter(c => c.method === "net.send_message_to_printer" && JSON.parse(c.payload.msg).print?.command === command);
+    assert.equal(sent.length, 1, "one authenticated control, never replayed");
+  });
+}
+
+test("a configured FULU cloud route refuses controls instead of sending plain MQTT", async t => {
+  const { calls } = await fakeFuluBridge(t);
+  const module = new URL("../dist/printers/bambu.js", import.meta.url).href;
+  const preload = `import { BambuImplementation } from ${JSON.stringify(module)}; BambuImplementation.prototype.getPrinter = async () => { throw new Error("Legacy MQTT must not be used"); };`;
+  const transport = new StdioClientTransport({command: process.execPath, args: ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, SERVER_ENTRY],
+    env: {...process.env, MCP_TRANSPORT: "stdio", PRINTER_HOST: "127.0.0.1", BAMBU_SERIAL: "01PTEST", BAMBU_TOKEN: "DUMMY", BAMBU_MODEL: "p1s",
+      BAMBU_DEFAULT_CONNECTION_MODE: "bambu_network"}, stderr: "pipe"});
+  t.after(async () => { await closeTransport(transport); });
+  const client = createClient(); await client.connect(transport);
+  for (const tool of ["cancel_print", "pause_print"]) {
+    const result = await client.callTool({name: tool, arguments: {}});
+    assert.equal(result.isError, true);
+    assert.match(JSON.stringify(result), /cloud connection/);
+    assert.doesNotMatch(JSON.stringify(result), /Legacy MQTT/);
+  }
+  assert.equal(calls().filter(c => c.method === "net.send_message_to_printer").length, 0);
+});
 
 test("an optional FULU install does not change default or explicitly direct Stop", async t => {
   const { calls } = await fakeFuluBridge(t);
