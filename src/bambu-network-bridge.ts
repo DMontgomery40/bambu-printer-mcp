@@ -41,6 +41,30 @@ function traceText(text: string): string {
   return clean.startsWith('{"header"') ? clean.slice(0, 4000) : clean.slice(0, 160);
 }
 
+/**
+ * The printer's answer to a control it was sent: it echoes command and sequence_id, with
+ * err_code set when it refuses. A P1S on authorization firmware signs it: {"header":{...},"print":{...}}.
+ */
+export function controlReply(msg: unknown, command: string, sequenceId: string): { accepted: boolean; errCode: number } | undefined {
+  if (typeof msg !== "string" || !msg.includes(sequenceId)) return undefined;
+  let print: any;
+  try { print = JSON.parse(msg)?.print; } catch { return undefined; }
+  if (print?.command !== command || String(print.sequence_id) !== sequenceId) return undefined;
+  const errCode = Number(print.err_code ?? 0) || 0;
+  const failed = typeof print.result === "string" && print.result.toLowerCase() !== "success";
+  return { accepted: errCode === 0 && !failed, errCode };
+}
+
+/** Result of a sent control from the printer's answer during the hold; a refusal throws. */
+function controlResult(command: string, route: string, reply: { accepted: boolean; errCode: number } | undefined, attempts: number): Record<string, unknown> {
+  const word = `${command[0].toUpperCase()}${command.slice(1)}`;
+  if (reply && !reply.accepted) {
+    throw new Error(`The printer refused ${word} over ${route} (error ${(reply.errCode >>> 0).toString(16).toUpperCase().padStart(8, "0")}). Nothing changed on the printer.`);
+  }
+  return { status: "success", attempts, confirmed: Boolean(reply),
+    message: reply ? `The printer accepted ${word}.` : `${word} submitted over ${route}. Check printer status to confirm it took effect.` };
+}
+
 export type LocalPrinter = { devId: string; devIp: string; username: string; password: string; useSsl: boolean };
 export type BridgeJobUpdate = { status: unknown; code: unknown; msg: unknown };
 export type LocalSession = {
@@ -48,6 +72,8 @@ export type LocalSession = {
   settle: (ms: number) => Promise<void>;
   /** Waits up to ms for FULU's certificate-installed message for this printer; false if it never came. */
   certificateReadyWithin: (ms: number) => Promise<boolean>;
+  /** This printer's messages about stop/pause/resume, as they arrive. */
+  controlMessages: string[];
   jobUpdates: BridgeJobUpdate[];
 };
 /** One line per FULU event or control send, for diagnosing controls. Never includes access codes. */
@@ -509,6 +535,7 @@ export class BambuNetworkBridge {
     run: (session: LocalSession) => Promise<T>
   ): Promise<T> {
     const jobUpdates: BridgeJobUpdate[] = [];
+    const controlMessages: string[] = [];
     let certificateReady = false;
     const installCertificate = async () => {
       await this.callWithAgent("net.install_device_cert", { dev_id: printer.devId, lan_only: true }, options);
@@ -532,6 +559,7 @@ export class BambuNetworkBridge {
         if (eventDev === printer.devId && (event?.name === "on_local_message" || event?.name === "on_message")) {
           if (event.payload?.msg === "device_cert_installed") certificateReady = true;
           if (event.payload?.msg === "device_cert_uninstalled") certificateReady = false;
+          if (typeof event.payload?.msg === "string" && /"command":"(stop|pause|resume)"/.test(event.payload.msg)) controlMessages.push(event.payload.msg);
         }
         if (event?.name === "on_local_connect") statuses.push(event.payload.status);
         if ((event?.name === "on_local_message" || event?.name === "on_message") && event.payload?.msg === "wait_info") waitInfo = true;
@@ -608,7 +636,7 @@ export class BambuNetworkBridge {
         await this.callWithAgent("net.send_message_to_printer", { dev_id: printer.devId, msg: JSON.stringify(message), qos, flag: 0 }, options);
       }
       await settle(timing.settleMs);
-      const result = await run({ installCertificate, settle, certificateReadyWithin, jobUpdates });
+      const result = await run({ installCertificate, settle, certificateReadyWithin, controlMessages, jobUpdates });
       await pump();
       return result;
     } finally {
@@ -667,13 +695,12 @@ export class BambuNetworkBridge {
       for (let attempt = 1; attempt <= timing.attempts; attempt++) {
         await beforeDispatch?.();
         assertActive();
+        // A 32-bit sequence like FULU's own counter (from 20000).
+        const sequenceId = String(20_000 + (Date.now() % 1_000_000));
         const result = await this.callWithAgent(method, {
           dev_id: printer.devId,
-          // A 32-bit sequence like FULU's own counter (from 20000). The P1S refused a 13-digit
-          // millisecond timestamp with err_code 84033546 (0x0502400A) on Nov 3.
-          msg: JSON.stringify({ print: { command, param: "", sequence_id: String(20_000 + (Date.now() % 1_000_000)) } }),
-          qos: 1, flag: 1, // MSG_SIGN: the P1S refuses unsigned controls (err_code 0x0502400A, Nov 3)
-
+          msg: JSON.stringify({ print: { command, param: "", sequence_id: sequenceId } }),
+          qos: 1, flag: 0,
         }, traced);
         assertBridgeOk(result, method);
         code = bridgeValueAsNumber(result, method);
@@ -683,8 +710,8 @@ export class BambuNetworkBridge {
           // controls, printer never paused or stopped). Stay connected while it reaches the printer.
           await session.settle(timing.deliveryMs);
           trace({ step: "delivered", command, heldMs: timing.deliveryMs });
-          return { status: "success", attempts: attempt,
-            message: `${command[0].toUpperCase()}${command.slice(1)} submitted through the authenticated FULU LAN connection. Check printer status to confirm it took effect.` };
+          const reply = session.controlMessages.map(msg => controlReply(msg, command, sequenceId)).find(Boolean);
+          return controlResult(command, "the local network", reply, attempt);
         }
         if ((code !== -4 && code !== -4030) || attempt === timing.attempts) break;
         await session.settle(timing.retryWaitMs);
@@ -693,6 +720,64 @@ export class BambuNetworkBridge {
       }
       throw new Error(`The printer did not accept ${command} over the authenticated FULU LAN connection (plug-in code ${code}).`);
     });
+  }
+
+  /**
+   * A print control over Bambu Cloud: how Bambu Studio and FULU's slicer control a printer
+   * bound to the account (MachineObject::publish_json → cloud_publish_json: send_message,
+   * qos 1, flag 0), after selecting and subscribing to it. Held open like the LAN control.
+   */
+  async sendCloudPrintCommand(devId: string, command: "stop" | "pause" | "resume", options: BambuNetworkBridgeOptions = {},
+    beforeDispatch?: () => Promise<void>, timing: Readonly<LocalControlTiming> = LOCAL_CONTROL_TIMING): Promise<Record<string, unknown>> {
+    const method = "net.send_message";
+    const assertActive = () => options.assertDispatchAllowed?.(method);
+    const trace = options.trace ?? this.controlTrace(options);
+    const traced = { ...options, trace };
+    // One plug-in event queue: never read it while a LAN session is.
+    const previous = this.localSessionTail;
+    let release!: () => void;
+    this.localSessionTail = new Promise<void>(resolve => { release = resolve; });
+    const messages: string[] = [];
+    const pump = async () => {
+      const polled = await this.request("bridge.poll_events", { limit: 1024 }, traced) as { events?: any[] };
+      for (const event of Array.isArray(polled?.events) ? polled.events : []) {
+        trace({ event: event?.name, devMatch: event?.payload?.dev_id === devId, ...(typeof event?.payload?.msg === "string" ? { msg: traceText(event.payload.msg) } : {}) });
+        if (event?.payload?.dev_id === devId && typeof event.payload.msg === "string") messages.push(event.payload.msg);
+      }
+    };
+    try {
+      await previous;
+      await this.ensureAgent(traced);
+      assertActive();
+      const login = await this.callWithAgent("net.is_user_login", {}, traced) as { value?: unknown };
+      if (login?.value !== true) throw new Error(`FULU's networking plug-in is not signed in to Bambu Cloud, so ${command} was not sent.`);
+      assertBridgeOk(await this.callWithAgent("net.set_on_message_fn", {}, traced), "net.set_on_message_fn");
+      for (const deadline = Date.now() + timing.connectTimeoutMs; ((await this.callWithAgent("net.is_server_connected", {}, traced)) as { value?: unknown })?.value !== true;) {
+        if (Date.now() >= deadline) throw new Error(`FULU's networking plug-in could not reach Bambu Cloud, so ${command} was not sent.`);
+        await new Promise(resolve => setTimeout(resolve, timing.pollMs));
+      }
+      await this.callWithAgent("net.set_user_selected_machine", { dev_id: devId }, traced);
+      await this.callWithAgent("net.add_subscribe", { devs: [devId] }, traced);
+      await pump();
+      await beforeDispatch?.();
+      assertActive();
+      const sequenceId = String(20_000 + (Date.now() % 1_000_000));
+      const result = await this.callWithAgent(method, {
+        dev_id: devId, msg: JSON.stringify({ print: { command, param: "", sequence_id: sequenceId } }), qos: 1, flag: 0,
+      }, traced);
+      assertBridgeOk(result, method);
+      const code = bridgeValueAsNumber(result, method);
+      trace({ step: "send", route: "cloud", command, code });
+      if (code !== 0) throw new Error(`Bambu Cloud did not accept ${command} for printer ${devId} (plug-in code ${code}).`);
+      for (const deadline = Date.now() + timing.deliveryMs; Date.now() < deadline;) {
+        await pump();
+        await new Promise(resolve => setTimeout(resolve, timing.pollMs));
+      }
+      trace({ step: "delivered", route: "cloud", command, heldMs: timing.deliveryMs });
+      return controlResult(command, "Bambu Cloud", messages.map(msg => controlReply(msg, command, sequenceId)).find(Boolean), 1);
+    } finally {
+      release();
+    }
   }
 
   /** Appends control diagnostics to control-trace.log in the bridge's config folder. */

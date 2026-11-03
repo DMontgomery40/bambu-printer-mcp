@@ -2952,9 +2952,12 @@ class BambuPrinterMCPServer {
                     throw new Error(nativeUnavailableReason());
                 if (route.mode !== "bambu_network")
                     return undefined;
-                if (route.type !== "lan")
-                    throw new Error(`This print was sent over FULU's cloud connection, which cannot ${command === "stop" ? "stop" : command} it yet. Use connection_type lan for FULU printing.`);
-                return (assertActive, beforeDispatch) => this.bambuNetwork.sendLocalPrintCommand({ devId: bambuSerial, devIp: host, username: "bblp", password: bambuToken, useSsl: true }, command, { assertDispatchAllowed: () => { extra.signal.throwIfAborted(); assertActive?.(); } }, beforeDispatch);
+                return (assertActive, beforeDispatch) => {
+                    const options = { assertDispatchAllowed: () => { extra.signal.throwIfAborted(); assertActive?.(); } };
+                    return route.type === "cloud"
+                        ? this.bambuNetwork.sendCloudPrintCommand(bambuSerial, command, options, beforeDispatch)
+                        : this.bambuNetwork.sendLocalPrintCommand({ devId: bambuSerial, devIp: host, username: "bblp", password: bambuToken, useSsl: true }, command, options, beforeDispatch);
+                };
             };
             const linuxEmergency = (native, mqtt) => async () => {
                 if (process.platform !== "linux")

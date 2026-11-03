@@ -15,6 +15,14 @@ export type LocalControlTiming = LocalTiming & {
     deliveryMs: number;
 };
 export declare const LOCAL_CONTROL_TIMING: Readonly<LocalControlTiming>;
+/**
+ * The printer's answer to a control it was sent: it echoes command and sequence_id, with
+ * err_code set when it refuses. A P1S on authorization firmware signs it: {"header":{...},"print":{...}}.
+ */
+export declare function controlReply(msg: unknown, command: string, sequenceId: string): {
+    accepted: boolean;
+    errCode: number;
+} | undefined;
 export type LocalPrinter = {
     devId: string;
     devIp: string;
@@ -32,6 +40,8 @@ export type LocalSession = {
     settle: (ms: number) => Promise<void>;
     /** Waits up to ms for FULU's certificate-installed message for this printer; false if it never came. */
     certificateReadyWithin: (ms: number) => Promise<boolean>;
+    /** This printer's messages about stop/pause/resume, as they arrive. */
+    controlMessages: string[];
     jobUpdates: BridgeJobUpdate[];
 };
 /** One line per FULU event or control send, for diagnosing controls. Never includes access codes. */
@@ -153,6 +163,12 @@ export declare class BambuNetworkBridge {
      * beforeDispatch runs before every send, so a resume re-checks the paused job.
      */
     sendLocalPrintCommand(printer: LocalPrinter, command: "stop" | "pause" | "resume", options?: BambuNetworkBridgeOptions, beforeDispatch?: () => Promise<void>, timing?: Readonly<LocalControlTiming>): Promise<Record<string, unknown>>;
+    /**
+     * A print control over Bambu Cloud: how Bambu Studio and FULU's slicer control a printer
+     * bound to the account (MachineObject::publish_json → cloud_publish_json: send_message,
+     * qos 1, flag 0), after selecting and subscribing to it. Held open like the LAN control.
+     */
+    sendCloudPrintCommand(devId: string, command: "stop" | "pause" | "resume", options?: BambuNetworkBridgeOptions, beforeDispatch?: () => Promise<void>, timing?: Readonly<LocalControlTiming>): Promise<Record<string, unknown>>;
     /** Appends control diagnostics to control-trace.log in the bridge's config folder. */
     private controlTrace;
     callWithAgent(method: string, payload?: JsonObject, options?: BambuNetworkBridgeOptions): Promise<unknown>;

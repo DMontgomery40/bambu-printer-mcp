@@ -25,6 +25,14 @@ const state = { certFolder: undefined, connected: false, certInstalled: false, c
 const crash = () => { process.stderr.write("Segmentation fault (core dumped)\n"); process.exit(139); };
 const queue = (name, payload) => state.events.push({ agent: 1, name, payload });
 
+// The printer's answer to a control, signed as a P1S signs it; FAKE_FULU_REFUSE sets its err_code.
+const reply = (name, payload) => {
+  const { command, sequence_id } = JSON.parse(payload.msg).print;
+  const print = process.env.FAKE_FULU_REFUSE ? { command, param: "", sequence_id, err_code: Number(process.env.FAKE_FULU_REFUSE) }
+    : { command, param: "", reason: "success", result: "success", sequence_id };
+  setTimeout(() => queue(name, { dev_id: payload.dev_id, msg: JSON.stringify({ header: { sign_alg: "RSA_SHA256", sign_string: "FAKE" }, print }) }), 10);
+};
+
 const unsupported = new Set((process.env.FAKE_FULU_UNSUPPORTED ?? "").split(",").filter(Boolean));
 
 function handle(method, payload) {
@@ -72,7 +80,17 @@ function handle(method, payload) {
       if (!["stop", "pause", "resume"].includes(JSON.parse(payload.msg).print?.command)) return ok();
       if (process.env.FAKE_FULU_REQUIRE_CERT_READY && !state.certReady) return ok(-4);
       if (Number(process.env.FAKE_FULU_CONTROL_FAILURES ?? 0) > (state.controlFailures ?? 0)) { state.controlFailures = (state.controlFailures ?? 0) + 1; return ok(-4); }
-      return ok(state.connected && state.certInstalled ? Number(process.env.FAKE_FULU_CONTROL_RESULT ?? 0) : -4030);
+      const result = state.connected && state.certInstalled ? Number(process.env.FAKE_FULU_CONTROL_RESULT ?? 0) : -4030;
+      if (result === 0) reply("on_local_message", payload);
+      return ok(result);
+    }
+    // Bambu Cloud: signed in only with FAKE_FULU_LOGGED_IN=1.
+    case "net.is_user_login": return ok(process.env.FAKE_FULU_LOGGED_IN === "1");
+    case "net.is_server_connected": return ok(process.env.FAKE_FULU_LOGGED_IN === "1");
+    case "net.send_message": {
+      if (!["stop", "pause", "resume"].includes(JSON.parse(payload.msg).print?.command)) return ok();
+      reply("on_message", payload);
+      return ok(0);
     }
     case "net.start_local_print": {
       const jobId = payload.client_job_id;

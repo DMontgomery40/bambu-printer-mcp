@@ -1391,7 +1391,8 @@ const shellQuoteArg = value => `'${String(value).replace(/'/g, "'\\''")}'`;
 const FAKE_FULU_ENV = ["BAMBU_NETWORK_BRIDGE_COMMAND", "BAMBU_NETWORK_CONFIG_DIR", "FAKE_FULU_LOG", "PJARCZAK_BAMBU_PLUGIN_DIR",
   "BAMBU_NETWORK_USER_INFO", "BAMBU_NETWORK_CERT_DIR", "PJARCZAK_BAMBU_NETWORK_SO", "PJARCZAK_BAMBU_SOURCE_SO",
   "FAKE_FULU_EXIT_CODE", "FAKE_FULU_PUBLISH_FAILURES", "FAKE_FULU_UNSUPPORTED", "FAKE_FULU_CONNECT_STATUS", "FAKE_FULU_CONTROL_RESULT",
-  "FAKE_FULU_CERT_EVENT", "FAKE_FULU_CERT_DELAY_MS", "FAKE_FULU_REQUIRE_CERT_READY", "FAKE_FULU_CONTROL_FAILURES"];
+  "FAKE_FULU_CERT_EVENT", "FAKE_FULU_CERT_DELAY_MS", "FAKE_FULU_REQUIRE_CERT_READY", "FAKE_FULU_CONTROL_FAILURES",
+  "FAKE_FULU_REFUSE", "FAKE_FULU_LOGGED_IN"];
 const fakeFuluEnvSnapshots = new WeakSet();
 
 async function fakeFuluBridge(t, env = {}, { wrapped = false } = {}) {
@@ -1471,6 +1472,38 @@ test("any other plug-in return is final: the control is never replayed", async t
   assert.equal(controlSends(calls).length, 1);
 });
 
+// Nov 3, the real P1S (cloud-bound, Developer Mode off): every LAN Stop/Pause got a signed reply
+// with err_code 84033546 and Counterpart still said "Stop sent." The refusal must reach the caller.
+test("a control the printer refuses fails with the printer's error code", async t => {
+  const {bridge} = await fakeFuluBridge(t, {FAKE_FULU_REFUSE: "84033546"});
+  await assert.rejects(bridge.sendLocalPrintCommand(LOCAL_PRINTER, "stop", {}, undefined, FAST_CONTROL), /refused Stop over the local network \(error 0502400A\)/);
+});
+
+test("a control the printer answers is reported as accepted, sent with flag 0", async t => {
+  const {bridge, calls} = await fakeFuluBridge(t, {});
+  const result = await bridge.sendLocalPrintCommand(LOCAL_PRINTER, "pause", {}, undefined, FAST_CONTROL);
+  assert.equal(result.confirmed, true);
+  assert.match(result.message, /accepted Pause/);
+  assert.equal(controlSends(calls, "pause")[0].payload.flag, 0);
+});
+
+test("a cloud control is sent the way Bambu Studio sends it to a cloud-bound printer, held open for the answer", async t => {
+  const {bridge, calls} = await fakeFuluBridge(t, {FAKE_FULU_LOGGED_IN: "1"});
+  const result = await bridge.sendCloudPrintCommand("01PTEST", "stop", {}, undefined, FAST_CONTROL);
+  assert.equal(result.confirmed, true);
+  const methods = calls().filter(c => c.method).map(c => c.method);
+  const send = methods.indexOf("net.send_message");
+  assert.ok(methods.indexOf("net.set_user_selected_machine") < send && methods.indexOf("net.add_subscribe") < send);
+  const sent = calls().find(c => c.method === "net.send_message").payload;
+  assert.deepEqual([sent.dev_id, sent.qos, sent.flag, JSON.parse(sent.msg).print.command], ["01PTEST", 1, 0, "stop"]);
+  assert.equal(methods.includes("net.connect_printer"), false, "no LAN session for a cloud control");
+});
+
+test("a cloud control refused by the printer fails with its error code", async t => {
+  const {bridge} = await fakeFuluBridge(t, {FAKE_FULU_LOGGED_IN: "1", FAKE_FULU_REFUSE: "84033546"});
+  await assert.rejects(bridge.sendCloudPrintCommand("01PTEST", "pause", {}, undefined, FAST_CONTROL), /refused Pause over Bambu Cloud \(error 0502400A\)/);
+});
+
 test("control diagnostics go to control-trace.log without the access code", async t => {
   const {bridge, dir} = await fakeFuluBridge(t, {});
   await bridge.sendLocalPrintCommand(LOCAL_PRINTER, "stop", {}, undefined, FAST_CONTROL);
@@ -1534,7 +1567,7 @@ for (const [tool, command] of [["cancel_print", "stop"], ["pause_print", "pause"
   });
 }
 
-test("a configured FULU cloud route refuses controls instead of sending plain MQTT", async t => {
+test("a configured FULU cloud route sends nothing when the plug-in is not signed in, and never plain MQTT", async t => {
   const { calls } = await fakeFuluBridge(t);
   const module = new URL("../dist/printers/bambu.js", import.meta.url).href;
   const preload = `import { BambuImplementation } from ${JSON.stringify(module)}; BambuImplementation.prototype.getPrinter = async () => { throw new Error("Legacy MQTT must not be used"); };`;
@@ -1546,10 +1579,10 @@ test("a configured FULU cloud route refuses controls instead of sending plain MQ
   for (const tool of ["cancel_print", "pause_print"]) {
     const result = await client.callTool({name: tool, arguments: {}});
     assert.equal(result.isError, true);
-    assert.match(JSON.stringify(result), /cloud connection/);
+    assert.match(JSON.stringify(result), /not signed in to Bambu Cloud/);
     assert.doesNotMatch(JSON.stringify(result), /Legacy MQTT/);
   }
-  assert.equal(calls().filter(c => c.method === "net.send_message_to_printer").length, 0);
+  assert.equal(calls().filter(c => c.method === "net.send_message_to_printer" || c.method === "net.send_message").length, 0);
 });
 
 test("an optional FULU install does not change default or explicitly direct Stop", async t => {
