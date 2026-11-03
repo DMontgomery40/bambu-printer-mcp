@@ -1,15 +1,31 @@
-export type PrintRoute = "lan" | "cloud";
+/**
+ * lan: the local network through FULU's BambuNetwork bridge (or the configured X2D native or Bambu Connect mode).
+ * cloud: Bambu Cloud through FULU's bridge.
+ * developer: the local network straight to the printer (lan_mqtt_ftps), for a printer in LAN Only + Developer Mode.
+ */
+export type PrintRoute = "lan" | "cloud" | "developer";
 export declare const PRINT_ROUTES: readonly PrintRoute[];
 export interface Connection {
     mode: string;
     type: string;
 }
-/** Bambu Cloud is FULU's BambuNetwork with connection type cloud; every other route is the local network. */
+/** One connection a person can choose, as counterpart_print_route reports it. */
+export interface RouteOption {
+    id: PrintRoute;
+    label: string;
+    available: boolean;
+    /** Why it can't be chosen here, when it can't. */
+    reason?: string;
+    /** What Pause, Resume and Stop do on this connection. */
+    controls: string;
+}
 export declare function routeOf(connection: Connection): PrintRoute;
+/** Every connection, and whether this server can use it (bridgeConfigured: BAMBU_NETWORK_BRIDGE_COMMAND is set). */
+export declare function routeOptions(current: Connection, bridgeConfigured: boolean): RouteOption[];
 /**
- * The configured defaults for a route. Cloud needs FULU's BambuNetwork. The local network keeps the
- * configured mode (direct LAN, X2D native, Bambu Connect or BambuNetwork) and, for BambuNetwork, uses its LAN type.
+ * The configured defaults for a route. Cloud and the local network use FULU's BambuNetwork; an X2D native or
+ * Bambu Connect setup keeps its own mode for the local network. Developer Mode is the direct LAN route.
  */
-export declare function connectionForRoute(route: PrintRoute, current: Connection): Connection;
+export declare function connectionForRoute(route: PrintRoute, current: Connection, bridgeConfigured?: boolean): Connection;
 /** Set KEY=value lines in a dotenv file, keeping every other line and the file's permissions. */
 export declare function writeEnvValues(file: string, values: Record<string, string>): void;

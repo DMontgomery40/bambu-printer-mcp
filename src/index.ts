@@ -13,7 +13,7 @@ import {
   McpError
 } from "@modelcontextprotocol/sdk/types.js";
 import dotenv from "dotenv";
-import { PRINT_ROUTES, connectionForRoute, routeOf, writeEnvValues, type PrintRoute } from "./counterpart/route.js";
+import { PRINT_ROUTES, connectionForRoute, routeOf, routeOptions, writeEnvValues, type PrintRoute } from "./counterpart/route.js";
 import fs from "fs";
 import os from "node:os";
 import path from "path";
@@ -3328,11 +3328,11 @@ class BambuPrinterMCPServer {
           },
           {
             name: "counterpart_print_route",
-            description: "Counterpart contract (counterpart/1): how this server reaches the printer for prints and for Stop/Pause/Resume. route is \"lan\" (the local network) or \"cloud\" (Bambu Cloud through FULU's BambuNetwork bridge); mode and type are BAMBU_DEFAULT_CONNECTION_MODE and BAMBU_DEFAULT_CONNECTION_TYPE as resolved. Pass route to change it: the change applies to the next print and control at once, and is saved to the .env file in this server's working directory when that file exists (savedTo; null otherwise). Sends nothing to the printer.",
+            description: "Counterpart contract (counterpart/1): how this server reaches the printer for prints and for Stop/Pause/Resume. route is \"lan\" (the local network through FULU's BambuNetwork bridge, or the configured X2D native or Bambu Connect mode), \"cloud\" (Bambu Cloud through FULU's bridge) or \"developer\" (the local network straight to a printer in LAN Only + Developer Mode, whose Pause, Resume and Stop need no Bambu app). options lists each with its label, whether it can be chosen here (and why not) and what controls do on it; choices lists the ids that can be chosen. mode and type are BAMBU_DEFAULT_CONNECTION_MODE and BAMBU_DEFAULT_CONNECTION_TYPE as resolved. Pass route to change it: the change applies to the next print and control at once, and is saved to the .env file in this server's working directory when that file exists (savedTo; null otherwise). Sends nothing to the printer.",
             inputSchema: {
               type: "object",
               properties: {
-                route: { type: "string", enum: ["lan", "cloud"], description: "Change the route. Omit to read it." }
+                route: { type: "string", enum: ["lan", "cloud", "developer"], description: "Change the route. Omit to read it." }
               },
               additionalProperties: false
             }
@@ -4717,9 +4717,11 @@ class BambuPrinterMCPServer {
 
           case "counterpart_print_route": {
             let savedTo: string | null = null;
+            // FULU's bridge is set up, so the routes through it can be used.
+            const bridgeConfigured = Boolean(this.bambuNetwork.resolveBridgeCommand());
             if (args?.route !== undefined) {
-              if (!PRINT_ROUTES.includes(args.route as PrintRoute)) throw new Error('route must be "lan" or "cloud".');
-              const next = connectionForRoute(args.route as PrintRoute, { mode: DEFAULT_BAMBU_CONNECTION_MODE, type: DEFAULT_BAMBU_CONNECTION_TYPE });
+              if (!PRINT_ROUTES.includes(args.route as PrintRoute)) throw new Error('route must be "lan", "cloud" or "developer".');
+              const next = connectionForRoute(args.route as PrintRoute, { mode: DEFAULT_BAMBU_CONNECTION_MODE, type: DEFAULT_BAMBU_CONNECTION_TYPE }, bridgeConfigured);
               // dotenv loaded .env from the working directory at start; a client's own env block has no file to update.
               const file = path.resolve(process.cwd(), ".env");
               if (fs.existsSync(file)) {
@@ -4733,7 +4735,9 @@ class BambuPrinterMCPServer {
               DEFAULT_BAMBU_CONNECTION_TYPE = next.type;
             }
             const connection = resolveConnection({}, this.displayModel(args, bambuSerial));
-            result = { route: routeOf(connection), mode: connection.mode, type: connection.type, choices: [...PRINT_ROUTES], savedTo };
+            const options = routeOptions(connection, bridgeConfigured);
+            result = { route: routeOf(connection), mode: connection.mode, type: connection.type,
+              choices: options.filter(option => option.available).map(option => option.id), options, savedTo };
             break;
           }
 
