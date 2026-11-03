@@ -15,6 +15,7 @@ import { isDualNozzleModel, normalizeModel, validateTemperature } from "../safet
 import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, describeAmsTrayRange } from "../ams-mapping.js";
 import { describeHmsKey, hiddenHmsKeys, hiddenHmsNotices, reportedHmsKey, unchippedNozzles, validatePrinterState, manualHeatingRequirements, type PrinterStateRequirements } from "../safety/printer-state.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRemotePath, cancelPendingPrinterOperations } from "../safety/artifact.js";
+import { controlOutcome, controlReply, nextControlSequence, type ControlReply, type PrintControl } from "../bambu-network-bridge.js";
 import { RTSP_CAMERA_MODELS, TCP_CAMERA_MODELS } from "./camera-models.js";
 import { resolveStudioPrintOptions, usedNozzleCount, type CallerPrintOptions } from "../studio-print-options.js";
 import { Client as FTPClient } from "basic-ftp";
@@ -73,13 +74,43 @@ function publishStudioJson(client: BambuClient, message: Record<string, any>, qo
 }
 
 /**
- * Bambu Studio's stop, MachineObject::command_task_abort (DeviceManager.cpp:1418-1426):
- * {"print":{"command":"stop","param":"","sequence_id":"<n>"}} at QoS 1. bambu-node's
- * UpdateStateCommand sends no param, at QoS 0.
+ * Bambu Studio's stop, pause and resume, MachineObject::command_task_abort/pause/resume
+ * (DeviceManager.cpp): {"print":{"command":"stop","param":"","sequence_id":"<n>"}} at QoS 1.
+ * bambu-node's UpdateStateCommand sends no param, at QoS 0.
  */
-const studioStopCommand = {
-  invoke: (client: BambuClient) => publishStudioJson(client, { print: { command: "stop", param: "", sequence_id: String(Date.now()) } }, 1),
-};
+const studioControl = (command: PrintControl, sequenceId = nextControlSequence()) => ({
+  invoke: (client: BambuClient) => publishStudioJson(client, { print: { command, param: "", sequence_id: sequenceId } }, 1),
+});
+const studioStopCommand = { invoke: (client: BambuClient) => studioControl("stop").invoke(client) };
+/** How long a control waits for the printer's answer (BAMBU_CONTROL_REPLY_MS, 0–60000). */
+function controlReplyMs(): number {
+  const raw = Number(process.env.BAMBU_CONTROL_REPLY_MS?.trim() || 10_000);
+  return Number.isInteger(raw) && raw >= 0 && raw <= 60_000 ? raw : 10_000;
+}
+/** Collects the printer's answer to one control from its reports, until stopped. */
+function watchControlReply(printer: BambuClient, command: PrintControl, sequenceId: string) {
+  let found: ((reply: ControlReply) => void) | undefined;
+  let early: ControlReply | undefined;
+  const onRaw = (_topic: string, payload: Buffer) => {
+    const reply = controlReply(payload.toString(), command, sequenceId);
+    if (!reply) return;
+    if (found) found(reply); else early ??= reply;
+  };
+  printer.on("rawMessage", onRaw);
+  return {
+    within: async (ms: number): Promise<ControlReply | undefined> => {
+      try {
+        if (early) return early;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const reply = await new Promise<ControlReply | undefined>(resolve => { found = resolve; timer = setTimeout(() => resolve(undefined), ms); });
+        clearTimeout(timer);
+        return reply;
+      } finally { printer.off("rawMessage", onRaw); }
+    },
+    stop: () => printer.off("rawMessage", onRaw),
+  };
+}
+const LAN_REFUSAL_HINT = " Bambu firmware with authorization control takes third-party LAN controls only with LAN Only Mode and Developer Mode on (Settings > WLAN on the printer).";
 /** A cached report older than this may be refreshed once with PushAll; see readProgressReport. */
 const STALE_REPORT_MS = 300_000;
 /** HMS 0500-0500-0001-0007: firmware 01.08.05+ rejected an unsigned MQTT command. */
@@ -1254,24 +1285,36 @@ export class BambuImplementation {
   async cancelJob(host: string, serial: string, token: string, dispatch?: () => Promise<any>): Promise<any> {
     cancelPendingPrinterOperations(host, serial);
     this.checkedJobs.delete(`${host}\n${serial}`);
-    const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
-
+    // The route's own result is the printer's answer; its refusal is already a sentence.
+    if (dispatch) return await dispatch();
+    const printer = await this.getPrinter(host, serial, token);
+    const sequenceId = nextControlSequence();
+    const watch = watchControlReply(printer, "stop", sequenceId);
     try {
-      if (dispatch) return await dispatch();
       // A stop with no PUBACK must not stay queued in MQTT.js and reach a later job.
       const ackMs = stopAckMs();
       const deadline = new AbortController();
       const timer = setTimeout(() => deadline.abort(Object.assign(new Error("stop not acknowledged"), { name: "TimeoutError" })), ackMs);
-      try { await this.invokeEmergencyCommand(printer!, studioStopCommand, deadline.signal); }
+      try { await this.invokeEmergencyCommand(printer, studioControl("stop", sequenceId), deadline.signal); }
       catch (error) {
         if ((error as Error)?.name === "TimeoutError") throw new Error(`The printer did not acknowledge the stop within ${ackMs / 1000} s; its MQTT client was closed so the stop cannot be sent late. Check the printer.`);
         throw error;
       } finally { clearTimeout(timer); }
-      this.checkedJobs.delete(`${host}\n${serial}`);
-      return { status: "success", message: "Stop sent and acknowledged by the printer (MQTT QoS 1), as Bambu Studio sends it. Check get_printer_status to confirm the job stopped." };
     } catch (error) {
+      watch.stop();
       throw new Error(`Failed to cancel print: ${(error as Error).message}`);
     }
+    this.checkedJobs.delete(`${host}\n${serial}`);
+    return controlOutcome("stop", "the local network", await watch.within(controlReplyMs()), {}, LAN_REFUSAL_HINT);
+  }
+
+  /** Pause or resume as Bambu Studio sends it, with the printer's answer. */
+  private async sendControlForReply(printer: BambuClient, command: "pause" | "resume"): Promise<Record<string, unknown>> {
+    const sequenceId = nextControlSequence();
+    const watch = watchControlReply(printer, command, sequenceId);
+    try { await invokeWithoutAck(printer, studioControl(command, sequenceId)); }
+    catch (error) { watch.stop(); throw error; }
+    return controlOutcome(command, "the local network", await watch.within(controlReplyMs()), {}, LAN_REFUSAL_HINT);
   }
 
   private async invokeEmergencyCommand(
@@ -1322,14 +1365,9 @@ export class BambuImplementation {
   }
 
   async pauseJob(host: string, serial: string, token: string, dispatch?: () => Promise<any>): Promise<any> {
-    const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
-    try {
-      if (dispatch) return await dispatch();
-      else await invokeWithoutAck(printer!, new UpdateStateCommand({ state: "pause" }));
-      return { status: "success", message: "Pause command sent successfully." };
-    } catch (error) {
-      throw new Error(`Failed to pause print: ${(error as Error).message}`);
-    }
+    if (dispatch) return await dispatch();
+    const printer = await this.getPrinter(host, serial, token);
+    return await this.sendControlForReply(printer, "pause");
   }
 
   /**
@@ -1383,9 +1421,8 @@ export class BambuImplementation {
       await pausedJob();
       const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
       assertActive();
-      if (dispatch) await dispatch(assertActive, pausedJob);
-      else await invokeWithoutAck(printer!, new UpdateStateCommand({ state: "resume" }));
-      return { status: "success", message: `Resume command sent for ${jobName}.`, jobName, bytesVerified };
+      const sent = dispatch ? await dispatch(assertActive, pausedJob) : await this.sendControlForReply(printer!, "resume");
+      return { ...sent, jobName, bytesVerified };
     });
   }
 

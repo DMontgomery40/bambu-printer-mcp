@@ -30,15 +30,57 @@ export function describeBambuNetworkPrintError(value: number): string {
 /** Waits from native/bambu-native-print.cpp, which prints through the same plug-in calls. */
 export type LocalTiming = { connectTimeoutMs: number; pollMs: number; settleMs: number; retryWaitMs: number };
 export const LOCAL_PRINT_TIMING: Readonly<LocalTiming> = Object.freeze({ connectTimeoutMs: 30_000, pollMs: 250, settleMs: 3_000, retryWaitMs: 8_000 });
-/** A control waits briefly for the certificate message, then sends; -4/-4030 returns are retried after a reinstall. */
-export type LocalControlTiming = LocalTiming & { certificateWaitMs: number; attempts: number; deliveryMs: number };
-export const LOCAL_CONTROL_TIMING: Readonly<LocalControlTiming> = Object.freeze({ ...LOCAL_PRINT_TIMING, settleMs: 1_000, retryWaitMs: 1_500, certificateWaitMs: 5_000, attempts: 3, deliveryMs: 5_000 });
+/**
+ * A control waits briefly for the certificate message, then sends; -4/-4030 returns are retried
+ * after a reinstall. It then waits up to replyMs for the printer's answer to that command.
+ */
+export type LocalControlTiming = LocalTiming & { certificateWaitMs: number; attempts: number; replyMs: number };
+export const LOCAL_CONTROL_TIMING: Readonly<LocalControlTiming> = Object.freeze({ ...LOCAL_PRINT_TIMING, settleMs: 1_000, retryWaitMs: 1_500, certificateWaitMs: 5_000, attempts: 3, replyMs: 10_000 });
+/** A cloud control waits up to connectMs for Bambu Cloud, then up to replyMs for the printer's answer. */
+export type CloudControlTiming = { connectMs: number; pollMs: number; replyMs: number };
+export const CLOUD_CONTROL_TIMING: Readonly<CloudControlTiming> = Object.freeze({ connectMs: 15_000, pollMs: 250, replyMs: 10_000 });
 
-/** Bounded event text for diagnostics, with any access code removed. */
-function traceText(text: string): string {
-  const clean = text.replace(/("?access_code"?\s*[:=]\s*"?)[^",}\s]*/gi, "$1[redacted]");
-  // A signed printer reply (a header, then its payload) is the printer's answer to a command: keep it whole.
-  return clean.startsWith('{"header"') ? clean.slice(0, 4000) : clean.slice(0, 160);
+export type PrintControl = "stop" | "pause" | "resume";
+/** The printer's answer to one control: accepted, or refused with its error code. */
+export type ControlReply = { accepted: true } | { accepted: false; errCode: number; reason?: string };
+
+/**
+ * A printer report read as its answer to `command` sent with `sequenceId`: the printer
+ * echoes the command and sequence_id, with err_code set (and result "fail") when it refuses.
+ * A P1S on authorization firmware signs that answer: {"header":{...},"print":{...}}.
+ */
+export function controlReply(msg: unknown, command: PrintControl, sequenceId: string): ControlReply | undefined {
+  if (typeof msg !== "string" || !msg.includes(sequenceId)) return undefined;
+  let print: any;
+  try { print = JSON.parse(msg)?.print; } catch { return undefined; }
+  if (print?.command !== command || String(print.sequence_id) !== sequenceId) return undefined;
+  const errCode = Number(print.err_code ?? 0) || 0;
+  const failed = typeof print.result === "string" && print.result.toLowerCase() !== "success";
+  if (errCode === 0 && !failed) return { accepted: true };
+  return { accepted: false, errCode, ...(typeof print.reason === "string" && print.reason ? { reason: print.reason } : {}) };
+}
+
+const CONTROL_WORD: Record<PrintControl, string> = { stop: "Stop", pause: "Pause", resume: "Resume" };
+const hexCode = (code: number) => (code >>> 0).toString(16).toUpperCase().padStart(8, "0");
+// Bambu Studio's MachineObject::m_sequence_id starts at 20000 and counts up.
+let controlSequence = 20_000 + Math.floor(Math.random() * 10_000);
+/** A fresh sequence_id for one control, so the printer's answer can be told apart. */
+export function nextControlSequence(): string {
+  return String(controlSequence++);
+}
+
+/**
+ * The result of one sent control, from the printer's answer. A refusal throws with the
+ * printer's error code; no answer is reported as unconfirmed, never as done.
+ */
+export function controlOutcome(command: PrintControl, route: string, reply: ControlReply | undefined, extra: Record<string, unknown>, refusalHint = ""): Record<string, unknown> {
+  const word = CONTROL_WORD[command];
+  if (reply?.accepted === false) {
+    throw new Error(`The printer refused ${word} over ${route} (error ${hexCode(reply.errCode)}${reply.reason ? `, ${reply.reason}` : ""}).${refusalHint}`);
+  }
+  if (reply?.accepted) return { status: "success", confirmed: true, ...extra, message: `The printer accepted ${word}.` };
+  return { status: "success", confirmed: false, ...extra,
+    message: `${word} was sent over ${route}, but the printer has not answered yet. Check the printer before assuming it took effect.` };
 }
 
 export type LocalPrinter = { devId: string; devIp: string; username: string; password: string; useSsl: boolean };
@@ -48,10 +90,10 @@ export type LocalSession = {
   settle: (ms: number) => Promise<void>;
   /** Waits up to ms for FULU's certificate-installed message for this printer; false if it never came. */
   certificateReadyWithin: (ms: number) => Promise<boolean>;
+  /** Waits up to ms for this printer's answer to a control; undefined if none came. */
+  replyWithin: (command: PrintControl, sequenceId: string, ms: number) => Promise<ControlReply | undefined>;
   jobUpdates: BridgeJobUpdate[];
 };
-/** One line per FULU event or control send, for diagnosing controls. Never includes access codes. */
-export type BridgeTrace = (entry: Record<string, unknown>) => void;
 
 type JsonObject = Record<string, unknown>;
 
@@ -71,8 +113,6 @@ export type BambuNetworkBridgeOptions = {
   /** Trusted in-process preflight; never populated from tool arguments. */
   beforeDispatch?: (method: string) => Promise<void>;
   assertDispatchAllowed?: (method: string) => void;
-  /** Diagnostics for a print control: every FULU event and send in its session. */
-  trace?: BridgeTrace;
   onDispatched?: (method: string) => void;
 };
 
@@ -263,6 +303,10 @@ function bridgeNumericResult(value: unknown): number | undefined {
   return typeof value === "object" && value !== null && typeof (value as { value?: unknown }).value === "number"
     ? (value as { value: number }).value
     : undefined;
+}
+
+function bridgeValueIsTrue(value: unknown): boolean {
+  return typeof value === "object" && value !== null && (value as { value?: unknown }).value === true;
 }
 
 function assertBridgeOk(value: unknown, method: string): void {
@@ -509,6 +553,7 @@ export class BambuNetworkBridge {
     run: (session: LocalSession) => Promise<T>
   ): Promise<T> {
     const jobUpdates: BridgeJobUpdate[] = [];
+    const messages: string[] = [];
     let certificateReady = false;
     const installCertificate = async () => {
       await this.callWithAgent("net.install_device_cert", { dev_id: printer.devId, lan_only: true }, options);
@@ -522,8 +567,6 @@ export class BambuNetworkBridge {
       const statuses: unknown[] = [];
       let waitInfo = false;
       for (const event of Array.isArray(polled?.events) ? polled.events : []) {
-        options.trace?.({ event: event?.name, devMatch: event?.payload?.dev_id === undefined ? "none" : event.payload.dev_id === printer.devId,
-          ...(event?.payload?.status !== undefined ? { status: event.payload.status } : {}), ...(typeof event?.payload?.msg === "string" ? { msg: traceText(event.payload.msg) } : {}) });
         if (event?.name === "job.update_status") jobUpdates.push({ status: event.payload?.status, code: event.payload?.code, msg: event.payload?.msg });
         const eventDev = event?.payload?.dev_id;
         if (eventDev !== undefined && eventDev !== "" && eventDev !== printer.devId) continue;
@@ -532,6 +575,7 @@ export class BambuNetworkBridge {
         if (eventDev === printer.devId && (event?.name === "on_local_message" || event?.name === "on_message")) {
           if (event.payload?.msg === "device_cert_installed") certificateReady = true;
           if (event.payload?.msg === "device_cert_uninstalled") certificateReady = false;
+          if (typeof event.payload?.msg === "string" && /"command":"(stop|pause|resume)"/.test(event.payload.msg)) messages.push(event.payload.msg);
         }
         if (event?.name === "on_local_connect") statuses.push(event.payload.status);
         if ((event?.name === "on_local_message" || event?.name === "on_message") && event.payload?.msg === "wait_info") waitInfo = true;
@@ -555,6 +599,18 @@ export class BambuNetworkBridge {
         await new Promise(resolve => setTimeout(resolve, timing.pollMs));
       } while (Date.now() < deadline);
       return certificateReady;
+    };
+    const replyWithin = async (command: PrintControl, sequenceId: string, ms: number) => {
+      const deadline = Date.now() + ms;
+      do {
+        await pump();
+        for (const msg of messages.splice(0)) {
+          const reply = controlReply(msg, command, sequenceId);
+          if (reply) return reply;
+        }
+        await new Promise(resolve => setTimeout(resolve, timing.pollMs));
+      } while (Date.now() < deadline);
+      return undefined;
     };
 
     await this.ensureAgent(options);
@@ -608,7 +664,7 @@ export class BambuNetworkBridge {
         await this.callWithAgent("net.send_message_to_printer", { dev_id: printer.devId, msg: JSON.stringify(message), qos, flag: 0 }, options);
       }
       await settle(timing.settleMs);
-      const result = await run({ installCertificate, settle, certificateReadyWithin, jobUpdates });
+      const result = await run({ installCertificate, settle, certificateReadyWithin, replyWithin, jobUpdates });
       await pump();
       return result;
     } finally {
@@ -645,46 +701,36 @@ export class BambuNetworkBridge {
   }
 
   /**
-   * A print control (stop, pause, resume) through the same authenticated LAN
-   * session as a FULU print. FULU's own app sends controls exactly this way
-   * (send_message_to_printer, qos 1, flag 0) on a connection whose certificate
-   * is installed. A fresh connection can report SEND_MSG_FAILED (-4) or
-   * LP_PUBLISH_MSG_FAILED (-4030) while that exchange finishes: those returns
-   * mean nothing was sent, so the certificate is reinstalled and the control
-   * tried again, as the native X2D helper does. Any other return is final.
+   * A print control (stop, pause, resume) over the plug-in's LAN session, as Bambu Studio
+   * sends it to a printer in LAN Only mode (MachineObject::local_publish_json:
+   * send_message_to_printer, qos 1, flag 0). A fresh connection can report SEND_MSG_FAILED (-4)
+   * or LP_PUBLISH_MSG_FAILED (-4030) while the certificate exchange finishes: those returns
+   * mean nothing was sent, so the certificate is reinstalled and the control tried again.
+   * Any other return is final. The session stays open until the printer answers, so the
+   * result is the printer's own: accepted, refused (thrown), or unconfirmed.
    * beforeDispatch runs before every send, so a resume re-checks the paused job.
    */
-  async sendLocalPrintCommand(printer: LocalPrinter, command: "stop" | "pause" | "resume", options: BambuNetworkBridgeOptions = {},
+  async sendLocalPrintCommand(printer: LocalPrinter, command: PrintControl, options: BambuNetworkBridgeOptions = {},
     beforeDispatch?: () => Promise<void>, timing: Readonly<LocalControlTiming> = LOCAL_CONTROL_TIMING): Promise<Record<string, unknown>> {
-    const assertActive = () => options.assertDispatchAllowed?.("net.send_message_to_printer");
-    const trace = options.trace ?? this.controlTrace(options);
-    const traced = { ...options, trace };
-    return this.withLocalSession(printer, traced, assertActive, timing, async session => {
-      const ready = await session.certificateReadyWithin(timing.certificateWaitMs);
-      trace({ step: "certificate", ready });
-      const method = "net.send_message_to_printer";
+    const method = "net.send_message_to_printer";
+    const assertActive = () => options.assertDispatchAllowed?.(method);
+    return this.withLocalSession(printer, options, assertActive, timing, async session => {
+      await session.certificateReadyWithin(timing.certificateWaitMs);
       let code = 0;
       for (let attempt = 1; attempt <= timing.attempts; attempt++) {
         await beforeDispatch?.();
         assertActive();
+        const sequenceId = nextControlSequence();
         const result = await this.callWithAgent(method, {
-          dev_id: printer.devId,
-          // A 32-bit sequence like FULU's own counter (from 20000). The P1S refused a 13-digit
-          // millisecond timestamp with err_code 84033546 (0x0502400A) on Nov 3.
-          msg: JSON.stringify({ print: { command, param: "", sequence_id: String(20_000 + (Date.now() % 1_000_000)) } }),
-          qos: 1, flag: 1, // MSG_SIGN: the P1S refuses unsigned controls (err_code 0x0502400A, Nov 3)
-
-        }, traced);
+          dev_id: printer.devId, msg: JSON.stringify({ print: { command, param: "", sequence_id: sequenceId } }), qos: 1, flag: 0,
+        }, options);
         assertBridgeOk(result, method);
         code = bridgeValueAsNumber(result, method);
-        trace({ step: "send", command, attempt, code });
         if (code === 0) {
-          // The plug-in queues the publish; disconnecting at once dropped it (Nov 3: five accepted
-          // controls, printer never paused or stopped). Stay connected while it reaches the printer.
-          await session.settle(timing.deliveryMs);
-          trace({ step: "delivered", command, heldMs: timing.deliveryMs });
-          return { status: "success", attempts: attempt,
-            message: `${command[0].toUpperCase()}${command.slice(1)} submitted through the authenticated FULU LAN connection. Check printer status to confirm it took effect.` };
+          const reply = await session.replyWithin(command, sequenceId, timing.replyMs);
+          return controlOutcome(command, "the local network", reply, { attempts: attempt, route: "lan" },
+            " A printer bound to Bambu Cloud takes Stop, Pause and Resume over Bambu Cloud, as Bambu Studio sends them; " +
+            "over the local network it needs LAN Only Mode with Developer Mode on.");
         }
         if ((code !== -4 && code !== -4030) || attempt === timing.attempts) break;
         await session.settle(timing.retryWaitMs);
@@ -695,12 +741,59 @@ export class BambuNetworkBridge {
     });
   }
 
-  /** Appends control diagnostics to control-trace.log in the bridge's config folder. */
-  private controlTrace(options: BambuNetworkBridgeOptions): BridgeTrace {
-    const file = path.join(this.resolveConfigDir(options.configDir), "control-trace.log");
-    return entry => {
-      try { fs.appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n", { mode: 0o600 }); } catch { /* diagnostics only */ }
-    };
+  /**
+   * A print control over Bambu Cloud, as Bambu Studio sends it to a printer bound to the
+   * user's account (MachineObject::cloud_publish_json: send_message, qos 1, flag 0), after
+   * selecting and subscribing to that printer (DeviceManager::set_selected_machine,
+   * add_user_subscribe). Needs the plug-in signed in to Bambu Cloud; nothing is sent
+   * otherwise. The result is the printer's answer, as for the LAN route.
+   */
+  async sendCloudPrintCommand(devId: string, command: PrintControl, options: BambuNetworkBridgeOptions = {},
+    beforeDispatch?: () => Promise<void>, timing: Readonly<CloudControlTiming> = CLOUD_CONTROL_TIMING): Promise<Record<string, unknown>> {
+    const method = "net.send_message";
+    const assertActive = () => options.assertDispatchAllowed?.(method);
+    // One plug-in event queue: wait for any LAN session to finish, and hold others off while this reads it.
+    const previous = this.localSessionTail;
+    let release!: () => void;
+    this.localSessionTail = new Promise<void>(resolve => { release = resolve; });
+    try {
+      await previous;
+      await this.ensureAgent(options);
+      assertActive();
+      if (!bridgeValueIsTrue(await this.callWithAgent("net.is_user_login", {}, options))) {
+        throw new Error(`FULU's networking plug-in is not signed in to Bambu Cloud, so ${CONTROL_WORD[command]} was not sent. ` +
+          "Sign in (docs/FULU.md#cloud-authentication) or use the local network route.");
+      }
+      assertBridgeOk(await this.callWithAgent("net.set_on_message_fn", {}, options), "net.set_on_message_fn");
+      for (const deadline = Date.now() + timing.connectMs; !bridgeValueIsTrue(await this.callWithAgent("net.is_server_connected", {}, options));) {
+        if (Date.now() >= deadline) throw new Error(`FULU's networking plug-in could not reach Bambu Cloud within ${Math.round(timing.connectMs / 1000)} s, so ${CONTROL_WORD[command]} was not sent.`);
+        assertActive();
+        await new Promise(resolve => setTimeout(resolve, timing.pollMs));
+      }
+      await this.callWithAgent("net.set_user_selected_machine", { dev_id: devId }, options);
+      await this.callWithAgent("net.add_subscribe", { devs: [devId] }, options);
+      await this.request("bridge.poll_events", { limit: 4096 }, options);
+      await beforeDispatch?.();
+      assertActive();
+      const sequenceId = nextControlSequence();
+      const result = await this.callWithAgent(method, {
+        dev_id: devId, msg: JSON.stringify({ print: { command, param: "", sequence_id: sequenceId } }), qos: 1, flag: 0,
+      }, options);
+      assertBridgeOk(result, method);
+      const code = bridgeValueAsNumber(result, method);
+      if (code !== 0) throw new Error(`Bambu Cloud did not accept ${command} for printer ${devId} (plug-in code ${code}).`);
+      let reply: ControlReply | undefined;
+      for (const deadline = Date.now() + timing.replyMs; !reply && Date.now() < deadline;) {
+        const polled = await this.request("bridge.poll_events", { limit: 1024 }, options) as { events?: any[] };
+        for (const event of Array.isArray(polled?.events) ? polled.events : []) {
+          if (!reply && event?.name === "on_message" && event.payload?.dev_id === devId) reply = controlReply(event.payload.msg, command, sequenceId);
+        }
+        if (!reply) await new Promise(resolve => setTimeout(resolve, timing.pollMs));
+      }
+      return controlOutcome(command, "Bambu Cloud", reply, { route: "cloud" });
+    } finally {
+      release();
+    }
   }
 
   async callWithAgent(
