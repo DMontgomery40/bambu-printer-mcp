@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readBoundedPrintFile, loadSafe3mfArchive } from './archive.js';
+import { projectFilaments } from "../ams-mapping.js";
 import { MACHINE_LIMITS, isDualNozzleModel, normalizeMaterial, normalizeModel, validateStartupPurgeTemperature, validateTemperature } from './limits.js';
 const NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 const fail = (message) => { throw new Error(`Print safety: ${message}`); };
@@ -748,5 +749,5 @@ export async function inspectPrintFile(filePath, options) {
         return fail('selected G-code contains no printable commands');
     if (!used.size)
         materials.forEach((_, index) => used.add(index));
-    return { model, nozzleDiameters, materials, usedFilamentPositions: [...used].sort((a, b) => a - b), plateInternalPath, sha256, maxNozzleTemperature, maxBedTemperature, maxChamberTemperature, bedType, selectsAms, nozzleTypes, nozzleFlows, filamentNozzleIndices };
+    return { model, nozzleDiameters, materials, usedFilamentPositions: [...used].sort((a, b) => a - b), plateInternalPath, sha256, maxNozzleTemperature, maxBedTemperature, maxChamberTemperature, bedType, selectsAms, nozzleTypes, nozzleFlows, filamentNozzleIndices, ...(Array.isArray(project.filament_type) ? { projectFilaments: projectFilaments(project) } : {}) };
 }

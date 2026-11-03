@@ -11,6 +11,7 @@ import JSZip from "jszip";
 import { BambuImplementation } from "../dist/printers/bambu.js";
 import { BambuNetworkBridge } from "../dist/bambu-network-bridge.js";
 import { withPrintSnapshot } from "../dist/safety/artifact.js";
+import { studioAmsMappingInfo, trayColour } from "../dist/ams-mapping.js";
 
 // Mocked printers never report a started job; tests that cover it opt back in.
 process.env.BAMBU_DISPATCH_CHECK_MS = "0";
@@ -28,7 +29,7 @@ function safetyStatus({ model = "p1s", nozzle = "0.4", state = "IDLE", ...raw } 
   };
 }
 
-async function fixture(t, { model = "p1s", nozzle = "0.4", nozzleDiameters, material = "PLA", gcode = "M104 S220\nM140 S60\nG1 X10 Y10 Z1\n", raw = false } = {}) {
+async function fixture(t, { model = "p1s", nozzle = "0.4", nozzleDiameters, material = "PLA", gcode = "M104 S220\nM140 S60\nG1 X10 Y10 Z1\n", raw = false, project = {} } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-safety-dispatch-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, raw ? "job.gcode" : "job.gcode.3mf");
@@ -40,7 +41,7 @@ async function fixture(t, { model = "p1s", nozzle = "0.4", nozzleDiameters, mate
     zip.file("3D/3dmodel.model", '<?xml version="1.0"?><model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources><object id="1" type="model" name="cube.stl"><mesh><vertices/><triangles/></mesh></object></resources><build><item objectid="1"/></build></model>');
     zip.file("Metadata/plate_1.gcode", content);
     zip.file("Metadata/plate_1.json", JSON.stringify({ filament_ids: [0] }));
-    zip.file("Metadata/project_settings.config", JSON.stringify({ printer_model: model, nozzle_diameter: nozzles, filament_type: [material], curr_bed_type: "Textured PEI Plate" }));
+    zip.file("Metadata/project_settings.config", JSON.stringify({ printer_model: model, nozzle_diameter: nozzles, filament_type: [material], curr_bed_type: "Textured PEI Plate", ...project }));
     await fs.writeFile(file, await zip.generateAsync({ type: "nodebuffer" }));
   }
   return file;
@@ -586,6 +587,12 @@ async function interceptedMcp(t, { blockBridgeInitialization = false, realBridge
       ${blockBridgeInitialization ? `log({action:'agent-wait'}); while (!fs.existsSync(${JSON.stringify(releasePath)})) await new Promise(resolve => setTimeout(resolve,10));` : ""}
       return { agent: 0, handshake: { ok: true } };
     };
+    // The Bambu Cloud session (login, subscribe, certificate) has its own fake-host tests;
+    // here a cloud job runs straight through it to the print request.
+    BambuNetworkBridge.prototype.withCloudSession = async function (devId, _options, assertActive, _timing, run) {
+      log({ action:"cloud-session", devId }); assertActive();
+      return run({ settle: async () => {}, messages: [], jobUpdates: [] });
+    };
     ${realBridgeRequest ? `BambuNetworkBridge.prototype.ensureStarted = async function () {
       this.child = {exitCode:0, stdin:{write:(frame, callback) => {
         const message=JSON.parse(frame.subarray(16).toString('utf8'));
@@ -691,6 +698,47 @@ test("verified public direct and bridge prints reach their intended transport", 
   assert.match(print.payload.params.dst_file, /^checked-[a-f0-9-]+-job\.gcode\.3mf$/);
   assert.equal(print.payload.params.task_use_ams, false);
   assert.equal(print.payload.params.ams_mapping, "[254]");
+});
+
+test("a FULU cloud print sends Bambu Studio's ams_mapping_info for the tray it prints from", async (t) => {
+  const { client, eventsPath } = await interceptedMcp(t, {
+    ams: { tray_now: "255", ams: [{ id: "0", tray: [
+      { id: "0", tray_type: "PLA", tray_info_idx: "GFA00", tray_color: "FFFFFFFF", nozzle_temp_min: "190", nozzle_temp_max: "230" },
+      { id: "1", tray_type: "PLA", tray_info_idx: "GFA00", tray_color: "161616FF", nozzle_temp_min: "190", nozzle_temp_max: "230" },
+    ] }] },
+  });
+  const file = await fixture(t, { project: { filament_ids: ["GFA00"], filament_colour: ["#000000"], filament_map: ["1"] } });
+  const result = await client.callTool({ name: "print_3mf_bambu_network", arguments: { three_mf_path: file, bambu_model: "p1s", bed_type: "textured_plate", ams_slots: [1], connection_type: "cloud" } });
+  assert.notEqual(result.isError, true, result.content?.[0]?.text);
+  const events = (await fs.readFile(eventsPath, "utf8")).trim().split("\n").map(JSON.parse);
+  const params = events.find(event => event.method === "net.start_print")?.payload.params;
+  assert.equal(params.ams_mapping, "[1]");
+  assert.deepEqual(JSON.parse(params.ams_mapping_info), [
+    { ams: 1, targetColor: "161616FF", filamentId: "GFA00", filamentType: "PLA", nozzleId: 1, sourceColor: "#000000FF" },
+  ]);
+});
+
+test("ams_mapping_info covers every project filament, external spools, AMS-HT and the right nozzle", () => {
+  const raw = {
+    ams: { ams: [{ id: "1", tray: [{ id: "0" }, { id: "1" }, { id: "2", tray_color: "00AE42FF" }] }, { id: "128", tray: [{ id: "0", tray_color: "F4EE2AFF" }] }] },
+    vir_slot: [{ id: "254", tray_color: "FFFFFFFF" }, { id: "255", tray_color: "000000FF" }],
+  };
+  const filaments = [
+    { type: "PLA", filamentId: "GFA00", colour: "#00AE42", nozzle: 2 },
+    { type: "PETG", filamentId: "GFG00", colour: "#ffffff80" },
+    { type: "PLA", filamentId: "GFA01", colour: "#F4EE2A", nozzle: 1 },
+    { type: "PLA", filamentId: "GFA00", colour: "#000000", nozzle: 1 },
+    { type: "PLA", filamentId: "GFA00", colour: "#000000" },
+  ];
+  assert.deepEqual(studioAmsMappingInfo(filaments, [6, 254, 128, 255, -1], tray => trayColour(raw, tray)), [
+    { ams: 6, targetColor: "00AE42FF", filamentId: "GFA00", filamentType: "PLA", nozzleId: 0, sourceColor: "#00AE42FF" },
+    { ams: 254, targetColor: "FFFFFFFF", filamentId: "GFG00", filamentType: "PETG", sourceColor: "#FFFFFF80" },
+    { ams: 128, targetColor: "F4EE2AFF", filamentId: "GFA01", filamentType: "PLA", nozzleId: 1, sourceColor: "#F4EE2AFF" },
+    { ams: 255, targetColor: "000000FF", filamentId: "GFA00", filamentType: "PLA", nozzleId: 1, sourceColor: "#000000FF" },
+    { ams: -1, targetColor: "", filamentId: "", filamentType: "" },
+  ]);
+  assert.equal(trayColour({ vt_tray: { tray_color: "123456FF" } }, 254), "123456FF", "single-nozzle printers report the external spool as vt_tray");
+  assert.equal(trayColour(raw, 3), undefined, "a tray the printer does not report has no colour");
 });
 
 async function startBridgeJob(t, options) {

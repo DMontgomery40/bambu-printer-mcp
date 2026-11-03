@@ -16,7 +16,7 @@ import { assertBambuNativeAvailable, bambuNativeControlsAvailable, bambuNativeUn
 import { importFileViaBambuConnect } from "./bambu-connect.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
 import { FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFAULT_ARGS, FUSION_NEW_DESIGN_OUTPUT_SCHEMA, FUSION_STATUS_OUTPUT_SCHEMA, FusionMcpBridge } from "./fusion-mcp-bridge.js";
-import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue } from "./ams-mapping.js";
+import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue, studioAmsMappingInfo, trayColour } from "./ams-mapping.js";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, parse3MF } from './3mf_parser.js';
 import { BambuImplementation, assertDirectPrintSupported, checkedFile } from "./printers/bambu.js";
 import { resolveStudioPrintOptions, usedNozzleCount } from "./studio-print-options.js";
@@ -1323,7 +1323,10 @@ class BambuPrinterMCPServer {
                 nozzle_mapping: stringifyBridgeJson(args?.nozzle_mapping) || "",
                 ams_mapping: amsMapping || "",
                 ams_mapping2: nativeAmsMapping2(mapping, isDualNozzleModel(printModel)) || "",
-                ams_mapping_info: stringifyBridgeJson(args?.ams_mapping_info) || "",
+                // Bambu Studio and FULU's slicer send this with every job (get_ams_mapping_result).
+                ams_mapping_info: mapping && inspection.projectFilaments?.length
+                    ? JSON.stringify(studioAmsMappingInfo(inspection.projectFilaments, mapping, tray => trayColour(confirmedStatus.raw, tray)))
+                    : "",
                 nozzles_info: stringifyBridgeJson(args?.nozzles_info) || "",
                 connection_type: connectionType,
                 comments: String(args?.comments || ""),

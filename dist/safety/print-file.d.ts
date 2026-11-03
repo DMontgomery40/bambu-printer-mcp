@@ -1,3 +1,4 @@
+import { type ProjectFilament } from "../ams-mapping.js";
 export interface PrintFileInspection {
     model: string;
     nozzleDiameters: number[];
@@ -14,6 +15,8 @@ export interface PrintFileInspection {
     nozzleFlows?: string[];
     /** Physical nozzle index for each declared filament, composed from the selected plate headers. */
     filamentNozzleIndices?: number[];
+    /** Every project filament as project_settings.config declares it, for PrintParams.ams_mapping_info. */
+    projectFilaments?: ProjectFilament[];
 }
 /** Inspect the exact selected plate. This does not simulate firmware or arbitrary motion:
  * only declared object bounds are checked, never purge/homing/wipe travel coordinates.

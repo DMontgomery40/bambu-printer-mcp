@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readBoundedPrintFile, loadSafe3mfArchive } from './archive.js';
+import { projectFilaments, type ProjectFilament } from "../ams-mapping.js";
 import { MACHINE_LIMITS, isDualNozzleModel, normalizeMaterial, normalizeModel, validateStartupPurgeTemperature, validateTemperature } from './limits.js';
 
 export interface PrintFileInspection {
@@ -18,6 +19,8 @@ export interface PrintFileInspection {
   nozzleFlows?: string[];
   /** Physical nozzle index for each declared filament, composed from the selected plate headers. */
   filamentNozzleIndices?: number[];
+  /** Every project filament as project_settings.config declares it, for PrintParams.ams_mapping_info. */
+  projectFilaments?: ProjectFilament[];
 }
 type Metadata = Record<string, unknown>;
 const NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
@@ -548,5 +551,5 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
   }
   if(!commandCount) return fail('selected G-code contains no printable commands');
   if(!used.size) materials.forEach((_,index)=>used.add(index));
-  return {model,nozzleDiameters,materials,usedFilamentPositions:[...used].sort((a,b)=>a-b),plateInternalPath,sha256,maxNozzleTemperature,maxBedTemperature,maxChamberTemperature,bedType,selectsAms,nozzleTypes,nozzleFlows,filamentNozzleIndices};
+  return {model,nozzleDiameters,materials,usedFilamentPositions:[...used].sort((a,b)=>a-b),plateInternalPath,sha256,maxNozzleTemperature,maxBedTemperature,maxChamberTemperature,bedType,selectsAms,nozzleTypes,nozzleFlows,filamentNozzleIndices,...(Array.isArray(project.filament_type)?{projectFilaments:projectFilaments(project)}:{})};
 }
