@@ -247,6 +247,7 @@ int main(int argc, char **argv) {
   setenv("BAMBU_NATIVE_COMMAND_CONFIRM","1",1);
   setenv("BAMBU_NATIVE_CERT_RETRY_SECONDS","1",1);
   setenv("BAMBU_NATIVE_CONTROL_RETRY_MS","250",1);
+  setenv("BAMBU_NATIVE_CERT_WAIT_MS","0",1);
   const auto operation = argc==2 && std::string(argv[1])=="--command-authorized"
     ? NativeOperation::AuthorizedCommand : NativeOperation::Print;
   try { runOperation(api,operation); return 0; }
@@ -369,7 +370,7 @@ int main() {
   assert.equal(compiled.status, 0, compiled.error?.message || compiled.stderr);
   const env = { ...process.env, BAMBU_NATIVE_HOST: "127.0.0.1", BAMBU_NATIVE_SERIAL: "20PEXIT", BAMBU_NATIVE_ACCESS_CODE: "DUMMY",
     BAMBU_NATIVE_COMMAND_CONFIRM: "1", BAMBU_NATIVE_COMMAND_JSON: JSON.stringify({ print: { command: "pause", sequence_id: "1" } }),
-    BAMBU_NATIVE_COMMAND_REPLY_MS: "0" };
+    BAMBU_NATIVE_COMMAND_REPLY_MS: "0", BAMBU_NATIVE_CERT_WAIT_MS: "0" };
   const sent = spawnSync(executable, [], { encoding: "utf8", timeout: 15000, env });
   assert.equal(sent.signal, null, sent.stderr);
   assert.equal(sent.status, 0, sent.stderr);
@@ -392,7 +393,8 @@ test("compiled native command waits for the printer's answer to its own sequence
 #include ${JSON.stringify(source)}
 #undef main
 BBL::OnLocalConnectedFn connected;
-std::function<void(std::string,std::string)> localMessage;
+std::function<void(std::string,std::string)> localMessage, cloudMessage;
+std::atomic<bool> certReady{false};
 int main() {
   NativeApi api;
   api.createAgent = [](std::string) -> void* { return reinterpret_cast<void*>(1); };
@@ -405,12 +407,19 @@ int main() {
   api.setQueueOnMain = [](void*,std::function<void(std::function<void()>)>) { return 0; };
   api.setPrinterConnected = [](void*,std::function<void(std::string)>) { return 0; };
   api.setLocalConnect = [](void*,BBL::OnLocalConnectedFn callback) { connected=callback; return 0; };
-  api.setMessage = [](void*,std::function<void(std::string,std::string)>) { return 0; };
+  api.setMessage = [](void*,std::function<void(std::string,std::string)> callback) { cloudMessage=callback; return 0; };
   api.setLocalMessage = [](void*,std::function<void(std::string,std::string)> callback) { localMessage=callback; return 0; };
   api.updateCert = [](void*) { return 0; };
-  api.installDeviceCert = [](void*,std::string,bool) {};
+  // The plug-in reports the printer's certificate a moment after it is asked for it.
+  api.installDeviceCert = [](void*,std::string serial,bool) {
+    static std::atomic<bool> asked{false};
+    if (asked.exchange(true)) return;
+    std::thread([serial] { std::this_thread::sleep_for(std::chrono::milliseconds(300)); certReady = true; cloudMessage(serial, "device_cert_installed"); }).detach();
+  };
   api.connectPrinter = [](void*,std::string serial,std::string,std::string,std::string,bool) { connected(0,serial,""); return 0; };
   api.sendMessageToPrinter = [](void*,std::string serial,std::string,int,int) {
+    outputLine("stub_send");
+    if (!certReady) return -4;
     if (envOr("STUB_ANSWER") == "1") std::thread([serial] {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
       localMessage(serial, "{\\"print\\":{\\"command\\":\\"push_status\\",\\"sequence_id\\":\\"20555\\"}}");
@@ -430,7 +439,8 @@ int main() {
     BAMBU_NATIVE_COMMAND_REPLY_MS: "3000" };
   const answered = spawnSync(executable, [], { encoding: "utf8", timeout: 15000, env: { ...env, STUB_ANSWER: "1" } });
   assert.equal(answered.status, 0, answered.stderr);
-  assert.match(answered.stdout, /native_command result=0\nnative_reply=\{"header".*"err_code":84033546\}\}\nstub_destroy_agent\n/);
+  assert.match(answered.stdout, /native_cert_ready=1\nstub_send\nnative_command result=0\nnative_reply=\{"header".*"err_code":84033546\}\}\nstub_destroy_agent\n/,
+    "a protected control waits for the printer's certificate instead of failing with -4");
   const silent = spawnSync(executable, [], { encoding: "utf8", timeout: 15000, env: { ...env, BAMBU_NATIVE_COMMAND_REPLY_MS: "200" } });
   assert.equal(silent.status, 0, silent.stderr);
   assert.match(silent.stdout, /native_command result=0\nnative_reply_timeout ms=200\nstub_destroy_agent\n/);
