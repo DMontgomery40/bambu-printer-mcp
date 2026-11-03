@@ -671,11 +671,13 @@ export class BambuNetworkBridge {
             ]) {
                 await this.callWithAgent("net.send_message", { dev_id: devId, msg: JSON.stringify(message), qos, flag: 0 }, options);
             }
-            await this.callWithAgent("net.install_device_cert", { dev_id: devId, lan_only: false }, options);
-            const ready = await waitFor(() => certificateReady, timing.certificateWaitMs);
+            const installCertificate = async () => { await this.callWithAgent("net.install_device_cert", { dev_id: devId, lan_only: false }, options); };
+            const certificateReadyWithin = (ms) => waitFor(() => certificateReady, ms);
+            await installCertificate();
+            const ready = await certificateReadyWithin(timing.certificateWaitMs);
             options.trace?.({ step: "certificate", route: "cloud", ready });
             await settle(timing.settleMs);
-            const result = await run({ settle, messages, jobUpdates });
+            const result = await run({ settle, messages, jobUpdates, installCertificate, certificateReadyWithin });
             await pump();
             return result;
         }
@@ -698,20 +700,32 @@ export class BambuNetworkBridge {
         const trace = options.trace ?? this.controlTrace(options);
         const traced = { ...options, trace };
         return this.withCloudSession(devId, traced, assertActive, timing, async (session) => {
-            await beforeDispatch?.();
-            assertActive();
-            const sequenceId = String(20000 + (Date.now() % 1000000));
-            const result = await this.callWithAgent(method, {
-                dev_id: devId, msg: JSON.stringify({ print: { command, param: "", sequence_id: sequenceId } }), qos: 1, flag: 0,
-            }, traced);
-            assertBridgeOk(result, method);
-            const code = bridgeValueAsNumber(result, method);
-            trace({ step: "send", route: "cloud", command, code });
-            if (code !== 0)
-                throw new Error(`Bambu Cloud did not accept ${command} for printer ${devId} (plug-in code ${code}).`);
-            await session.settle(timing.deliveryMs);
-            trace({ step: "delivered", route: "cloud", command, heldMs: timing.deliveryMs });
-            return controlResult(command, "Bambu Cloud", session.messages.map(msg => controlReply(msg, command, sequenceId)).find(Boolean), 1);
+            let code = 0;
+            for (let attempt = 1; attempt <= timing.attempts; attempt++) {
+                await beforeDispatch?.();
+                assertActive();
+                const sequenceId = String(20000 + (Date.now() % 1000000));
+                const result = await this.callWithAgent(method, {
+                    dev_id: devId, msg: JSON.stringify({ print: { command, param: "", sequence_id: sequenceId } }), qos: 1, flag: 0,
+                }, traced);
+                assertBridgeOk(result, method);
+                code = bridgeValueAsNumber(result, method);
+                trace({ step: "send", route: "cloud", command, attempt, code });
+                if (code === 0) {
+                    await session.settle(timing.deliveryMs);
+                    trace({ step: "delivered", route: "cloud", command, heldMs: timing.deliveryMs });
+                    return controlResult(command, "Bambu Cloud", session.messages.map(msg => controlReply(msg, command, sequenceId)).find(Boolean), attempt);
+                }
+                // Before the printer's certificate is installed the plug-in sends nothing and returns
+                // CONNECT_FAILED (-2) or SEND_MSG_FAILED (-4), as on the LAN route (Nov 3: cloud pause -2
+                // with the certificate not yet installed). Reinstall it, wait, and send again.
+                if ((code !== -2 && code !== -4) || attempt === timing.attempts)
+                    break;
+                await session.settle(timing.retryWaitMs);
+                await session.installCertificate();
+                trace({ step: "certificate", route: "cloud", attempt, ready: await session.certificateReadyWithin(timing.certificateWaitMs) });
+            }
+            throw new Error(`Bambu Cloud did not accept ${command} for printer ${devId} (plug-in code ${code}).`);
         });
     }
     /** Appends control diagnostics to control-trace.log in the bridge's config folder. */

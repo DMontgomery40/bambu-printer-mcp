@@ -71,7 +71,11 @@ function handle(method, payload) {
       return ok();
     case "net.install_device_cert":
       if (!payload.lan_only && process.env.FAKE_FULU_LOGGED_IN === "1") {
-        setTimeout(() => queue("on_message", { dev_id: payload.dev_id, msg: "device_cert_installed" }), 10);
+        // FAKE_FULU_CLOUD_CERT_ON_INSTALL=n: only the nth install request installs the certificate.
+        state.cloudInstalls = (state.cloudInstalls ?? 0) + 1;
+        if (state.cloudInstalls >= Number(process.env.FAKE_FULU_CLOUD_CERT_ON_INSTALL ?? 1)) {
+          setTimeout(() => { state.cloudCertReady = true; queue("on_message", { dev_id: payload.dev_id, msg: "device_cert_installed" }); }, 10);
+        }
         return ok();
       }
       if (state.connected) {
@@ -96,6 +100,8 @@ function handle(method, payload) {
     case "net.is_server_connected": return ok(process.env.FAKE_FULU_LOGGED_IN === "1");
     case "net.send_message": {
       if (!["stop", "pause", "resume"].includes(JSON.parse(payload.msg).print?.command)) return ok();
+      // The real plug-in returns CONNECT_FAILED (-2) for a control sent before the certificate is installed.
+      if (process.env.FAKE_FULU_CLOUD_REQUIRE_CERT && !state.cloudCertReady) return ok(-2);
       reply("on_message", payload);
       return ok(0);
     }

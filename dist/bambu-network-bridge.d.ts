@@ -33,6 +33,10 @@ export type CloudTiming = {
 export declare const CLOUD_PRINT_TIMING: Readonly<CloudTiming>;
 export type CloudSession = {
     settle: (ms: number) => Promise<void>;
+    /** Ask the plug-in to install the printer's certificate again, as Bambu Studio does after a failed send. */
+    installCertificate: () => Promise<void>;
+    /** Wait up to ms for device_cert_installed; true once it has arrived. */
+    certificateReadyWithin: (ms: number) => Promise<boolean>;
     /** This printer's cloud messages, as they arrive. */
     messages: string[];
     jobUpdates: BridgeJobUpdate[];

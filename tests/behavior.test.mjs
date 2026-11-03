@@ -1392,7 +1392,7 @@ const FAKE_FULU_ENV = ["BAMBU_NETWORK_BRIDGE_COMMAND", "BAMBU_NETWORK_CONFIG_DIR
   "BAMBU_NETWORK_USER_INFO", "BAMBU_NETWORK_CERT_DIR", "PJARCZAK_BAMBU_NETWORK_SO", "PJARCZAK_BAMBU_SOURCE_SO",
   "FAKE_FULU_EXIT_CODE", "FAKE_FULU_PUBLISH_FAILURES", "FAKE_FULU_UNSUPPORTED", "FAKE_FULU_CONNECT_STATUS", "FAKE_FULU_CONTROL_RESULT",
   "FAKE_FULU_CERT_EVENT", "FAKE_FULU_CERT_DELAY_MS", "FAKE_FULU_REQUIRE_CERT_READY", "FAKE_FULU_CONTROL_FAILURES",
-  "FAKE_FULU_REFUSE", "FAKE_FULU_LOGGED_IN"];
+  "FAKE_FULU_REFUSE", "FAKE_FULU_LOGGED_IN", "FAKE_FULU_CLOUD_CERT_ON_INSTALL", "FAKE_FULU_CLOUD_REQUIRE_CERT"];
 const fakeFuluEnvSnapshots = new WeakSet();
 
 async function fakeFuluBridge(t, env = {}, { wrapped = false } = {}) {
@@ -1521,6 +1521,25 @@ test("a cloud print sends nothing when the plug-in is not signed in", async t =>
 test("a cloud control refused by the printer fails with its error code", async t => {
   const {bridge} = await fakeFuluBridge(t, {FAKE_FULU_LOGGED_IN: "1", FAKE_FULU_REFUSE: "84033546"});
   await assert.rejects(bridge.sendCloudPrintCommand("01PTEST", "pause", {}, undefined, FAST_CONTROL), /refused Pause over Bambu Cloud \(error 0502400A\)/);
+});
+
+// Nov 3, the real P1S over Bambu Cloud: pause returned -2 while the certificate was still installing;
+// the second send after device_cert_installed was accepted.
+test("a cloud control sent before the certificate is installed is sent again once it is", async t => {
+  const {bridge, calls} = await fakeFuluBridge(t, {FAKE_FULU_LOGGED_IN: "1", FAKE_FULU_CLOUD_REQUIRE_CERT: "1", FAKE_FULU_CLOUD_CERT_ON_INSTALL: "2"});
+  const result = await bridge.sendCloudPrintCommand("01PTEST", "pause", {}, undefined, FAST_CONTROL);
+  assert.equal(result.attempts, 2);
+  assert.equal(result.confirmed, true);
+  const recorded = calls().filter(c => c.method);
+  const sends = recorded.filter(c => c.method === "net.send_message" && JSON.parse(c.payload.msg).print?.command === "pause");
+  assert.equal(sends.length, 2);
+  assert.equal(recorded.filter(c => c.method === "net.install_device_cert").length, 2, "the certificate is installed again before the second send");
+});
+
+test("a cloud control is not resent after a final plug-in error", async t => {
+  const {bridge, calls} = await fakeFuluBridge(t, {FAKE_FULU_LOGGED_IN: "1", FAKE_FULU_CLOUD_REQUIRE_CERT: "1", FAKE_FULU_CLOUD_CERT_ON_INSTALL: "99"});
+  await assert.rejects(bridge.sendCloudPrintCommand("01PTEST", "stop", {}, undefined, FAST_CONTROL), /Bambu Cloud did not accept stop .*plug-in code -2/);
+  assert.equal(calls().filter(c => c.method === "net.send_message" && JSON.parse(c.payload.msg).print?.command === "stop").length, FAST_CONTROL.attempts);
 });
 
 test("control diagnostics go to control-trace.log without the access code", async t => {
