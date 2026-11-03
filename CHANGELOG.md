@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.1.52] – 2026-11-04
 
 ### Changed
 
@@ -20,11 +20,9 @@
 
 - Support document-bound Fusion design passes: return an isolated document identity, optionally import an F3D revision into a new document, and preserve the identity across every modeling/export subcall. Older bridges fail closed when binding is requested; existing unbound callers remain compatible. Requires a configured Fusion bridge/add-in that advertises the binding protocol.
 
-## [1.1.52] – 2026-11-02
-
-### Fixed
-
 - Slice multiple STL copies with Bambu Studio's `--clone-objects`, matching the existing Orca route. Bambu rejects `--repetitions` greater than one with the default all-plates slice. Keep selected-plate 3MF repetitions unchanged and reject competing STL copy counts. The output retains every generated plate; each `print_3mf` call still prints only its selected plate.
+
+- Accept Bambu Studio 2.9 layer-temperature changes (`M104 M S<temperature>` with an optional `T` selector). Keep hardware and material temperature ceilings, tool validation, and rejection of numeric markers, other heater commands and extra parameters. Reproduced with isolated Studio 02.09.01.70 P1S single- and two-colour slices; no physical print was run.
 
 ### Added
 
@@ -33,6 +31,8 @@
 - Add `camera_stream_start`, `camera_frame`, and `camera_stream_stop`: one camera connection per watched printer (host and serial together), bounded long-poll reads, native 32×18 change detection, and viewer-sized JPEGs with an optional encoded-byte budget. A1/P1 reuse the existing TLS frame decoder; RTSP models use one ffmpeg MJPEG process. Idle and MCP shutdown close owned resources; `camera_snapshot` reuses an active stream.
 - Advertise the additive `capabilities.cameraStream` flag while keeping the existing camera transport field compatible. The implementation adapts the parked camera manager's contract with bounded native image processing and stable unchanged cursors.
 - Validate stream lifecycle, decoder/authentication reuse, RTSP process shutdown, concurrent waiters, resize, and actual MCP tool discovery with simulated transports. Real-device and sustained CPU/bandwidth acceptance are recorded separately; no physical-print behavior changes.
+
+- Serves design guidance for agents that design or edit models to print as MCP prompts: `fdm_design`, `fdm_multicolor`, `fdm_assembly` and `fdm_after_slice`, plus the resource `guidance://fdm/capability-guidance` for bridges and overhangs. The server's `instructions` point every client to them. The text is David Montgomery's FDM design prompt pack of 3 November 2026, unchanged. mcp-3D-printer-server serves the same guidance. Tested over a real stdio MCP connection; whether an agent follows it is a model behavior, not tested here.
 
 ## [1.1.51] – 2026-11-02
 

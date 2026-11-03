@@ -92,6 +92,8 @@ Verified software: the [October 23 nightly](https://github.com/OrcaSlicer/OrcaSl
 
 ## Multi-colour CLI support and version limits
 
+Bambu Studio 02.09.01.70 emits `M104 M S<temperature>` when the temperature changes after the first layer. The inspector accepts that marker while retaining independent heater and material limits. Isolated macOS P1S 0.4 single- and two-colour output from the [official 2.9 release](https://github.com/bambulab/BambuStudio/releases/tag/v02.09.01.70) is checked against the exact generated files. This verifies slicer/file compatibility, not physical printing or H3C nine-tool support.
+
 The CLI can crash when a project uses a filament after the first but its
 loaded profiles leave `filament_colour` at a single-entry default. The MCP
 now supplies one colour per slot. Explicit `filament_colours` values take
