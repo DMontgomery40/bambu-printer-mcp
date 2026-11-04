@@ -24,8 +24,8 @@ const hints = (readOnlyHint: boolean, destructiveHint: boolean, idempotentHint: 
 const READ_OUTSIDE = hints(true, false, true, true);
 /** Reads local files or this server's configuration only. */
 const READ_LOCAL = hints(true, false, true, false);
-/** Writes a new output into this server's private temporary directory; inputs untouched. */
-const LOCAL_OUTPUT = hints(false, false, true, false);
+/** Writes a fixed-name output into this server's temporary directory, replacing an earlier output of that name; inputs untouched. */
+const LOCAL_OUTPUT = hints(false, true, true, false);
 /** Sets a printer setting to a given value; setting it again changes nothing. */
 const SET_PRINTER = hints(false, false, true, true);
 /** Starts a print job: adds a job, removes nothing, but a repeat would start another. */
@@ -38,7 +38,8 @@ export const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
   resolve_3mf_ams_slots: READ_OUTSIDE, // reads the live AMS inventory
   list_printer_files: READ_OUTSIDE,
   counterpart_print_progress: READ_OUTSIDE,
-  bambu_network_bridge_status: READ_OUTSIDE, // connect: true starts the bridge helper and signs in; changes no printer or file
+  // connect: true starts the bridge agent, which writes its configuration and device identity and can replace certificates.
+  bambu_network_bridge_status: hints(false, true, true, true),
   camera_frame: READ_OUTSIDE,
   camera_stream_start: READ_OUTSIDE, // opens this server's own camera connection; no printer motion or commands
   camera_stream_stop: READ_OUTSIDE, // closes that connection
@@ -50,7 +51,7 @@ export const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
   list_3mf_plate_objects: READ_LOCAL,
   get_stl_info: READ_LOCAL,
   list_templates: READ_LOCAL,
-  get_slice_settings: READ_LOCAL,
+  get_slice_settings: LOCAL_OUTPUT, // a 3MF's settings are extracted to a fixed file in the temporary directory
   counterpart_printer_info: READ_LOCAL, // configuration and capabilities; sends nothing to the printer
 
   // Local outputs in the server's temporary directory
@@ -60,15 +61,15 @@ export const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
   merge_vertices: LOCAL_OUTPUT,
   center_model: LOCAL_OUTPUT,
   lay_flat: LOCAL_OUTPUT,
-  // Same, but a configured orca-slicer-api slices on a remote service.
-  slice_stl: hints(false, false, true, true),
-  slice_with_template: hints(false, false, true, true),
+  // Same, but a configured orca-slicer-api slices on a remote service, a new job and output each call.
+  slice_stl: hints(false, true, false, true),
+  slice_with_template: hints(false, true, false, true),
   // New 3MF at a caller-chosen path; never overwrites, so a repeat fails instead of replacing.
   counterpart_make_3mf: hints(false, false, false, false),
   // Copies into the template registry, replacing a template of the same name.
   save_template: hints(false, true, true, false),
-  // Rewrites BAMBU_DEFAULT_CONNECTION_MODE/TYPE in .env and in this process; choosing a route back undoes it.
-  counterpart_print_route: hints(false, false, true, false),
+  // Replaces BAMBU_DEFAULT_CONNECTION_MODE/TYPE in .env and in this process.
+  counterpart_print_route: hints(false, true, true, false),
 
   // Print starts
   start_print: START_PRINT,
@@ -105,7 +106,8 @@ export const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
   // Blender and Fusion
   blender_mcp_status: READ_OUTSIDE, // connects and lists tools; edits nothing
   blender_mcp_call: hints(false, true, false, true), // any Blender tool, including execute_blender_code
-  blender_mcp_edit_model: hints(false, false, false, true), // scene objects preserved; the output path must be new
+  // The standard route preserves scene objects and needs a new output path; a configured legacy bridge promises neither.
+  blender_mcp_edit_model: hints(false, true, false, true),
   fusion_mcp_status: hints(false, false, true, true), // launch: true starts Fusion on this computer
   fusion_mcp_call: hints(false, true, false, true), // any Fusion tool, including execute_code
   fusion_mcp_new_design: hints(false, false, false, true), // opens another new document

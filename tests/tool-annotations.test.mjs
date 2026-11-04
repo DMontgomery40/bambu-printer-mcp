@@ -53,9 +53,11 @@ test('annotations match what the tools do to the printer and files', async t => 
   }
   // Irreversible: ending a job, skipping objects, deleting files, clearing errors, raw bridge or editor calls.
   for (const name of ['cancel_print', 'skip_objects', 'delete_printer_file', 'clear_hms_errors', 'bambu_network_call',
-    'blender_mcp_call', 'fusion_mcp_call', 'save_template', 'camera_snapshot']) assert.equal(byName[name].destructiveHint, true, name);
+    'blender_mcp_call', 'fusion_mcp_call', 'save_template', 'camera_snapshot', 'bambu_network_bridge_status', 'counterpart_print_route']) assert.equal(byName[name].destructiveHint, true, name);
   // A repeated print start starts another job.
   for (const name of ['print_3mf', 'start_print_job', 'upload_file']) assert.equal(byName[name].idempotentHint, false, name);
-  // Local model edits write new files in the server's temporary directory only.
+  // A slice or local model edit replaces its earlier output of the same name, in the server's temporary directory.
+  for (const name of ['scale_stl', 'slice_stl', 'get_slice_settings']) assert.equal(byName[name].destructiveHint, true, name);
+  // Local model edits write only to the server's temporary directory only.
   for (const name of ['scale_stl', 'rotate_stl', 'lay_flat', 'get_stl_info']) assert.equal(byName[name].openWorldHint, false, name);
 });
