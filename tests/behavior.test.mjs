@@ -2554,6 +2554,63 @@ test("the installed Bambu Studio's floating-cantilever warning reaches sliceSTLW
     ["It seems object tee.stl has floating cantilever. Please re-orient the object or enable support generation."]);
 });
 
+test("slice_stl writes enable_support, support_type and support_threshold_angle over the resolved process preset", async (t) => {
+  const fakeSlicer = await createFakeBambuSlicer();
+  t.after(() => fs.rmSync(fakeSlicer.tempDir, { recursive: true, force: true }));
+  const transport = new StdioClientTransport({
+    command: process.execPath, args: [SERVER_ENTRY], cwd: fakeSlicer.tempDir,
+    env: { ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "p1s", BAMBU_SERIAL: "", BAMBU_TOKEN: "", BAMBU_SLICER_PROFILE: "",
+      BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot, TEMP_DIR: path.join(fakeSlicer.tempDir, "out"), SLICER_TYPE: "bambustudio", MCP_ALLOW_EXECUTABLE_ARG: "1" },
+    stderr: "pipe",
+  });
+  const client = createClient();
+  t.after(async () => { await closeTransport(transport); });
+  await client.connect(transport);
+  const { tools } = await client.listTools();
+  const schema = tools.find(tool => tool.name === "slice_stl").inputSchema.properties;
+  assert.deepEqual([schema.enable_support.type, schema.support_type.enum, schema.support_threshold_angle.type],
+    ["boolean", ["normal(auto)", "tree(auto)", "normal(manual)", "tree(manual)"], "integer"]);
+  const result = await client.callTool({ name: "slice_stl", arguments: { stl_path: SAMPLE_STL, bambu_model: "p1s",
+    slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false, enable_support: true, support_type: "tree(auto)", support_threshold_angle: 35 } });
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  const slicerArgs = JSON.parse(fs.readFileSync(fakeSlicer.argsOutPath, "utf8"));
+  const processPath = slicerArgs[slicerArgs.indexOf("--load-settings") + 1].split(";").at(-1);
+  const processSettings = JSON.parse(fs.readFileSync(processPath, "utf8"));
+  assert.deepEqual([processSettings.enable_support, processSettings.support_type, processSettings.support_threshold_angle, processSettings.layer_height],
+    ["1", "tree(auto)", "35", "0.2"], "only the support keys change; the rest of the preset stays as resolved");
+  const refused = await client.callTool({ name: "slice_stl", arguments: { stl_path: SAMPLE_STL, bambu_model: "p1s",
+    slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false, support_type: "organic" } });
+  assert.equal(refused.isError, true);
+});
+
+test("the installed Bambu Studio generates supports only when slice_stl's enable_support asks for them", {
+  skip: !fs.existsSync(installedStudio) && "Bambu Studio is not installed",
+  timeout: 600_000,
+}, async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "studio-supports-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  // A T: a narrow stem under a wide, unsupported cap.
+  const tee = boxesStl([[[-2, 0, 0], [2, 40, 26]], [[-30, 0, 26], [30, 40, 30]]]);
+  const manipulator = new STLManipulator(directory);
+  // Studio's own record of the slice: the project settings it used and whether the plate used supports.
+  const slice = async (overrides, name) => {
+    const stl = path.join(directory, `${name}.stl`);
+    fs.writeFileSync(stl, tee);
+    const sliced = await manipulator.sliceSTLWithResult(stl, "bambustudio", installedStudio, undefined, undefined,
+      "Bambu Lab P1S 0.4 nozzle", { bedType: "textured_plate", processOverrides: overrides });
+    const zip = await JSZip.loadAsync(fs.readFileSync(sliced.path));
+    const settings = JSON.parse(await zip.file("Metadata/project_settings.config").async("string"));
+    const info = await zip.file("Metadata/slice_info.config").async("string");
+    return { settings, supportUsed: /key="support_used" value="true"/.test(info) };
+  };
+  const on = await slice({ enable_support: "1", support_type: "tree(auto)", support_threshold_angle: "35" }, "on");
+  assert.deepEqual([on.settings.enable_support, on.settings.support_type, on.settings.support_threshold_angle], ["1", "tree(auto)", "35"]);
+  assert.equal(on.supportUsed, true);
+  const off = await slice({ enable_support: "0" }, "off");
+  assert.equal(off.settings.enable_support, "0");
+  assert.equal(off.supportUsed, false);
+});
+
 test("relative TEMP_DIR and profile, filament and model paths reach the slicer as absolute paths", async (t) => {
   // BambuStudio 2.8.2.61 fails every export ("return_code=-13") when
   // --outputdir is relative, so a TEMP_DIR=./temp .env broke all slicing.

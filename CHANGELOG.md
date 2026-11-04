@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.54] – 2026-11-04
+
+### Added
+
+- `slice_stl` takes `enable_support`, `support_type` (`normal(auto)`, `tree(auto)`, `normal(manual)`, `tree(manual)`) and `support_threshold_angle`, written over the resolved process preset like `layer_height` and `wall_loops`. Bambu-compatible slicers only. Checked with the installed Bambu Studio 02.08.02.61 on a T-shaped overhang: the sliced project carries the requested values, and Studio reports `support_used` true with supports on and false with them off. No printer was involved.
+
 ## [1.1.53] – 2026-11-04
 
 ### Added

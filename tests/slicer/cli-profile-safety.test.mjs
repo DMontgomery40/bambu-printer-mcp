@@ -926,3 +926,15 @@ test('print-sheet arguments are validated and written in Bambu Studio string for
   // The remote API slices the uploaded process preset, which carries the override.
   assert.doesNotThrow(() => validateRemoteSliceOptions({ processOverrides: { wall_loops: '3' } }));
 });
+
+test('support arguments are validated and written in Bambu Studio string forms', async () => {
+  const { parseProcessOverrides, SUPPORT_TYPES } = await import('../../dist/slicer/process-overrides.js');
+  assert.deepEqual(parseProcessOverrides({ enable_support: true, support_type: 'tree(auto)', support_threshold_angle: 35 }, 0.4),
+    { enable_support: '1', support_type: 'tree(auto)', support_threshold_angle: '35' });
+  assert.deepEqual(parseProcessOverrides({ enable_support: false }, 0.4), { enable_support: '0' });
+  assert.deepEqual([...SUPPORT_TYPES], ['normal(auto)', 'tree(auto)', 'normal(manual)', 'tree(manual)']);
+  for (const bad of [{ enable_support: 1 }, { enable_support: 'true' }, { support_type: 'tree' }, { support_type: 'organic' },
+    { support_threshold_angle: 91 }, { support_threshold_angle: -1 }, { support_threshold_angle: 30.5 }]) {
+    assert.throws(() => parseProcessOverrides(bad, 0.4), /enable_support|support_type|support_threshold_angle/, JSON.stringify(bad));
+  }
+});
