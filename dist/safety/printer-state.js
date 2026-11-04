@@ -1,3 +1,4 @@
+import { PrinterRefusal } from "../refusal.js";
 import { HIDDEN_HMS } from "./hidden-hms.js";
 import { GetVersionCommand, PushAllCommand } from "bambu-node";
 import { isDualNozzleModel, normalizeMaterial, normalizeModel } from "./limits.js";
@@ -330,7 +331,7 @@ function validateErrors(raw, requireIdle, serial, model) {
     const state = typeof raw.gcode_state === "string" ? raw.gcode_state.toUpperCase() : "UNKNOWN";
     const terminal = isCancelledX2DJob(raw, model) || isFinishedP1SJob(raw, model);
     if (requireIdle && !["IDLE", "FINISH"].includes(state) && !terminal)
-        throw new Error(`Printer state ${state} is not safely idle.`);
+        throw new PrinterRefusal("printer-not-ready", `Printer state ${state} is not safely idle.`);
     if (!requireIdle && !["IDLE", "FINISH", "RUNNING", "PAUSE"].includes(state) && !terminal)
         throw new Error(`Printer state ${state} is unknown or failed.`);
     if (finiteNumber(raw.print_error) !== 0 && !isPauseNotice(raw, requireIdle))

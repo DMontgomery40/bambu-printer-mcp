@@ -1,3 +1,4 @@
+import { PrinterRefusal } from "../refusal.js";
 import {CameraStreams, type FrameOptions} from "./camera-stream.js";
 import {openTcpCameraSource, openRtspCameraSource} from "./camera-sources.js";
 import {cameraNumber} from "./camera-tools.js";
@@ -2069,7 +2070,7 @@ export class BambuImplementation {
         if (verdict === "rejected") {
           // Nothing started, so there is no checked job to resume or clear later.
           this.checkedJobs.delete(`${host}\n${serial}`);
-          throw new Error(COMMAND_REJECTED_MESSAGE);
+          throw new PrinterRefusal("printer-command-rejected", COMMAND_REJECTED_MESSAGE);
         }
         if (verdict === "cancelled" || cancelled()) throw new Error(DISPATCH_CANCELLED_MESSAGE);
         return verdict ?? "unconfirmed";

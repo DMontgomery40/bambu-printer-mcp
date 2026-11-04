@@ -26,6 +26,8 @@ test('only the exact clean X2D cancellation qualifies as terminal', () => {
     { hms: [{ attr: 1, code: 0x20001 }] }, { hms: undefined },
     { model: 'h2d' }, { nozzle_diameter: ['0.6', '0.4'] }, { vir_slot: [{ id: 255, tray_type: 'PLA' }] },
   ]) assert.throws(() => validatePrinterState(fresh(canceled(overrides)), requirements), JSON.stringify(overrides));
+  assert.throws(() => validatePrinterState(fresh(canceled({ gcode_state: 'RUNNING' })), requirements),
+    error => /not safely idle/.test(error.message) && error.code === 'printer-not-ready', 'a busy printer refuses with a stable code');
   const stale = fresh(canceled());
   stale.observation.requestedAt -= 60_000;
   assert.throws(() => validatePrinterState(stale, requirements), /fresh|stale/);
