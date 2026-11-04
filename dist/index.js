@@ -5,7 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { ListResourcesRequestSchema, ReadResourceRequestSchema, ListToolsRequestSchema, CallToolRequestSchema, ListPromptsRequestSchema, GetPromptRequestSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import dotenv from "dotenv";
-import { PRINT_ROUTES, connectionForRoute, routeOf, routeOptions, writeEnvValues } from "./counterpart/route.js";
+import { PRINT_ROUTES, connectionForRoute, ownLocalOf, routeOf, routeOptions, writeEnvValues } from "./counterpart/route.js";
 import fs from "fs";
 import os from "node:os";
 import path from "path";
@@ -66,6 +66,8 @@ const DEFAULT_BAMBU_MODEL = process.env.BAMBU_PRINTER_MODEL?.trim().toLowerCase(
 // counterpart_print_route changes these at run time (and in the .env file they came from).
 let DEFAULT_BAMBU_CONNECTION_MODE = process.env.BAMBU_DEFAULT_CONNECTION_MODE?.trim().toLowerCase() || "";
 let DEFAULT_BAMBU_CONNECTION_TYPE = process.env.BAMBU_DEFAULT_CONNECTION_TYPE?.trim().toLowerCase() || "";
+/** The connection configured at start, before counterpart_print_route changes it: its own local route is kept. */
+const CONFIGURED_CONNECTION = { mode: DEFAULT_BAMBU_CONNECTION_MODE, type: DEFAULT_BAMBU_CONNECTION_TYPE };
 const CONNECTION_MODES = ["lan_mqtt_ftps", "bambu_native", "bambu_network", "bambu_connect"];
 /**
  * The one route decision for a printer: print_3mf and every print control
@@ -2985,12 +2987,14 @@ class BambuPrinterMCPServer {
             const printerControl = (command) => {
                 const nativeCommand = (assertActive, beforeDispatch) => sendNativeCommand({ host, serial: bambuSerial, token: bambuToken,
                     messageJson: JSON.stringify({ print: { command, param: "", sequence_id: String(Date.now()) } }), qos: 1 }, command === "resume" ? { signal: extra.signal, assertActive, beforeDispatch } : undefined);
-                if (nativeControls()) {
+                // The selected route decides first: a job started over FULU's bridge (LAN or cloud) is controlled there,
+                // even on an X2D whose native plug-in is installed. Otherwise an X2D uses its native route when it can.
+                const route = resolveConnection(args);
+                if (route.mode !== "bambu_network" && nativeControls()) {
                     return command === "stop"
                         ? linuxEmergency(() => nativeCommand(), signal => this.bambu.sendStopOverMqtt(host, bambuSerial, bambuToken, signal))
                         : nativeCommand;
                 }
-                const route = resolveConnection(args);
                 if (route.mode === "bambu_native")
                     throw new Error(nativeUnavailableReason());
                 if (route.mode !== "bambu_network")
@@ -3995,10 +3999,14 @@ class BambuPrinterMCPServer {
                         let savedTo = null;
                         // FULU's bridge is set up, so the routes through it can be used.
                         const bridgeConfigured = Boolean(this.bambuNetwork.resolveBridgeCommand());
+                        const routeModel = this.displayModel(args, bambuSerial);
+                        // The printer's own local route (X2D native by default, or a configured native/Bambu Connect mode),
+                        // resolved from the start-up configuration so it survives choosing another route.
+                        const ownLocal = ownLocalOf({ mode: CONFIGURED_CONNECTION.mode || (routeModel === "x2d" ? "bambu_native" : ""), type: CONFIGURED_CONNECTION.type || "lan" });
                         if (args?.route !== undefined) {
                             if (!PRINT_ROUTES.includes(args.route))
                                 throw new Error('route must be "lan", "cloud" or "developer".');
-                            const next = connectionForRoute(args.route, { mode: DEFAULT_BAMBU_CONNECTION_MODE, type: DEFAULT_BAMBU_CONNECTION_TYPE }, bridgeConfigured);
+                            const next = connectionForRoute(args.route, resolveConnection({}, routeModel), bridgeConfigured, ownLocal);
                             // dotenv loaded .env from the working directory at start; a client's own env block has no file to update.
                             const file = path.resolve(process.cwd(), ".env");
                             if (fs.existsSync(file)) {
@@ -4011,8 +4019,8 @@ class BambuPrinterMCPServer {
                             DEFAULT_BAMBU_CONNECTION_MODE = next.mode;
                             DEFAULT_BAMBU_CONNECTION_TYPE = next.type;
                         }
-                        const connection = resolveConnection({}, this.displayModel(args, bambuSerial));
-                        const options = routeOptions(connection, bridgeConfigured);
+                        const connection = resolveConnection({}, routeModel);
+                        const options = routeOptions(connection, bridgeConfigured, ownLocal);
                         result = { route: routeOf(connection), mode: connection.mode, type: connection.type,
                             choices: options.filter(option => option.available).map(option => option.id), options, savedTo };
                         break;

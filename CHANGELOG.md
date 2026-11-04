@@ -24,6 +24,8 @@
 
 - Accept Bambu Studio 2.9 layer-temperature changes (`M104 M S<temperature>` with an optional `T` selector). Keep hardware and material temperature ceilings, tool validation, and rejection of numeric markers, other heater commands and extra parameters. Reproduced with isolated Studio 02.09.01.70 P1S single- and two-colour slices; no physical print was run.
 
+- An X2D job on FULU's LAN or cloud route is paused, resumed and stopped through that route, even when the native plug-in is installed; other X2D controls keep the native route. `counterpart_print_route` keeps an X2D's native local route (implicit or configured) available after choosing Developer Mode or Bambu Cloud, and choosing the local network returns to it. Tested with simulated transports; no X2D hardware was used.
+
 ### Added
 
 - Bundle the pinned native camera runtimes for supported desktop platforms in the generic MCPB extension; verify extracted release startup and JPEG processing on Linux, macOS and Windows before attaching the release asset.

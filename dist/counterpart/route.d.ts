@@ -20,12 +20,18 @@ export interface RouteOption {
     controls: string;
 }
 export declare function routeOf(connection: Connection): PrintRoute;
-/** Every connection, and whether this server can use it (bridgeConfigured: BAMBU_NETWORK_BRIDGE_COMMAND is set). */
-export declare function routeOptions(current: Connection, bridgeConfigured: boolean): RouteOption[];
+/** The current connection when it is its own local route (X2D native or Bambu Connect); otherwise none. */
+export declare function ownLocalOf(current: Connection): Connection | undefined;
+/**
+ * Every connection, and whether this server can use it (bridgeConfigured: BAMBU_NETWORK_BRIDGE_COMMAND is set).
+ * ownLocal is the printer's own local route (X2D native or Bambu Connect), kept apart from the current choice
+ * so switching to Developer Mode or Bambu Cloud and back returns to it.
+ */
+export declare function routeOptions(current: Connection, bridgeConfigured: boolean, ownLocal?: Connection | undefined): RouteOption[];
 /**
  * The configured defaults for a route. Cloud and the local network use FULU's BambuNetwork; an X2D native or
  * Bambu Connect setup keeps its own mode for the local network. Developer Mode is the direct LAN route.
  */
-export declare function connectionForRoute(route: PrintRoute, current: Connection, bridgeConfigured?: boolean): Connection;
+export declare function connectionForRoute(route: PrintRoute, current: Connection, bridgeConfigured?: boolean, ownLocal?: Connection | undefined): Connection;
 /** Set KEY=value lines in a dotenv file, keeping every other line and the file's permissions. */
 export declare function writeEnvValues(file: string, values: Record<string, string>): void;

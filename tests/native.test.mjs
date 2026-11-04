@@ -778,3 +778,12 @@ test("X2D prints past the hidden boot camera notice without clearing, other code
   assert.match(result.content[0].text, /HMS 0500-0600-0002-0002/);
   assert.equal((await blocked.events()).some(e => e.kind === "helper"), false);
 });
+
+test("an X2D job on FULU's cloud route is paused through that route, not the native helper", async t => {
+  // Codex review on #99: native controls used to win before the selected route was read.
+  const s = await server(t, { env: { BAMBU_DEFAULT_CONNECTION_MODE: "bambu_network", BAMBU_DEFAULT_CONNECTION_TYPE: "cloud",
+    BAMBU_NETWORK_BRIDGE_COMMAND: "", FULU_BAMBU_NETWORK_BRIDGE_COMMAND: "", PJARCZAK_BAMBU_BRIDGE_COMMAND: "" } });
+  const result = await s.client.callTool({ name: "pause_print", arguments: {} });
+  assert.equal(result.isError, true, "no bridge is configured here, so the cloud route itself reports why");
+  assert.equal((await s.events()).some(e => e.kind === "helper"), false, "the native helper sent nothing");
+});

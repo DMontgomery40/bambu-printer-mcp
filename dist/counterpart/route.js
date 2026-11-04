@@ -11,13 +11,21 @@ export function routeOf(connection) {
         return "developer";
     return "lan";
 }
-/** Every connection, and whether this server can use it (bridgeConfigured: BAMBU_NETWORK_BRIDGE_COMMAND is set). */
-export function routeOptions(current, bridgeConfigured) {
+/** The current connection when it is its own local route (X2D native or Bambu Connect); otherwise none. */
+export function ownLocalOf(current) {
+    return OWN_LOCAL_MODES.has(current.mode) ? current : undefined;
+}
+/**
+ * Every connection, and whether this server can use it (bridgeConfigured: BAMBU_NETWORK_BRIDGE_COMMAND is set).
+ * ownLocal is the printer's own local route (X2D native or Bambu Connect), kept apart from the current choice
+ * so switching to Developer Mode or Bambu Cloud and back returns to it.
+ */
+export function routeOptions(current, bridgeConfigured, ownLocal = ownLocalOf(current)) {
     const signedControls = "Uses the configured authenticated connection for Print, Pause, Resume and Stop.";
     const needsBridge = "Needs FULU's BambuNetwork bridge (BAMBU_NETWORK_BRIDGE_COMMAND).";
-    const ownLocal = OWN_LOCAL_MODES.has(current.mode);
+    const local = bridgeConfigured || ownLocal !== undefined;
     return [
-        { id: "lan", label: "Local network", available: bridgeConfigured || ownLocal, ...(bridgeConfigured || ownLocal ? {} : { reason: needsBridge }), controls: signedControls },
+        { id: "lan", label: "Local network", available: local, ...(local ? {} : { reason: needsBridge }), controls: signedControls },
         { id: "cloud", label: "Bambu Cloud", available: bridgeConfigured, ...(bridgeConfigured ? {} : { reason: needsBridge }), controls: signedControls },
         { id: "developer", label: "Local network, Developer Mode", available: true,
             controls: "Pause, Resume and Stop go straight to the printer. Turn on LAN Only and Developer Mode on the printer first; Bambu Cloud and Bambu Handy then stop working for it." },
@@ -27,15 +35,15 @@ export function routeOptions(current, bridgeConfigured) {
  * The configured defaults for a route. Cloud and the local network use FULU's BambuNetwork; an X2D native or
  * Bambu Connect setup keeps its own mode for the local network. Developer Mode is the direct LAN route.
  */
-export function connectionForRoute(route, current, bridgeConfigured = true) {
-    const option = routeOptions(current, bridgeConfigured).find(item => item.id === route);
+export function connectionForRoute(route, current, bridgeConfigured = true, ownLocal = ownLocalOf(current)) {
+    const option = routeOptions(current, bridgeConfigured, ownLocal).find(item => item.id === route);
     if (!option?.available)
         throw new Error(`The ${option?.label ?? route} connection isn't available here. ${option?.reason ?? ""}`.trim());
     if (route === "cloud")
         return { mode: "bambu_network", type: "cloud" };
     if (route === "developer")
         return { mode: "lan_mqtt_ftps", type: "lan" };
-    return OWN_LOCAL_MODES.has(current.mode) ? current : { mode: "bambu_network", type: "lan" };
+    return ownLocal ?? { mode: "bambu_network", type: "lan" };
 }
 /** Set KEY=value lines in a dotenv file, keeping every other line and the file's permissions. */
 export function writeEnvValues(file, values) {

@@ -365,6 +365,19 @@ test("counterpart_print_route keeps an X2D native setup as its local network", a
   assert.equal((await route(client, { route: "lan" })).mode, "bambu_native");
 });
 
+test("an X2D on its implicit native route can choose the local network, and comes back to native after Developer Mode", async t => {
+  // Codex review on #99: the route tool used to pass the unresolved defaults, and Developer Mode overwrote native.
+  for (const env of [{ ...ROUTE_ENV, BAMBU_MODEL: "x2d" }, { ...WITH_BRIDGE, BAMBU_MODEL: "x2d", BAMBU_DEFAULT_CONNECTION_MODE: "bambu_native" }]) {
+    const { client } = await server(t, env);
+    const read = await route(client);
+    assert.deepEqual([read.route, read.mode], ["lan", "bambu_native"]);
+    assert.equal((await route(client, { route: "lan" })).mode, "bambu_native");
+    assert.equal((await route(client, { route: "developer" })).mode, "lan_mqtt_ftps");
+    assert.ok((await route(client)).choices.includes("lan"), "the native local route is still offered");
+    assert.equal((await route(client, { route: "lan" })).mode, "bambu_native", "and choosing it returns to native");
+  }
+});
+
 test("counterpart errors are text only, so an MCP client's outputSchema check cannot hide them", async t => {
   const { client, directory } = await server(t);
   const result = await client.callTool({ name: "counterpart_make_3mf", arguments: { out_path: path.join(directory, "missing", "a.3mf"), parts: [{ stl_path: "x.stl", name: "x" }] } });
