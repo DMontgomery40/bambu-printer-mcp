@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { CAMERA_STREAM_TOOLS } from "./printers/camera-tools.js";
+import { withAnnotations } from "./tool-annotations.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -2592,7 +2593,6 @@ class BambuPrinterMCPServer {
                     {
                         name: "inspect_print_file",
                         description: "Inspect an exact private snapshot of a prepared sliced 3MF or textual G-code file and selected plate without contacting a printer. Returns versioned file-only evidence; no printer readiness or permission to dispatch is established. Does not auto-slice.",
-                        annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
                         inputSchema: {
                             type: "object",
                             additionalProperties: false,
@@ -2817,8 +2817,7 @@ class BambuPrinterMCPServer {
                                 bambu_token: { type: "string", description: "Access token (default: value from env); never returned." }
                             }
                         },
-                        outputSchema: PRINTER_INFO_OUTPUT_SCHEMA,
-                        annotations: { readOnlyHint: true }
+                        outputSchema: PRINTER_INFO_OUTPUT_SCHEMA
                     },
                     {
                         name: "counterpart_print_route",
@@ -2843,8 +2842,7 @@ class BambuPrinterMCPServer {
                                 bambu_token: { type: "string", description: "Access token (default: value from env)" }
                             }
                         },
-                        outputSchema: PRINT_PROGRESS_OUTPUT_SCHEMA,
-                        annotations: { readOnlyHint: true }
+                        outputSchema: PRINT_PROGRESS_OUTPUT_SCHEMA
                     },
                     {
                         name: "counterpart_make_3mf",
@@ -2934,7 +2932,7 @@ class BambuPrinterMCPServer {
                         },
                         outputSchema: FUSION_EXPORT_OUTPUT_SCHEMA
                     }
-                ]
+                ].map(withAnnotations)
             };
         });
         this.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {

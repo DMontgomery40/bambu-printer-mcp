@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Every tool now declares MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), taken from what it actually does to the printer, files and other apps. One table in `src/tool-annotations.ts` holds them, and a test fails if a listed tool has none. Clients can use the hints to decide which tools to offer or confirm. Counterpart's remote endpoint will use them for per-device scopes. They are hints, not a safety gate: every print and control still runs the server's own checks.
+
 ## [1.1.52] – 2026-11-04
 
 ### Changed
