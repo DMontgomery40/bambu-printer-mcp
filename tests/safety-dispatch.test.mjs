@@ -659,7 +659,7 @@ for (const [name, changes, error] of [
   });
 }
 
-async function interceptedMcp(t, { blockBridgeInitialization = false, realBridgeRequest = false, model = "p1s", nozzleDiameters = [0.4], ams, bridgeResponse = { ok: true, value: 0 }, localPrint } = {}) {
+async function interceptedMcp(t, { blockBridgeInitialization = false, realBridgeRequest = false, model = "p1s", nozzleDiameters = [0.4], ams, bridgeResponse = { ok: true, value: 0 }, bridgeResponses = {}, localPrint } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-bridge-safety-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const eventsPath = path.join(dir, "events.jsonl");
@@ -709,7 +709,7 @@ async function interceptedMcp(t, { blockBridgeInitialization = false, realBridge
       }}};
     };` : `BambuNetworkBridge.prototype.request = async (method, payload) => {
       log({ action:'bridge', method, payload });
-      return ${JSON.stringify(bridgeResponse)};
+      return (${JSON.stringify(bridgeResponses)})[method] ?? ${JSON.stringify(bridgeResponse)};
     };`}
   `);
   const transport = new StdioClientTransport({ command: process.execPath, args: ["--import", preload, path.join(root, "dist/index.js")], cwd: dir, stderr: "pipe", env: { ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "", BAMBU_PRINTER_MODEL: "", BAMBU_PRINTER_HOST: host, BAMBU_PRINTER_SERIAL: serial, BAMBU_SERIAL: serial, BAMBU_PRINTER_ACCESS_TOKEN: token, BAMBU_TOKEN: token, BAMBU_DEV_ID: serial, BAMBU_NETWORK_BRIDGE_COMMAND: "",
@@ -804,6 +804,55 @@ test("verified public direct and bridge prints reach their intended transport", 
   assert.match(print.payload.params.dst_file, /^checked-[a-f0-9-]+-job\.gcode\.3mf$/);
   assert.equal(print.payload.params.task_use_ams, false);
   assert.equal(print.payload.params.ams_mapping, "[254]");
+});
+
+// Bambu Studio sends a cloud-bound printer it can reach on the LAN, with storage, with record first and
+// start_print only after a failure before the print command (PrintJob.cpp). Nov 4: start_print alone got
+// -3120, HTTP 403 "internal blocking" on the real P1S. (The fixtures above report no storage: start_print.)
+const cloudPrintArgs = (file, extra = {}) => ({ three_mf_path: file, bambu_model: "p1s", nozzle_diameter: "0.4", bed_type: "textured_plate", use_ams: false, connection_type: "cloud", ...extra });
+const bridgeCalls = async (eventsPath) => (await fs.readFile(eventsPath, "utf8")).trim().split("\n").map(JSON.parse).filter(event => event.action === "bridge" && /^net\.start_/.test(event.method));
+
+test("a FULU cloud print to a printer with storage goes with record first, in the cloud session", async (t) => {
+  const server = await interceptedMcp(t);
+  await server.setReportedStatus({ sdcard: true });
+  const result = await server.client.callTool({ name: "print_3mf_bambu_network", arguments: cloudPrintArgs(await fixture(t)) });
+  assert.notEqual(result.isError, true, result.content?.[0]?.text);
+  const sent = await bridgeCalls(server.eventsPath);
+  assert.deepEqual(sent.map(event => event.method), ["net.start_local_print_with_record"]);
+  assert.equal(sent[0].payload.params.connection_type, "cloud");
+  assert.equal(sent[0].payload.params.password, "TEST_TOKEN", "Studio's recorded route uploads with the access code");
+  const events = (await fs.readFile(server.eventsPath, "utf8")).trim().split("\n").map(JSON.parse);
+  assert.ok(events.some(event => event.action === "cloud-session"));
+  assert.ok(!events.some(event => event.action === "local-print"));
+});
+
+test("a FULU cloud print whose recorded send fails before the print command goes once through the cloud", async (t) => {
+  const server = await interceptedMcp(t, { bridgeResponses: { "net.start_local_print_with_record": { ok: true, value: -2120 } } });
+  await server.setReportedStatus({ sdcard: true });
+  const result = await server.client.callTool({ name: "print_3mf_bambu_network", arguments: cloudPrintArgs(await fixture(t)) });
+  assert.notEqual(result.isError, true, result.content?.[0]?.text);
+  const sent = await bridgeCalls(server.eventsPath);
+  assert.deepEqual(sent.map(event => event.method), ["net.start_local_print_with_record", "net.start_print"]);
+  assert.equal(sent[1].payload.params.comments, "failed(-2120)");
+  assert.equal(sent[1].payload.params.dst_file, sent[0].payload.params.dst_file, "the same checked job");
+  assert.match(result.content[0].text, /start_print command .* sent successfully\. It first tried net\.start_local_print_with_record.*-2120 \(Bambu Cloud refused to create the print task\)/);
+});
+
+test("a FULU cloud print is not sent twice after a failure that may have reached the printer", async (t) => {
+  const server = await interceptedMcp(t, { bridgeResponses: { "net.start_local_print_with_record": { ok: true, value: -4030 } } });
+  await server.setReportedStatus({ sdcard: true });
+  const result = await server.client.callTool({ name: "print_3mf_bambu_network", arguments: cloudPrintArgs(await fixture(t)) });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /start_local_print_with_record returned non-zero result -4030/);
+  assert.deepEqual((await bridgeCalls(server.eventsPath)).map(event => event.method), ["net.start_local_print_with_record"]);
+});
+
+test("an explicit FULU print method is sent as given, with no Studio fallback", async (t) => {
+  const server = await interceptedMcp(t, { bridgeResponse: { ok: true, value: -3120 } });
+  await server.setReportedStatus({ sdcard: true });
+  const result = await server.client.callTool({ name: "print_3mf_bambu_network", arguments: cloudPrintArgs(await fixture(t), { bambu_network_method: "start_print" }) });
+  assert.equal(result.isError, true);
+  assert.deepEqual((await bridgeCalls(server.eventsPath)).map(event => event.method), ["net.start_print"]);
 });
 
 test("a FULU cloud print sends Bambu Studio's ams_mapping_info for the tray it prints from", async (t) => {
