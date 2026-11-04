@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Keep authenticated FULU Pause, Resume and Stop request IDs as strings in Studio's 20000–29999 window, with a shared counter across LAN, cloud and retries that wraps inside the window. A cloud-bound P1S 01.10 rejects larger IDs with 0502400A even when their signatures are valid. Preserve reply correlation and the delivery hold; remove guidance claiming controls require Studio/Handy or Developer Mode. Automated regressions cover both transports and wraparound; hardware validation is limited to the maintainer's P1S.
+
 - One connection decision for print and control: `cancel_print`, `pause_print` and `resume_print` now use `BAMBU_DEFAULT_CONNECTION_MODE` (and the new `BAMBU_DEFAULT_CONNECTION_TYPE`) exactly as `print_3mf` does. Before, a server configured for FULU printed through the authenticated bridge but sent Stop and Pause as plain MQTT, which protected firmware rejects with HMS 0500_0500_0001_0007. Pause and Resume now travel the authenticated FULU LAN session like Stop. A FULU cloud route refuses controls instead of sending plain MQTT.
 
 - Authenticated LAN controls (Stop, Pause, Resume) wait briefly for FULU's certificate message but no longer refuse to send without it: on the real P1S it never arrived and Stop sent nothing. A synchronous SEND_MSG_FAILED (-4) or LP_PUBLISH_MSG_FAILED (-4030) means nothing was sent, so the certificate is reinstalled and the control tried again, up to three times, as the native X2D helper does; any other return is final. Each control's FULU events and sends are written to `control-trace.log` in the bridge config folder, without access codes.

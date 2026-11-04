@@ -23,9 +23,9 @@ export function controlReply(msg, command, sequenceId) {
     return { accepted: errCode === 0 && !failed, errCode };
 }
 /**
- * The printer's authorization check refused the command (0x05024007-0x0502400B: unsigned, certificate not
- * trusted, malformed header, signature rejected). On a P1S 01.10.00.00 FULU's plug-in gets 0x0502400A for every
- * Pause and Stop over LAN and Bambu Cloud, while Bambu Studio and Bambu Handy are accepted.
+ * The printer's command verification refused the envelope. These codes do not
+ * establish that third-party controls are unsupported: P1S 01.10 also returns
+ * 0x0502400A for a valid signature with a sequence ID outside the Studio window.
  */
 export function isAuthorizationRefusal(errCode) {
     const code = errCode >>> 0;
@@ -37,9 +37,8 @@ export function refusedControlMessage(command, route, errCode, direct = false) {
     const code = (errCode >>> 0).toString(16).toUpperCase().padStart(8, "0");
     if (!isAuthorizationRefusal(errCode))
         return `The printer refused ${word} over ${route} (error ${code}). Nothing changed on the printer.`;
-    return direct
-        ? `The printer refused ${word} (error ${code}): it isn't in LAN Only and Developer Mode, so it takes Pause, Resume and Stop only from Bambu Studio or Bambu Handy. ` +
-            "Use one of those now, or turn on LAN Only and Developer Mode on the printer."
-        : `The printer refused ${word} (error ${code}): in its current mode it takes Pause, Resume and Stop only from Bambu Studio or Bambu Handy. ` +
-            "Use one of those now. To use them from here, turn on LAN Only and Developer Mode on the printer and choose the Developer Mode connection.";
+    const message = `The printer refused ${word} (error ${code}): its command verification failed. `;
+    return message + (direct
+        ? "Check LAN Only and Developer Mode for the direct connection, or choose an authenticated Local network or Bambu Cloud connection."
+        : "Check the authenticated connection and signing setup for this printer.");
 }

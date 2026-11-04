@@ -13,8 +13,7 @@ export function routeOf(connection) {
 }
 /** Every connection, and whether this server can use it (bridgeConfigured: BAMBU_NETWORK_BRIDGE_COMMAND is set). */
 export function routeOptions(current, bridgeConfigured) {
-    const signedControls = "Prints work with Developer Mode off. Printers with Bambu's authorization control (P1S firmware 01.10 and later) " +
-        "refuse Pause, Resume and Stop sent this way; Bambu Studio and Bambu Handy can still send them.";
+    const signedControls = "Uses the configured authenticated connection for Print, Pause, Resume and Stop.";
     const needsBridge = "Needs FULU's BambuNetwork bridge (BAMBU_NETWORK_BRIDGE_COMMAND).";
     const ownLocal = OWN_LOCAL_MODES.has(current.mode);
     return [

@@ -46,6 +46,11 @@ function controlResult(command, route, reply, attempts) {
 export const CLOUD_PRINT_TIMING = Object.freeze({ connectTimeoutMs: 30000, pollMs: 250, settleMs: 3000, certificateWaitMs: 10000 });
 let stateSequence = 0;
 const nextSequence = () => String(++stateSequence);
+// The signed Studio channel on P1S 01.10 accepts string IDs in [20000, 29999].
+// Larger IDs receive 0502400A even when the RSA signature is valid. Share the
+// counter across LAN/cloud controls and retries; never derive IDs from wall time.
+let controlSequence = 19999;
+const nextControlSequence = () => String(controlSequence = controlSequence >= 29999 ? 20000 : controlSequence + 1);
 /**
  * The plug-in's certificate folder: BAMBU_NETWORK_CERT_DIR when set, else
  * Bambu's pinned public certificates written to the agent's config folder,
@@ -585,8 +590,7 @@ export class BambuNetworkBridge {
             for (let attempt = 1; attempt <= timing.attempts; attempt++) {
                 await beforeDispatch?.();
                 assertActive();
-                // A 32-bit sequence like FULU's own counter (from 20000).
-                const sequenceId = String(20000 + (Date.now() % 1000000));
+                const sequenceId = nextControlSequence();
                 const result = await this.callWithAgent(method, {
                     dev_id: printer.devId,
                     msg: JSON.stringify({ print: { command, param: "", sequence_id: sequenceId } }),
@@ -721,7 +725,7 @@ export class BambuNetworkBridge {
             for (let attempt = 1; attempt <= timing.attempts; attempt++) {
                 await beforeDispatch?.();
                 assertActive();
-                const sequenceId = String(20000 + (Date.now() % 1000000));
+                const sequenceId = nextControlSequence();
                 const result = await this.callWithAgent(method, {
                     dev_id: devId, msg: JSON.stringify({ print: { command, param: "", sequence_id: sequenceId } }), qos: 1, flag: 0,
                 }, traced);

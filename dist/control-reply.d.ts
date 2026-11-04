@@ -12,9 +12,9 @@ export type ControlReply = {
  */
 export declare function controlReply(msg: unknown, command: string, sequenceId: string): ControlReply | undefined;
 /**
- * The printer's authorization check refused the command (0x05024007-0x0502400B: unsigned, certificate not
- * trusted, malformed header, signature rejected). On a P1S 01.10.00.00 FULU's plug-in gets 0x0502400A for every
- * Pause and Stop over LAN and Bambu Cloud, while Bambu Studio and Bambu Handy are accepted.
+ * The printer's command verification refused the envelope. These codes do not
+ * establish that third-party controls are unsupported: P1S 01.10 also returns
+ * 0x0502400A for a valid signature with a sequence ID outside the Studio window.
  */
 export declare function isAuthorizationRefusal(errCode: number): boolean;
 /** What to tell a person about a refused control. direct: the control went straight to the printer (Developer Mode connection). */
