@@ -1197,6 +1197,8 @@ When `slicer_type` is `bambustudio` (the default), these additional parameters a
 | `min_save` | boolean | Produce smaller output 3MF (faster uploads) |
 | `skip_modified_gcodes` | boolean | Ignore stale custom gcodes in the 3MF |
 | `slice_plate` | number | Which plate to slice (0 = all plates, default: 0) |
+| `quality` | string | `draft`, `standard` or `fine`: the server picks the layer height for the nozzle in use (0.28 and 0.12 mm on 0.4 mm; standard keeps the preset) |
+| `strength` | string | `standard`, `strong` or `max`: the server picks walls and infill (4 walls at 25%, 6 at 40%; standard keeps the preset) |
 | `layer_height` | number | Layer height in mm, such as 0.28, 0.2 or 0.12; at most the nozzle diameter |
 | `wall_loops` | integer | Number of walls, 0 to 1000 |
 | `sparse_infill_density` | string | Sparse infill density, such as `"15%"` |
@@ -1204,7 +1206,7 @@ When `slicer_type` is `bambustudio` (the default), these additional parameters a
 | `support_type` | string | `normal(auto)`, `tree(auto)`, `normal(manual)` or `tree(manual)` |
 | `support_threshold_angle` | integer | Overhang threshold for automatic supports, 0 to 90 degrees (0 lets the slicer decide) |
 
-`layer_height`, `wall_loops`, `sparse_infill_density` and the three support arguments are written as a process override on top of the machine and process preset the tool resolves, using Bambu Studio's keys and string forms (`"0.2"`, `"2"`, `"15%"`). Every other preset value, and the machine preset, stay as resolved, and your own profile files are not changed. They work with every Bambu-compatible slicer, including remote `orca-slicer-api` slicing, and are refused for PrusaSlicer, Slic3r and Cura.
+`quality` and `strength` let a client send the person's choice without slicer numbers; an explicit `layer_height`, `wall_loops` or `sparse_infill_density` wins over them. `layer_height`, `wall_loops`, `sparse_infill_density` and the three support arguments are written as a process override on top of the machine and process preset the tool resolves, using Bambu Studio's keys and string forms (`"0.2"`, `"2"`, `"15%"`). Every other preset value, and the machine preset, stay as resolved, and your own profile files are not changed. They work with every Bambu-compatible slicer, including remote `orca-slicer-api` slicing, and are refused for PrusaSlicer, Slic3r and Cura.
 
 **Example: Slice with auto-orient and 3 copies**
 ```json
