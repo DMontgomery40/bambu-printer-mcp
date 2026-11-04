@@ -215,9 +215,9 @@ For the equivalent `print_3mf` calls, add `connection_mode: "bambu_network"`. It
 
 | `bambu_network_method` | Runtime call | Default/use |
 |---|---|---|
-| `start_print` | `net.start_print` | Default for cloud |
+| `start_print` | `net.start_print` | Cloud upload; the cloud default's fallback after a failure before the print command, and the route for a printer with no storage |
 | `start_local_print` | `net.start_local_print` | Default for LAN |
-| `start_local_print_with_record` | `net.start_local_print_with_record` | Local job with task-record behavior |
+| `start_local_print_with_record` | `net.start_local_print_with_record` | Default for cloud: LAN upload, task recorded in the account, sent in the cloud session |
 | `start_send_gcode_to_sdcard` | `net.start_send_gcode_to_sdcard` | Advanced runtime-specific transfer |
 | `start_sdcard_print` | `net.start_sdcard_print` | Advanced runtime-specific SD-card start |
 
@@ -254,7 +254,8 @@ These failures come from upstream software, not from this server. The server wor
 | Handshake works, file upload fails | Verify the project and config paths inside the host/VM/WSL process, including read/write permissions. |
 | Agent ready, cloud print rejected | Verify login, region, and device ID; `agentReady` is not an authenticated-session guarantee. |
 | Cloud print `-3010`, `SSL certificate problem` | Give the containerized host a CA bundle; see [cloud authentication](#cloud-authentication). |
-| Cloud print `-3120`, `[http code]: 403 … [reason]: internal blocking` | Bambu Cloud refused to create the print task after the upload finished. Seen on a cloud-bound P1S (firmware 01.10.00.00) with plug-in 02.05.02.58 on 2026-11-03; Bambu Studio users report the same error. The cause is on Bambu's side and not established; print over LAN instead. |
+| Cloud print `-3120`, `[http code]: 403 … [reason]: internal blocking` | Bambu Cloud refused to create the print task after the upload finished. Seen with `start_print` on a cloud-bound P1S (firmware 01.10.00.00) with plug-in 02.05.02.58 on 2026-11-03; Bambu Studio and OrcaSlicer users report the same error ([BambuStudio #8404](https://github.com/bambulab/BambuStudio/issues/8404), [OrcaSlicer #13277](https://github.com/OrcaSlicer/OrcaSlicer/issues/13277)). The cause is not established. Since 1.1.55 the cloud default is Studio's own first route, `start_local_print_with_record`, with `start_print` only after a failure before the print command; the error lists both results. A strict VPN or content filter in front of the runtime is one reported cause. |
+| Cloud print `-2120` | Bambu Cloud refused to record the task for the LAN upload. Check the account login and the printer's binding. |
 | A control returns the printer's `err_code` 84033546 (0x0502400A) | Command verification failed. On P1S 01.10, a valid signature with a request ID outside Studio's string `20000`–`29999` window produces this error. Use the updated MCP counter; this code alone does not establish that Developer Mode is required. |
 | Non-zero result or `send msg failed` | Inspect the redacted runtime error and printer diagnostics; do not blindly repeat a possible print submission. |
 | FULU/Orca CLI slicing requested | Use 1.1.11+ with the matching installed profile tree and exact model/nozzle; see the CLI checks above. Use GUI export if preparation or slicing fails. |

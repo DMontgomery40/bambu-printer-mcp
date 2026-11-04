@@ -1645,12 +1645,18 @@ class BambuPrinterMCPServer {
 
     const connectionType = resolveConnection(args).type;
 
-    const bridgePrintMethod = resolveBambuNetworkPrintMethod(
+    // With no method given, a cloud print follows Bambu Studio's order for a cloud-bound printer it can
+    // reach on the LAN (PrintJob.cpp): start_local_print_with_record in the cloud session, then start_print.
+    // This server always has the printer's IP and access code, which Studio needs for the first.
+    const studioCloudRoute = connectionType === "cloud" && args?.bambu_network_method === undefined;
+    const bridgePrintMethod = studioCloudRoute ? "start_local_print_with_record" : resolveBambuNetworkPrintMethod(
       args?.bambu_network_method !== undefined ? String(args.bambu_network_method) : undefined,
       connectionType
     );
-    const bridgeMethod = toBridgeMethod(bridgePrintMethod);
+    let bridgeMethod = toBridgeMethod(bridgePrintMethod);
     const isLocalBridgePrint = bridgePrintMethod !== "start_print";
+    const inCloudSession = studioCloudRoute || !isLocalBridgePrint;
+    let cloudFallbackMethod = studioCloudRoute ? toBridgeMethod("start_print") : undefined;
 
     const devId = String(args?.dev_id || bambuSerial || DEFAULT_BAMBU_DEV_ID).trim();
     if (!devId) {
@@ -1730,6 +1736,11 @@ class BambuPrinterMCPServer {
       const amsMapping = stringifyBridgeJson(mapping?.map(value => bridgeAmsMappingValue(value, isDualNozzleModel(printModel))));
       const remoteFileName = uniquePrintName(threeMFPath);
       const checkedName = remoteFileName.replace(/(?:\.gcode)?\.3mf$/i, "");
+      if (cloudFallbackMethod && externalStorageState(confirmedStatus.raw) !== "normal") {
+        // Studio sends straight through the cloud when the printer has no storage for the LAN upload.
+        bridgeMethod = cloudFallbackMethod;
+        cloudFallbackMethod = undefined;
+      }
       const params: Record<string, unknown> = {
         dev_id: devId,
         // Firmware can report the task name instead of the uploaded filename.
@@ -1825,18 +1836,19 @@ class BambuPrinterMCPServer {
       const bridgeOptions: BambuNetworkBridgeOptions = {
         ...this.bridgeOptionsFromArgs(args, "print_3mf_bambu_network"),
         beforeDispatch: async method => {
-          if (method !== bridgeMethod) return;
+          if (method !== bridgeMethod && method !== cloudFallbackMethod) return;
           assertActive();
           const dispatchStatus = await this.bambu.getSafetyStatus(devIp, devId, password || bambuToken);
           validatePrinterState(dispatchStatus, requirements);
           this.bambu.assertPrintPreflight(dispatchStatus, preflight);
         },
-        assertDispatchAllowed: method => { if (method === bridgeMethod) assertActive(); },
-        onDispatched: method => { if (method === bridgeMethod) retainForDispatchedUpload(); },
+        assertDispatchAllowed: method => { if (method === bridgeMethod || method === cloudFallbackMethod) assertActive(); },
+        onDispatched: method => { if (method === bridgeMethod || method === cloudFallbackMethod) retainForDispatchedUpload(); },
       };
       let jobUpdates: BridgeJobUpdate[] = [];
       let bridgeResult: unknown;
-      if (isLocalBridgePrint) {
+      let firstFailure: number | undefined;
+      if (!inCloudSession) {
         ({ result: bridgeResult, jobUpdates } = await this.bambuNetwork.startLocalPrint(
           { devId, devIp, username: String(params.username), password, useSsl: params.use_ssl_for_mqtt as boolean },
           bridgeMethod,
@@ -1845,8 +1857,11 @@ class BambuPrinterMCPServer {
           assertActive
         ));
       } else {
-        ({ result: bridgeResult, jobUpdates } = await this.bambuNetwork.startCloudPrint(devId, bridgeMethod, { client_job_id: clientJobId, params }, bridgeOptions, assertActive));
+        ({ result: bridgeResult, jobUpdates, firstFailure } = await this.bambuNetwork.startCloudPrint(devId, bridgeMethod, { client_job_id: clientJobId, params }, bridgeOptions, assertActive, undefined, cloudFallbackMethod));
+        if (firstFailure !== undefined) bridgeMethod = cloudFallbackMethod!;
       }
+      const firstAttempt = firstFailure !== undefined
+        ? ` It first tried net.start_local_print_with_record, as Bambu Studio does, which returned ${firstFailure}${describeBambuNetworkPrintError(firstFailure)}.` : "";
 
       if (typeof bridgeResult === "object" && bridgeResult !== null && (bridgeResult as { ok?: unknown }).ok === false) {
         throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} failed: ${String((bridgeResult as { error?: unknown }).error || "unknown bridge error")}`);
@@ -1861,7 +1876,7 @@ class BambuPrinterMCPServer {
         const reported = jobUpdates.filter(update => update.code !== 0 || update.msg).slice(-3)
           .map(update => `status ${update.status}, code ${update.code}${update.msg ? `: ${update.msg}` : ""}`).join("; ");
         throw new Error(`FULU BambuNetwork bridge method ${bridgeMethod} returned non-zero result ${value}${describeBambuNetworkPrintError(value)}.` +
-          (reported ? ` Plug-in reported: ${reported}.` : ""));
+          (reported ? ` Plug-in reported: ${reported}.` : "") + firstAttempt);
       }
 
       assertActive();
@@ -1869,7 +1884,7 @@ class BambuPrinterMCPServer {
 
       return {
         status: "success",
-        message: `FULU BambuNetwork ${bridgePrintMethod} command for ${threeMfFilename} sent successfully.`,
+        message: `FULU BambuNetwork ${bridgeMethod.replace(/^net\./, "")} command for ${threeMfFilename} sent successfully.${firstAttempt}`,
         bridgeMethod,
         bridgeResult,
         clientJobId,
@@ -2733,7 +2748,7 @@ class BambuPrinterMCPServer {
                   description: "REQUIRED: Bambu Lab printer model. Ask the user if not known. Using the wrong model can damage the printer."
                 },
                 connection_type: { type: "string", enum: ["cloud", "lan"], description: "BambuNetwork connection type to put in FULU PrintParams; cloud uses restored internet printing, lan uses local bridge printing." },
-                bambu_network_method: { type: "string", enum: BAMBU_NETWORK_PRINT_METHODS, description: "FULU print method to invoke; defaults to start_print for cloud and start_local_print for lan." },
+                bambu_network_method: { type: "string", enum: BAMBU_NETWORK_PRINT_METHODS, description: "FULU print method to invoke; defaults to start_local_print for lan, and for cloud to Bambu Studio's order: start_local_print_with_record, then start_print if that fails." },
                 dev_id: { type: "string", description: "Bambu device id used by BambuNetwork; defaults to BAMBU_DEV_ID or BAMBU_SERIAL." },
                 dev_ip: { type: "string", description: "Printer IP address for LAN/local bridge methods; defaults to host when provided." },
                 host: { type: "string", description: "Printer host or IP address, used as dev_ip for LAN/local bridge methods." },
@@ -3162,7 +3177,7 @@ class BambuPrinterMCPServer {
                 },
                 try_emmc_print: { type: "boolean", description: "X2D native printing: true stores the job on internal storage (eMMC), false on the SD card or USB stick (refused unless the printer reports one ready). Omit to use the card when ready, else eMMC; BAMBU_NATIVE_TRY_EMMC_PRINT sets a server default." },
                 connection_type: { type: "string", enum: ["cloud", "lan"], description: "BambuNetwork connection type when connection_mode is bambu_network; cloud uses restored internet printing, lan uses local bridge printing." },
-                bambu_network_method: { type: "string", enum: BAMBU_NETWORK_PRINT_METHODS, description: "FULU print method when connection_mode is bambu_network; defaults to start_print for cloud and start_local_print for lan." },
+                bambu_network_method: { type: "string", enum: BAMBU_NETWORK_PRINT_METHODS, description: "FULU print method when connection_mode is bambu_network; defaults to start_local_print for lan, and for cloud to Bambu Studio's order: start_local_print_with_record, then start_print if that fails." },
                 dev_id: { type: "string", description: "Bambu device id for FULU BambuNetwork printing; defaults to BAMBU_DEV_ID or BAMBU_SERIAL." },
                 dev_ip: { type: "string", description: "Printer IP address for FULU BambuNetwork LAN/local print methods; defaults to host when provided." },
                 bridge_command: { type: "string", description: "Override command for the FULU bridge host or macOS/WSL wrapper; defaults to BAMBU_NETWORK_BRIDGE_COMMAND. Per-call overrides require MCP_ALLOW_EXECUTABLE_ARG=1." },

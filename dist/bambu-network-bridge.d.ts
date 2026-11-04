@@ -193,10 +193,16 @@ export declare class BambuNetworkBridge {
      * Shares the LAN session queue: one reader of the plug-in's events at a time.
      */
     withCloudSession<T>(devId: string, options: BambuNetworkBridgeOptions, assertActive: () => void, timing: Readonly<CloudTiming>, run: (session: CloudSession) => Promise<T>): Promise<T>;
-    /** A cloud print method (start_print) in a cloud session, so the plug-in has the printer's state. */
-    startCloudPrint(devId: string, method: string, payload: JsonObject, options?: BambuNetworkBridgeOptions, assertActive?: () => void, timing?: Readonly<CloudTiming>): Promise<{
+    /**
+     * A cloud print in a cloud session, so the plug-in has the printer's state. With a fallback this is
+     * Bambu Studio's order for a cloud-bound printer it can also reach on the LAN (PrintJob.cpp,
+     * SendAttemptRoute::LanWithRecord, then ::Cloud): start_local_print_with_record, then start_print
+     * when the first failed before its print command was sent. `firstFailure` is the first method's result.
+     */
+    startCloudPrint(devId: string, method: string, payload: JsonObject, options?: BambuNetworkBridgeOptions, assertActive?: () => void, timing?: Readonly<CloudTiming>, fallbackMethod?: string): Promise<{
         result: unknown;
         jobUpdates: BridgeJobUpdate[];
+        firstFailure?: number;
     }>;
     /**
      * A print control over Bambu Cloud: how Bambu Studio and FULU's slicer control a printer
