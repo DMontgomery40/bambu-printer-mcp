@@ -55,7 +55,7 @@ import { isDualNozzleModel } from "./safety/limits.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safety/artifact.js";
 import { detectProfilesRoot } from "./slicer/profile-flatten.js";
 import { bambuPrinterInfo } from "./counterpart/info.js";
-import { DESIGN_PROMPTS, FDM_CAPABILITY_GUIDANCE, FDM_CAPABILITY_URI, SERVER_INSTRUCTIONS } from "./design-guidance.js";
+import { DESIGN_PROMPTS, FDM_CAPABILITY_GUIDANCE, FDM_CAPABILITY_RESOURCE, FDM_CAPABILITY_URI, SERVER_INSTRUCTIONS } from "./design-guidance.js";
 import { bambuProgress, offlineProgress } from "./counterpart/progress.js";
 import { makeCounterpart3mf } from "./counterpart/make-3mf.js";
 import { MAKE_3MF_OUTPUT_SCHEMA, PRINT_PROGRESS_OUTPUT_SCHEMA, PRINTER_INFO_OUTPUT_SCHEMA } from "./counterpart/schemas.js";
@@ -2240,12 +2240,7 @@ class BambuPrinterMCPServer {
             mimeType: "application/json",
             description: "HMS and error-related fields from the latest printer status"
           },
-          {
-            uri: FDM_CAPABILITY_URI,
-            name: "FDM bridge and overhang guidance",
-            mimeType: "text/markdown",
-            description: "Planning bands and evidence for bridges and overhangs, for when one decides the plan and no measured capability is available"
-          }
+          FDM_CAPABILITY_RESOURCE
         ],
         templates: [
           {
@@ -2270,7 +2265,7 @@ class BambuPrinterMCPServer {
     this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
       const uri = request.params.uri;
       if (uri === FDM_CAPABILITY_URI) {
-        return { contents: [{ uri, mimeType: "text/markdown", text: FDM_CAPABILITY_GUIDANCE }] };
+        return { contents: [{ uri, mimeType: FDM_CAPABILITY_RESOURCE.mimeType, text: FDM_CAPABILITY_GUIDANCE }] };
       }
       const match = uri.match(/^printer:\/\/([^\/]+)\/(.+)$/);
 
