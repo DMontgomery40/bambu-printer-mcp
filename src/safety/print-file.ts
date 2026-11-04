@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readBoundedPrintFile, loadSafe3mfArchive } from './archive.js';
+import { projectFilaments, type ProjectFilament } from "../ams-mapping.js";
 import { MACHINE_LIMITS, isDualNozzleModel, normalizeMaterial, normalizeModel, validateStartupPurgeTemperature, validateTemperature } from './limits.js';
 
 export interface PrintFileInspection {
@@ -18,6 +19,8 @@ export interface PrintFileInspection {
   nozzleFlows?: string[];
   /** Physical nozzle index for each declared filament, composed from the selected plate headers. */
   filamentNozzleIndices?: number[];
+  /** Every project filament as project_settings.config declares it, for PrintParams.ams_mapping_info. */
+  projectFilaments?: ProjectFilament[];
 }
 type Metadata = Record<string, unknown>;
 const NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
@@ -405,7 +408,14 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
         continue;
       }
       if(['M104','M109','M140','M190','M141','M191'].includes(code)) {
-        const args=parameters(argumentsText,'A');
+        const args=parameters(argumentsText,code==='M104'?'AM':'A');
+        // Studio 2.9's GCodeWriter marks layer-temperature changes with bare M.
+        // Accept only its exact S-target / optional T form; targets and tool
+        // selectors still pass through the independent thermal checks below.
+        if(args.has('M')) {
+          if(!Number.isNaN(args.get('M')!) || !args.has('S') || [...args.keys()].some(key=>!'MST'.includes(key))) fail('unsupported M104 layer-change temperature parameters');
+          args.delete('M');
+        }
         // Official A1 and A1 mini start G-code waits with M109 S<target> H<limit>
         // (S25 H140, S100 H170, S220 H300). H is not a heater target: S stays the
         // checked target, so H is accepted only within those vendor bounds.
@@ -548,5 +558,5 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
   }
   if(!commandCount) return fail('selected G-code contains no printable commands');
   if(!used.size) materials.forEach((_,index)=>used.add(index));
-  return {model,nozzleDiameters,materials,usedFilamentPositions:[...used].sort((a,b)=>a-b),plateInternalPath,sha256,maxNozzleTemperature,maxBedTemperature,maxChamberTemperature,bedType,selectsAms,nozzleTypes,nozzleFlows,filamentNozzleIndices};
+  return {model,nozzleDiameters,materials,usedFilamentPositions:[...used].sort((a,b)=>a-b),plateInternalPath,sha256,maxNozzleTemperature,maxBedTemperature,maxChamberTemperature,bedType,selectsAms,nozzleTypes,nozzleFlows,filamentNozzleIndices,...(Array.isArray(project.filament_type)?{projectFilaments:projectFilaments(project)}:{})};
 }

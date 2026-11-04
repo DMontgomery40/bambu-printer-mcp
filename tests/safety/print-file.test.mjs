@@ -791,3 +791,22 @@ test('H2C hotend pre-cooling uses the incoming filament and independent thermal 
   for(const model of ['H2D','X2D','P1S'])
     await assert.rejects(inspect(t,header(model,'PLA',model==='P1S'?'0.4':'0.4;0.4')+'M620 S0A\nM620.15 P180\n',{model:model.toLowerCase()}),/unsupported M620.15/);
 });
+
+// Studio v02.09.01.70, GCodeWriter::set_temperature: LayerChange emits
+// M104 M S<target> with an optional T tool. The bare M is not a heat target.
+test('Studio 2.9 layer-change M104 M retains independent temperature checks',async t=>{
+  for(const [name,model,nozzles,command] of [
+    ['P1S','p1s','0.4','M104 M S210'],
+    ['A1','a1','0.4','M104 M S210'],
+    ['X2D','x2d','0.4;0.4','M104 M S210 T1'],
+  ]) {
+    const result=await inspect(t,header(name,'PLA',nozzles)+command+'\n',{model});
+    assert.equal(result.maxNozzleTemperature,210);
+  }
+  await assert.rejects(inspect(t,header()+'M104 M S400\n'),/temperature|limit/i);
+  await assert.rejects(inspect(t,header('X2D','ABS;PLA','0.4;0.4')+'T0\nM104 M S290 T1\n',{model:'x2d'}),/PLA|temperature|limit/i);
+});
+test('Studio layer-change marker rejects numeric flags, extra forms and missing targets',async t=>{
+  for(const command of ['M104 M1 S210','M104 M0 S210','M104 M','M104 M R210','M104 M S210 R220','M104 M M S210','M104 M S210 A','M104 M S210 N0','M109 M S210','M140 M S60','M104 M S210 T4'])
+    await assert.rejects(inspect(t,header()+command+'\n'),/temperature|parameter|target|nozzle|command/i,command);
+});

@@ -206,7 +206,7 @@ The optional FULU **BambuNetwork bridge** exposes `bambu_network_bridge_status`,
 - Set print speed mode (`silent`/`standard`/`sport`/`ludicrous`), clear HMS/print errors, trigger AMS RFID re-read, and control H2/P2 airduct mode (`cooling`/`heating`) via MQTT
 - **Start/stop AMS filament drying** (`set_ams_drying`) on heated AMS units (AMS Pro / AMS-HT). Sends `print.ams_control` MQTT command.
 - Set nozzle and bed temperature via G-code dispatch over MQTT
-- Confirm print starts and positive manual heating through a human preflight prompt. Hardware-error clearing requires explicit human acknowledgment; see [hardware safety and headless configuration](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md).
+- Print, heating and resume start without a prompt; clearing hardware errors and resuming a file that could not be re-read still ask a person; see [hardware safety](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md).
 - Set fan speed (part, auxiliary, chamber) and chamber light mode (on/off/flashing) via MQTT
 - Read HMS (Health Management System) diagnostics as an MCP resource at `printer://{host}/hms` — read-only error summary from the printer, with automatic settle retry
 - Start G-code files already stored on the printer
@@ -643,6 +643,18 @@ Two transports are wired in, picked by `bambu_model`:
 
 Returns `{ status, format: "image/jpeg", sizeBytes, base64, savedTo?, transport }`. `transport` is `"tcp-6000"` or `"rtsps-322"` so callers can tell which path produced the frame. Pass `save_path` to also write the bytes to disk; otherwise only the base64 payload is returned.
 
+#### camera_stream_start, camera_frame, camera_stream_stop
+
+Development capability; discover these tools before using them with an installed server. Start one shared camera connection while a viewer is open, then request changed frames. The connection closes after 30 seconds without a viewer request. Snapshots reuse its latest frame. A1/P1 use the existing TLS protocol; X1/H2/P2S use one ffmpeg process for the stream lifetime.
+
+```json
+{"fps": 1, "idle_timeout_ms": 30000, "bambu_model": "p1s"}
+```
+
+Pass the usual optional `host`, `bambu_serial`, and `bambu_token` overrides to each tool. `camera_stream_start` returns `{status: "started" | "running", transport, fps, startedAt}`. Then call `camera_frame` with, for example, `{ "since_seq": 0, "wait_ms": 10000, "max_width": 300, "max_bytes": 20000 }`. A changed frame returns JPEG `base64`, `seq`, dimensions and capture time. Keep the last delivered `seq` on `unchanged`; those replies carry no image. `max_width` preserves aspect ratio; optional `max_bytes` caps JPEG bytes by downscaling further (base64 adds about one third), and `changed_only` defaults to true with a 0.02 normalized thumbnail threshold.
+
+Stop requests close the shared connection immediately, affecting every viewer of that printer; normally let idle expiry close it. Other printers keep their own connections. These tools send no motion, heating or print commands. See [the camera stream contract](docs/CAMERA-STREAM.md) for limits, cancellation, availability and lifecycle details.
+
 #### delete_printer_file
 
 Delete a single file from the printer's SD card via FTPS. **Destructive.** Requires `confirm: true` — without it the call returns `status: "skipped"` and does not contact the printer. Path traversal segments (`..`) are rejected. Only files under `cache/`, `timelapse/`, and `logs/` can be deleted.
@@ -741,12 +753,12 @@ Resume a paused print job that this server inspected and started. Resume reheats
 
 1. A fresh report must show that job paused, with the inspected nozzle and filament still in place.
 2. The server downloads the job's file from the printer over FTPS and compares its SHA-256 with the inspected bytes. A P1S deletes an uploaded project once it starts printing and keeps the plate G-code it extracted, `cache/<name>_plate_<n>.gcode`, which is byte-identical to the 3MF's `Metadata/plate_<n>.gcode`. When the project is gone, the server compares that file with the inspected plate. A different file refuses the resume, and the job can no longer be resumed from here.
-3. A person confirms through MCP elicitation: the prompt names the job, its peak temperatures, materials and SHA-256. `BAMBU_REQUIRE_CONFIRMATION=0` skips this prompt, as it does for print and heating prompts.
-4. The printer is read again after the prompt, and on X2D and H2 the native helper rechecks it once more right before sending. Only then does the server send `UpdateState` with `state: "resume"`.
+3. The resume starts without a prompt when the bytes were verified. Only a file that could not be re-read asks a person; that prompt names the job, its peak temperatures, materials and SHA-256.
+4. The printer is read again, and on X2D and H2 the native helper rechecks it once more right before sending. Only then does the server send `UpdateState` with `state: "resume"`.
 
 The server keeps one resume record per printer. Cancelling the job ends it, and so does a report that the job finished, failed or went idle after it was seen running, or another job seen in its place. A later job with the same name, such as the same file reprinted from the touchscreen, is never resumed. The server watches every MQTT report it receives, not just its own reads. It doesn't see reports while its MQTT session is disconnected.
 
-The result is `{status, message, jobName, bytesVerified}`, where `jobName` is the name `counterpart_print_progress` reports. On the BambuNetwork and X2D native routes, Bambu's plug-in puts the file on the printer, so its FTPS path isn't verified. If the file can't be read back there, the resume matches the job by its unique name and returns `bytesVerified: false`, and the prompt says so. That prompt always appears, even with `BAMBU_REQUIRE_CONFIRMATION=0`, which skips only prompts for resumes whose bytes were verified. On every other route, a file that can't be re-read refuses the resume.
+The result is `{status, message, jobName, bytesVerified}`, where `jobName` is the name `counterpart_print_progress` reports. On the BambuNetwork and X2D native routes, Bambu's plug-in puts the file on the printer, so its FTPS path isn't verified. If the file can't be read back there, the resume matches the job by its unique name and returns `bytesVerified: false`, and a person is asked, with the prompt saying so. On every other route, a file that can't be re-read refuses the resume.
 
 ```json
 {
@@ -907,7 +919,7 @@ Inspect a prepared sliced 3MF or textual G-code file offline before deciding wha
 
 `file_path` and explicit `bambu_model` are required; the model is never inferred from configuration. `plate_index` is zero-based and defaults to 0. Nozzle/bed checks are optional comparisons against file declarations, not observations of installed hardware. Only these five argument names are accepted; credentials, host and executable/bridge overrides are not part of this tool.
 
-The generic result has `receipt_version: "1"`, `evidence: "file-only"`, `dispatch_authorized: false`, `artifact` (`sha256`, `byte_length`, `file_format`), the requested `selection`, and the original `inspection` including declared model, nozzles, materials/used filament positions, internal plate path and checked temperature peaks. Hash and byte length identify the exact inspected snapshot; a consumer must compare them with its own artifact and selected plate. The temporary snapshot is removed, and its path is not a dispatch capability. The receipt does not prove printer readiness, physical material/nozzle contents, fit, full motion simulation or permission to print. Actual print routes still independently inspect the dispatched snapshot and require fresh hardware state and human preflight.
+The generic result has `receipt_version: "1"`, `evidence: "file-only"`, `dispatch_authorized: false`, `artifact` (`sha256`, `byte_length`, `file_format`), the requested `selection`, and the original `inspection` including declared model, nozzles, materials/used filament positions, internal plate path and checked temperature peaks. Hash and byte length identify the exact inspected snapshot; a consumer must compare them with its own artifact and selected plate. The temporary snapshot is removed, and its path is not a dispatch capability. The receipt does not prove printer readiness, physical material/nozzle contents, fit, full motion simulation or permission to print. Actual print routes still independently inspect the dispatched snapshot and require fresh hardware state.
 
 #### Print options
 
@@ -970,7 +982,7 @@ Install Bambu Studio and its networking plug-in, plus the Apple command-line dev
 
 The npm package and desktop bundle include `native/bambu-native-print.cpp`, `scripts/build-bambu-native.sh` and the Linux setup script, never a developer's compiled binary. The server finds the built helper relative to its installed package, regardless of the launch directory. A trusted server setting `BAMBU_NATIVE_HELPER` can select an alternate executable.
 
-For X2D, `print_3mf` defaults to `connection_mode: "bambu_native"`; legacy `lan_mqtt_ftps` requests are redirected to it. Supply `ams_slots`, a complete project-level `ams_mapping`, or `auto_match_ams: true`. A job that uses only one external spool requires explicit `use_ams: false`; a job mixing AMS trays with the external spools maps them as `254` (left/deputy nozzle) and `255` (right/main nozzle). Raw `ams_mapping2` and nozzle/extra-option overrides are rejected before dispatch; the server derives both AMS representations from the checked structured mapping. Model/nozzle/material inspection, fresh printer-state checks, and human preflight apply before the helper receives a private snapshot. The native helper requests fresh shared printer-state authorization immediately before each print submission, including a certificate retry, and before checked heating, resume, or error-clearing commands; custom helpers must support this handshake. Stop and heater-off remain available without preflight. Native upload-only requests use the same all-plate inspection as FTPS uploads. They accept `project_name`, `preset_name`, `bed_type`, and an existing `plate_index`; AMS, nozzle, and calibration print options are rejected. Use `print_3mf` for checked print settings.
+For X2D, `print_3mf` defaults to `connection_mode: "bambu_native"`; legacy `lan_mqtt_ftps` requests are redirected to it. Supply `ams_slots`, a complete project-level `ams_mapping`, or `auto_match_ams: true`. A job that uses only one external spool requires explicit `use_ams: false`; a job mixing AMS trays with the external spools maps them as `254` (left/deputy nozzle) and `255` (right/main nozzle). Raw `ams_mapping2` and nozzle/extra-option overrides are rejected before dispatch; the server derives both AMS representations from the checked structured mapping. Model/nozzle/material inspection and fresh printer-state checks apply before the helper receives a private snapshot. The native helper requests fresh shared printer-state authorization immediately before each print submission, including a certificate retry, and before checked heating, resume, or error-clearing commands; custom helpers must support this handshake. Stop and heater-off remain available without preflight. Native upload-only requests use the same all-plate inspection as FTPS uploads. They accept `project_name`, `preset_name`, `bed_type`, and an existing `plate_index`; AMS, nozzle, and calibration print options are rejected. Use `print_3mf` for checked print settings.
 
 The helper waits for connection/certificate exchange and retries only the initial `-4030` send once. Rebuild the helper after upgrading to receive the teardown fix. A successful dispatch receipt ends the helper before plug-in cleanup can turn an accepted job into an error. If an older/custom helper crashes after dispatch, the server reports uncertainty: check the printer state and job name before retrying, because resending can duplicate a print. Previous hardware testing reached `RUNNING` on X2D; this revision is validated with mocked transport regressions and clean installs, not a new physical print. `bambu_connect` is an optional macOS handoff for user review in Bambu Connect and does not start a print. Native task, heater, and error controls retain the common safety checks; raw controls cannot bypass them. Request cancellation, stop, and heater-off interrupt pending native helpers; the server waits for process exit before releasing a checked file. A command already sent to the printer cannot be recalled by cancelling the request, so verify printer state before retrying.
 
@@ -1065,7 +1077,8 @@ If the project does not match those assumptions, the tool fails fast with a stru
 
 [Counterpart](https://github.com/DMontgomery40/scan-to-make) (Scan to Make) reads printers through a small contract that this server and [mcp-3D-printer-server](https://github.com/DMontgomery40/mcp-3D-printer-server) share. Each tool declares an `outputSchema` and returns `structuredContent`, plus the same JSON as text for older clients. An error is returned as text only, because MCP clients check `structuredContent` against the schema even on errors. `counterpart_printer_info` and `counterpart_print_progress` take the usual optional `host`, `bambu_serial`, `bambu_token` and `bambu_model` (default `BAMBU_MODEL`) arguments.
 
-- **`counterpart_printer_info`** returns `{contract, server: {name, version}, printer: {kind: "bambu", model, serial, host}, capabilities}`. `capabilities` lists progress, layers, the camera transport (`bambu-tcp` for A1/P1, `rtsp` for X1, P2S, H2 and X2D, `none` without a model), `filaments: "ams"`, pause, resume, cancel, `print3mf` and `gcode` (false on X2D). It sends nothing to the printer and never returns the access code.
+- **`counterpart_printer_info`** returns `{contract, server: {name, version}, printer: {kind: "bambu", model, serial, host}, capabilities}`. `capabilities` lists progress, layers, the camera transport (`bambu-tcp` for A1/P1, `rtsp` for X1, P2S, H2 and X2D, `none` without a model), `cameraStream: true` for supported camera models, `filaments: "ams"`, pause, resume, cancel, `print3mf` and `gcode` (false on X2D). It sends nothing to the printer and never returns the access code.
+- **`counterpart_print_route`** reads or changes how prints and Stop/Pause/Resume reach the printer: `{route, mode, type, choices, savedTo}`, where `route` is `lan` (the local network, in the configured `BAMBU_DEFAULT_CONNECTION_MODE`) or `cloud` (Bambu Cloud through the [FULU bridge](docs/FULU.md)). Pass `route` to change it; the next print and control use it at once, and it is written to the `.env` in the server's working directory when one exists (`savedTo`, otherwise `null`). It is not part of the shared contract: it has no `outputSchema`, and mcp-3D-printer-server has no Bambu Cloud route.
 - **`counterpart_print_progress`** returns `{contract, observedAt, state, job?, temps?, activeFilament?, problems}` from the printer's MQTT reports, which this server keeps while it is connected. A held session is answered from that cache without any printer traffic, and `observedAt` is when the printer sent the report. The server asks the printer for a full report only to fill an empty cache, and at most once every five minutes after the printer has been quiet that long. A printer that sends no report within 8 seconds is `offline`.
   - `state`: `IDLE` is `idle`, `PREPARE`/`SLICING` `preparing`, `RUNNING` `printing`, `PAUSE` `paused`, `FINISH` `finished` and `FAILED` `failed`. A `FAILED` job with `0300400C` ("The task was canceled.") in `print_error`, or in X2D's `fail_reason`, is `cancelled`. Any other or missing `gcode_state` on a connected printer is `busy`.
   - `job` (not for idle, busy or offline): `name` is `subtask_name`, else the basename of `gcode_file` (a raw G-code print reports only its file path; that basename is the `jobName` the print returns); `id` is `task_id`, omitted when it is the LAN placeholder `"0"`; `progress` is `mc_percent`; `remainingSec` is `mc_remaining_time` (minutes) × 60; `layer`/`totalLayers` appear once the printer reports a total; `stage` is Bambu Studio's words for `stg_cur` ("Heatbed preheating", "Auto bed leveling").
@@ -1165,7 +1178,7 @@ When `slicer_type` is `bambustudio` (the default), these additional parameters a
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `uptodate` | boolean | Update 3MF configs to latest BambuStudio presets |
-| `repetitions` | number | Number of copies to print |
+| `repetitions` | number | Total STL copies, using the CLI's `--clone-objects`; do not also pass `clone_objects`. Copies may span plates, and `print_3mf` prints one selected plate per call. For 3MF repetitions, choose `slice_plate` explicitly. |
 | `orient` | boolean | Auto-orient model for optimal printability |
 | `arrange` | boolean | Auto-arrange objects on the build plate |
 | `ensure_on_bed` | boolean | Lift floating models onto the bed |
@@ -1388,6 +1401,18 @@ Resources follow the MCP resource protocol and can be read by calling `ReadResou
 - `printer://{host}/hms` -- HMS and error diagnostics from the latest status payload. Returns connection state, printer status, explicit HMS payloads when present, and shallow raw fields whose names indicate errors, failures, warnings, or HMS data.
 
 **Example:** To read the status of the default printer, use URI `printer://192.168.1.100/status`. The host segment must match a configured printer IP; the server uses `PRINTER_HOST` if the default URI template is used.
+
+### Design guidance
+
+The server carries manufacturing judgment for agents that design or edit a model to print. It is served as MCP prompts, so the client attaches each piece when it applies; the server's `instructions` tell any client they exist.
+
+- `fdm_design` -- for every design or model-editing task. Plan how the object prints as part of the design: geometry, orientation, supports, colours and assembly, using the actual printer, filaments and slice. It keeps what the person asked for and judges overhangs, bridges and supports locally, with no fixed 45-degree or bridge-length ban.
+- `fdm_multicolor` -- when several colours or support materials share a print: filament transitions across layers, colour placement, plate scheduling and flushing.
+- `fdm_assembly` -- when a split, accent insert or joint could materially improve the result.
+- `fdm_after_slice` -- a separate review turn after `slice_stl`, before presenting the manufacturing recommendation: keep, revise, or validate one specific uncertainty, using the returned `slicer_result`.
+- `guidance://fdm/capability-guidance` (resource) -- planning bands and sources for bridges and overhangs, for when one is consequential and there is no sufficiently specific measured capability for the printer, material and profile.
+
+mcp-3D-printer-server serves the same guidance.
 
 </details>
 

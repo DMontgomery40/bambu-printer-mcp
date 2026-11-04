@@ -39,10 +39,7 @@ test('the same canceled report from a matching non-X2D printer stays blocked', (
   }
 });
 
-test('a canceled job adds no plate prompt in headless mode', async t => {
-  const previous = process.env.BAMBU_REQUIRE_CONFIRMATION;
-  process.env.BAMBU_REQUIRE_CONFIRMATION = '0';
-  t.after(() => { if (previous === undefined) delete process.env.BAMBU_REQUIRE_CONFIRMATION; else process.env.BAMBU_REQUIRE_CONFIRMATION = previous; });
+test('a canceled job adds no plate prompt', async t => {
   const messages = [];
   const implementation = new BambuImplementation(async message => { messages.push(message); return false; });
   await implementation.confirmPrintPreflight(serial, fresh(canceled()), inspection);

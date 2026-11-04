@@ -7,12 +7,6 @@ import { BambuImplementation } from "../dist/printers/bambu.js";
 const host = "127.0.0.1", serial = "20PCALLBACK", token = "DUMMY";
 
 function setup(t, raw = {}) {
-  const previousConfirmation = process.env.BAMBU_REQUIRE_CONFIRMATION;
-  process.env.BAMBU_REQUIRE_CONFIRMATION = "1";
-  t.after(() => {
-    if (previousConfirmation === undefined) delete process.env.BAMBU_REQUIRE_CONFIRMATION;
-    else process.env.BAMBU_REQUIRE_CONFIRMATION = previousConfirmation;
-  });
   let confirmations = 0, reads = 0;
   const printer = new BambuImplementation(async () => { confirmations++; return true; });
   const report = { vir_slot: [{id:255,tray_type:"PLA"},{id:254,tray_type:"PLA"}], model: "x2d", gcode_state: "IDLE", nozzle_diameter: ["0.4", "0.4"], print_error: 0, hms: [], ...raw };
@@ -25,7 +19,7 @@ function setup(t, raw = {}) {
   return { printer, report, confirmations: () => confirmations, reads: () => reads };
 }
 
-test("native heating rejects newly busy state at helper dispatch without reconfirming", async t => {
+test("native heating rejects newly busy state at helper dispatch without a prompt", async t => {
   const s = setup(t);
   let sent = false;
   await assert.rejects(s.printer.setTemperature(host, serial, token, "bed", 50, "x2d", undefined, 0.4,
@@ -35,10 +29,10 @@ test("native heating rejects newly busy state at helper dispatch without reconfi
       sent = true;
     }), /RUNNING|idle/i);
   assert.equal(sent, false);
-  assert.equal(s.confirmations(), 1);
+  assert.equal(s.confirmations(), 0);
 });
 
-test("native heating repeats live checks for retries while retaining one confirmation", async t => {
+test("native heating repeats live checks for retries without a prompt", async t => {
   const s = setup(t);
   await s.printer.setTemperature(host, serial, token, "bed", 50, "x2d", undefined, 0.4,
     async (_heater, _target, _active, beforeDispatch) => {
@@ -47,7 +41,7 @@ test("native heating repeats live checks for retries while retaining one confirm
       await assert.rejects(async () => beforeDispatch?.(), /identity|model/i);
     });
   assert.equal(s.reads(), 4);
-  assert.equal(s.confirmations(), 1);
+  assert.equal(s.confirmations(), 0);
 });
 
 test("heating rechecks the currently loaded spool material at helper dispatch", async t => {
@@ -81,7 +75,7 @@ for (const [label, change, error] of [
   ["job identity", s => Object.assign(s.report, { gcode_file: "cache/other.3mf" }), /no longer the job/],
   ["nozzle", s => Object.assign(s.report, { nozzle_diameter: ["0.6", "0.4"] }), /nozzle|diameter/i],
   ["paused state", s => Object.assign(s.report, { gcode_state: "RUNNING" }), /paused|PAUSE/i],
-  // The job ended and the same file paused again between the post-prompt check and the helper's.
+  // The job ended and the same file paused again between the server's last check and the helper's.
   ["that the confirmed record is still current", s => s.printer.observeReport(host, serial, { gcode_state: "FINISH", gcode_file: "cache/checked.3mf" }), /no longer the job/],
 ]) test(`native resume rechecks ${label} at helper dispatch`, async t => {
   const s = setup(t, { gcode_state: "PAUSE", gcode_file: "cache/checked.3mf" });
@@ -93,7 +87,7 @@ for (const [label, change, error] of [
     sent = true;
   }), error);
   assert.equal(sent, false);
-  assert.equal(s.confirmations(), 1, "resume asked once, before the helper ran");
+  assert.equal(s.confirmations(), 0, "a resume whose bytes were re-read does not ask");
 });
 
 test("native error clearing rejects codes that changed after confirmation at helper dispatch", async t => {

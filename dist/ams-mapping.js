@@ -74,3 +74,52 @@ export function bridgeAmsMapping2Entry(value, dualNozzle = false) {
         return { ams_id: 128, slot_id: value - 128 };
     return { ams_id: Math.floor(value / 4), slot_id: value % 4 };
 }
+/** Read every project filament (not just the plate's used ones) from project_settings.config. */
+export function projectFilaments(projectSettings) {
+    const list = (key) => Array.isArray(projectSettings[key]) ? projectSettings[key].map(String) : [];
+    const types = list("filament_type"), ids = list("filament_ids"), colours = list("filament_colour"), nozzles = list("filament_map");
+    return types.map((type, index) => ({
+        type, filamentId: ids[index] ?? "", colour: colours[index] ?? "",
+        ...(nozzles[index] !== undefined && Number.isInteger(Number(nozzles[index])) ? { nozzle: Number(nozzles[index]) } : {}),
+    }));
+}
+/** The colour the printer reports for an absolute tray value (AMS, AMS-HT or external spool). */
+export function trayColour(rawStatus, tray) {
+    const units = Array.isArray(rawStatus?.ams?.ams) ? rawStatus.ams.ams : [];
+    let colour;
+    if (tray === 254 || tray === 255) {
+        const slots = Array.isArray(rawStatus?.vir_slot) ? rawStatus.vir_slot : [];
+        colour = slots.find(slot => Number(slot?.id) === tray)?.tray_color ?? (tray === 254 ? rawStatus?.vt_tray?.tray_color : undefined);
+    }
+    else if (tray >= 128) {
+        colour = units.find(unit => Number(unit?.id) === tray)?.tray?.[0]?.tray_color;
+    }
+    else if (tray >= 0) {
+        const unit = units.find(candidate => Number(candidate?.id) === Math.floor(tray / 4));
+        colour = (Array.isArray(unit?.tray) ? unit.tray : []).find((slot) => Number(slot?.id) === tray % 4)?.tray_color;
+    }
+    return typeof colour === "string" ? colour : undefined;
+}
+/**
+ * PrintParams.ams_mapping_info exactly as Bambu Studio and FULU's slicer build it
+ * (SelectMachineDialog::get_ams_mapping_result) and send it with every print: one entry per
+ * project filament. A mapped filament names its tray, its filament id and type, its colour as
+ * #RRGGBBAA and the tray's colour as the printer reports it; an unmapped one carries ams -1.
+ * Filament-map nozzle 1 (left) is cloud nozzle 1 and 2 (right) is 0 (CloudTaskNozzleId).
+ */
+export function studioAmsMappingInfo(filaments, mapping, colourOfTray) {
+    return filaments.map((filament, position) => {
+        const tray = mapping[position];
+        if (tray === undefined || tray < 0)
+            return { ams: -1, targetColor: "", filamentId: "", filamentType: "" };
+        const hex = filament.colour.replace(/^#/, "").toUpperCase();
+        return {
+            ams: tray,
+            targetColor: colourOfTray(tray) ?? "",
+            filamentId: filament.filamentId,
+            filamentType: filament.type,
+            ...(filament.nozzle === 1 ? { nozzleId: 1 } : filament.nozzle === 2 ? { nozzleId: 0 } : {}),
+            sourceColor: /^[0-9A-F]{6}$/.test(hex) ? `#${hex}FF` : /^[0-9A-F]{8}$/.test(hex) ? `#${hex}` : "",
+        };
+    });
+}

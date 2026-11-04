@@ -823,14 +823,25 @@ for (const slicerType of ['orcaslicer', 'orcaslicer-bambulab']) {
   });
 }
 
-test('BambuStudio keeps its transform and repetition flags unchanged', async t => {
+test('BambuStudio keeps transforms but clones STL copies while slicing all plates', async t => {
   const f = await fixture(t, 'bambustudio');
   await f.slice({ scale: 4, rotate: 90, rotateX: 90, rotateY: 30, arrange: true, repetitions: 3 });
   const args = await f.args();
-  for (const [flag, value] of [['--scale', '4'], ['--rotate', '90'], ['--rotate-x', '90'], ['--rotate-y', '30'], ['--repetitions', '3']]) {
+  for (const [flag, value] of [['--scale', '4'], ['--rotate', '90'], ['--rotate-x', '90'], ['--rotate-y', '30'], ['--clone-objects', '3'], ['--slice', '0']]) {
     assert.deepEqual(args.slice(args.indexOf(flag), args.indexOf(flag) + 2), [flag, value]);
   }
   assert.equal(args.at(-1), f.stl);
+  assert.equal(args.includes('--repetitions'), false, 'Bambu rejects repetitions greater than one with slice-all');
+});
+
+test('BambuStudio rejects two competing STL copy counts and preserves selected-plate 3MF repetitions', async t => {
+  const f = await fixture(t, 'bambustudio');
+  await assert.rejects(f.slice({repetitions: 2, cloneObjects: '3'}), /either repetitions or clone_objects/);
+  const project = await f.project(1);
+  await f.slice({repetitions: 2, slicePlate: 1}, undefined, project);
+  const args = await f.args();
+  assert.deepEqual(args.slice(args.indexOf('--repetitions'), args.indexOf('--repetitions') + 2), ['--repetitions', '2']);
+  assert.equal(args.includes('--clone-objects'), false);
 });
 
 test('a Bambu-style CLI failure names its reason from a fresh result.json or its exit code', async t => {

@@ -271,8 +271,9 @@ test("counterpart_make_3mf refuses overwrites, missing directories, bad parts an
   assert.deepEqual(fs.readdirSync(f.directory).filter(name => name.endsWith(".3mf")).sort(), ["existing.3mf"], "nothing is left behind");
 });
 
-async function server(t, env = {}) {
+async function server(t, env = {}, files = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "counterpart-mcp-"));
+  for (const [name, { text, mode }] of Object.entries(files)) fs.writeFileSync(path.join(directory, name), text, { mode });
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(root, "dist/index.js")],
@@ -305,6 +306,76 @@ test("counterpart tools declare outputSchemas and return structuredContent with 
   assert.equal(info.structuredContent.printer.serial, "01PTESTSERIAL");
   assert.equal(info.structuredContent.server.version, JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version);
   assert.doesNotMatch(info.content[0].text, /printer-secret/);
+});
+
+const NO_BRIDGE = { BAMBU_NETWORK_BRIDGE_COMMAND: undefined, FULU_BAMBU_NETWORK_BRIDGE_COMMAND: undefined, PJARCZAK_BAMBU_BRIDGE_COMMAND: undefined };
+const ROUTE_ENV = { ...NO_BRIDGE, BAMBU_DEFAULT_CONNECTION_MODE: undefined, BAMBU_DEFAULT_CONNECTION_TYPE: undefined };
+const WITH_BRIDGE = { ...ROUTE_ENV, BAMBU_NETWORK_BRIDGE_COMMAND: "/usr/bin/true" };
+const route = async (client, args = {}) => JSON.parse((await client.callTool({ name: "counterpart_print_route", arguments: args })).content[0].text);
+
+test("counterpart_print_route reads the route and changes it in the running server and its .env", async t => {
+  const dotenv = "# printer\nBAMBU_SERIAL=01PTESTSERIAL\nBAMBU_DEFAULT_CONNECTION_MODE=bambu_network\nBAMBU_DEFAULT_CONNECTION_TYPE=lan\nBAMBU_REQUIRE_X=1\n";
+  const { client, directory } = await server(t, WITH_BRIDGE, { ".env": { text: dotenv, mode: 0o600 } });
+  const read = await route(client);
+  assert.deepEqual([read.route, read.mode, read.type, read.savedTo], ["lan", "bambu_network", "lan", null]);
+  assert.deepEqual(read.choices, ["lan", "cloud", "developer"]);
+  assert.deepEqual(read.options.map(option => [option.id, option.label, option.available]),
+    [["lan", "Local network", true], ["cloud", "Bambu Cloud", true], ["developer", "Local network, Developer Mode", true]]);
+  assert.match(read.options[0].controls, /authenticated connection.*Pause, Resume and Stop/);
+  assert.match(read.options[2].controls, /Developer Mode/);
+
+  const cloud = await route(client, { route: "cloud" });
+  assert.deepEqual([cloud.route, cloud.mode, cloud.type], ["cloud", "bambu_network", "cloud"]);
+  const file = path.join(fs.realpathSync(directory), ".env");
+  assert.equal(fs.realpathSync(cloud.savedTo), file);
+  assert.equal(fs.readFileSync(file, "utf8"), dotenv.replace("CONNECTION_TYPE=lan", "CONNECTION_TYPE=cloud"), "only the route line changes");
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600, "the file keeps its permissions");
+  assert.equal((await route(client)).route, "cloud", "the running server uses the new route");
+
+  // Developer Mode is the direct LAN route; choosing the local network again goes back through FULU.
+  const developer = await route(client, { route: "developer" });
+  assert.deepEqual([developer.route, developer.mode, developer.type], ["developer", "lan_mqtt_ftps", "lan"]);
+  assert.match(fs.readFileSync(file, "utf8"), /BAMBU_DEFAULT_CONNECTION_MODE=lan_mqtt_ftps\nBAMBU_DEFAULT_CONNECTION_TYPE=lan/);
+  assert.deepEqual([(await route(client, { route: "lan" })).mode, (await route(client)).type], ["bambu_network", "lan"]);
+  assert.equal(fs.readFileSync(file, "utf8"), dotenv);
+});
+
+test("counterpart_print_route without FULU's bridge: only Developer Mode can be chosen, and no .env is created", async t => {
+  const { client, directory } = await server(t, { ...ROUTE_ENV, BAMBU_DEFAULT_CONNECTION_MODE: "lan_mqtt_ftps" });
+  const read = await route(client);
+  assert.deepEqual([read.route, read.mode], ["developer", "lan_mqtt_ftps"]);
+  assert.deepEqual(read.choices, ["developer"]);
+  assert.match(read.options.find(option => option.id === "cloud").reason, /BAMBU_NETWORK_BRIDGE_COMMAND/);
+  for (const unavailable of ["cloud", "lan"]) {
+    const refused = await client.callTool({ name: "counterpart_print_route", arguments: { route: unavailable } });
+    assert.equal(refused.isError, true);
+    assert.match(refused.content[0].text, /isn't available here.*BAMBU_NETWORK_BRIDGE_COMMAND/);
+  }
+  assert.equal((await route(client)).mode, "lan_mqtt_ftps", "a refused change keeps the route");
+  assert.equal(fs.existsSync(path.join(directory, ".env")), false);
+  const refused = await client.callTool({ name: "counterpart_print_route", arguments: { route: "wifi" } });
+  assert.equal(refused.isError, true);
+});
+
+test("counterpart_print_route keeps an X2D native setup as its local network", async t => {
+  const { client } = await server(t, { ...ROUTE_ENV, BAMBU_MODEL: "x2d", BAMBU_DEFAULT_CONNECTION_MODE: "bambu_native" });
+  const read = await route(client);
+  assert.deepEqual([read.route, read.mode], ["lan", "bambu_native"]);
+  assert.deepEqual(read.choices, ["lan", "developer"]);
+  assert.equal((await route(client, { route: "lan" })).mode, "bambu_native");
+});
+
+test("an X2D on its implicit native route can choose the local network, and comes back to native after Developer Mode", async t => {
+  // Codex review on #99: the route tool used to pass the unresolved defaults, and Developer Mode overwrote native.
+  for (const env of [{ ...ROUTE_ENV, BAMBU_MODEL: "x2d" }, { ...WITH_BRIDGE, BAMBU_MODEL: "x2d", BAMBU_DEFAULT_CONNECTION_MODE: "bambu_native" }]) {
+    const { client } = await server(t, env);
+    const read = await route(client);
+    assert.deepEqual([read.route, read.mode], ["lan", "bambu_native"]);
+    assert.equal((await route(client, { route: "lan" })).mode, "bambu_native");
+    assert.equal((await route(client, { route: "developer" })).mode, "lan_mqtt_ftps");
+    assert.ok((await route(client)).choices.includes("lan"), "the native local route is still offered");
+    assert.equal((await route(client, { route: "lan" })).mode, "bambu_native", "and choosing it returns to native");
+  }
 });
 
 test("counterpart errors are text only, so an MCP client's outputSchema check cannot hide them", async t => {

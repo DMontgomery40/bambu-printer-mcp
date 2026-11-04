@@ -11,6 +11,7 @@ import JSZip from "jszip";
 import { BambuImplementation } from "../dist/printers/bambu.js";
 import { BambuNetworkBridge } from "../dist/bambu-network-bridge.js";
 import { withPrintSnapshot } from "../dist/safety/artifact.js";
+import { studioAmsMappingInfo, trayColour } from "../dist/ams-mapping.js";
 
 // Mocked printers never report a started job; tests that cover it opt back in.
 process.env.BAMBU_DISPATCH_CHECK_MS = "0";
@@ -28,7 +29,7 @@ function safetyStatus({ model = "p1s", nozzle = "0.4", state = "IDLE", ...raw } 
   };
 }
 
-async function fixture(t, { model = "p1s", nozzle = "0.4", nozzleDiameters, material = "PLA", gcode = "M104 S220\nM140 S60\nG1 X10 Y10 Z1\n", raw = false } = {}) {
+async function fixture(t, { model = "p1s", nozzle = "0.4", nozzleDiameters, material = "PLA", gcode = "M104 S220\nM140 S60\nG1 X10 Y10 Z1\n", raw = false, project = {} } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-safety-dispatch-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, raw ? "job.gcode" : "job.gcode.3mf");
@@ -40,18 +41,17 @@ async function fixture(t, { model = "p1s", nozzle = "0.4", nozzleDiameters, mate
     zip.file("3D/3dmodel.model", '<?xml version="1.0"?><model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources><object id="1" type="model" name="cube.stl"><mesh><vertices/><triangles/></mesh></object></resources><build><item objectid="1"/></build></model>');
     zip.file("Metadata/plate_1.gcode", content);
     zip.file("Metadata/plate_1.json", JSON.stringify({ filament_ids: [0] }));
-    zip.file("Metadata/project_settings.config", JSON.stringify({ printer_model: model, nozzle_diameter: nozzles, filament_type: [material], curr_bed_type: "Textured PEI Plate" }));
+    zip.file("Metadata/project_settings.config", JSON.stringify({ printer_model: model, nozzle_diameter: nozzles, filament_type: [material], curr_bed_type: "Textured PEI Plate", ...project }));
     await fs.writeFile(file, await zip.generateAsync({ type: "nodebuffer" }));
   }
   return file;
 }
 
-function isolatedPrinter(status = safetyStatus(), { confirm = async () => true } = {}) {
+function isolatedPrinter(status = safetyStatus(), { confirm = async () => true, resumeStateDir, files = new Map() } = {}) {
   const prompts = [];
-  const printer = new BambuImplementation(async (message) => { prompts.push(message); return confirm(message); });
+  const printer = new BambuImplementation(async (message) => { prompts.push(message); return confirm(message); }, { resumeStateDir });
   const events = [];
   // The printer's storage: uploads land here and FTPS downloads read them back.
-  const files = new Map();
   const stored = (remote) => remote.replace(/^\/+/, "");
   printer.ftpUpload = async (_host, _token, file, remote) => {
     const bytes = await fs.readFile(file);
@@ -302,10 +302,10 @@ test("resume refuses a job this server has not inspected before connecting", asy
 });
 
 /** A checked P1S job started by this server, then reported paused; confirm answers the prompts after the start. */
-async function pausedJob(t, { confirm = async () => true } = {}) {
+async function pausedJob(t, { confirm = async () => true, resumeStateDir } = {}) {
   const file = await fixture(t);
   let answer = async () => true;
-  const isolated = isolatedPrinter(undefined, { confirm: (message) => answer(message) });
+  const isolated = isolatedPrinter(undefined, { confirm: (message) => answer(message), resumeStateDir });
   const started = await isolated.printer.print3mf(host, serial, token, { projectName: "resume", filePath: file, bambuModel: "p1s", useAMS: false });
   answer = confirm;
   isolated.events.length = 0;
@@ -321,8 +321,15 @@ async function pausedJob(t, { confirm = async () => true } = {}) {
   return job;
 }
 
-test("a matching inspected paused job resumes after its bytes are re-read, a person confirms and a fresh check", async (t) => {
-  const job = await pausedJob(t);
+/** Record the job as a plug-in route placed it, with a file the printer cannot give back: that resume still asks a person. */
+function unverified(job) {
+  const record = job.printer.checkedJobs.get(`${host}\n${serial}`);
+  job.printer.recordCheckedJob(host, serial, record.remotePath, record.requirements, record, false);
+  job.files.clear();
+}
+
+test("a matching inspected paused job resumes after its bytes are re-read and a fresh check, without a prompt", async (t) => {
+  const job = await pausedJob(t, { confirm: async () => false });
   const result = await job.printer.resumeJob(host, serial, token);
   assert.equal(result.status, "success");
   assert.equal(result.bytesVerified, true);
@@ -330,34 +337,137 @@ test("a matching inspected paused job resumes after its bytes are re-read, a per
   assert.deepEqual(job.events.map(({ action }) => action), ["status", "download", "status", "connect", "publish"]);
   assert.equal(job.events[1].remote, job.started.remoteProjectPath);
   assert.equal(job.events[4].payload.print.command, "resume");
-  assert.equal(job.prompts.length, 1);
-  assert.match(job.prompts[0], /^Resume checked-[a-f0-9-]+-job\.gcode\.3mf on P1S \(01PTESTSAFETY\)\?.*reheats.*nozzle 220°C, bed 60°C.*Materials: PLA\..*SHA-256: [a-f0-9]{64} \(re-read from the printer\)/s);
+  assert.deepEqual(job.prompts, [], "a resume whose bytes were re-read does not ask");
 });
 
-test("resume asks a person first: a declined prompt sends nothing", async (t) => {
+/** The same printer, as a new server process sees it after a restart: same storage, same paused report, same record folder. */
+function restarted(job, resumeStateDir) {
+  const next = isolatedPrinter(undefined, { resumeStateDir, files: job.files });
+  next.printer.getSafetyStatus = async () => { next.events.push({ action: "status" }); return safetyStatus(job.report); };
+  return next;
+}
+
+async function recordFolder(t) {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-resume-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  return dir;
+}
+
+// Nov 3: the MCP restarted (companion restarts) while a P1S pick paused before layer 2; Resume from Counterpart was
+// refused for the rest of the print because the record of the job lived only in the old process.
+test("a server restarted during a pause still resumes the job it started, with every check", async (t) => {
+  const dir = await recordFolder(t);
+  const job = await pausedJob(t, { resumeStateDir: dir });
+  job.printer.printerStore.onReport(host, serial, { gcode_state: "RUNNING", gcode_file: job.started.remoteProjectPath, subtask_name: job.started.subtaskName });
+  const files = await fs.readdir(dir);
+  assert.equal(files.length, 1);
+  assert.equal((await fs.stat(path.join(dir, files[0]))).mode & 0o777, 0o600, "the record is private");
+  const next = restarted(job, dir);
+  const result = await next.printer.resumeJob(host, serial, token);
+  assert.equal(result.status, "success");
+  assert.equal(result.bytesVerified, true);
+  assert.deepEqual(next.events.map(({ action }) => action), ["status", "download", "status", "connect", "publish"]);
+  assert.equal(next.events.at(-1).payload.print.command, "resume");
+});
+
+test("after a restart, a job stopped before it or ended while the server was down is not resumed", async (t) => {
+  const dir = await recordFolder(t);
+  const stopped = await pausedJob(t, { resumeStateDir: dir });
+  await stopped.printer.cancelJob(host, serial, token, async () => ({ status: "success" }));
+  assert.deepEqual(await fs.readdir(dir), [], "Stop removes the record");
+  const afterStop = restarted(stopped, dir);
+  await assert.rejects(afterStop.printer.resumeJob(host, serial, token), /inspected and started/);
+  assert.deepEqual(afterStop.events, []);
+
+  const ended = await pausedJob(t, { resumeStateDir: dir });
+  ended.printer.printerStore.onReport(host, serial, { gcode_state: "RUNNING", gcode_file: ended.started.remoteProjectPath, subtask_name: ended.started.subtaskName });
+  const afterEnd = restarted(ended, dir);
+  // The first report the new server sees says the job finished; the same file then pauses again (a touchscreen reprint).
+  afterEnd.printer.printerStore.onReport(host, serial, { gcode_state: "FINISH", gcode_file: ended.started.remoteProjectPath, subtask_name: ended.started.subtaskName });
+  await assert.rejects(afterEnd.printer.resumeJob(host, serial, token), /inspected and started/);
+  assert.equal(afterEnd.events.filter(({ action }) => action === "publish").length, 0);
+});
+
+test("a damaged or foreign resume record is ignored", async (t) => {
+  const dir = await recordFolder(t);
+  const job = await pausedJob(t, { resumeStateDir: dir });
+  const [name] = await fs.readdir(dir);
+  const saved = JSON.parse(await fs.readFile(path.join(dir, name), "utf8"));
+  for (const damaged of ["{not json", JSON.stringify({ ...saved, key: "other-host\nother-serial" }), JSON.stringify({ ...saved, job: { ...saved.job, sha256: "nope" } })]) {
+    await fs.writeFile(path.join(dir, name), damaged);
+    await assert.rejects(restarted(job, dir).printer.resumeJob(host, serial, token), /inspected and started/);
+  }
+});
+
+/**
+ * A printer client that answers each control on its report topic, as the real MQTT client re-emits it
+ * (rawMessage). answer(print) returns the fields of the printer's reply, or undefined for no reply.
+ */
+function answeringClient(events, answer) {
+  const listeners = new Set();
+  return {
+    on: (name, listener) => { if (name === "rawMessage") listeners.add(listener); },
+    off: (name, listener) => { if (name === "rawMessage") listeners.delete(listener); },
+    publish: async (payload) => {
+      events.push({ action: "publish", payload });
+      const reply = answer(payload.print);
+      if (reply) setTimeout(() => {
+        const text = JSON.stringify({ print: { command: payload.print.command, param: "", sequence_id: payload.print.sequence_id, ...reply } });
+        for (const listener of [...listeners]) listener(`device/${serial}/report`, Buffer.from(text));
+      }, 10);
+    },
+  };
+}
+
+// Developer Mode connection: a printer that is not really in LAN Only + Developer Mode refuses unsigned controls
+// (84033543, 0x05024007). Counterpart must say so instead of "sent".
+for (const command of ["stop", "pause", "resume"]) {
+  test(`a direct ${command} the printer refuses as unsigned says it isn't in Developer Mode; an answered one is confirmed`, async (t) => {
+    for (const [answer, expected] of [[{ err_code: 84033543 }, "refused"], [{ result: "success" }, "accepted"]]) {
+      const job = await pausedJob(t);
+      job.printer.getPrinter = async () => { job.events.push({ action: "connect" }); return answeringClient(job.events, () => answer); };
+      const send = command === "stop" ? job.printer.cancelJob(host, serial, token)
+        : command === "pause" ? job.printer.pauseJob(host, serial, token) : job.printer.resumeJob(host, serial, token);
+      if (expected === "refused") {
+        await assert.rejects(send, /refused \w+ \(error 05024007\): its command verification failed.*LAN Only and Developer Mode/);
+      } else {
+        const result = await send;
+        assert.equal(result.confirmed, true);
+        assert.match(result.message, /accepted/);
+      }
+      const sent = job.published().at(-1).payload.print;
+      assert.deepEqual([sent.command, sent.param], [command, ""], "Bambu Studio's own control JSON");
+      assert.match(sent.sequence_id, /^\d+$/);
+    }
+  });
+}
+
+test("a direct control with no answer still reports it was sent, unconfirmed", async (t) => {
+  const job = await pausedJob(t);
+  process.env.BAMBU_CONTROL_REPLY_MS = "50";
+  t.after(() => { delete process.env.BAMBU_CONTROL_REPLY_MS; });
+  job.printer.getPrinter = async () => answeringClient(job.events, () => undefined);
+  const result = await job.printer.pauseJob(host, serial, token);
+  assert.equal(result.confirmed, false);
+  assert.match(result.message, /Pause command sent/);
+});
+
+test("an unverified resume asks a person first: a declined prompt sends nothing", async (t) => {
   const job = await pausedJob(t, { confirm: async () => false });
+  unverified(job);
   await assert.rejects(job.printer.resumeJob(host, serial, token), /declined|cancelled/i);
   assert.equal(job.prompts.length, 1);
+  assert.match(job.prompts[0], /^Resume checked-[a-f0-9-]+-job\.gcode\.3mf on P1S \(01PTESTSAFETY\)\?.*reheats.*nozzle 220°C, bed 60°C.*Materials: PLA\..*SHA-256: [a-f0-9]{64} \(Bambu's plug-in placed the file/s);
   assert.deepEqual(job.published(), []);
 });
 
-test("resume reads the printer again after the prompt", async (t) => {
+test("an unverified resume reads the printer again after the prompt", async (t) => {
   let job;
   job = await pausedJob(t, { confirm: async () => { job.report = { ...job.report, state: "RUNNING" }; return true; } });
+  unverified(job);
   await assert.rejects(job.printer.resumeJob(host, serial, token), /paused/i);
   assert.equal(job.prompts.length, 1);
   assert.deepEqual(job.published(), []);
-});
-
-test("BAMBU_REQUIRE_CONFIRMATION=0 skips the resume prompt but not the byte check", async (t) => {
-  const previous = process.env.BAMBU_REQUIRE_CONFIRMATION;
-  process.env.BAMBU_REQUIRE_CONFIRMATION = "0";
-  t.after(() => { if (previous === undefined) delete process.env.BAMBU_REQUIRE_CONFIRMATION; else process.env.BAMBU_REQUIRE_CONFIRMATION = previous; });
-  const job = await pausedJob(t);
-  const result = await job.printer.resumeJob(host, serial, token);
-  assert.equal(result.bytesVerified, true);
-  assert.deepEqual(job.prompts, []);
-  assert.deepEqual(job.events.map(({ action }) => action), ["status", "download", "status", "connect", "publish"]);
 });
 
 test("a changed printer file refuses the resume and retires the record", async (t) => {
@@ -399,7 +509,7 @@ test("a project the printer replaced with its extracted plate is verified agains
   const result = await job.printer.resumeJob(host, serial, token);
   assert.equal(result.bytesVerified, true);
   assert.deepEqual(job.events.filter(({ action }) => action === "download").map(({ remote }) => remote), [job.started.remoteProjectPath, plate]);
-  assert.match(job.prompts[0], new RegExp(`re-read from the printer as its extracted plate ${plate.replaceAll(".", "\\.")}`));
+  assert.deepEqual(job.prompts, []);
   assert.equal(job.published().length, 1);
 });
 
@@ -447,6 +557,7 @@ test("a job that ends and pauses again while the prompt is open is not resumed",
     job.printer.printerStore.onReport(host, serial, { gcode_state: "FINISH", gcode_file: job.started.remoteProjectPath, subtask_name: job.started.subtaskName });
     return true;
   } });
+  unverified(job);
   await assert.rejects(job.printer.resumeJob(host, serial, token), /no longer the job/);
   assert.equal(job.prompts.length, 1);
   assert.deepEqual(job.published(), []);
@@ -464,10 +575,7 @@ test("a plug-in route job the printer cannot re-read is matched by its unique na
   assert.equal(job.published().length, 1);
 });
 
-test("an unverified plug-in route resume always asks a person, even with BAMBU_REQUIRE_CONFIRMATION=0", async (t) => {
-  const previous = process.env.BAMBU_REQUIRE_CONFIRMATION;
-  process.env.BAMBU_REQUIRE_CONFIRMATION = "0";
-  t.after(() => { if (previous === undefined) delete process.env.BAMBU_REQUIRE_CONFIRMATION; else process.env.BAMBU_REQUIRE_CONFIRMATION = previous; });
+test("an unverified plug-in route resume always asks a person", async (t) => {
   let answer = true;
   const job = await pausedJob(t, { confirm: async () => answer });
   const record = job.printer.checkedJobs.get(`${host}\n${serial}`);
@@ -475,7 +583,7 @@ test("an unverified plug-in route resume always asks a person, even with BAMBU_R
   const saved = new Map(job.files);
   job.files.clear();
   answer = false;
-  await assert.rejects(job.printer.resumeJob(host, serial, token), /could not be re-read, so this resume always needs a person.*BAMBU_REQUIRE_CONFIRMATION=0/);
+  await assert.rejects(job.printer.resumeJob(host, serial, token), /could not be re-read, so this resume always needs a person/);
   assert.equal(job.prompts.length, 1);
   assert.deepEqual(job.published(), []);
   answer = true;
@@ -483,17 +591,14 @@ test("an unverified plug-in route resume always asks a person, even with BAMBU_R
   assert.equal(result.bytesVerified, false);
   assert.equal(job.prompts.length, 2);
   assert.equal(job.published().length, 1);
-  // The same route with readable, matching bytes may skip the prompt under the opt-out.
+  // The same route with readable, matching bytes does not ask.
   for (const [remote, bytes] of saved) job.files.set(remote, bytes);
   job.report = { ...job.report, state: "PAUSE" };
   assert.equal((await job.printer.resumeJob(host, serial, token)).bytesVerified, true);
   assert.equal(job.prompts.length, 2, "no prompt when the bytes were verified");
 });
 
-test("an unverified plug-in route resume without an elicitation client is refused under the opt-out", async (t) => {
-  const previous = process.env.BAMBU_REQUIRE_CONFIRMATION;
-  process.env.BAMBU_REQUIRE_CONFIRMATION = "0";
-  t.after(() => { if (previous === undefined) delete process.env.BAMBU_REQUIRE_CONFIRMATION; else process.env.BAMBU_REQUIRE_CONFIRMATION = previous; });
+test("an unverified plug-in route resume without an elicitation client is refused", async (t) => {
   const job = await pausedJob(t);
   const record = job.printer.checkedJobs.get(`${host}\n${serial}`);
   const headless = new BambuImplementation();
@@ -586,6 +691,12 @@ async function interceptedMcp(t, { blockBridgeInitialization = false, realBridge
       ${blockBridgeInitialization ? `log({action:'agent-wait'}); while (!fs.existsSync(${JSON.stringify(releasePath)})) await new Promise(resolve => setTimeout(resolve,10));` : ""}
       return { agent: 0, handshake: { ok: true } };
     };
+    // The Bambu Cloud session (login, subscribe, certificate) has its own fake-host tests;
+    // here a cloud job runs straight through it to the print request.
+    BambuNetworkBridge.prototype.withCloudSession = async function (devId, _options, assertActive, _timing, run) {
+      log({ action:"cloud-session", devId }); assertActive();
+      return run({ settle: async () => {}, messages: [], jobUpdates: [] });
+    };
     ${realBridgeRequest ? `BambuNetworkBridge.prototype.ensureStarted = async function () {
       this.child = {exitCode:0, stdin:{write:(frame, callback) => {
         const message=JSON.parse(frame.subarray(16).toString('utf8'));
@@ -601,7 +712,9 @@ async function interceptedMcp(t, { blockBridgeInitialization = false, realBridge
       return ${JSON.stringify(bridgeResponse)};
     };`}
   `);
-  const transport = new StdioClientTransport({ command: process.execPath, args: ["--import", preload, path.join(root, "dist/index.js")], cwd: dir, stderr: "pipe", env: { ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "", BAMBU_PRINTER_MODEL: "", BAMBU_PRINTER_HOST: host, BAMBU_PRINTER_SERIAL: serial, BAMBU_SERIAL: serial, BAMBU_PRINTER_ACCESS_TOKEN: token, BAMBU_TOKEN: token, BAMBU_DEV_ID: serial, BAMBU_NETWORK_BRIDGE_COMMAND: "" } });
+  const transport = new StdioClientTransport({ command: process.execPath, args: ["--import", preload, path.join(root, "dist/index.js")], cwd: dir, stderr: "pipe", env: { ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "", BAMBU_PRINTER_MODEL: "", BAMBU_PRINTER_HOST: host, BAMBU_PRINTER_SERIAL: serial, BAMBU_SERIAL: serial, BAMBU_PRINTER_ACCESS_TOKEN: token, BAMBU_TOKEN: token, BAMBU_DEV_ID: serial, BAMBU_NETWORK_BRIDGE_COMMAND: "",
+    // Each server keeps its own resume records: a job another test started must never be resumable here.
+    BAMBU_RESUME_STATE_DIR: await fs.mkdtemp(path.join(os.tmpdir(), "bambu-resume-server-")) } });
   const client = new Client({ name: "safety-dispatch-tests", version: "1" }, { capabilities: { elicitation: { form: {} } } });
   client.setRequestHandler(ElicitRequestSchema, async () => ({ action: "accept", content: { confirmed: true } }));
   t.after(() => client.close());
@@ -691,6 +804,47 @@ test("verified public direct and bridge prints reach their intended transport", 
   assert.match(print.payload.params.dst_file, /^checked-[a-f0-9-]+-job\.gcode\.3mf$/);
   assert.equal(print.payload.params.task_use_ams, false);
   assert.equal(print.payload.params.ams_mapping, "[254]");
+});
+
+test("a FULU cloud print sends Bambu Studio's ams_mapping_info for the tray it prints from", async (t) => {
+  const { client, eventsPath } = await interceptedMcp(t, {
+    ams: { tray_now: "255", ams: [{ id: "0", tray: [
+      { id: "0", tray_type: "PLA", tray_info_idx: "GFA00", tray_color: "FFFFFFFF", nozzle_temp_min: "190", nozzle_temp_max: "230" },
+      { id: "1", tray_type: "PLA", tray_info_idx: "GFA00", tray_color: "161616FF", nozzle_temp_min: "190", nozzle_temp_max: "230" },
+    ] }] },
+  });
+  const file = await fixture(t, { project: { filament_ids: ["GFA00"], filament_colour: ["#000000"], filament_map: ["1"] } });
+  const result = await client.callTool({ name: "print_3mf_bambu_network", arguments: { three_mf_path: file, bambu_model: "p1s", bed_type: "textured_plate", ams_slots: [1], connection_type: "cloud" } });
+  assert.notEqual(result.isError, true, result.content?.[0]?.text);
+  const events = (await fs.readFile(eventsPath, "utf8")).trim().split("\n").map(JSON.parse);
+  const params = events.find(event => event.method === "net.start_print")?.payload.params;
+  assert.equal(params.ams_mapping, "[1]");
+  assert.deepEqual(JSON.parse(params.ams_mapping_info), [
+    { ams: 1, targetColor: "161616FF", filamentId: "GFA00", filamentType: "PLA", nozzleId: 1, sourceColor: "#000000FF" },
+  ]);
+});
+
+test("ams_mapping_info covers every project filament, external spools, AMS-HT and the right nozzle", () => {
+  const raw = {
+    ams: { ams: [{ id: "1", tray: [{ id: "0" }, { id: "1" }, { id: "2", tray_color: "00AE42FF" }] }, { id: "128", tray: [{ id: "0", tray_color: "F4EE2AFF" }] }] },
+    vir_slot: [{ id: "254", tray_color: "FFFFFFFF" }, { id: "255", tray_color: "000000FF" }],
+  };
+  const filaments = [
+    { type: "PLA", filamentId: "GFA00", colour: "#00AE42", nozzle: 2 },
+    { type: "PETG", filamentId: "GFG00", colour: "#ffffff80" },
+    { type: "PLA", filamentId: "GFA01", colour: "#F4EE2A", nozzle: 1 },
+    { type: "PLA", filamentId: "GFA00", colour: "#000000", nozzle: 1 },
+    { type: "PLA", filamentId: "GFA00", colour: "#000000" },
+  ];
+  assert.deepEqual(studioAmsMappingInfo(filaments, [6, 254, 128, 255, -1], tray => trayColour(raw, tray)), [
+    { ams: 6, targetColor: "00AE42FF", filamentId: "GFA00", filamentType: "PLA", nozzleId: 0, sourceColor: "#00AE42FF" },
+    { ams: 254, targetColor: "FFFFFFFF", filamentId: "GFG00", filamentType: "PETG", sourceColor: "#FFFFFF80" },
+    { ams: 128, targetColor: "F4EE2AFF", filamentId: "GFA01", filamentType: "PLA", nozzleId: 1, sourceColor: "#F4EE2AFF" },
+    { ams: 255, targetColor: "000000FF", filamentId: "GFA00", filamentType: "PLA", nozzleId: 1, sourceColor: "#000000FF" },
+    { ams: -1, targetColor: "", filamentId: "", filamentType: "" },
+  ]);
+  assert.equal(trayColour({ vt_tray: { tray_color: "123456FF" } }, 254), "123456FF", "single-nozzle printers report the external spool as vt_tray");
+  assert.equal(trayColour(raw, 3), undefined, "a tray the printer does not report has no colour");
 });
 
 async function startBridgeJob(t, options) {
@@ -946,9 +1100,12 @@ test("public stop during bridge agent initialization prevents the actual native 
   assert.equal(events.filter(event => event.action === "bridge-frame").length, 0, "the real bridge request must stop before stdin.write");
 });
 
-test("human preflight declines before upload and shows inspected settings", async (t) => {
+test("the print after a hardware clear declines before upload and shows inspected settings", async (t) => {
   const file = await fixture(t);
-  const { printer, events } = isolatedPrinter();
+  const { printer, events } = isolatedPrinter(safetyStatus({ print_error: 123, hms: [] }));
+  await printer.clearHmsErrors(host, serial, token);
+  events.length = 0;
+  printer.getSafetyStatus = async () => safetyStatus();
   const prompts = [];
   printer.confirm = async message => { prompts.push(message); return false; };
   await assert.rejects(printer.print3mf(host, serial, token, { projectName: "confirm", filePath: file, bambuModel: "p1s", useAMS: false }), /confirmation.*declined/i);
@@ -956,18 +1113,16 @@ test("human preflight declines before upload and shows inspected settings", asyn
   assert.match(prompts[0], /P1S.*0\.4 mm.*PLA.*220°C.*60°C.*SHA-256/s);
 });
 
-test("human preflight rechecks printer state after confirmation", async (t) => {
+test("print preflight rechecks printer state before upload", async (t) => {
   const file = await fixture(t);
   const { printer, events } = isolatedPrinter();
-  printer.confirm = async () => { printer.getSafetyStatus = async () => safetyStatus({ state: "RUNNING" }); return true; };
+  let reads = 0;
+  printer.getSafetyStatus = async () => safetyStatus(++reads >= 2 ? { state: "RUNNING" } : {});
   await assert.rejects(printer.print3mf(host, serial, token, { projectName: "confirm", filePath: file, bambuModel: "p1s", useAMS: false }), /not safely idle/i);
   assertNoDispatch(events);
 });
 
-test("FINISH adds no plate confirmation in headless mode", async (t) => {
-  const previous = process.env.BAMBU_REQUIRE_CONFIRMATION;
-  process.env.BAMBU_REQUIRE_CONFIRMATION = "0";
-  t.after(() => { if (previous === undefined) delete process.env.BAMBU_REQUIRE_CONFIRMATION; else process.env.BAMBU_REQUIRE_CONFIRMATION = previous; });
+test("FINISH adds no plate confirmation, and an ordinary print does not ask", async (t) => {
   const file = await fixture(t);
   const { printer, events } = isolatedPrinter(safetyStatus({ state: "FINISH", subtask_name: "previous-part" }));
   const prompts = [];
@@ -979,24 +1134,19 @@ test("FINISH adds no plate confirmation in headless mode", async (t) => {
 test("bed clearance cannot authorize a different finished job", async (t) => {
   const file = await fixture(t);
   const { printer, events } = isolatedPrinter(safetyStatus({ state: "FINISH", subtask_name: "previous-part" }));
-  printer.confirm = async () => { printer.getSafetyStatus = async () => safetyStatus({ state: "FINISH", subtask_name: "another-part" }); return true; };
+  let reads = 0;
+  printer.getSafetyStatus = async () => safetyStatus({ state: "FINISH", subtask_name: ++reads >= 2 ? "another-part" : "previous-part" });
   await assert.rejects(printer.print3mf(host, serial, token, { projectName: "confirm", filePath: file, bambuModel: "p1s", useAMS: false }), /job changed during preflight/i);
   assertNoDispatch(events);
 });
 
-test("manual positive heating requires confirmation but heater-off does not", async () => {
-  const { printer, events } = isolatedPrinter();
-  printer.confirm = async () => false;
-  await assert.rejects(printer.setTemperature(host, serial, token, "nozzle", 220, "p1s", "PLA"), error => {
-    // Issue #67: a client that supports elicitation can still decline; do not send people looking for another client.
-    assert.match(error.message, /confirmation was declined or cancelled/i);
-    assert.match(error.message, /BAMBU_REQUIRE_CONFIRMATION=0/);
-    assert.doesNotMatch(error.message, /Use an MCP client with elicitation support/);
-    return true;
-  });
-  assertNoDispatch(events);
+test("manual positive heating and heater-off send without a prompt", async () => {
+  const { printer, events, prompts } = isolatedPrinter(undefined, { confirm: async () => false });
+  await printer.setTemperature(host, serial, token, "nozzle", 220, "p1s", "PLA");
+  assert.match(events.filter(event => event.action === "publish")[0].payload.print.param, /M104 (?:T0 )?S220/);
   await printer.setTemperature(host, serial, token, "nozzle", 0);
-  assert.match(events.find(event => event.action === "publish").payload.print.param, /M104 S0/);
+  assert.match(events.filter(event => event.action === "publish")[1].payload.print.param, /M104 S0/);
+  assert.deepEqual(prompts, []);
 });
 
 test("hardware errors cannot be cleared without human confirmation", async () => {
@@ -1006,7 +1156,6 @@ test("hardware errors cannot be cleared without human confirmation", async () =>
   await assert.rejects(printer.clearHmsErrors(host, serial, token), error => {
     assert.match(error.message, /confirmation was declined or cancelled/i);
     assert.match(error.message, /always needs a person/);
-    assert.doesNotMatch(error.message, /BAMBU_REQUIRE_CONFIRMATION/, "the headless opt-out does not apply to physical checks");
     return true;
   });
   assert.match(prompts[0], /print_error:123.*HMS 0000-0001-0002-0001|HMS 0000-0001-0002-0001.*print_error:123/);
@@ -1030,6 +1179,9 @@ test("cleared hardware codes are returned and acknowledged again before printing
 test("the print preflight names hidden HMS notices that do not block printing", async () => {
   const prompts = [];
   const printer = new BambuImplementation(async message => { prompts.push(message); return true; });
+  // Only the print after a hardware clear asks; its prompt carries the notices.
+  printer.clearedErrors.set("20PTEST", ["print_error:123"]);
+  printer.clearedErrors.set("094TEST", ["print_error:123"]);
   const inspection = { model: "x2d", nozzleDiameters: [0.4, 0.4], materials: ["PETG"], maxNozzleTemperature: 270, maxBedTemperature: 70, maxChamberTemperature: 0, sha256: "a".repeat(64) };
   await printer.confirmPrintPreflight("20PTEST", { raw: { serial: "20PTEST", gcode_state: "IDLE", hms: [{ attr: 83887616, code: 131184 }] } }, inspection);
   assert.match(prompts[0], /The printer also reports HMS 0500-0600-0002-0070, which Bambu lists for this model without text and never shows as a fault; it does not block printing/);
@@ -1045,7 +1197,7 @@ test("the print preflight names hidden HMS notices that do not block printing", 
 });
 
 for (const [stage, appearsOnRead] of [["confirmation recheck", 2], ["dispatch recheck", 3]]) {
-  test(`a hidden notice that first appears at the ${stage} stops the print until it is confirmed`, async (t) => {
+  test(`a hidden notice that first appears at the ${stage} stops the print until it is named`, async (t) => {
     // H2D (serial prefix 094) lists 0500-0100-0002-0003 without text.
     const notice = { attr: 0x05000100, code: 0x00020003 };
     const h2d = hms => ({ ...safetyStatus({ model: "h2d", nozzle: ["0.4", "0.4"], hms, sn: "094TESTSAFETY" }), serial: "094TESTSAFETY" });
@@ -1058,13 +1210,12 @@ for (const [stage, appearsOnRead] of [["confirmation recheck", 2], ["dispatch re
     const options = { projectName: "late-notice", filePath: file, bambuModel: "h2d", useAMS: false };
     await assert.rejects(printer.print3mf(host, "094TESTSAFETY", token, options),
       /reported HMS 0500-0100-0002-0003 after the print confirmation.*start the print again/);
-    assert.doesNotMatch(prompts[0], /also reports/);
     assert.equal(events.some(({ action }) => action === "publish"), false, "an unnamed notice must stop the print before it is sent");
 
-    // The retry names the notice, and the print goes out.
+    // The retry sees the notice from the start, and the print goes out without a prompt.
     printer.getSafetyStatus = async () => h2d([notice]);
     await printer.print3mf(host, "094TESTSAFETY", token, options);
-    assert.match(prompts[1], /The printer also reports HMS 0500-0100-0002-0003/);
+    assert.deepEqual(prompts, []);
     assert.equal(events.filter(({ action }) => action === "publish").length, 1);
   });
 }
@@ -1090,9 +1241,6 @@ test("changed hardware codes during confirmation are not cleared", async () => {
 
 for (const failure of ["confirmation recheck", "upload", "dispatch recheck", "publish"]) {
   test(`cleared-error acknowledgment survives failed ${failure} until successful dispatch`, async (t) => {
-    const previous = process.env.BAMBU_REQUIRE_CONFIRMATION;
-    process.env.BAMBU_REQUIRE_CONFIRMATION = "0";
-    t.after(() => { if (previous === undefined) delete process.env.BAMBU_REQUIRE_CONFIRMATION; else process.env.BAMBU_REQUIRE_CONFIRMATION = previous; });
     const legacyFile = await fixture(t);
     const file = legacyFile.replace(".gcode.3mf", ".3mf");
     await fs.rename(legacyFile, file);

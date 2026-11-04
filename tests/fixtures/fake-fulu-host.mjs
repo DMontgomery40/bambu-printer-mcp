@@ -21,9 +21,18 @@ const MAGIC = 0x52424a50;
 const log = entry => { if (process.env.FAKE_FULU_LOG) fs.appendFileSync(process.env.FAKE_FULU_LOG, `${JSON.stringify(entry)}\n`); };
 log({ start: true, env: Object.fromEntries(["PJARCZAK_BAMBU_PLUGIN_DIR", "PJARCZAK_BAMBU_NETWORK_SO", "PJARCZAK_BAMBU_SOURCE_SO"].map(name => [name, process.env[name] ?? null])) });
 
-const state = { certFolder: undefined, connected: false, certInstalled: false, events: [], publishFailures: Number(process.env.FAKE_FULU_PUBLISH_FAILURES ?? 0) };
+const state = { certFolder: undefined, connected: false, certInstalled: false, certReady: false, onMessage: false, events: [], publishFailures: Number(process.env.FAKE_FULU_PUBLISH_FAILURES ?? 0) };
 const crash = () => { process.stderr.write("Segmentation fault (core dumped)\n"); process.exit(139); };
 const queue = (name, payload) => state.events.push({ agent: 1, name, payload });
+
+// The printer's answer to a control, signed as a P1S signs it; FAKE_FULU_REFUSE sets its err_code.
+const reply = (name, payload) => {
+  const { command, sequence_id } = JSON.parse(payload.msg).print;
+  const invalidSequence = typeof sequence_id !== "string" || !/^2[0-9]{4}$/.test(sequence_id);
+  const print = invalidSequence ? {command, sequence_id, err_code: 84033546} : process.env.FAKE_FULU_REFUSE ? { command, param: "", sequence_id, err_code: Number(process.env.FAKE_FULU_REFUSE) }
+    : { command, param: "", reason: "success", result: "success", sequence_id };
+  setTimeout(() => queue(name, { dev_id: payload.dev_id, msg: JSON.stringify({ header: { sign_alg: "RSA_SHA256", sign_string: "FAKE" }, print }) }), 10);
+};
 
 const unsupported = new Set((process.env.FAKE_FULU_UNSUPPORTED ?? "").split(",").filter(Boolean));
 
@@ -36,6 +45,7 @@ function handle(method, payload) {
       return { ok: true, network_loaded: loaded, network_status: loaded ? "loaded" : "validate failed: file open failed", bridge_version: "FAKE" };
     }
     case "net.create_agent": return ok(1);
+    case "net.set_on_message_fn": state.onMessage = true; return ok();
     case "net.set_cert_file":
       state.certFolder = payload.folder;
       return ok();
@@ -49,6 +59,7 @@ function handle(method, payload) {
       const status = trusted ? Number(process.env.FAKE_FULU_CONNECT_STATUS ?? 0) : 1;
       state.connected = status === 0;
       state.certInstalled = false;
+      state.certReady = false;
       setTimeout(() => queue("on_local_connect", { dev_id: payload.dev_id, status, msg: status === 0 ? "ssl:" : "-1" }), 20);
       return ok();
     }
@@ -56,9 +67,45 @@ function handle(method, payload) {
       if (!state.certFolder) crash();
       state.connected = false;
       return ok();
-    case "net.install_device_cert":
-      if (state.connected) state.certInstalled = true;
+    case "net.set_user_selected_machine":
+      if (process.env.FAKE_FULU_LOGGED_IN === "1") setTimeout(() => queue("on_printer_connected", { topic_str: payload.dev_id }), 10);
       return ok();
+    case "net.install_device_cert":
+      if (!payload.lan_only && process.env.FAKE_FULU_LOGGED_IN === "1") {
+        // FAKE_FULU_CLOUD_CERT_ON_INSTALL=n: only the nth install request installs the certificate.
+        state.cloudInstalls = (state.cloudInstalls ?? 0) + 1;
+        if (state.cloudInstalls >= Number(process.env.FAKE_FULU_CLOUD_CERT_ON_INSTALL ?? 1)) {
+          setTimeout(() => { state.cloudCertReady = true; queue("on_message", { dev_id: payload.dev_id, msg: "device_cert_installed" }); }, 10);
+        }
+        return ok();
+      }
+      if (state.connected) {
+        state.certInstalled = true;
+        if (state.onMessage && process.env.FAKE_FULU_CERT_EVENT !== "missing") setTimeout(() => {
+          const dev_id = process.env.FAKE_FULU_CERT_EVENT === "other-printer" ? "OTHER" : payload.dev_id;
+          state.certReady = dev_id === payload.dev_id;
+          queue("on_message", {dev_id, msg: "device_cert_installed"});
+        }, Number(process.env.FAKE_FULU_CERT_DELAY_MS ?? 20));
+      }
+      return ok();
+    case "net.send_message_to_printer": {
+      if (!["stop", "pause", "resume"].includes(JSON.parse(payload.msg).print?.command)) return ok();
+      if (process.env.FAKE_FULU_REQUIRE_CERT_READY && !state.certReady) return ok(-4);
+      if (Number(process.env.FAKE_FULU_CONTROL_FAILURES ?? 0) > (state.controlFailures ?? 0)) { state.controlFailures = (state.controlFailures ?? 0) + 1; return ok(-4); }
+      const result = state.connected && state.certInstalled ? Number(process.env.FAKE_FULU_CONTROL_RESULT ?? 0) : -4030;
+      if (result === 0) reply("on_local_message", payload);
+      return ok(result);
+    }
+    // Bambu Cloud: signed in only with FAKE_FULU_LOGGED_IN=1.
+    case "net.is_user_login": return ok(process.env.FAKE_FULU_LOGGED_IN === "1");
+    case "net.is_server_connected": return ok(process.env.FAKE_FULU_LOGGED_IN === "1");
+    case "net.send_message": {
+      if (!["stop", "pause", "resume"].includes(JSON.parse(payload.msg).print?.command)) return ok();
+      // The real plug-in returns CONNECT_FAILED (-2) for a control sent before the certificate is installed.
+      if (process.env.FAKE_FULU_CLOUD_REQUIRE_CERT && !state.cloudCertReady) return ok(-2);
+      reply("on_message", payload);
+      return ok(0);
+    }
     case "net.start_local_print": {
       const jobId = payload.client_job_id;
       queue("job.update_status", { job_id: jobId, status: 1, code: 100, msg: "0.0M/0.0M" });

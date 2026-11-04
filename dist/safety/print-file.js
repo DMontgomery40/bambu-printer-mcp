@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readBoundedPrintFile, loadSafe3mfArchive } from './archive.js';
+import { projectFilaments } from "../ams-mapping.js";
 import { MACHINE_LIMITS, isDualNozzleModel, normalizeMaterial, normalizeModel, validateStartupPurgeTemperature, validateTemperature } from './limits.js';
 const NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 const fail = (message) => { throw new Error(`Print safety: ${message}`); };
@@ -531,7 +532,15 @@ export async function inspectPrintFile(filePath, options) {
                 continue;
             }
             if (['M104', 'M109', 'M140', 'M190', 'M141', 'M191'].includes(code)) {
-                const args = parameters(argumentsText, 'A');
+                const args = parameters(argumentsText, code === 'M104' ? 'AM' : 'A');
+                // Studio 2.9's GCodeWriter marks layer-temperature changes with bare M.
+                // Accept only its exact S-target / optional T form; targets and tool
+                // selectors still pass through the independent thermal checks below.
+                if (args.has('M')) {
+                    if (!Number.isNaN(args.get('M')) || !args.has('S') || [...args.keys()].some(key => !'MST'.includes(key)))
+                        fail('unsupported M104 layer-change temperature parameters');
+                    args.delete('M');
+                }
                 // Official A1 and A1 mini start G-code waits with M109 S<target> H<limit>
                 // (S25 H140, S100 H170, S220 H300). H is not a heater target: S stays the
                 // checked target, so H is accepted only within those vendor bounds.
@@ -748,5 +757,5 @@ export async function inspectPrintFile(filePath, options) {
         return fail('selected G-code contains no printable commands');
     if (!used.size)
         materials.forEach((_, index) => used.add(index));
-    return { model, nozzleDiameters, materials, usedFilamentPositions: [...used].sort((a, b) => a - b), plateInternalPath, sha256, maxNozzleTemperature, maxBedTemperature, maxChamberTemperature, bedType, selectsAms, nozzleTypes, nozzleFlows, filamentNozzleIndices };
+    return { model, nozzleDiameters, materials, usedFilamentPositions: [...used].sort((a, b) => a - b), plateInternalPath, sha256, maxNozzleTemperature, maxBedTemperature, maxChamberTemperature, bedType, selectsAms, nozzleTypes, nozzleFlows, filamentNozzleIndices, ...(Array.isArray(project.filament_type) ? { projectFilaments: projectFilaments(project) } : {}) };
 }

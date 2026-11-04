@@ -1,3 +1,4 @@
+import { CameraStreams, type FrameOptions } from "./camera-stream.js";
 import { inspectPrintFile, type PrintFileInspection } from "../safety/print-file.js";
 import { type PrinterStateRequirements } from "../safety/printer-state.js";
 export declare function assertDirectPrintSupported(model: string | undefined, serial?: string): void;
@@ -50,6 +51,13 @@ export type CheckedFile = {
     maxChamberTemperature: number;
     materials: string[];
 };
+/**
+ * Where each printer's resume record is kept so a restart of this server (a deploy, a crash, a reboot) during a
+ * pause can still resume the job it started: BAMBU_RESUME_STATE_DIR, else bambu-printer-mcp/resume in the
+ * config home. Resume runs every check on a reloaded record: a fresh paused report naming this exact job, the
+ * re-read bytes or its unique name, and a person for an unverified file.
+ */
+export declare function defaultResumeStateDir(env?: NodeJS.ProcessEnv): string;
 /** What a resume needs to know about a started file (filePath, the inspected snapshot): its bytes, printed plate, limits and used materials. */
 export declare function checkedFile(inspection: PrintFileInspection, filePath: string): Promise<CheckedFile>;
 export type PrintPreflight = {
@@ -58,28 +66,28 @@ export type PrintPreflight = {
     model: string;
     notices: string[];
 };
-/**
- * Split the A1/P1 camera stream on port 6000 into JPEG frames. Each frame is
- * a 16-byte header (payload size LE, itrack, flags, reserved) and the JPEG.
- */
-export declare function cameraFrameParser(onFrame: (jpeg: Buffer) => void, onError: (error: Error) => void): (chunk: Buffer) => void;
+export { cameraFrameParser } from "./camera-wire.js";
 export declare class BambuImplementation {
     private readonly confirm?;
     private printerStore;
+    readonly cameraStreams: CameraStreams;
     /**
      * The job each printer may resume, keyed host and serial. Cancel, a report
      * that it ended after it was seen running, or another job seen in its place
      * retires it, so a later job that reuses the name is never resumed.
      */
-    private checkedJobs;
+    private readonly checkedJobs;
     /** In-flight counterpart_print_progress reads, one per printer. */
     private progressReads;
     private clearedErrors;
-    constructor(confirm?: ((message: string) => Promise<boolean>) | undefined);
+    constructor(confirm?: ((message: string) => Promise<boolean>) | undefined, options?: {
+        resumeStateDir?: string;
+    });
     /**
-     * Ask a person through MCP elicitation. BAMBU_REQUIRE_CONFIRMATION=0 skips
-     * ordinary prompts; a physical check, or a prompt with requiredBecause (why
-     * this one cannot be skipped), always asks.
+     * Ask a person through MCP elicitation, only for a physical check or a prompt with
+     * requiredBecause (why a person must accept it). Ordinary print, heating and resume
+     * starts do not ask: the client's own button is the yes, and the printer runs its
+     * own checks.
      */
     confirmHardwareAction(message: string, physicalCheck?: boolean, requiredBecause?: string): Promise<void>;
     private finishedJobIdentity;
@@ -132,8 +140,8 @@ export declare class BambuImplementation {
     /**
      * Resume reheats and moves the printer, so it is gated like a print start:
      * only the job this server inspected and started, while a fresh report shows
-     * it paused, with its bytes re-read over FTPS and compared, and after human
-     * confirmation (unless BAMBU_REQUIRE_CONFIRMATION=0). The record must still
+     * it paused, with its bytes re-read over FTPS and compared. Only a file that
+     * could not be re-read asks a person. The record must still
      * be current at every check, including the native helper's last one.
      */
     resumeJob(host: string, serial: string, token: string, dispatch?: (assertActive: () => void, beforeDispatch: () => Promise<void>) => Promise<any>): Promise<any>;
@@ -246,6 +254,24 @@ export declare class BambuImplementation {
      *
      * Read-only; no confirm gate. Default 8s timeout for cold-start latency.
      */
+    cameraStreamStart(host: string, serial: string, token: string, options?: {
+        bambuModel?: string;
+        fps?: number;
+        idleTimeoutMs?: number;
+        ffmpegPath?: string;
+    }): {
+        status: "started" | "running";
+        transport: import("./camera-stream.js").CameraTransport;
+        fps: number;
+        startedAt: string;
+    };
+    cameraStreamFrame(host: string, serial: string, options?: FrameOptions): Promise<import("./camera-stream.js").StreamFrameResult | {
+        status: string;
+        seq: number;
+    }>;
+    cameraStreamStop(host: string, serial: string): {
+        status: string;
+    };
     cameraSnapshot(host: string, _serial: string, token: string, options?: {
         savePath?: string;
         timeoutMs?: number;
@@ -336,4 +362,3 @@ export declare class BambuImplementation {
     private waitForTlsSession;
     disconnectAll(): Promise<void>;
 }
-export {};
