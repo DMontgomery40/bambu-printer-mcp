@@ -399,6 +399,59 @@ test("a damaged or foreign resume record is ignored", async (t) => {
   }
 });
 
+/**
+ * A printer client that answers each control on its report topic, as the real MQTT client re-emits it
+ * (rawMessage). answer(print) returns the fields of the printer's reply, or undefined for no reply.
+ */
+function answeringClient(events, answer) {
+  const listeners = new Set();
+  return {
+    on: (name, listener) => { if (name === "rawMessage") listeners.add(listener); },
+    off: (name, listener) => { if (name === "rawMessage") listeners.delete(listener); },
+    publish: async (payload) => {
+      events.push({ action: "publish", payload });
+      const reply = answer(payload.print);
+      if (reply) setTimeout(() => {
+        const text = JSON.stringify({ print: { command: payload.print.command, param: "", sequence_id: payload.print.sequence_id, ...reply } });
+        for (const listener of [...listeners]) listener(`device/${serial}/report`, Buffer.from(text));
+      }, 10);
+    },
+  };
+}
+
+// Developer Mode connection: a printer that is not really in LAN Only + Developer Mode refuses unsigned controls
+// (84033543, 0x05024007). Counterpart must say so instead of "sent".
+for (const command of ["stop", "pause", "resume"]) {
+  test(`a direct ${command} the printer refuses as unsigned says it isn't in Developer Mode; an answered one is confirmed`, async (t) => {
+    for (const [answer, expected] of [[{ err_code: 84033543 }, "refused"], [{ result: "success" }, "accepted"]]) {
+      const job = await pausedJob(t);
+      job.printer.getPrinter = async () => { job.events.push({ action: "connect" }); return answeringClient(job.events, () => answer); };
+      const send = command === "stop" ? job.printer.cancelJob(host, serial, token)
+        : command === "pause" ? job.printer.pauseJob(host, serial, token) : job.printer.resumeJob(host, serial, token);
+      if (expected === "refused") {
+        await assert.rejects(send, /refused \w+ \(error 05024007\): it isn't in LAN Only and Developer Mode.*Bambu Studio or Bambu Handy/);
+      } else {
+        const result = await send;
+        assert.equal(result.confirmed, true);
+        assert.match(result.message, /accepted/);
+      }
+      const sent = job.published().at(-1).payload.print;
+      assert.deepEqual([sent.command, sent.param], [command, ""], "Bambu Studio's own control JSON");
+      assert.match(sent.sequence_id, /^\d+$/);
+    }
+  });
+}
+
+test("a direct control with no answer still reports it was sent, unconfirmed", async (t) => {
+  const job = await pausedJob(t);
+  process.env.BAMBU_CONTROL_REPLY_MS = "50";
+  t.after(() => { delete process.env.BAMBU_CONTROL_REPLY_MS; });
+  job.printer.getPrinter = async () => answeringClient(job.events, () => undefined);
+  const result = await job.printer.pauseJob(host, serial, token);
+  assert.equal(result.confirmed, false);
+  assert.match(result.message, /Pause command sent/);
+});
+
 test("an unverified resume asks a person first: a declined prompt sends nothing", async (t) => {
   const job = await pausedJob(t, { confirm: async () => false });
   unverified(job);

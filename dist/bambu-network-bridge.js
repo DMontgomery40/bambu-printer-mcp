@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { BAMBU_NETWORK_CERTIFICATES } from "./bambu-network-certs.js";
+import { controlReply, refusedControlMessage } from "./control-reply.js";
 const FRAME_MAGIC = 0x52424a50;
 const FRAME_HEADER_SIZE = 16;
 const FRAME_TYPE_JSON_REQUEST = 1;
@@ -33,45 +34,12 @@ function traceText(text) {
     // A signed printer reply (a header, then its payload) is the printer's answer to a command: keep it whole.
     return clean.startsWith('{"header"') ? clean.slice(0, 4000) : clean.slice(0, 160);
 }
-/**
- * The printer's answer to a control it was sent: it echoes command and sequence_id, with
- * err_code set when it refuses. A P1S on authorization firmware signs it: {"header":{...},"print":{...}}.
- */
-export function controlReply(msg, command, sequenceId) {
-    if (typeof msg !== "string" || !msg.includes(sequenceId))
-        return undefined;
-    let print;
-    try {
-        print = JSON.parse(msg)?.print;
-    }
-    catch {
-        return undefined;
-    }
-    if (print?.command !== command || String(print.sequence_id) !== sequenceId)
-        return undefined;
-    const errCode = Number(print.err_code ?? 0) || 0;
-    const failed = typeof print.result === "string" && print.result.toLowerCase() !== "success";
-    return { accepted: errCode === 0 && !failed, errCode };
-}
-/**
- * The printer's authorization check refused the command (0x05024007-0x0502400B: unsigned, certificate not
- * trusted, malformed header, signature rejected). On a P1S 01.10.00.00 FULU's plug-in gets 0x0502400A for every
- * Pause and Stop over LAN and Bambu Cloud, while Bambu Studio and Bambu Handy are accepted.
- */
-export function isAuthorizationRefusal(errCode) {
-    const code = errCode >>> 0;
-    return code >= 0x05024007 && code <= 0x0502400B;
-}
+export { controlReply, isAuthorizationRefusal } from "./control-reply.js";
 /** Result of a sent control from the printer's answer during the hold; a refusal throws. */
 function controlResult(command, route, reply, attempts) {
     const word = `${command[0].toUpperCase()}${command.slice(1)}`;
-    if (reply && !reply.accepted) {
-        const code = (reply.errCode >>> 0).toString(16).toUpperCase().padStart(8, "0");
-        throw new Error(isAuthorizationRefusal(reply.errCode)
-            ? `The printer refused ${word} (error ${code}): in its current mode it takes Pause, Resume and Stop only from Bambu Studio or Bambu Handy. ` +
-                "Use one of those now. To use them from here, turn on LAN Only and Developer Mode on the printer and choose the Developer Mode connection."
-            : `The printer refused ${word} over ${route} (error ${code}). Nothing changed on the printer.`);
-    }
+    if (reply && !reply.accepted)
+        throw new Error(refusedControlMessage(command, route, reply.errCode));
     return { status: "success", attempts, confirmed: Boolean(reply),
         message: reply ? `The printer accepted ${word}.` : `${word} submitted over ${route}. Check printer status to confirm it took effect.` };
 }
