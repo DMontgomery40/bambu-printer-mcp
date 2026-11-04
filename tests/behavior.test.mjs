@@ -2621,6 +2621,47 @@ test("slice_stl writes enable_support, support_type and support_threshold_angle 
   assert.equal(refused.isError, true);
 });
 
+test("slice_stl's quality and strength become the slicer's own layer height, walls and infill for the nozzle in use", async (t) => {
+  const fakeSlicer = await createFakeBambuSlicer();
+  t.after(() => fs.rmSync(fakeSlicer.tempDir, { recursive: true, force: true }));
+  const transport = new StdioClientTransport({
+    command: process.execPath, args: [SERVER_ENTRY], cwd: fakeSlicer.tempDir,
+    env: { ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "p1s", BAMBU_SERIAL: "", BAMBU_TOKEN: "", BAMBU_SLICER_PROFILE: "",
+      BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot, TEMP_DIR: path.join(fakeSlicer.tempDir, "out"), SLICER_TYPE: "bambustudio", MCP_ALLOW_EXECUTABLE_ARG: "1" },
+    stderr: "pipe",
+  });
+  const client = createClient();
+  t.after(async () => { await closeTransport(transport); });
+  await client.connect(transport);
+  const { tools } = await client.listTools();
+  const schema = tools.find(tool => tool.name === "slice_stl").inputSchema.properties;
+  assert.deepEqual([schema.quality.enum, schema.strength.enum], [["draft", "standard", "fine"], ["standard", "strong", "max"]]);
+  const sliceWith = async (extra) => {
+    const result = await client.callTool({ name: "slice_stl", arguments: { stl_path: SAMPLE_STL, bambu_model: "p1s",
+      slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false, ...extra } });
+    assert.equal(result.isError, undefined, result.content?.[0]?.text);
+    const slicerArgs = JSON.parse(fs.readFileSync(fakeSlicer.argsOutPath, "utf8"));
+    const processPath = slicerArgs[slicerArgs.indexOf("--load-settings") + 1].split(";").at(-1);
+    const { layer_height, wall_loops, sparse_infill_density } = JSON.parse(fs.readFileSync(processPath, "utf8"));
+    return { layer_height, wall_loops, sparse_infill_density };
+  };
+  assert.deepEqual(await sliceWith({ quality: "fine", strength: "max" }), { layer_height: "0.12", wall_loops: "6", sparse_infill_density: "40%" });
+  assert.deepEqual(await sliceWith({ quality: "draft", strength: "strong" }), { layer_height: "0.28", wall_loops: "4", sparse_infill_density: "25%" });
+  assert.equal((await sliceWith({ quality: "standard", strength: "standard" })).layer_height, "0.2", "standard keeps the preset's own value");
+  assert.equal((await sliceWith({ quality: "fine", layer_height: 0.16 })).layer_height, "0.16", "an explicit layer_height wins");
+  const refused = await client.callTool({ name: "slice_stl", arguments: { stl_path: SAMPLE_STL, bambu_model: "p1s",
+    slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false, quality: "ultra" } });
+  assert.equal(refused.isError, true);
+});
+
+test("quality scales with the nozzle: draft on a 0.6 mm nozzle is 0.42 mm", async () => {
+  const { withPrintQuality } = await import("../dist/slicer/print-quality.js");
+  assert.equal(withPrintQuality({ quality: "draft" }, 0.6).layer_height, 0.42);
+  assert.equal(withPrintQuality({ quality: "fine" }, 0.2).layer_height, 0.06);
+  assert.deepEqual(withPrintQuality({ stl_path: "x" }, 0.4), { stl_path: "x" }, "nothing asked, nothing written");
+  assert.throws(() => withPrintQuality({ strength: "huge" }, 0.4), /strength must be one of/);
+});
+
 test("the installed Bambu Studio generates supports only when slice_stl's enable_support asks for them", {
   skip: !fs.existsSync(installedStudio) && "Bambu Studio is not installed",
   timeout: 600_000,

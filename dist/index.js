@@ -33,6 +33,7 @@ import { bambuProgress, offlineProgress } from "./counterpart/progress.js";
 import { makeCounterpart3mf } from "./counterpart/make-3mf.js";
 import { MAKE_3MF_OUTPUT_SCHEMA, PRINT_PROGRESS_OUTPUT_SCHEMA, PRINTER_INFO_OUTPUT_SCHEMA } from "./counterpart/schemas.js";
 import { parseProcessOverrides } from "./slicer/process-overrides.js";
+import { PRINT_QUALITY_PROPERTIES, withPrintQuality } from "./slicer/print-quality.js";
 import { machinePauseGcode, parsePauseLayers, pausedLayers, readPlateGcode } from "./slicer/layer-pauses.js";
 dotenv.config();
 const DEFAULT_HOST = process.env.BAMBU_PRINTER_HOST || process.env.PRINTER_HOST || "localhost";
@@ -2135,6 +2136,7 @@ class BambuPrinterMCPServer {
                                 skip_modified_gcodes: { type: "boolean", description: "Strip custom start/end gcodes embedded in the 3MF. Recommended for downloaded 3MFs since custom gcodes from other users' profiles may be unsafe for your printer." },
                                 pause_at_layers: { type: "array", items: { type: "integer", minimum: 2 }, description: "Pause before each of these layers (1-based, as Bambu Studio and OrcaSlicer number them in the preview), for example to drop in magnets or nuts. The slicer writes the printer's own pause G-code there (M400 U1 on Bambu printers); the printer stops by itself and waits for Resume. Bambu Studio or OrcaSlicer CLI only. Pauses already in a project 3MF are kept." },
                                 slice_plate: { type: "number", description: "Which plate index to slice. 0 = all plates for local slicers; remote slicing defaults to plate 1 and rejects 0. Use 1, 2, etc. to slice only a specific plate in multi-plate 3MF projects." },
+                                ...PRINT_QUALITY_PROPERTIES,
                                 layer_height: { type: "number", exclusiveMinimum: 0, description: "Layer height in mm, such as 0.28 (draft), 0.2 (standard) or 0.12 (fine). Written as the process preset's layer_height over the machine and process preset this tool resolves; at most the nozzle diameter. Bambu-compatible slicers only." },
                                 wall_loops: { type: "integer", minimum: 0, maximum: 1000, description: "Number of walls (perimeters), written as the process preset's wall_loops. Bambu-compatible slicers only." },
                                 sparse_infill_density: { type: "string", pattern: "^\\s*\\d+(\\.\\d+)?\\s*%\\s*$", description: "Sparse infill density as a percentage, such as \"15%\", written as the process preset's sparse_infill_density. Bambu-compatible slicers only." },
@@ -3719,7 +3721,7 @@ class BambuPrinterMCPServer {
                             if (pauses)
                                 sliceBambuOptions.pauseAtLayers = pauses;
                         }
-                        const processOverrides = parseProcessOverrides(args, Number(nozzleDiam));
+                        const processOverrides = parseProcessOverrides(withPrintQuality(args, Number(nozzleDiam)), Number(nozzleDiam));
                         if (processOverrides)
                             sliceBambuOptions.processOverrides = processOverrides;
                         if (sliceBambuOptions.loadFilamentIds && String(args.stl_path).toLowerCase().endsWith(".3mf")) {
