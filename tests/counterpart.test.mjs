@@ -185,6 +185,8 @@ test("printer info reports the camera transport and controls for each model with
       [true, true, true, true, true, true, "ams"]);
     assert.deepEqual(info.capabilities.slicing, { supports: true, copies: true, orient: true }, "Bambu Studio's CLI takes all three");
   }
+  // Remote slicing (orca-slicer-api) refuses repetitions, so it makes no copies.
+  assert.deepEqual(bambuPrinterInfo({ server, host: "h", slicerType: "orca-slicer-api" }).capabilities.slicing, { supports: true, copies: false, orient: true });
   assert.equal(bambuPrinterInfo({ server, host: "h", serial: "" }).printer.serial, undefined);
 });
 

@@ -4013,7 +4013,7 @@ class BambuPrinterMCPServer {
                         result = await this.blender.edit(args ?? {}, this.resolveExecutableSelectorArg(args?.bridge_command, "blender_mcp_edit_model", "bridge_command", true) ?? (!process.env.BLENDER_MCP_COMMAND?.trim() ? this.runtimeConfig.blenderBridgeCommand : undefined), extra.signal);
                         break;
                     case "counterpart_printer_info":
-                        result = bambuPrinterInfo({ server: SERVER_INFO, host, serial: bambuSerial, model: this.displayModel(args, bambuSerial) });
+                        result = bambuPrinterInfo({ server: SERVER_INFO, host, serial: bambuSerial, model: this.displayModel(args, bambuSerial), slicerType: normalizeSlicerType(DEFAULT_SLICER_TYPE) });
                         break;
                     case "counterpart_print_route": {
                         let savedTo = null;

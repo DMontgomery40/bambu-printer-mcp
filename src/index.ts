@@ -4762,7 +4762,7 @@ class BambuPrinterMCPServer {
             break;
 
           case "counterpart_printer_info":
-            result = bambuPrinterInfo({ server: SERVER_INFO, host, serial: bambuSerial, model: this.displayModel(args, bambuSerial) });
+            result = bambuPrinterInfo({ server: SERVER_INFO, host, serial: bambuSerial, model: this.displayModel(args, bambuSerial), slicerType: normalizeSlicerType(DEFAULT_SLICER_TYPE) });
             break;
 
           case "counterpart_print_route": {

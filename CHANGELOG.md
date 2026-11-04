@@ -4,7 +4,7 @@
 
 ### Added
 
-- `counterpart_printer_info` reports `capabilities.slicing`: whether `slice_stl` can apply supports, copies (`repetitions`) and auto-orient with this server's slicer. Here it always can (Bambu Studio's CLI). Clients such as Counterpart offer those choices from this instead of knowing which slicers accept what. Checked with mocked transports only.
+- `counterpart_printer_info` reports `capabilities.slicing`: whether `slice_stl` can apply supports, copies (`repetitions`) and auto-orient with this server's slicer. The local slicer CLIs take all three; remote `orca-slicer-api` slicing makes no copies. Clients such as Counterpart offer those choices from this instead of knowing which slicers accept what. Checked with mocked transports only.
 
 ## [1.1.57] – 2026-11-04
 

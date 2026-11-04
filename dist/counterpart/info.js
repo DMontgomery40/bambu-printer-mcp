@@ -5,6 +5,10 @@ import { SERIAL_MODELS } from "../safety/printer-state.js";
 import { COUNTERPART_CONTRACT } from "./schemas.js";
 /** Bambu's display names ("P1S", "A1 Mini", "H2D Pro"), keyed by normalized model. */
 const DISPLAY_NAMES = new Map(Object.values(SERIAL_MODELS).map(name => [normalizeModel(name), name]));
+/** What slice_stl applies on each backend: the local slicer CLIs take all three; orca-slicer-api refuses repetitions. */
+export function bambuSliceCapabilities(slicerType) {
+    return slicerType === "orca-slicer-api" ? { supports: true, copies: false, orient: true } : { supports: true, copies: true, orient: true };
+}
 export function bambuPrinterInfo(options) {
     const model = normalizeModel(options.model);
     const serial = options.serial?.trim();
@@ -30,8 +34,8 @@ export function bambuPrinterInfo(options) {
             print3mf: true,
             // X2D jobs go through its native route; FTPS/remote-file G-code starts stay blocked there.
             gcode: model !== "x2d",
-            // slice_stl always slices with Bambu Studio's CLI here: supports, copies (repetitions) and auto-orient apply.
-            slicing: { supports: true, copies: true, orient: true },
+            // From the configured slicer backend, as slice_stl uses it (remote orca-slicer-api makes no copies).
+            slicing: bambuSliceCapabilities(options.slicerType),
         },
     };
 }
