@@ -183,6 +183,7 @@ test("printer info reports the camera transport and controls for each model with
     assert.equal(info.capabilities.gcode, gcode);
     assert.deepEqual([info.capabilities.progress, info.capabilities.layers, info.capabilities.pause, info.capabilities.resume, info.capabilities.cancel, info.capabilities.print3mf, info.capabilities.filaments],
       [true, true, true, true, true, true, "ams"]);
+    assert.deepEqual(info.capabilities.slicing, { supports: true, copies: true, orient: true }, "Bambu Studio's CLI takes all three");
   }
   assert.equal(bambuPrinterInfo({ server, host: "h", serial: "" }).printer.serial, undefined);
 });

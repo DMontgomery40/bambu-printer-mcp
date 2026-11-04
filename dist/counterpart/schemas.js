@@ -46,6 +46,11 @@ export const PRINTER_INFO_OUTPUT_SCHEMA = {
                 cancel: { type: "boolean" },
                 print3mf: { type: "boolean" },
                 gcode: { type: "boolean" },
+                slicing: {
+                    type: "object",
+                    required: ["supports", "copies", "orient"],
+                    properties: { supports: { type: "boolean" }, copies: { type: "boolean" }, orient: { type: "boolean" } },
+                },
             },
             required: ["progress", "layers", "camera", "filaments", "pause", "resume", "cancel", "print3mf", "gcode"],
         },

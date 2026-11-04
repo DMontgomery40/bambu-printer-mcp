@@ -33,6 +33,8 @@ export type PrinterInfo = {
     cameraStream?: boolean;
     filaments: "ams" | "single" | "none";
     pause: boolean; resume: boolean; cancel: boolean; print3mf: boolean; gcode: boolean;
+    /** What slice_stl can apply with this server's slicer (the same field in mcp-3D-printer-server). */
+    slicing?: { supports: boolean; copies: boolean; orient: boolean };
   };
 };
 
@@ -75,6 +77,11 @@ export const PRINTER_INFO_OUTPUT_SCHEMA = {
         cancel: { type: "boolean" },
         print3mf: { type: "boolean" },
         gcode: { type: "boolean" },
+        slicing: {
+          type: "object",
+          required: ["supports", "copies", "orient"],
+          properties: { supports: { type: "boolean" }, copies: { type: "boolean" }, orient: { type: "boolean" } },
+        },
       },
       required: ["progress", "layers", "camera", "filaments", "pause", "resume", "cancel", "print3mf", "gcode"],
     },

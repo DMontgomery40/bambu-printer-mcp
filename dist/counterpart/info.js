@@ -30,6 +30,8 @@ export function bambuPrinterInfo(options) {
             print3mf: true,
             // X2D jobs go through its native route; FTPS/remote-file G-code starts stay blocked there.
             gcode: model !== "x2d",
+            // slice_stl always slices with Bambu Studio's CLI here: supports, copies (repetitions) and auto-orient apply.
+            slicing: { supports: true, copies: true, orient: true },
         },
     };
 }
