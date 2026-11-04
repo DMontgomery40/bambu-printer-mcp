@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { TOOL_ANNOTATIONS } from '../dist/tool-annotations.js';
+import { TOOL_ANNOTATIONS, withAnnotations } from '../dist/tool-annotations.js';
 
 const entry = fileURLToPath(new URL('../dist/index.js', import.meta.url));
 const preload = fileURLToPath(new URL('./fixtures/inspection-no-network.mjs', import.meta.url));
@@ -58,7 +58,12 @@ test('annotations match what the tools do to the printer and files', async t => 
   // A repeated print start starts another job.
   for (const name of ['print_3mf', 'start_print_job', 'upload_file']) assert.equal(byName[name].idempotentHint, false, name);
   // A slice or local model edit replaces its earlier output of the same name, in the server's temporary directory.
-  for (const name of ['scale_stl', 'slice_stl', 'get_slice_settings', 'print_3mf']) assert.equal(byName[name].destructiveHint, true, name);
+  for (const name of ['scale_stl', 'slice_stl', 'get_slice_settings', 'print_3mf', 'print_3mf_bambu_network', 'print_collar_charm']) assert.equal(byName[name].destructiveHint, true, name);
   // Local model edits write only to the server's temporary directory only.
   for (const name of ['scale_stl', 'rotate_stl', 'lay_flat', 'get_stl_info']) assert.equal(byName[name].openWorldHint, false, name);
+});
+
+test('a tool missing from the table gets the most cautious hints', () => {
+  assert.deepEqual(withAnnotations({ name: 'not_in_the_table' }).annotations,
+    { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true });
 });
