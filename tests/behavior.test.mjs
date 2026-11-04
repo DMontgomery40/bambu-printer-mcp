@@ -2651,7 +2651,11 @@ test("slice_stl's quality and strength become the slicer's own layer height, wal
   assert.equal((await sliceWith({ quality: "fine", layer_height: 0.16 })).layer_height, "0.16", "an explicit layer_height wins");
   const refused = await client.callTool({ name: "slice_stl", arguments: { stl_path: SAMPLE_STL, bambu_model: "p1s",
     slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false, quality: "ultra" } });
-  assert.equal(refused.isError, true);
+  assert.equal(refused.isError, true);  // Copies on a backend that can't make them say so instead of slicing one (capabilities.slicing.copies is false there).
+  const noCopies = await client.callTool({ name: "slice_stl", arguments: { stl_path: SAMPLE_STL, bambu_model: "p1s",
+    slicer_type: "prusaslicer", slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false, repetitions: 3 } });
+  assert.equal(noCopies.isError, true);
+  assert.match(noCopies.content[0].text, /Copies \(repetitions\) need the Bambu Studio or OrcaSlicer CLI, not prusaslicer/);
 });
 
 test("quality scales with the nozzle: draft on a 0.6 mm nozzle is 0.42 mm", async () => {

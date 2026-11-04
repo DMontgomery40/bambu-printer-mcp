@@ -70,6 +70,12 @@ export type PrinterInfo = {
         cancel: boolean;
         print3mf: boolean;
         gcode: boolean;
+        /** What slice_stl can apply with this server's slicer (the same field in mcp-3D-printer-server). */
+        slicing?: {
+            supports: boolean;
+            copies: boolean;
+            orient: boolean;
+        };
     };
 };
 export declare const PRINTER_INFO_OUTPUT_SCHEMA: {
@@ -147,6 +153,21 @@ export declare const PRINTER_INFO_OUTPUT_SCHEMA: {
                 };
                 gcode: {
                     type: string;
+                };
+                slicing: {
+                    type: string;
+                    required: string[];
+                    properties: {
+                        supports: {
+                            type: string;
+                        };
+                        copies: {
+                            type: string;
+                        };
+                        orient: {
+                            type: string;
+                        };
+                    };
                 };
             };
             required: string[];

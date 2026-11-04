@@ -183,7 +183,14 @@ test("printer info reports the camera transport and controls for each model with
     assert.equal(info.capabilities.gcode, gcode);
     assert.deepEqual([info.capabilities.progress, info.capabilities.layers, info.capabilities.pause, info.capabilities.resume, info.capabilities.cancel, info.capabilities.print3mf, info.capabilities.filaments],
       [true, true, true, true, true, true, "ams"]);
+    assert.deepEqual(info.capabilities.slicing, { supports: true, copies: true, orient: true }, "Bambu Studio's CLI takes all three");
   }
+  // The capability follows the backend: remote orca-slicer-api makes no copies; PrusaSlicer, Slic3r and Cura take none.
+  assert.deepEqual(bambuPrinterInfo({ server, host: "h", slicerType: "orca-slicer-api" }).capabilities.slicing, { supports: true, copies: false, orient: true });
+  for (const slicerType of ["prusaslicer", "slic3r", "cura"]) {
+    assert.deepEqual(bambuPrinterInfo({ server, host: "h", slicerType }).capabilities.slicing, { supports: false, copies: false, orient: false }, slicerType);
+  }
+  assert.deepEqual(bambuPrinterInfo({ server, host: "h", slicerType: "orcaslicer" }).capabilities.slicing, { supports: true, copies: true, orient: true });
   assert.equal(bambuPrinterInfo({ server, host: "h", serial: "" }).printer.serial, undefined);
 });
 
