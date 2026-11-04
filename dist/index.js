@@ -2,7 +2,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { ListResourcesRequestSchema, ReadResourceRequestSchema, ListToolsRequestSchema, CallToolRequestSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { ListResourcesRequestSchema, ReadResourceRequestSchema, ListToolsRequestSchema, CallToolRequestSchema, ListPromptsRequestSchema, GetPromptRequestSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import dotenv from "dotenv";
 import fs from "fs";
 import os from "node:os";
@@ -25,6 +25,7 @@ import { isDualNozzleModel } from "./safety/limits.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safety/artifact.js";
 import { detectProfilesRoot } from "./slicer/profile-flatten.js";
 import { bambuPrinterInfo } from "./counterpart/info.js";
+import { DESIGN_PROMPTS, FDM_CAPABILITY_GUIDANCE, FDM_CAPABILITY_URI, SERVER_INSTRUCTIONS } from "./design-guidance.js";
 import { bambuProgress, offlineProgress } from "./counterpart/progress.js";
 import { makeCounterpart3mf } from "./counterpart/make-3mf.js";
 import { MAKE_3MF_OUTPUT_SCHEMA, PRINT_PROGRESS_OUTPUT_SCHEMA, PRINTER_INFO_OUTPUT_SCHEMA } from "./counterpart/schemas.js";
@@ -959,9 +960,11 @@ class BambuPrinterMCPServer {
         this.runtimeConfig = readRuntimeConfig();
         this.server = new Server(SERVER_INFO, {
             capabilities: {
+                prompts: {},
                 resources: {},
                 tools: {}
-            }
+            },
+            instructions: SERVER_INSTRUCTIONS
         });
         this.bambu = new BambuImplementation(async (message) => {
             try {
@@ -1001,6 +1004,7 @@ class BambuPrinterMCPServer {
     }
     setupHandlers() {
         this.setupResourceHandlers();
+        this.setupPromptHandlers();
         this.setupToolHandlers();
     }
     /**
@@ -1669,6 +1673,21 @@ class BambuPrinterMCPServer {
             resolved_path: registryEntry,
         };
     }
+    /** The FDM design guidance as MCP prompts: the client decides when to attach each one. */
+    setupPromptHandlers() {
+        this.server.setRequestHandler(ListPromptsRequestSchema, async () => ({
+            prompts: DESIGN_PROMPTS.map(({ name, title, description }) => ({ name, title, description })),
+        }));
+        this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+            const prompt = DESIGN_PROMPTS.find(item => item.name === request.params.name);
+            if (!prompt)
+                throw new McpError(ErrorCode.InvalidParams, `Unknown prompt: ${request.params.name}`);
+            return {
+                description: prompt.description,
+                messages: [{ role: "user", content: { type: "text", text: prompt.text } }],
+            };
+        });
+    }
     setupResourceHandlers() {
         this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
             return {
@@ -1690,6 +1709,12 @@ class BambuPrinterMCPServer {
                         name: "Bambu Printer HMS Diagnostics",
                         mimeType: "application/json",
                         description: "HMS and error-related fields from the latest printer status"
+                    },
+                    {
+                        uri: FDM_CAPABILITY_URI,
+                        name: "FDM bridge and overhang guidance",
+                        mimeType: "text/markdown",
+                        description: "Planning bands and evidence for bridges and overhangs, for when one decides the plan and no measured capability is available"
                     }
                 ],
                 templates: [
@@ -1713,6 +1738,9 @@ class BambuPrinterMCPServer {
         });
         this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
             const uri = request.params.uri;
+            if (uri === FDM_CAPABILITY_URI) {
+                return { contents: [{ uri, mimeType: "text/markdown", text: FDM_CAPABILITY_GUIDANCE }] };
+            }
             const match = uri.match(/^printer:\/\/([^\/]+)\/(.+)$/);
             if (!match) {
                 throw new McpError(ErrorCode.InvalidRequest, `Invalid resource URI: ${uri}`);
