@@ -2654,7 +2654,10 @@ class BambuPrinterMCPServer {
                 slice_plate: { type: "number", description: "Which plate index to slice. 0 = all plates for local slicers; remote slicing defaults to plate 1 and rejects 0. Use 1, 2, etc. to slice only a specific plate in multi-plate 3MF projects." },
                 layer_height: { type: "number", exclusiveMinimum: 0, description: "Layer height in mm, such as 0.28 (draft), 0.2 (standard) or 0.12 (fine). Written as the process preset's layer_height over the machine and process preset this tool resolves; at most the nozzle diameter. Bambu-compatible slicers only." },
                 wall_loops: { type: "integer", minimum: 0, maximum: 1000, description: "Number of walls (perimeters), written as the process preset's wall_loops. Bambu-compatible slicers only." },
-                sparse_infill_density: { type: "string", pattern: "^\\s*\\d+(\\.\\d+)?\\s*%\\s*$", description: "Sparse infill density as a percentage, such as \"15%\", written as the process preset's sparse_infill_density. Bambu-compatible slicers only." }
+                sparse_infill_density: { type: "string", pattern: "^\\s*\\d+(\\.\\d+)?\\s*%\\s*$", description: "Sparse infill density as a percentage, such as \"15%\", written as the process preset's sparse_infill_density. Bambu-compatible slicers only." },
+                enable_support: { type: "boolean", description: "Turn support generation on or off, written as the process preset's enable_support. Bambu-compatible slicers only." },
+                support_type: { type: "string", enum: ["normal(auto)", "tree(auto)", "normal(manual)", "tree(manual)"], description: "Support style, written as the process preset's support_type. Bambu-compatible slicers only." },
+                support_threshold_angle: { type: "integer", minimum: 0, maximum: 90, description: "Overhang threshold in degrees for automatic supports, written as the process preset's support_threshold_angle (0 lets the slicer decide). Bambu-compatible slicers only." }
               },
               required: ["stl_path", "bambu_model"]
             }

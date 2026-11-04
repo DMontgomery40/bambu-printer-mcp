@@ -1200,8 +1200,11 @@ When `slicer_type` is `bambustudio` (the default), these additional parameters a
 | `layer_height` | number | Layer height in mm, such as 0.28, 0.2 or 0.12; at most the nozzle diameter |
 | `wall_loops` | integer | Number of walls, 0 to 1000 |
 | `sparse_infill_density` | string | Sparse infill density, such as `"15%"` |
+| `enable_support` | boolean | Turn support generation on or off |
+| `support_type` | string | `normal(auto)`, `tree(auto)`, `normal(manual)` or `tree(manual)` |
+| `support_threshold_angle` | integer | Overhang threshold for automatic supports, 0 to 90 degrees (0 lets the slicer decide) |
 
-`layer_height`, `wall_loops` and `sparse_infill_density` are written as a process override on top of the machine and process preset the tool resolves, using Bambu Studio's keys and string forms (`"0.2"`, `"2"`, `"15%"`). Every other preset value, and the machine preset, stay as resolved, and your own profile files are not changed. They work with every Bambu-compatible slicer, including remote `orca-slicer-api` slicing, and are refused for PrusaSlicer, Slic3r and Cura.
+`layer_height`, `wall_loops`, `sparse_infill_density` and the three support arguments are written as a process override on top of the machine and process preset the tool resolves, using Bambu Studio's keys and string forms (`"0.2"`, `"2"`, `"15%"`). Every other preset value, and the machine preset, stay as resolved, and your own profile files are not changed. They work with every Bambu-compatible slicer, including remote `orca-slicer-api` slicing, and are refused for PrusaSlicer, Slic3r and Cura.
 
 **Example: Slice with auto-orient and 3 copies**
 ```json
