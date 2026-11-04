@@ -1,5 +1,10 @@
 import { type PrinterInfo } from "./schemas.js";
-/** What slice_stl applies on each backend: the local slicer CLIs take all three; orca-slicer-api refuses repetitions. */
+/** Backends that slice through the Bambu Studio / OrcaSlicer CLI, where supports, copies and auto-orient all apply. */
+export declare const BAMBU_CLI_SLICERS: readonly ["bambustudio", "orcaslicer", "orcaslicer-bambulab"];
+/**
+ * What slice_stl applies on each backend: the Bambu Studio / OrcaSlicer CLIs take all three; remote orca-slicer-api
+ * takes supports and orient but refuses repetitions; PrusaSlicer, Slic3r and Cura take none of them here.
+ */
 export declare function bambuSliceCapabilities(slicerType: string | undefined): {
     supports: boolean;
     copies: boolean;

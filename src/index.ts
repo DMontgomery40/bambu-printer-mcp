@@ -57,7 +57,7 @@ import { SERIAL_MODELS, externalStorageState, validatePrinterState } from "./saf
 import { isDualNozzleModel } from "./safety/limits.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safety/artifact.js";
 import { detectProfilesRoot } from "./slicer/profile-flatten.js";
-import { bambuPrinterInfo } from "./counterpart/info.js";
+import { bambuPrinterInfo, bambuSliceCapabilities } from "./counterpart/info.js";
 import { DESIGN_PROMPTS, FDM_CAPABILITY_GUIDANCE, FDM_CAPABILITY_RESOURCE, FDM_CAPABILITY_URI, SERVER_INSTRUCTIONS } from "./design-guidance.js";
 import { bambuProgress, offlineProgress } from "./counterpart/progress.js";
 import { makeCounterpart3mf } from "./counterpart/make-3mf.js";
@@ -4318,6 +4318,11 @@ class BambuPrinterMCPServer {
               args as Record<string, unknown> | undefined,
               "slice_stl"
             );
+            // Copies only where the backend makes them (counterpart_printer_info capabilities.slicing); elsewhere one copy
+            // would be sliced without a word.
+            if (args?.repetitions !== undefined && Number(args.repetitions) > 1 && !bambuSliceCapabilities(slicerType).copies) {
+              throw new Error(`Copies (repetitions) need the Bambu Studio or OrcaSlicer CLI, not ${slicerType}; nothing was sliced.`);
+            }
             const sliceModel = await this.resolveBambuModel(args?.bambu_model as string | undefined);
             const nozzleDiam = String(args?.nozzle_diameter || DEFAULT_NOZZLE_DIAMETER);
             const activeSlicerProfile = await resolveSlicerProfilePath(
