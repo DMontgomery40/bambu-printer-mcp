@@ -7,8 +7,10 @@
  */
 export declare const PRINT_QUALITIES: readonly ["draft", "standard", "fine"];
 export declare const PRINT_STRENGTHS: readonly ["standard", "strong", "max"];
+export type PrintQuality = (typeof PRINT_QUALITIES)[number];
+export type PrintStrength = (typeof PRINT_STRENGTHS)[number];
 /** The call's arguments with `quality` and `strength` written out as slicer settings. */
-export declare function withPrintQuality<T extends Record<string, unknown> | undefined>(args: T, nozzleDiameter?: number): T;
+export declare function withPrintQuality(args: Record<string, unknown>, nozzleDiameter?: number): Record<string, unknown>;
 /** slice_stl input-schema properties for both arguments. */
 export declare const PRINT_QUALITY_PROPERTIES: {
     readonly quality: {

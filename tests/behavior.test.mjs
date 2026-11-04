@@ -2660,6 +2660,7 @@ test("quality scales with the nozzle: draft on a 0.6 mm nozzle is 0.42 mm", asyn
   assert.equal(withPrintQuality({ quality: "fine" }, 0.2).layer_height, 0.06);
   assert.deepEqual(withPrintQuality({ stl_path: "x" }, 0.4), { stl_path: "x" }, "nothing asked, nothing written");
   assert.throws(() => withPrintQuality({ strength: "huge" }, 0.4), /strength must be one of/);
+  assert.throws(() => withPrintQuality({ strength: null }, 0.4), /strength must be one of/, "null is not Standard");
 });
 
 test("the installed Bambu Studio generates supports only when slice_stl's enable_support asks for them", {
