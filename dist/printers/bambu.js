@@ -1,7 +1,12 @@
+import { CameraStreams } from "./camera-stream.js";
+import { openTcpCameraSource, openRtspCameraSource } from "./camera-sources.js";
+import { cameraNumber } from "./camera-tools.js";
+import { cameraFrameParser, cameraAuth } from "./camera-wire.js";
 import { createHash } from "node:crypto";
+import { controlReply, refusedControlMessage } from "../control-reply.js";
 import { isFinishedP1SJob, isCancelledX2DJob, readFreshPrinterStatus } from "../safety/printer-state.js";
 import fs from "node:fs/promises";
-import { createReadStream, readFileSync, existsSync } from "node:fs";
+import { createReadStream, readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { Readable } from "node:stream";
@@ -15,7 +20,7 @@ import { RTSP_CAMERA_MODELS, TCP_CAMERA_MODELS } from "./camera-models.js";
 import { resolveStudioPrintOptions, usedNozzleCount } from "../studio-print-options.js";
 import { Client as FTPClient } from "basic-ftp";
 import * as mqtt from "mqtt";
-import { BambuClient, GCodeFileCommand, GCodeLineCommand, PushAllCommand, UpdateFanCommand, UpdateLightCommand, UpdateStateCommand, } from "bambu-node";
+import { BambuClient, GCodeFileCommand, GCodeLineCommand, PushAllCommand, UpdateFanCommand, UpdateLightCommand, } from "bambu-node";
 /**
  * Post-Jan-2025 H2D firmware requires mTLS with a Bambu-issued client cert.
  * Loads cert+key once from:
@@ -62,12 +67,45 @@ function publishStudioJson(client, message, qos) {
 }
 /**
  * Bambu Studio's stop, MachineObject::command_task_abort (DeviceManager.cpp:1418-1426):
- * {"print":{"command":"stop","param":"","sequence_id":"<n>"}} at QoS 1. bambu-node's
- * UpdateStateCommand sends no param, at QoS 0.
+ * {"print":{"command":"stop","param":"","sequence_id":"<n>"}} at QoS 1 (bambu-node's
+ * UpdateStateCommand sends no param, at QoS 0). Pause and Resume go the same way (studioControl).
  */
 const studioStopCommand = {
     invoke: (client) => publishStudioJson(client, { print: { command: "stop", param: "", sequence_id: String(Date.now()) } }, 1),
 };
+/**
+ * Pause, Resume or Stop exactly as Bambu Studio sends them (MachineObject::command_task_*), with this server's own
+ * 32-bit sequence id, so the printer's answer to this one control can be told apart from any other report.
+ */
+function studioControl(command) {
+    const sequenceId = String(20000 + (Date.now() % 1000000));
+    return { command, sequenceId, invoke: (client) => publishStudioJson(client, { print: { command, param: "", sequence_id: sequenceId } }, 1) };
+}
+/** How long a control on the direct local network waits for the printer's answer (BAMBU_CONTROL_REPLY_MS, 0-30000). */
+function controlReplyMs() {
+    const configured = Number(process.env.BAMBU_CONTROL_REPLY_MS);
+    return Number.isFinite(configured) && configured >= 0 ? Math.min(configured, 30000) : 5000;
+}
+/**
+ * The printer's answer to one control on its report topic (the client re-emits every message as rawMessage).
+ * Started before the publish so a fast answer is not missed; undefined when none arrives in time.
+ */
+function watchControlReply(client, command, sequenceId, ms) {
+    const emitter = client;
+    if (ms <= 0 || typeof emitter?.on !== "function" || typeof emitter?.off !== "function")
+        return Promise.resolve(undefined);
+    return new Promise(resolve => {
+        let timer;
+        const onMessage = (_topic, payload) => {
+            const reply = controlReply(String(payload), command, sequenceId);
+            if (reply)
+                finish(reply);
+        };
+        const finish = (reply) => { clearTimeout(timer); emitter.off("rawMessage", onMessage); resolve(reply); };
+        timer = setTimeout(() => finish(undefined), ms);
+        emitter.on("rawMessage", onMessage);
+    });
+}
 /** A cached report older than this may be refreshed once with PushAll; see readProgressReport. */
 const STALE_REPORT_MS = 300000;
 /** HMS 0500-0500-0001-0007: firmware 01.08.05+ rejected an unsigned MQTT command. */
@@ -462,6 +500,89 @@ class BambuClientStore {
 function printJobIdentity(raw) {
     return JSON.stringify([raw.gcode_file, raw.subtask_name, raw.task_id, raw.subtask_id, raw.job_id]);
 }
+/**
+ * Where each printer's resume record is kept so a restart of this server (a deploy, a crash, a reboot) during a
+ * pause can still resume the job it started: BAMBU_RESUME_STATE_DIR, else bambu-printer-mcp/resume in the
+ * config home. Resume runs every check on a reloaded record: a fresh paused report naming this exact job, the
+ * re-read bytes or its unique name, and a person for an unverified file.
+ */
+export function defaultResumeStateDir(env = process.env) {
+    if (env.BAMBU_RESUME_STATE_DIR)
+        return env.BAMBU_RESUME_STATE_DIR;
+    const configHome = env.XDG_CONFIG_HOME || path.join(env.HOME || os.homedir(), ".config");
+    return path.join(configHome, "bambu-printer-mcp", "resume");
+}
+function isCheckedJob(value) {
+    return Boolean(value) && typeof value === "object" && /^[a-f0-9]{64}$/.test(value.sha256 ?? "") &&
+        typeof value.remotePath === "string" && value.remotePath !== "" && typeof value.model === "string" &&
+        Boolean(value.requirements) && typeof value.requirements === "object" && Array.isArray(value.materials) &&
+        typeof value.seenRunning === "boolean" && typeof value.uploadedHere === "boolean" &&
+        [value.maxNozzleTemperature, value.maxBedTemperature, value.maxChamberTemperature].every(Number.isFinite);
+}
+/**
+ * The resume record of each printer (keyed host and serial). With a folder, every change is written to that
+ * printer's own file (private, replaced atomically) and the file is read the first time the printer is asked
+ * about, so a new server process knows the job the previous one started. Without one it lives in memory only.
+ */
+class ResumeRecords {
+    constructor(dir) {
+        this.dir = dir;
+        this.jobs = new Map();
+        this.read = new Set();
+    }
+    get(key) {
+        if (!this.read.has(key)) {
+            this.read.add(key);
+            const saved = this.dir ? this.readFile(key) : undefined;
+            if (saved)
+                this.jobs.set(key, saved);
+        }
+        return this.jobs.get(key);
+    }
+    set(key, job) {
+        this.read.add(key);
+        this.jobs.set(key, job);
+        this.save(key);
+    }
+    delete(key) {
+        this.read.add(key);
+        const had = this.jobs.delete(key);
+        this.save(key);
+        return had;
+    }
+    /** Write this printer's record as it is now (or remove its file). A failed write never stops a print or a control. */
+    save(key) {
+        if (!this.dir)
+            return;
+        const file = this.file(key);
+        const job = this.jobs.get(key);
+        try {
+            if (!job) {
+                rmSync(file, { force: true });
+                return;
+            }
+            mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+            const temporary = `${file}.${process.pid}.tmp`;
+            writeFileSync(temporary, JSON.stringify({ version: 1, key, job }), { mode: 0o600 });
+            renameSync(temporary, file);
+        }
+        catch (error) {
+            console.error(`Could not save the resume record for ${key.replace("\n", " ")}: ${error.message}. Resume still works until this server restarts.`);
+        }
+    }
+    file(key) {
+        return path.join(this.dir, `${createHash("sha256").update(key).digest("hex").slice(0, 32)}.json`);
+    }
+    readFile(key) {
+        try {
+            const saved = JSON.parse(readFileSync(this.file(key), "utf8"));
+            return saved?.version === 1 && saved.key === key && isCheckedJob(saved.job) ? saved.job : undefined;
+        }
+        catch {
+            return undefined;
+        }
+    }
+}
 const ACTIVE_JOB_STATES = new Set(["PREPARE", "SLICING", "RUNNING", "PAUSE"]);
 /** Reports after which a started job can no longer be resumed. */
 const ENDED_JOB_STATES = new Set(["FINISH", "FAILED", "IDLE"]);
@@ -506,58 +627,25 @@ function reportedJobName(raw) {
         return subtask;
     return typeof raw.gcode_file === "string" ? path.posix.basename(raw.gcode_file.replace(/\\/g, "/").replace(/^\d+:/, "")) || undefined : undefined;
 }
-/**
- * Split the A1/P1 camera stream on port 6000 into JPEG frames. Each frame is
- * a 16-byte header (payload size LE, itrack, flags, reserved) and the JPEG.
- */
-export function cameraFrameParser(onFrame, onError) {
-    let buffered = Buffer.alloc(0);
-    let failed = false;
-    return chunk => {
-        if (failed)
-            return;
-        buffered = Buffer.concat([buffered, chunk]);
-        while (buffered.length >= 16) {
-            const payloadSize = buffered.readUInt32LE(0);
-            if (payloadSize <= 0 || payloadSize > 5000000) {
-                failed = true;
-                onError(new Error(`camera_snapshot: unreasonable payload size ${payloadSize} from header; auth likely failed.`));
-                return;
-            }
-            if (buffered.length < 16 + payloadSize)
-                return;
-            const jpeg = buffered.subarray(16, 16 + payloadSize);
-            buffered = buffered.subarray(16 + payloadSize);
-            if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) {
-                failed = true;
-                onError(new Error(`camera_snapshot: payload does not start with JPEG SOI (FF D8); got ${jpeg[0].toString(16)} ${jpeg[1].toString(16)}.`));
-                return;
-            }
-            onFrame(Buffer.from(jpeg));
-        }
-    };
-}
+export { cameraFrameParser } from "./camera-wire.js";
 export class BambuImplementation {
-    constructor(confirm) {
+    constructor(confirm, options = {}) {
         this.confirm = confirm;
-        /**
-         * The job each printer may resume, keyed host and serial. Cancel, a report
-         * that it ended after it was seen running, or another job seen in its place
-         * retires it, so a later job that reuses the name is never resumed.
-         */
-        this.checkedJobs = new Map();
+        this.cameraStreams = new CameraStreams();
         /** In-flight counterpart_print_progress reads, one per printer. */
         this.progressReads = new Map();
         this.clearedErrors = new Map();
+        this.checkedJobs = new ResumeRecords(options.resumeStateDir);
         this.printerStore = new BambuClientStore((host, serial, report) => this.observeReport(host, serial, report));
     }
     /**
-     * Ask a person through MCP elicitation. BAMBU_REQUIRE_CONFIRMATION=0 skips
-     * ordinary prompts; a physical check, or a prompt with requiredBecause (why
-     * this one cannot be skipped), always asks.
+     * Ask a person through MCP elicitation, only for a physical check or a prompt with
+     * requiredBecause (why a person must accept it). Ordinary print, heating and resume
+     * starts do not ask: the client's own button is the yes, and the printer runs its
+     * own checks.
      */
     async confirmHardwareAction(message, physicalCheck = false, requiredBecause) {
-        if (!physicalCheck && requiredBecause === undefined && process.env.BAMBU_REQUIRE_CONFIRMATION === "0")
+        if (!physicalCheck && requiredBecause === undefined)
             return;
         if (!this.confirm) {
             throw new Error("Hardware safety confirmation is unavailable. Use an MCP client with elicitation support. No command was sent." + (requiredBecause ? ` ${requiredBecause}` : ""));
@@ -565,8 +653,7 @@ export class BambuImplementation {
         if (!(await this.confirm(message))) {
             throw new Error("Hardware safety confirmation was declined or cancelled in the MCP client. No command was sent. " + (physicalCheck
                 ? "This confirmation covers a physical check at the printer and always needs a person to accept it."
-                : requiredBecause ?? ("Some clients decline prompts automatically, for example in a non-interactive permission mode. " +
-                    "A deliberately headless setup that approves jobs another way can set BAMBU_REQUIRE_CONFIRMATION=0 to skip ordinary print and heating prompts.")));
+                : requiredBecause ?? "Some clients decline prompts automatically, for example in a non-interactive permission mode."));
         }
     }
     finishedJobIdentity(status) {
@@ -603,7 +690,7 @@ export class BambuImplementation {
             throw new Error("Printer job changed during preflight. Review the current printer status and retry.");
         }
         // An X2D raises its hidden camera notice about 15 seconds after boot, so it
-        // can appear after the human confirmed. Never pass a notice nobody was told about.
+        // can appear after the preflight. Never pass a notice the preflight did not name.
         const unnamed = hiddenHmsNotices(status?.raw, preflight.serial, preflight.model).filter(notice => !preflight.notices.includes(notice));
         if (unnamed.length) {
             throw new Error(`Printer reported ${unnamed.join(", ")} after the print confirmation. ` +
@@ -636,7 +723,10 @@ export class BambuImplementation {
             return;
         const state = raw.gcode_state.toUpperCase();
         if (ACTIVE_JOB_STATES.has(state) && reportsJob(raw, checked.remotePath)) {
-            checked.seenRunning = true;
+            if (!checked.seenRunning) {
+                checked.seenRunning = true;
+                this.checkedJobs.save(key);
+            }
             return;
         }
         if (checked.seenRunning && (ENDED_JOB_STATES.has(state) || (ACTIVE_JOB_STATES.has(state) && reportedJobNames(raw).length > 0))) {
@@ -1130,8 +1220,10 @@ export class BambuImplementation {
             const ackMs = stopAckMs();
             const deadline = new AbortController();
             const timer = setTimeout(() => deadline.abort(Object.assign(new Error("stop not acknowledged"), { name: "TimeoutError" })), ackMs);
+            const stop = studioControl("stop");
+            const answered = watchControlReply(printer, stop.command, stop.sequenceId, controlReplyMs());
             try {
-                await this.invokeEmergencyCommand(printer, studioStopCommand, deadline.signal);
+                await this.invokeEmergencyCommand(printer, stop, deadline.signal);
             }
             catch (error) {
                 if (error?.name === "TimeoutError")
@@ -1142,7 +1234,13 @@ export class BambuImplementation {
                 clearTimeout(timer);
             }
             this.checkedJobs.delete(`${host}\n${serial}`);
-            return { status: "success", message: "Stop sent and acknowledged by the printer (MQTT QoS 1), as Bambu Studio sends it. Check get_printer_status to confirm the job stopped." };
+            // A printer that is not in LAN Only + Developer Mode answers an unsigned Stop with a refusal.
+            const reply = await answered;
+            if (reply && !reply.accepted)
+                throw new Error(refusedControlMessage("stop", "the local network", reply.errCode, true));
+            return { status: "success", confirmed: Boolean(reply), message: reply
+                    ? "The printer accepted Stop."
+                    : "Stop sent and acknowledged by the printer (MQTT QoS 1), as Bambu Studio sends it. Check get_printer_status to confirm the job stopped." };
         }
         catch (error) {
             throw new Error(`Failed to cancel print: ${error.message}`);
@@ -1197,9 +1295,13 @@ export class BambuImplementation {
         try {
             if (dispatch)
                 return await dispatch();
-            else
-                await invokeWithoutAck(printer, new UpdateStateCommand({ state: "pause" }));
-            return { status: "success", message: "Pause command sent successfully." };
+            const pause = studioControl("pause");
+            const answered = watchControlReply(printer, pause.command, pause.sequenceId, controlReplyMs());
+            await invokeWithoutAck(printer, pause);
+            const reply = await answered;
+            if (reply && !reply.accepted)
+                throw new Error(refusedControlMessage("pause", "the local network", reply.errCode, true));
+            return { status: "success", confirmed: Boolean(reply), message: reply ? "The printer accepted Pause." : "Pause command sent successfully." };
         }
         catch (error) {
             throw new Error(`Failed to pause print: ${error.message}`);
@@ -1208,8 +1310,8 @@ export class BambuImplementation {
     /**
      * Resume reheats and moves the printer, so it is gated like a print start:
      * only the job this server inspected and started, while a fresh report shows
-     * it paused, with its bytes re-read over FTPS and compared, and after human
-     * confirmation (unless BAMBU_REQUIRE_CONFIRMATION=0). The record must still
+     * it paused, with its bytes re-read over FTPS and compared. Only a file that
+     * could not be re-read asks a person. The record must still
      * be current at every check, including the native helper's last one.
      */
     async resumeJob(host, serial, token, dispatch) {
@@ -1251,17 +1353,23 @@ export class BambuImplementation {
                 `bed ${checked.maxBedTemperature}°C, chamber ${checked.maxChamberTemperature}°C) and moves. Materials: ${checked.materials.length ? checked.materials.join(", ") : "none declared"}. ` +
                 `File SHA-256: ${checked.sha256}${"verified" in reread ? ` (re-read from the printer${reread.verified === checked.remotePath ? "" : ` as its extracted plate ${reread.verified}`})` : ` (Bambu's plug-in placed the file, and it could not be re-read over FTPS: ${unread}; matched by its unique name)`}. ` +
                 "Confirm the nozzle path is clear and the filament is still loaded.", false, 
-            // The opt-out covers resumes whose bytes were checked; an unverified file always needs a person.
-            bytesVerified ? undefined : "The printer's copy of this file could not be re-read, so this resume always needs a person to accept it, even with BAMBU_REQUIRE_CONFIRMATION=0.");
+            // A resume whose bytes were checked does not ask; an unverified file always needs a person.
+            bytesVerified ? undefined : "The printer's copy of this file could not be re-read, so this resume always needs a person to accept it.");
             // The job may have been resumed, stopped or replaced at the printer while the prompt was open.
             await pausedJob();
             const printer = dispatch ? undefined : await this.getPrinter(host, serial, token);
             assertActive();
-            if (dispatch)
+            if (dispatch) {
                 await dispatch(assertActive, pausedJob);
-            else
-                await invokeWithoutAck(printer, new UpdateStateCommand({ state: "resume" }));
-            return { status: "success", message: `Resume command sent for ${jobName}.`, jobName, bytesVerified };
+                return { status: "success", message: `Resume command sent for ${jobName}.`, jobName, bytesVerified };
+            }
+            const resume = studioControl("resume");
+            const answered = watchControlReply(printer, resume.command, resume.sequenceId, controlReplyMs());
+            await invokeWithoutAck(printer, resume);
+            const reply = await answered;
+            if (reply && !reply.accepted)
+                throw new Error(refusedControlMessage("resume", "the local network", reply.errCode, true));
+            return { status: "success", confirmed: Boolean(reply), message: reply ? `The printer accepted Resume for ${jobName}.` : `Resume command sent for ${jobName}.`, jobName, bytesVerified };
         });
     }
     /**
@@ -1844,8 +1952,40 @@ export class BambuImplementation {
      *
      * Read-only; no confirm gate. Default 8s timeout for cold-start latency.
      */
+    cameraStreamStart(host, serial, token, options = {}) {
+        const fps = cameraNumber(options.fps, 1, 0.2, 2, "fps");
+        const idleTimeoutMs = cameraNumber(options.idleTimeoutMs, 30000, 5000, 120000, "idle_timeout_ms", true);
+        const model = normalizeModel(options.bambuModel) ?? "";
+        const tcp = TCP_CAMERA_MODELS.has(model);
+        if (!tcp && !RTSP_CAMERA_MODELS.has(model))
+            throw new Error("camera_stream_start requires a supported bambu_model or BAMBU_MODEL");
+        const { stream, status } = this.cameraStreams.start(JSON.stringify([host, serial]), { transport: tcp ? "tcp-6000" : "rtsps-322", fps, idleTimeoutMs,
+            skipFirstFrame: tcp, open: handlers => tcp ? openTcpCameraSource(host, token, handlers) : openRtspCameraSource(host, token, fps, handlers, options.ffmpegPath) });
+        return { status, transport: stream.transport, fps: stream.fps, startedAt: stream.startedAt };
+    }
+    async cameraStreamFrame(host, serial, options = {}) {
+        const sinceSeq = cameraNumber(options.sinceSeq, 0, 0, Number.MAX_SAFE_INTEGER, "since_seq", true);
+        const waitMs = cameraNumber(options.waitMs, 0, 0, 10000, "wait_ms", true);
+        const minChange = cameraNumber(options.minChange, 0.02, 0, 1, "min_change");
+        const maxWidth = options.maxWidth === undefined ? undefined : cameraNumber(options.maxWidth, 300, 1, 4096, "max_width", true);
+        const maxBytes = options.maxBytes === undefined ? undefined : cameraNumber(options.maxBytes, 42000, 4096, 5000000, "max_bytes", true);
+        if (options.changedOnly !== undefined && typeof options.changedOnly !== "boolean")
+            throw new Error("changed_only must be a boolean");
+        return this.cameraStreams.get(JSON.stringify([host, serial]))?.frame({ ...options, sinceSeq, waitMs, minChange, maxWidth, maxBytes }) ?? { status: "stopped", seq: 0 };
+    }
+    cameraStreamStop(host, serial) { this.cameraStreams.stop(JSON.stringify([host, serial])); return { status: "stopped" }; }
     async cameraSnapshot(host, _serial, token, options = {}) {
         const timeoutMs = options.timeoutMs ?? 8000;
+        const stream = this.cameraStreams.get(JSON.stringify([host, _serial]));
+        if (stream && !stream.stopped) {
+            const jpeg = await stream.latest(Math.min(timeoutMs, 10000));
+            if (!jpeg)
+                throw new Error("The active camera stream has not produced a live frame");
+            if (options.savePath)
+                await (await import("node:fs/promises")).writeFile(options.savePath, jpeg);
+            return { status: "success", format: "image/jpeg", sizeBytes: jpeg.length, base64: jpeg.toString("base64"), transport: stream.transport,
+                ...(options.savePath ? { savedTo: options.savePath } : {}) };
+        }
         const model = (options.bambuModel ?? "").toLowerCase();
         const RTSP_MODELS = RTSP_CAMERA_MODELS;
         if (!model) {
@@ -1984,12 +2124,7 @@ export class BambuImplementation {
      */
     async fetchTcpCameraFrame(host, token, timeoutMs, port = 6000) {
         const tls = await import("node:tls");
-        const auth = Buffer.alloc(80, 0);
-        auth.writeUInt32LE(0x40, 0); // payload size
-        auth.writeUInt32LE(0x3000, 4); // type
-        // flags=0, reserved=0 are already zero from Buffer.alloc.
-        auth.write("bblp", 16, 4, "ascii");
-        auth.write(token, 48, Math.min(32, Buffer.byteLength(token, "ascii")), "ascii");
+        const auth = cameraAuth(token);
         return new Promise((resolve, reject) => {
             let settled = false;
             let frames = 0;

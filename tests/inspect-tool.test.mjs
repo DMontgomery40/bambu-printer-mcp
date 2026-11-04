@@ -18,7 +18,7 @@ async function server(t) {
   const transport = new StdioClientTransport({ command: process.execPath, args: ['--import', preload, entry], cwd: dir, stderr: 'pipe',
     env: { HOME: dir, MCP_TRANSPORT: 'stdio', BAMBU_MODEL: '', BAMBU_PRINTER_MODEL: '',
       BAMBU_PRINTER_HOST: '127.0.0.1', PRINTER_HOST: '127.0.0.1', BAMBU_SERIAL: '', BAMBU_PRINTER_SERIAL: '',
-      BAMBU_TOKEN: '', BAMBU_PRINTER_ACCESS_TOKEN: '', BAMBU_REQUIRE_CONFIRMATION: '1', INSPECTION_NETWORK_LOG: networkLog } });
+      BAMBU_TOKEN: '', BAMBU_PRINTER_ACCESS_TOKEN: '', INSPECTION_NETWORK_LOG: networkLog } });
   transport.stderr.on('data', () => {});
   const client = new Client({ name: 'offline-inspection-test', version: '1' }, { capabilities: {} });
   t.after(async () => { await client.close(); await transport.close(); await rm(dir, { recursive: true, force: true }); });

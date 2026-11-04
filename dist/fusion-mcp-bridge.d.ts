@@ -75,10 +75,6 @@ export declare const FUSION_STATUS_OUTPUT_SCHEMA: {
     };
     required: string[];
 };
-/** fusion_mcp_call passes the remote result through: its structuredContent, else an empty object. */
-export declare const FUSION_CALL_OUTPUT_SCHEMA: {
-    type: "object";
-};
 export declare const FUSION_NEW_DESIGN_OUTPUT_SCHEMA: {
     type: "object";
     properties: {
@@ -91,6 +87,13 @@ export declare const FUSION_NEW_DESIGN_OUTPUT_SCHEMA: {
         };
         parametric: {
             type: string;
+        };
+        document_id: {
+            type: string;
+        };
+        document_binding: {
+            type: string;
+            const: number;
         };
     };
     required: string[];
@@ -175,6 +178,7 @@ export declare class FusionMcpBridge {
     /** A faust tool that must succeed; its failure text is Fusion's own and contains no secrets of ours. */
     private must;
     status(args: Arguments, signal?: AbortSignal): Promise<Record<string, unknown>>;
+    private boundArguments;
     call(args: Arguments, signal?: AbortSignal): Promise<CallToolResult>;
     newDesign(args: Arguments, signal?: AbortSignal): Promise<Record<string, unknown>>;
     export(args: Arguments, signal?: AbortSignal): Promise<Record<string, unknown>>;

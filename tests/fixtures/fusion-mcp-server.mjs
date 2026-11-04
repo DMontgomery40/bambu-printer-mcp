@@ -19,6 +19,10 @@ const tools = [
   { name: "get_parameters", inputSchema: object() },
   { name: "set_parameter", inputSchema: object({ name: { type: "string" }, value: { type: "number" } }, ["name", "value"]) },
 ];
+if (mode === "binding") {
+  for (const tool of tools) tool.inputSchema.properties.document_id = {type: "string", minLength: 1};
+  tools.push({name: "new_document", inputSchema: object({source_f3d: {type: "string"}})});
+}
 function triangleStl() {
   const stl = Buffer.alloc(134);
   stl.writeUInt32LE(1, 80);
@@ -40,8 +44,10 @@ reader.on("line", (line) => {
   const { name, arguments: args = {} } = request.params;
   log({ event: "call", name, args });
   if (mode === "call-timeout") return;
+  if (mode === "mixed-content") return send(request.id, {content: [{type: "text", text: "Visible sketch result"}, {type: "image", mimeType: "image/png", data: "aW1hZ2U="}], structuredContent: {sketch: "Sketch1"}});
   if (name === "ping") return mode === "addin-down" ? error(request.id, name, "CONNECTION", "Fusion 360 not reachable") : ok(request.id, name, { pong: "True" });
   if (mode === "no-design") return error(request.id, name, "NO_ACTIVE_DESIGN", "No active design");
+  if (name === "new_document") return ok(request.id, name, {document: "Untitled", document_id: "owned-document-token", document_binding: 1, parametric: "True"});
   if (name === "execute_code") {
     const marker = /^# BAMBU_FUSION (\w+)/.exec(args.code)?.[1];
     const result = marker === "new_design" ? { document: "Untitled", parametric: true }

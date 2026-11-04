@@ -30,6 +30,7 @@ export type PrinterInfo = {
   capabilities: {
     progress: boolean; layers: boolean;
     camera: "bambu-tcp" | "rtsp" | "http-snapshot" | "none";
+    cameraStream?: boolean;
     filaments: "ams" | "single" | "none";
     pause: boolean; resume: boolean; cancel: boolean; print3mf: boolean; gcode: boolean;
   };
@@ -67,6 +68,7 @@ export const PRINTER_INFO_OUTPUT_SCHEMA = {
         progress: { type: "boolean" },
         layers: { type: "boolean" },
         camera: { type: "string", enum: ["bambu-tcp", "rtsp", "http-snapshot", "none"] },
+        cameraStream: { type: "boolean" },
         filaments: { type: "string", enum: ["ams", "single", "none"] },
         pause: { type: "boolean" },
         resume: { type: "boolean" },

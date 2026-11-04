@@ -169,6 +169,8 @@ Use the authentication/session configuration supported by your installed runtime
 
 On Linux, a contributor reports that copying the FULU GUI's own `BambuNetworkEngine.conf` from FULU OrcaSlicer's configuration folder into `BAMBU_NETWORK_CONFIG_DIR` makes `net.is_user_login` return `true` without `BAMBU_NETWORK_USER_INFO`. That file holds your account session: keep it private and out of issue reports. The server never copies it for you. This uses FULU's login, not Bambu Studio's.
 
+A host in a container or VM also needs a CA bundle for the plug-in's HTTPS calls to Bambu Cloud. Without one, a cloud print fails with `-3010` and `curl: SSL certificate problem: unable to get local issuer certificate`. Set `SSL_CERT_FILE` and `CURL_CA_BUNDLE` to a CA bundle inside the guest, and `SSL_CERT_DIR` to its certificate folder (for example `/etc/ssl/certs`), as FULU's own `tools/pjarczak_bambu_runtime/wsl/pjarczak_wsl_run_host.sh` does. For Docker, add `-e SSL_CERT_FILE=… -e CURL_CA_BUNDLE=… -e SSL_CERT_DIR=/etc/ssl/certs` to the `docker run` in your bridge command.
+
 If login cannot be established, stop at the probe and use direct LAN where supported, or use FULU's own UI. Cloud bridge jobs still require Bambu services; they are not the cloud-free workflow described at the top of this guide. Keep tokens, access codes, account JSON, and unredacted logs out of public issues.
 
 ## Print through the bridge
@@ -251,6 +253,9 @@ These failures come from upstream software, not from this server. The server wor
 | Missing library / architecture / VM error | Check the matching upstream runtime, CPU architecture, library directory, and platform wrapper. |
 | Handshake works, file upload fails | Verify the project and config paths inside the host/VM/WSL process, including read/write permissions. |
 | Agent ready, cloud print rejected | Verify login, region, and device ID; `agentReady` is not an authenticated-session guarantee. |
+| Cloud print `-3010`, `SSL certificate problem` | Give the containerized host a CA bundle; see [cloud authentication](#cloud-authentication). |
+| Cloud print `-3120`, `[http code]: 403 … [reason]: internal blocking` | Bambu Cloud refused to create the print task after the upload finished. Seen on a cloud-bound P1S (firmware 01.10.00.00) with plug-in 02.05.02.58 on 2026-11-03; Bambu Studio users report the same error. The cause is on Bambu's side and not established; print over LAN instead. |
+| A control returns the printer's `err_code` 84033546 (0x0502400A) | Command verification failed. On P1S 01.10, a valid signature with a request ID outside Studio's string `20000`–`29999` window produces this error. Use the updated MCP counter; this code alone does not establish that Developer Mode is required. |
 | Non-zero result or `send msg failed` | Inspect the redacted runtime error and printer diagnostics; do not blindly repeat a possible print submission. |
 | FULU/Orca CLI slicing requested | Use 1.1.11+ with the matching installed profile tree and exact model/nozzle; see the CLI checks above. Use GUI export if preparation or slicing fails. |
 | X2D native transport unavailable | Native printing requires macOS or x86-64 Linux, the optional built helper, and a compatible installed networking plug-in. On Linux, run `bambu-printer-mcp-native-setup` and check it with `--verify`. Legacy FTPS/remote-file starts remain unsupported; keep the X2D model and preset. |

@@ -81,6 +81,13 @@ export declare function isHiddenNotice(serial: string, model: string, entry: Hms
 export declare function hiddenHmsNotices(raw: unknown, serial: string, model: string): string[];
 /** Cleared-code keys of reported hidden entries; clearing never removes them, so they are not re-acknowledged. */
 export declare function hiddenHmsKeys(raw: unknown, serial: string, model: string): string[];
+/**
+ * 0300_8013, "Printing was paused by the user" / "paused due to the pause command added to the
+ * printing file" (hms-messages.ts): the printer's report of a deliberate pause, which Resume clears.
+ * A paused P1S reports it as print_error, so it is not an error for resuming a paused job.
+ */
+export declare const PAUSE_NOTICE = 50364435;
+export declare function isPauseNotice(raw: Record<string, any>, requireIdle: boolean): boolean;
 /** Verifies reported configuration, not a physical nozzle/spool inspection. */
 export declare function validatePrinterState(status: any, requirements: PrinterStateRequirements): ValidatedPrinterState;
 /** Manual M104 cannot remap filament slots. Validate the material already at the nozzle. */

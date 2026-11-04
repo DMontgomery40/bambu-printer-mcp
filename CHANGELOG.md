@@ -1,5 +1,39 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Print, heating and resume start without a prompt; clearing hardware errors and resuming a file that could not be re-read still ask a person. The client's own Print button is the yes, and the printer runs its own checks. The first print after a hardware clear still asks that the cleared causes are resolved. The `BAMBU_REQUIRE_CONFIRMATION` setting is removed and ignored if set.
+
+### Fixed
+
+- Keep authenticated FULU Pause, Resume and Stop request IDs as strings in Studio's 20000–29999 window, with a shared counter across LAN, cloud and retries that wraps inside the window. A cloud-bound P1S 01.10 rejects larger IDs with 0502400A even when their signatures are valid. Preserve reply correlation and the delivery hold; remove guidance claiming controls require Studio/Handy or Developer Mode. Automated regressions cover both transports and wraparound; hardware validation is limited to the maintainer's P1S.
+
+- One connection decision for print and control: `cancel_print`, `pause_print` and `resume_print` now use `BAMBU_DEFAULT_CONNECTION_MODE` (and the new `BAMBU_DEFAULT_CONNECTION_TYPE`) exactly as `print_3mf` does. Before, a server configured for FULU printed through the authenticated bridge but sent Stop and Pause as plain MQTT, which protected firmware rejects with HMS 0500_0500_0001_0007. Pause and Resume now travel the authenticated FULU LAN session like Stop. A FULU cloud route refuses controls instead of sending plain MQTT.
+
+- Authenticated LAN controls (Stop, Pause, Resume) wait briefly for FULU's certificate message but no longer refuse to send without it: on the real P1S it never arrived and Stop sent nothing. A synchronous SEND_MSG_FAILED (-4) or LP_PUBLISH_MSG_FAILED (-4030) means nothing was sent, so the certificate is reinstalled and the control tried again, up to three times, as the native X2D helper does; any other return is final. Each control's FULU events and sends are written to `control-trace.log` in the bridge config folder, without access codes.
+
+- Send Stop through the selected authenticated FULU LAN bridge on non-native printers. A protected P1S no longer receives an unsigned MQTT stop after an authenticated print. Bridge failures remain errors; no unauthenticated fallback or automatic replay is used.
+
+- Preserve Fusion tool text, images and genuine structured results without synthesizing an empty structured reply that hides modeling feedback in clients.
+
+- Support document-bound Fusion design passes: return an isolated document identity, optionally import an F3D revision into a new document, and preserve the identity across every modeling/export subcall. Older bridges fail closed when binding is requested; existing unbound callers remain compatible. Requires a configured Fusion bridge/add-in that advertises the binding protocol.
+
+## [1.1.52] – 2026-11-02
+
+### Fixed
+
+- Slice multiple STL copies with Bambu Studio's `--clone-objects`, matching the existing Orca route. Bambu rejects `--repetitions` greater than one with the default all-plates slice. Keep selected-plate 3MF repetitions unchanged and reject competing STL copy counts. The output retains every generated plate; each `print_3mf` call still prints only its selected plate.
+
+### Added
+
+- Bundle the pinned native camera runtimes for supported desktop platforms in the generic MCPB extension; verify extracted release startup and JPEG processing on Linux, macOS and Windows before attaching the release asset.
+
+- Add `camera_stream_start`, `camera_frame`, and `camera_stream_stop`: one camera connection per watched printer (host and serial together), bounded long-poll reads, native 32×18 change detection, and viewer-sized JPEGs with an optional encoded-byte budget. A1/P1 reuse the existing TLS frame decoder; RTSP models use one ffmpeg MJPEG process. Idle and MCP shutdown close owned resources; `camera_snapshot` reuses an active stream.
+- Advertise the additive `capabilities.cameraStream` flag while keeping the existing camera transport field compatible. The implementation adapts the parked camera manager's contract with bounded native image processing and stable unchanged cursors.
+- Validate stream lifecycle, decoder/authentication reuse, RTSP process shutdown, concurrent waiters, resize, and actual MCP tool discovery with simulated transports. Real-device and sustained CPU/bandwidth acceptance are recorded separately; no physical-print behavior changes.
+
 ## [1.1.51] – 2026-11-02
 
 ### Fixed

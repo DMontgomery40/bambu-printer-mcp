@@ -1,3 +1,4 @@
+import { customGcodesWithPauses, layerTops, machinePauseGcode, pausedLayers, readPlateGcode, readProjectCustomGcodes } from "../slicer/layer-pauses.js";
 import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
@@ -1345,6 +1346,48 @@ export class STLManipulator extends EventEmitter {
      * error_string and plate warnings.
      */
     async sliceSTLWithResult(stlFilePath, slicerType, slicerPath, slicerProfile, progressCallback, printerPreset, bambuOptions) {
+        const once = (options) => this.sliceSTLOnce(stlFilePath, slicerType, slicerPath, slicerProfile, progressCallback, printerPreset, options);
+        const layers = bambuOptions?.pauseAtLayers?.length ? bambuOptions.pauseAtLayers : undefined;
+        const cli = slicerType === 'bambustudio' || slicerType === 'orcaslicer' || slicerType === 'orcaslicer-bambulab';
+        const plate = bambuOptions?.slicePlate && bambuOptions.slicePlate > 0 ? bambuOptions.slicePlate : 1;
+        // The CLI drops a project's own pauses and colour changes; carry them over.
+        const project = cli && /\.3mf$/i.test(stlFilePath) ? await readProjectCustomGcodes(stlFilePath, plate) : undefined;
+        if (!layers && !project?.gcodes.length)
+            return once(bambuOptions);
+        if (layers && !cli) {
+            throw new Error(`Pausing at a layer needs the Bambu Studio or OrcaSlicer CLI, not ${slicerType}.`);
+        }
+        const customGcodesFile = path.join(this.tempDir, `custom-gcodes-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+        try {
+            let tops = [];
+            if (layers) {
+                // A pause sits at its layer's exact top Z; learn the tops from a slice without pauses.
+                if (progressCallback)
+                    progressCallback(10, `Finding layer heights for the pause before layer ${layers.join(", ")}`);
+                const plain = await once({ ...bambuOptions, pauseAtLayers: undefined, customGcodesFile: undefined });
+                const gcode = await readPlateGcode(plain.path, plate);
+                if (!gcode)
+                    throw new Error('The slicer wrote no plate G-code, so the pause layers cannot be placed.');
+                tops = layerTops(gcode);
+            }
+            const info = layers ? customGcodesWithPauses(tops, layers, project) : project;
+            await fs.promises.writeFile(customGcodesFile, JSON.stringify(info));
+            const result = await once({ ...bambuOptions, customGcodesFile });
+            if (layers) {
+                const gcode = await readPlateGcode(result.path, plate);
+                const placed = gcode ? pausedLayers(gcode, machinePauseGcode(gcode)) : [];
+                const missing = layers.filter(layer => !placed.includes(layer));
+                if (!gcode || missing.length || layerTops(gcode).length !== tops.length) {
+                    throw new Error(`The slicer did not place the pause before layer ${(missing.length ? missing : layers).join(", ")}. Nothing was sent to the printer.`);
+                }
+            }
+            return result;
+        }
+        finally {
+            await fs.promises.rm(customGcodesFile, { force: true });
+        }
+    }
+    async sliceSTLOnce(stlFilePath, slicerType, slicerPath, slicerProfile, progressCallback, printerPreset, bambuOptions) {
         const operationId = this.generateOperationId();
         this.activeOperations.set(operationId, true);
         if (slicerType !== 'orca-slicer-api' && isPathLikeExecutable(slicerPath) && !fs.existsSync(slicerPath)) {
@@ -1493,8 +1536,8 @@ export class STLManipulator extends EventEmitter {
                             throw new Error("OrcaSlicer's CLI crashes when scale above 1, rotate_x or rotate_y moves a 3MF object below the bed while arranging. " +
                                 "Set arrange to false, or apply the transform in the slicer and export the project.");
                         }
-                        if (orcaCli && !is3mf && bambuOptions?.repetitions !== undefined && bambuOptions.cloneObjects) {
-                            throw new Error("Use either repetitions or clone_objects for an STL with OrcaSlicer, not both.");
+                        if (!is3mf && bambuOptions?.repetitions !== undefined && bambuOptions.cloneObjects) {
+                            throw new Error("Use either repetitions or clone_objects for an STL, not both.");
                         }
                         const inputPath = meshTransform ? await this.transformMeshForCli(stlFilePath, bambuOptions) : stlFilePath;
                         if (inputPath !== stlFilePath)
@@ -1534,8 +1577,9 @@ export class STLManipulator extends EventEmitter {
                         if (bambuOptions?.arrange !== undefined)
                             args.push('--arrange', bambuOptions.arrange ? '1' : '0');
                         if (bambuOptions?.repetitions !== undefined) {
-                            // OrcaSlicer counts copies of a single loaded STL with --clone-objects.
-                            if (orcaCli && !is3mf)
+                            // Both Bambu Studio and Orca count STL copies with --clone-objects.
+                            // --repetitions > 1 requires a selected existing plate and rejects --slice 0.
+                            if (!is3mf)
                                 args.push('--clone-objects', String(bambuOptions.repetitions));
                             else
                                 args.push('--repetitions', String(bambuOptions.repetitions));
@@ -1560,6 +1604,8 @@ export class STLManipulator extends EventEmitter {
                         }
                         if (bambuOptions?.loadFilamentIds)
                             args.push('--load-filament-ids', bambuOptions.loadFilamentIds);
+                        if (bambuOptions?.customGcodesFile)
+                            args.push('--load-custom-gcodes', path.resolve(bambuOptions.customGcodesFile));
                         args.push(path.resolve(inputPath));
                         // Override outputFilePath for bambustudio since it produces 3MF, not gcode
                         outputFilePath = bambuOutputPath;

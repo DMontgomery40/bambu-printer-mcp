@@ -31,9 +31,29 @@ test("MCPB archive preserves runtime and licenses without local secrets or pruni
   const beforePackage = fs.readFileSync(path.join(fixture, "package.json"), "utf8");
   const beforeLock = fs.readFileSync(path.join(fixture, "package-lock.json"), "utf8");
   const outputPath = path.join(fixture, "test.mcpb");
-  packageMcpb({ root: fixture, outputPath, quiet: true });
+  // Release CI runs this same test against the Linux-built asset on other hosts.
+  if (process.env.MCPB_TEST_ARCHIVE) fs.copyFileSync(process.env.MCPB_TEST_ARCHIVE, outputPath);
+  else packageMcpb({ root: fixture, outputPath, quiet: true });
 
   const archive = await JSZip.loadAsync(fs.readFileSync(outputPath));
+  // A single release asset must also start on hosts other than the packaging runner.
+  const lock = JSON.parse(beforeLock);
+  for (const target of ["darwin-arm64", "darwin-x64", "win32-arm64", "win32-x64", "linux-arm64", "linux-x64", "linuxmusl-arm64", "linuxmusl-x64"]) {
+    const name = `@img/sharp-${target}`;
+    const metadata = archive.file(`node_modules/${name}/package.json`);
+    assert.ok(metadata, `missing native camera runtime for ${target}`);
+    const pkg = JSON.parse(await metadata.async("string"));
+    assert.equal(pkg.version, lock.packages[`node_modules/${name}`].version);
+    assert.ok(archive.file(`node_modules/${name}/${pkg.exports["./sharp.node"].replace(/^\.\//, "")}`));
+    assert.ok(Object.keys(archive.files).some(file => file.startsWith(`node_modules/${name}/`) && file.endsWith(".node")), `missing native binary for ${target}`);
+    for (const dependency of Object.keys(pkg.optionalDependencies ?? {})) {
+      const dependencyMetadata = archive.file(`node_modules/${dependency}/package.json`);
+      assert.ok(dependencyMetadata, `missing ${target} shared library`);
+      const library = JSON.parse(await dependencyMetadata.async("string"));
+      assert.equal(library.version, lock.packages[`node_modules/${dependency}`].version);
+      assert.ok(archive.file(`node_modules/${dependency}/${library.exports["./binary"].replace(/^\.\//, "")}`));
+    }
+  }
   for (const name of ["manifest.json", "package.json", "dist/index.js", "src/index.ts", "patches/bambu-node+3.22.21.patch", "scripts/install-patches.mjs", "scripts/build-bambu-native.sh", "scripts/setup-bambu-native.mjs", "native/bambu-native-print.cpp", "LICENSE", "README.md", "CONTRIBUTORS.md", "node_modules/mqtt/LICENSE.md", "node_modules/bambu-node/LICENSE", "node_modules/three/LICENSE", "node_modules/basic-ftp/LICENSE.txt"]) {
     assert.ok(archive.file(name), `missing release file: ${name}`);
   }
@@ -56,6 +76,14 @@ test("MCPB archive preserves runtime and licenses without local secrets or pruni
   }
   const launchDirectory = path.join(fixture, "extension-host-cwd");
   fs.mkdirSync(launchDirectory);
+  const imageSize = execFileSync(process.execPath, ["--input-type=commonjs", "-e", `
+    const sharp = require('sharp');
+    sharp({create: {width: 32, height: 18, channels: 3, background: '#245678'}})
+      .jpeg().toBuffer().then(bytes => sharp(bytes).metadata())
+      .then(info => process.stdout.write(JSON.stringify([info.width, info.height])))
+      .catch(error => { console.error(error); process.exitCode = 1; });
+  `], {cwd: installed, encoding: "utf8", timeout: 15000});
+  assert.deepEqual(JSON.parse(imageSize), [32, 18], "the extracted native camera runtime must encode and decode");
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(installed, manifest.server.entry_point)],

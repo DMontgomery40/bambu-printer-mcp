@@ -126,7 +126,9 @@ console.log('native_print result=0');
       BAMBU_NATIVE_HELPER: installedHelper ? helper : "",
       BAMBU_NATIVE_HOME: installedPlugin ? createFakeNativeHome(dir, { tunnelLibrary }) : path.join(dir, "empty-native-home"),
       ...(unpinnedOptIn ? UNPINNED_PLUGIN_ENV : { BAMBU_NATIVE_ALLOW_UNPINNED_PLUGIN: "" }),
-      BAMBU_DEFAULT_CONNECTION_MODE: "", BAMBU_REQUIRE_CONFIRMATION: "1", BAMBU_EMERGENCY_MQTT_TIMEOUT_MS: "500", BAMBU_NATIVE_TRY_EMMC_PRINT: undefined, ...env }, stderr: "pipe",
+      BAMBU_DEFAULT_CONNECTION_MODE: "", BAMBU_EMERGENCY_MQTT_TIMEOUT_MS: "500", BAMBU_NATIVE_TRY_EMMC_PRINT: undefined,
+      // Each server keeps its own resume records: a job another test started must never be resumable here.
+      BAMBU_RESUME_STATE_DIR: await fs.mkdtemp(path.join(os.tmpdir(), "bambu-resume-server-")), ...env }, stderr: "pipe",
   });
   const client = new Client({ name: "native-regression", version: "0" }, { capabilities: { elicitation: { form: {} } } });
   const prompts = [];
@@ -149,15 +151,15 @@ console.log('native_print result=0');
 
 const canceledTask = { fail_reason: '50348044', subtask_name: 'previous-canceled-part', task_id: '1', subtask_id: '0', job_id: '0' };
 
-test('native printing from a canceled X2D task adds no plate prompt in headless mode', async t => {
-  const s = await server(t, { state: 'FAILED', storage: canceledTask, decline: true, env: { BAMBU_REQUIRE_CONFIRMATION: '0' } });
+test('native printing from a canceled X2D task adds no prompt, even for a client that would decline', async t => {
+  const s = await server(t, { state: 'FAILED', storage: canceledTask, decline: true });
   const result = await s.print({ connection_mode: 'bambu_native', ams_slots: [0] });
   assert.notEqual(result.isError, true, JSON.stringify(result));
   assert.deepEqual(s.prompts, []);
   assert.equal((await s.events()).some(e => e.kind === 'helper'), true);
 });
 
-test('a confirmed canceled X2D task reaches checked native dispatch without error-reset commands', async t => {
+test('a canceled X2D task reaches checked native dispatch without error-reset commands', async t => {
   const s = await server(t, { state: 'FAILED', storage: canceledTask });
   const result = await s.print({ connection_mode: 'bambu_native', ams_slots: [0] });
   assert.notEqual(result.isError, true, JSON.stringify(result));
@@ -206,7 +208,7 @@ for (const connection_mode of [undefined, "lan_mqtt_ftps", "bambu_native"]) {
     const s = await server(t, { model: "" });
     const result = await s.print({ connection_mode, ams_slots: [128] });
     assert.notEqual(result.isError, true, JSON.stringify(result));
-    assert.deepEqual(s.prompts, ["model", "confirm"], "model should be resolved exactly once");
+    assert.deepEqual(s.prompts, ["model"], "model should be resolved exactly once, and the print itself does not ask");
     const events = await s.events();
     assert.equal(events.filter(e => e.kind === "helper").length, 1);
     assert.equal(events.some(e => ["ftp", "mqtt"].includes(e.kind)), false);
@@ -333,7 +335,7 @@ test("Linux X2D print uses the installed native helper with the shared checks", 
   const s = await server(t, { platform: "linux", model: "" });
   const result = await s.print({ ams_slots: [0] });
   assert.notEqual(result.isError, true, JSON.stringify(result));
-  assert.deepEqual(s.prompts, ["model", "confirm"]);
+  assert.deepEqual(s.prompts, ["model"]);
   const events = await s.events();
   assert.equal(events.some(e => ["ftp", "mqtt"].includes(e.kind)), false);
   const call = events.find(e => e.kind === "helper");
@@ -382,7 +384,7 @@ test("Windows X2D print fails with a platform error before touching the printer"
   assert.deepEqual(s.prompts, ["model"]);
 });
 
-for (const options of [{ state: "RUNNING" }, { gcode: "M104 S400\n" }, { decline: true }]) {
+for (const options of [{ state: "RUNNING" }, { gcode: "M104 S400\n" }]) {
   test(`native print honors shared preflight: ${JSON.stringify(options)}`, async t => {
     const s = await server(t, options);
     assert.equal((await s.print({ use_ams: false })).isError, true);
@@ -633,11 +635,11 @@ test("metadata preserves unit-local filament IDs and absolute calibration IDs ac
   }
 });
 
-test("elicited X2D heating uses native dispatch only after human preflight", async t => {
+test("elicited X2D heating uses native dispatch without a heating prompt", async t => {
   const s = await server(t, { model: "" });
   const result = await s.client.callTool({ name: "set_temperature", arguments: { component: "bed", temperature: 50 } });
   assert.notEqual(result.isError, true, JSON.stringify(result));
-  assert.deepEqual(s.prompts, ["model", "confirm"]);
+  assert.deepEqual(s.prompts, ["model"]);
   const events = await s.events();
   assert.equal(events.some(e => e.kind === "mqtt"), false);
   assert.equal(events.find(e => e.kind === "helper").command.print.command, "set_bed_temp");
