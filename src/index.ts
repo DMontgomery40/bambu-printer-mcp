@@ -64,6 +64,7 @@ import { makeCounterpart3mf } from "./counterpart/make-3mf.js";
 import { MAKE_3MF_OUTPUT_SCHEMA, PRINT_PROGRESS_OUTPUT_SCHEMA, PRINTER_INFO_OUTPUT_SCHEMA } from "./counterpart/schemas.js";
 import { parseProcessOverrides } from "./slicer/process-overrides.js";
 import { PRINT_QUALITY_PROPERTIES, withPrintQuality } from "./slicer/print-quality.js";
+import { PrinterRefusal } from "./refusal.js";
 import { machinePauseGcode, parsePauseLayers, pausedLayers, readPlateGcode } from "./slicer/layer-pauses.js";
 
 dotenv.config();
@@ -964,6 +965,8 @@ type StructuredToolError = {
   suggestion: string;
   message: string;
   tool: string;
+  /** A stable refusal code (src/refusal.ts) when the printer refused; clients act on it, not on the words. */
+  code?: string;
   slicer_result?: Record<string, unknown>;
 };
 
@@ -4855,6 +4858,7 @@ class BambuPrinterMCPServer {
             : `Check parameters and try again. Error: ${message}`,
           message,
           tool: name,
+          ...(error instanceof PrinterRefusal ? { code: error.code } : {}),
           // The slicer's own result.json; the message starts with its error_string and warnings.
           ...(error instanceof SlicerRunError && error.slicerResult ? { slicer_result: error.slicerResult } : {}),
         };

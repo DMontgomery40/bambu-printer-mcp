@@ -259,6 +259,7 @@ test("print_3mf reports what the printer did after the command, including firmwa
         assert.match(result.structuredContent.message, /clear_hms_errors/);
         assert.equal(result.structuredContent.retryable, false);
         assert.match(result.structuredContent.suggestion, /Retrying unchanged repeats this refusal/);
+        assert.equal(result.structuredContent.code, "printer-command-rejected", "clients act on the code, not the HMS wording");
       } else {
         assert.equal(result.isError, undefined, result.content?.[0]?.text);
         const body = JSON.parse(result.content[0].text);

@@ -1167,7 +1167,8 @@ test("print preflight rechecks printer state before upload", async (t) => {
   const { printer, events } = isolatedPrinter();
   let reads = 0;
   printer.getSafetyStatus = async () => safetyStatus(++reads >= 2 ? { state: "RUNNING" } : {});
-  await assert.rejects(printer.print3mf(host, serial, token, { projectName: "confirm", filePath: file, bambuModel: "p1s", useAMS: false }), /not safely idle/i);
+  await assert.rejects(printer.print3mf(host, serial, token, { projectName: "confirm", filePath: file, bambuModel: "p1s", useAMS: false }),
+    error => /not safely idle/i.test(error.message) && error.code === "printer-not-ready", "a stable code clients act on");
   assertNoDispatch(events);
 });
 
