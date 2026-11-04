@@ -9,6 +9,8 @@ const LOCAL_OUTPUT = hints(false, true, true, false);
 const SET_PRINTER = hints(false, false, true, true);
 /** Starts a print job: adds a job, removes nothing, but a repeat would start another. */
 const START_PRINT = hints(false, false, false, true);
+/** Starts a print, auto-slicing an unsliced project first, which replaces an earlier slice output of that name. */
+const SLICE_AND_PRINT = hints(false, true, false, true);
 export const TOOL_ANNOTATIONS = {
     // Printer and cloud reads
     get_printer_status: READ_OUTSIDE,
@@ -19,8 +21,9 @@ export const TOOL_ANNOTATIONS = {
     // connect: true starts the bridge agent, which writes its configuration and device identity and can replace certificates.
     bambu_network_bridge_status: hints(false, true, true, true),
     camera_frame: READ_OUTSIDE,
-    camera_stream_start: READ_OUTSIDE, // opens this server's own camera connection; no printer motion or commands
-    camera_stream_stop: READ_OUTSIDE, // closes that connection
+    // Open (or renew) and close the one camera connection all viewers of this printer share; no printer motion or commands.
+    camera_stream_start: hints(false, false, true, true),
+    camera_stream_stop: hints(false, false, true, true),
     // Writes save_path, overwriting an existing file there; every call takes a new frame.
     camera_snapshot: hints(false, true, false, true),
     // Local reads
@@ -40,8 +43,8 @@ export const TOOL_ANNOTATIONS = {
     // Same, but a configured orca-slicer-api slices on a remote service, a new job and output each call.
     slice_stl: hints(false, true, false, true),
     slice_with_template: hints(false, true, false, true),
-    // New 3MF at a caller-chosen path; never overwrites, so a repeat fails instead of replacing.
-    counterpart_make_3mf: hints(false, false, false, false),
+    // New 3MF at a caller-chosen path; never overwrites, so a repeat fails and changes nothing.
+    counterpart_make_3mf: hints(false, false, true, false),
     // Copies into the template registry, replacing a template of the same name.
     save_template: hints(false, true, true, false),
     // Replaces BAMBU_DEFAULT_CONNECTION_MODE/TYPE in .env and in this process.
@@ -49,9 +52,9 @@ export const TOOL_ANNOTATIONS = {
     // Print starts
     start_print: START_PRINT,
     start_print_job: START_PRINT,
-    print_3mf: START_PRINT,
-    print_3mf_bambu_network: START_PRINT,
-    print_collar_charm: START_PRINT,
+    print_3mf: SLICE_AND_PRINT,
+    print_3mf_bambu_network: SLICE_AND_PRINT,
+    print_collar_charm: SLICE_AND_PRINT,
     upload_file: START_PRINT, // print: true starts the uploaded G-code; uploads never overwrite (unique names)
     upload_gcode: hints(false, false, false, true), // a uniquely named new copy per call
     // Print controls
@@ -71,8 +74,8 @@ export const TOOL_ANNOTATIONS = {
     x2d_native_control: hints(false, true, true, true),
     clear_hms_errors: hints(false, true, true, true), // clears the printer's error record
     delete_printer_file: hints(false, true, true, true),
-    // Raw bridge methods can do anything the bridge can, including printer commands.
-    bambu_network_call: hints(false, true, false, true),
+    // Only handshake and sign-in reads are allowed, but with_agent (the default) starts the bridge agent like the status probe.
+    bambu_network_call: hints(false, true, true, true),
     // Opens the file in the Bambu Connect app; does not print.
     bambu_connect_import_file: hints(false, false, false, true),
     // Blender and Fusion
@@ -83,10 +86,11 @@ export const TOOL_ANNOTATIONS = {
     fusion_mcp_status: hints(false, false, true, true), // launch: true starts Fusion on this computer
     fusion_mcp_call: hints(false, true, false, true), // any Fusion tool, including execute_code
     fusion_mcp_new_design: hints(false, false, false, true), // opens another new document
-    fusion_mcp_export: hints(false, false, false, true), // never overwrites; a repeat fails
+    fusion_mcp_export: hints(false, false, true, true), // never overwrites; a repeat fails and changes nothing
 };
-/** The tool with its annotations. A tool missing from the table is a bug caught by the tests. */
+/** Assumed for a tool missing from the table (a bug the tests catch): the least a client should trust it. */
+const UNKNOWN = hints(false, true, false, true);
+/** The tool with its annotations. */
 export function withAnnotations(tool) {
-    const annotations = TOOL_ANNOTATIONS[tool.name];
-    return annotations ? { ...tool, annotations } : tool;
+    return { ...tool, annotations: TOOL_ANNOTATIONS[tool.name] ?? UNKNOWN };
 }

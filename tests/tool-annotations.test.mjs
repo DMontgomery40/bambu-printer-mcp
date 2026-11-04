@@ -42,22 +42,23 @@ test('every listed tool declares all four MCP annotation hints, and the table na
 
 test('annotations match what the tools do to the printer and files', async t => {
   const byName = Object.fromEntries((await listedTools(t)).map(tool => [tool.name, tool.annotations]));
-  // Remote read scope: these must stay read-only.
-  for (const name of ['get_printer_status', 'get_printer_filaments', 'list_printer_files', 'counterpart_printer_info',
-    'counterpart_print_progress', 'camera_frame', 'inspect_print_file']) assert.equal(byName[name].readOnlyHint, true, name);
+  // The remote read scope is exactly these tools; adding one is a deliberate change here.
+  assert.deepEqual(Object.keys(byName).filter(name => byName[name].readOnlyHint).sort(), ['blender_mcp_status', 'camera_frame',
+    'counterpart_print_progress', 'counterpart_printer_info', 'get_printer_filaments', 'get_printer_status', 'get_stl_info',
+    'inspect_print_file', 'list_3mf_plate_objects', 'list_printer_files', 'list_templates', 'resolve_3mf_ams_slots']);
   // Anything that moves, heats, prints or writes is not read-only and reaches the printer.
   for (const name of ['print_3mf', 'print_3mf_bambu_network', 'start_print', 'start_print_job', 'upload_file', 'pause_print', 'resume_print',
     'cancel_print', 'set_temperature', 'set_fan_speed', 'reread_ams_rfid', 'clear_hms_errors', 'delete_printer_file', 'bambu_network_call']) {
     assert.equal(byName[name].readOnlyHint, false, name);
     assert.equal(byName[name].openWorldHint, true, name);
   }
-  // Irreversible: ending a job, skipping objects, deleting files, clearing errors, raw bridge or editor calls.
+  // Irreversible or replacing: ending a job, skipping objects, deleting files, clearing errors, bridge agent setup, editor calls.
   for (const name of ['cancel_print', 'skip_objects', 'delete_printer_file', 'clear_hms_errors', 'bambu_network_call',
     'blender_mcp_call', 'fusion_mcp_call', 'save_template', 'camera_snapshot', 'bambu_network_bridge_status', 'counterpart_print_route']) assert.equal(byName[name].destructiveHint, true, name);
   // A repeated print start starts another job.
   for (const name of ['print_3mf', 'start_print_job', 'upload_file']) assert.equal(byName[name].idempotentHint, false, name);
   // A slice or local model edit replaces its earlier output of the same name, in the server's temporary directory.
-  for (const name of ['scale_stl', 'slice_stl', 'get_slice_settings']) assert.equal(byName[name].destructiveHint, true, name);
+  for (const name of ['scale_stl', 'slice_stl', 'get_slice_settings', 'print_3mf']) assert.equal(byName[name].destructiveHint, true, name);
   // Local model edits write only to the server's temporary directory only.
   for (const name of ['scale_stl', 'rotate_stl', 'lay_flat', 'get_stl_info']) assert.equal(byName[name].openWorldHint, false, name);
 });

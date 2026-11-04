@@ -17,9 +17,9 @@ export interface ToolAnnotations {
     openWorldHint: boolean;
 }
 export declare const TOOL_ANNOTATIONS: Record<string, ToolAnnotations>;
-/** The tool with its annotations. A tool missing from the table is a bug caught by the tests. */
+/** The tool with its annotations. */
 export declare function withAnnotations<T extends {
     name: string;
 }>(tool: T): T & {
-    annotations?: ToolAnnotations;
+    annotations: ToolAnnotations;
 };
