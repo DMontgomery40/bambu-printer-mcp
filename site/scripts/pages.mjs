@@ -108,7 +108,7 @@ export const PAGES = [
     group: 'Reference',
     route: 'reference/resources',
     title: 'MCP resources',
-    description: 'Printer status, files, and HMS diagnostics as MCP resources.',
+    description: 'Printer status, files, and HMS diagnostics as MCP resources, and design guidance as MCP prompts.',
     sources: [{ file: 'README.md', heading: 'Available Resources' }],
   },
   {
