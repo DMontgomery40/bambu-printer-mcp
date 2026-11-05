@@ -4,7 +4,7 @@
 
 ### Added
 
-- `get_slice_settings` on a 3MF returns `own_process`: true when `slice_stl` and `print_3mf`'s auto-slice slice that file with its own process (a designer's Bambu Studio or Orca project) unless the call names `slicer_profile`, `template_name` or `template_3mf_path`. It is the same test those tools use, so a client can show that a designer's file prints with the designer's settings, and leave quality and strength at standard, without reading the 3MF itself. Counterpart's print sheet carried the last print's quality and strength over to a copy of a designer's 3MF, where they changed its layer height, walls or infill. Checked with a stand-in slicer.
+- `get_slice_settings` on a 3MF returns `own_process`: true when the file carries its own process (a designer's Bambu Studio or Orca project), so `slice_stl` and `print_3mf`'s auto-slice slice it with that process unless the call names `slicer_profile`, `template_name` or `template_3mf_path`. It calls the same function those tools use, so a client can show that a designer's file prints with the designer's settings, and leave quality and strength at standard, without reading the 3MF itself. Counterpart's print sheet carried the last print's quality and strength over to a copy of a designer's 3MF, where they changed its layer height, walls or infill. Checked with a stand-in slicer.
 
 ## [1.1.61] – 2026-11-05
 
