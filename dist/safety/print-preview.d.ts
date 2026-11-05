@@ -26,7 +26,7 @@ interface Segment {
     tool: number;
     width: number;
 }
-/** Extruding moves of one plate's G-code, start-up purge excluded. */
+/** Extruding moves of one plate's G-code, start-up purge and filament-change flushing excluded. */
 export declare function extrusionSegments(gcode: string): {
     segments: Segment[];
     layers: number;
