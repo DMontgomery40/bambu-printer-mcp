@@ -83,14 +83,19 @@ export function extrusionSegments(gcode) {
                     width = Number(w[1]);
             }
         }
-        const line = (comment >= 0 ? raw.slice(0, comment) : raw).trim().toUpperCase();
+        // The syntax file inspection accepts (print-file.ts): optional line number and checksum, a command word that
+        // may be zero-padded (G01) or touch its first parameter (G1X20), and parameters with or without spaces or a + sign.
+        const line = (comment >= 0 ? raw.slice(0, comment) : raw).trim().toUpperCase().replace(/^N\d+\s*/, "").replace(/\*\d+\s*$/, "");
         if (!line)
             continue;
-        const word = line.split(/\s+/)[0];
-        const toolMatch = /^T(\d+)$/.exec(word);
-        if (toolMatch) {
-            const t = Number(toolMatch[1]);
-            if (t < 255)
+        const command = /^([GMT])(\d+(?:\.\d+)?)/.exec(line);
+        if (!command)
+            continue;
+        const word = command[1] + String(Number(command[2].split(".")[0])) + (command[2].includes(".") ? "." + command[2].split(".")[1] : "");
+        const words = parameterWords(line.slice(command[0].length));
+        if (command[1] === "T") {
+            const t = Number(command[2]);
+            if (Number.isInteger(t) && t < 255)
                 tool = t;
             continue;
         }
@@ -120,14 +125,14 @@ export function extrusionSegments(gcode) {
             continue;
         }
         if (word === "G92") {
-            const m = /\bE(-?[\d.]+)/.exec(line);
-            if (m)
-                e = Number(m[1]);
+            const reset = words.get("E");
+            if (reset !== undefined)
+                e = reset;
             continue;
         }
         if (word !== "G0" && word !== "G1" && word !== "G2" && word !== "G3")
             continue;
-        const value = (axis) => { const m = new RegExp(`\\b${axis}(-?[\\d.]+)`).exec(line); return m ? Number(m[1]) : undefined; };
+        const value = (axis) => words.get(axis);
         const nx = value("X"), ny = value("Y"), nz = value("Z"), ne = value("E");
         const tx = nx === undefined ? x : absoluteXY ? nx : x + nx;
         const ty = ny === undefined ? y : absoluteXY ? ny : y + ny;
@@ -174,6 +179,20 @@ export function extrusionSegments(gcode) {
     }
     // G-code that names no features at all is drawn whole rather than not at all.
     return { segments: sawFeature ? marked : unmarked, layers };
+}
+/** A command's parameters, as file inspection reads them: letter then number, spaces and a + sign optional. */
+function parameterWords(text) {
+    const words = new Map();
+    let rest = text.trim();
+    while (rest) {
+        const token = /^([A-Z])\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+))?/.exec(rest);
+        if (!token)
+            break;
+        if (token[2] !== undefined && !words.has(token[1]))
+            words.set(token[1], Number(token[2]));
+        rest = rest.slice(token[0].length).trimStart();
+    }
+    return words;
 }
 /** An arc's centre from I/J (offsets from the start) or R (radius; negative takes the longer way round). */
 function arcCentre(x, y, tx, ty, clockwise, i, j, r) {
