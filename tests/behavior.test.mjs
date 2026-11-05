@@ -2760,6 +2760,7 @@ test("a designer's 3MF slices with its own process; strength never weakens it; a
   // The slice's own arguments, as slice_stl takes them: own_process is what that slice does, decided here.
   const forSlice = async extra => parseJsonResult(await client.callTool({ name: "get_slice_settings", arguments: { source_path: designer, ...extra } })).own_process;
   assert.equal(await forSlice({ quality: "standard", strength: "standard" }), true, "standard changes nothing");
+  assert.equal(await forSlice({ layer_height: 0.42, nozzle_diameter: "0.6" }), false, "a layer height valid for the slice's own nozzle is checked against it");
   for (const extra of [{ slicer_profile: path.join(fakeSlicer.tempDir, "mine.json") }, { template_3mf_path: bare }, { layer_height: 0.2 }, { wall_loops: 3 },
     { sparse_infill_density: "20%" }, { quality: "fine" }, { strength: "strong" }, { enable_support: false }])
     assert.equal(await forSlice(extra), false, `${Object.keys(extra)[0]} replaces or changes the designer's process`);
