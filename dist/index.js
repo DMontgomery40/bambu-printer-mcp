@@ -30,6 +30,9 @@ import { isDualNozzleModel } from "./safety/limits.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safety/artifact.js";
 import { detectProfilesRoot } from "./slicer/profile-flatten.js";
 import { bambuPrinterInfo, bambuSliceCapabilities } from "./counterpart/info.js";
+import { DISCOVER_OUTPUT_SCHEMA, discoverBambu } from "./counterpart/discovery.js";
+import { SETUP_FIELDS_OUTPUT_SCHEMA, bambuSetupFields, slicerSetup } from "./counterpart/setup.js";
+import { PROPOSE_FILAMENTS_INPUT_PROPERTIES, PROPOSE_FILAMENTS_OUTPUT_SCHEMA, NO_COLOUR_NAMES, bambuTrayLabel, loadColourNames, proposeFilaments, spoolName } from "./counterpart/filaments.js";
 import { DESIGN_PROMPTS, FDM_CAPABILITY_GUIDANCE, FDM_CAPABILITY_RESOURCE, FDM_CAPABILITY_URI, SERVER_INSTRUCTIONS } from "./design-guidance.js";
 import { bambuProgress, offlineProgress } from "./counterpart/progress.js";
 import { makeCounterpart3mf } from "./counterpart/make-3mf.js";
@@ -100,6 +103,7 @@ const SERVER_INFO = {
 /** Tools that declare an outputSchema: they always return structuredContent, and errors carry none. */
 const OUTPUT_SCHEMA_TOOLS = new Set([
     "counterpart_printer_info", "counterpart_print_progress", "counterpart_make_3mf",
+    "counterpart_discover_printers", "counterpart_setup_fields", "counterpart_propose_filaments",
     "fusion_mcp_status", "fusion_mcp_new_design", "fusion_mcp_export",
     "camera_stream_start", "camera_frame", "camera_stream_stop",
 ]);
@@ -241,6 +245,61 @@ const FILAMENT_MODEL_CODES = {
 };
 const COLLAR_CHARM_POLICY = getCollarCharmRolePolicy();
 let filamentProfileIndexCache = null;
+/** The configured slicer's BBL filament profile folder, when the slicer configuration resolves. */
+function filamentProfileDirectory() {
+    try {
+        const { slicerType, slicerPath } = resolveSlicerConfig(undefined);
+        return path.join(detectProfilesRoot(slicerPath, slicerType), "BBL", "filament");
+    }
+    catch {
+        return undefined;
+    }
+}
+/** An executable path, or a bare command found on PATH. */
+function executableExists(command) {
+    if (!command)
+        return false;
+    if (command.includes("/") || command.includes("\\"))
+        return fs.existsSync(command);
+    return (process.env.PATH ?? "").split(path.delimiter).some(dir => dir && fs.existsSync(path.join(dir, command)));
+}
+/** A Bambu profile tree: BBL's machine profiles, or Orca's packed BBL.opc. */
+function bblProfilesAt(root) {
+    return fs.existsSync(path.join(root, "BBL", "machine")) || fs.existsSync(path.join(root, "BBL.opc"));
+}
+/** The slicer this server would run now and the settings that choose it, for counterpart_setup_fields. */
+function slicerSetupNow() {
+    let config;
+    try {
+        config = resolveSlicerConfig(undefined);
+    }
+    catch {
+        config = { slicerType: String(DEFAULT_SLICER_TYPE), slicerPath: "" };
+    }
+    if (config.slicerType === "orca-slicer-api")
+        return slicerSetup({ types: SLICER_TYPES, type: config.slicerType, found: Boolean(process.env.SLICER_API_URL), remote: true });
+    const bbl = ["bambustudio", "orcaslicer", "orcaslicer-bambulab"].includes(config.slicerType);
+    let profilesRoot;
+    try {
+        profilesRoot = bbl ? detectProfilesRoot(config.slicerPath, config.slicerType) : undefined;
+    }
+    catch {
+        profilesRoot = undefined;
+    }
+    return slicerSetup({ types: SLICER_TYPES, type: config.slicerType, path: config.slicerPath, found: executableExists(config.slicerPath),
+        ...(bbl ? { profilesFound: Boolean(profilesRoot && bblProfilesAt(profilesRoot)), ...(profilesRoot ? { profilesRoot } : {}) } : {}) });
+}
+let colourNamesCache = null;
+/** Bambu Studio's own colour names for its filaments, read once from the configured slicer's profiles. */
+function colourNames() {
+    if (colourNamesCache)
+        return colourNamesCache;
+    const names = loadColourNames(filamentProfileDirectory());
+    // A slicer installed later still names its colours: only a table that loaded is kept.
+    if (names !== NO_COLOUR_NAMES)
+        colourNamesCache = names;
+    return names;
+}
 function buildFilamentProfileIndex() {
     const byName = new Map();
     const baseNameByFilamentId = new Map();
@@ -380,6 +439,8 @@ function normalizePrinterFilamentInventory(status, bambuModel, nozzleDiameter) {
                 profile_resolution: profileResolution.resolution,
                 match_confidence: matchConfidence,
                 display_name: displayParts.length > 0 ? displayParts.join(" ") : "empty/unknown",
+                label: amsId !== null && trayId !== null ? bambuTrayLabel(amsId, trayId) : null,
+                spool_name: trayType ? spoolName(traySubBrands || trayType, trayInfoIdx && trayColor ? colourNames().spool(trayInfoIdx, trayColor) : undefined) : null,
                 profile_candidates: profileResolution.paths,
             });
         }
@@ -2890,6 +2951,44 @@ class BambuPrinterMCPServer {
                         outputSchema: PRINTER_INFO_OUTPUT_SCHEMA
                     },
                     {
+                        name: "counterpart_discover_printers",
+                        description: "Counterpart contract (counterpart/1): Bambu printers on the local network, from their own SSDP announcements (UDP 2021), with serial, model (as bambu_model names it), name and firmware. Listens for duration_ms (default 4000). network is \"unavailable\" when another app holds the port. Never connects to or authenticates with a printer.",
+                        inputSchema: {
+                            type: "object",
+                            properties: { duration_ms: { type: "integer", minimum: 500, maximum: 15000, description: "How long to listen (default 4000)." } },
+                            additionalProperties: false
+                        },
+                        outputSchema: DISCOVER_OUTPUT_SCHEMA
+                    },
+                    {
+                        name: "counterpart_setup_fields",
+                        description: "Counterpart contract (counterpart/1): the printers this server drives and the settings it reads for each, by .env variable name (first canonical, then aliases): label, hint, whether required, the model choices and the model each serial-number prefix names. Pass serial to get the model it names. Sends nothing to a printer and returns no configured values.",
+                        inputSchema: {
+                            type: "object",
+                            properties: { serial: { type: "string", maxLength: 64, description: "A Bambu serial number: model is the one it names, when known." } },
+                            additionalProperties: false
+                        },
+                        outputSchema: SETUP_FIELDS_OUTPUT_SCHEMA
+                    },
+                    {
+                        name: "counterpart_propose_filaments",
+                        description: "Counterpart contract (counterpart/1): which loaded AMS spool prints each of a model's colours, before slicing. Reads the live AMS once. trays lists the spools a person may choose (label like \"A2\", a person-readable name, colour, material, feed). proposal gives each filament its nearest spool in OKLab colour with the asked-for material preferred, and a verdict: same-colour, closest (that colour isn't loaded; note says so), no-colour or none. One print feeds from one source. Pass chosen to check the person's spools against what is loaded now; mapping then lists every filament slot's spool (painted slots included), and problems says why a choice can't print.",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                ...PROPOSE_FILAMENTS_INPUT_PROPERTIES,
+                                bambu_model: { type: "string", description: "Printer model; defaults to BAMBU_MODEL. Selects the filament profiles that decide which spools can slice." },
+                                nozzle_diameter: { type: "string", description: "Nozzle diameter (default NOZZLE_DIAMETER or 0.4)." },
+                                host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
+                                bambu_serial: { type: "string", description: "Serial number (default: value from env)" },
+                                bambu_token: { type: "string", description: "Access token (default: value from env); never returned." }
+                            },
+                            required: ["filaments"],
+                            additionalProperties: false
+                        },
+                        outputSchema: PROPOSE_FILAMENTS_OUTPUT_SCHEMA
+                    },
+                    {
                         name: "counterpart_print_route",
                         description: "Counterpart contract (counterpart/1): how this server reaches the printer for prints and for Stop/Pause/Resume. route is \"lan\" (the local network through FULU's BambuNetwork bridge, or the configured X2D native or Bambu Connect mode), \"cloud\" (Bambu Cloud through FULU's bridge) or \"developer\" (the local network straight to a printer in LAN Only + Developer Mode, whose Pause, Resume and Stop need no Bambu app). options lists each with its label, whether it can be chosen here (and why not) and what controls do on it; choices lists the ids that can be chosen. mode and type are BAMBU_DEFAULT_CONNECTION_MODE and BAMBU_DEFAULT_CONNECTION_TYPE as resolved. Pass route to change it: the change applies to the next print and control at once, and is saved to the .env file in this server's working directory when that file exists (savedTo; null otherwise). Sends nothing to the printer.",
                         inputSchema: {
@@ -4078,6 +4177,35 @@ class BambuPrinterMCPServer {
                     case "blender_mcp_edit_model":
                         result = await this.blender.edit(args ?? {}, this.resolveExecutableSelectorArg(args?.bridge_command, "blender_mcp_edit_model", "bridge_command", true) ?? (!process.env.BLENDER_MCP_COMMAND?.trim() ? this.runtimeConfig.blenderBridgeCommand : undefined), extra.signal);
                         break;
+                    case "counterpart_discover_printers": {
+                        const requested = Number(args?.duration_ms);
+                        const found = await discoverBambu(Number.isFinite(requested) ? requested : 4000);
+                        // Only models bambu_model accepts: the X1 (serial 00W) has none, so it stays unset.
+                        result = { contract: "counterpart/1", network: found.state, printers: found.printers.map(({ model, ...printer }) => ({ ...printer, ...(model && VALID_BAMBU_MODELS.includes(model) ? { model } : {}) })) };
+                        break;
+                    }
+                    case "counterpart_setup_fields":
+                        result = bambuSetupFields({ server: SERVER_INFO, models: VALID_BAMBU_MODELS, slicer: slicerSetupNow(), ...(typeof args?.serial === "string" ? { serial: args.serial } : {}) });
+                        break;
+                    case "counterpart_propose_filaments": {
+                        const requestedModel = (String(args?.bambu_model ?? DEFAULT_BAMBU_MODEL ?? "")).trim().toLowerCase();
+                        const normalizedModel = requestedModel ? validateBambuModel(requestedModel) : undefined;
+                        const inventory = await this.getResolvedPrinterFilamentInventory(host, bambuSerial, bambuToken, normalizedModel, String(args?.nozzle_diameter || DEFAULT_NOZZLE_DIAMETER));
+                        const trays = inventory.trays.flatMap(tray => {
+                            const colour = normalizeRgbColor(tray.tray_color);
+                            if (!tray.loaded || tray.slot === null || !colour || !tray.tray_type || !tray.label)
+                                return [];
+                            // print_3mf's tray value: an AMS-HT unit (id 128 and up, one tray) is its unit id, not ams_id × 4 + tray.
+                            const slot = tray.ams_id !== null && tray.ams_id >= 128 ? tray.ams_id : tray.slot;
+                            return [{ slot, label: tray.label, name: tray.spool_name ?? tray.tray_type, colour: `#${colour.toUpperCase()}`,
+                                    material: tray.tray_type, filamentId: tray.tray_info_idx ?? "", feed: "ams", sliceable: Boolean(tray.resolved_profile_path),
+                                    ...(tray.resolved_profile_path ? { profile: tray.resolved_profile_path } : {}) }];
+                        });
+                        result = proposeFilaments({ trays, filaments: Array.isArray(args?.filaments) ? args.filaments : [],
+                            ...(Array.isArray(args?.painted) ? { painted: args.painted } : {}), ...(Array.isArray(args?.chosen) ? { chosen: args.chosen } : {}),
+                            sliced: args?.sliced === true, names: colourNames() });
+                        break;
+                    }
                     case "counterpart_printer_info":
                         result = bambuPrinterInfo({ server: SERVER_INFO, host, serial: bambuSerial, model: this.displayModel(args, bambuSerial), slicerType: normalizeSlicerType(DEFAULT_SLICER_TYPE) });
                         break;

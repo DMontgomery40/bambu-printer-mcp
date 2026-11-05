@@ -18,6 +18,8 @@ export const TOOL_ANNOTATIONS = {
     resolve_3mf_ams_slots: READ_OUTSIDE, // reads the live AMS inventory
     list_printer_files: READ_OUTSIDE,
     counterpart_print_progress: READ_OUTSIDE,
+    counterpart_discover_printers: READ_OUTSIDE, // listens for the printers' own SSDP announcements
+    counterpart_propose_filaments: READ_OUTSIDE, // reads the live AMS inventory
     // connect: true starts the bridge agent, which writes its configuration and device identity and can replace certificates.
     bambu_network_bridge_status: hints(false, true, true, true),
     camera_frame: READ_OUTSIDE,
@@ -33,6 +35,7 @@ export const TOOL_ANNOTATIONS = {
     list_templates: READ_LOCAL,
     get_slice_settings: LOCAL_OUTPUT, // a 3MF's settings are extracted to a fixed file in the temporary directory
     counterpart_printer_info: READ_LOCAL, // configuration and capabilities; sends nothing to the printer
+    counterpart_setup_fields: READ_LOCAL, // the settings this server reads; no configured values
     // Local outputs in the server's temporary directory
     extend_stl_base: LOCAL_OUTPUT,
     scale_stl: LOCAL_OUTPUT,

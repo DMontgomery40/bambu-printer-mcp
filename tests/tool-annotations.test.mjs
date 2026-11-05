@@ -44,7 +44,7 @@ test('annotations match what the tools do to the printer and files', async t => 
   const byName = Object.fromEntries((await listedTools(t)).map(tool => [tool.name, tool.annotations]));
   // The remote read scope is exactly these tools; adding one is a deliberate change here.
   assert.deepEqual(Object.keys(byName).filter(name => byName[name].readOnlyHint).sort(), ['blender_mcp_status', 'camera_frame',
-    'counterpart_print_progress', 'counterpart_printer_info', 'get_printer_filaments', 'get_printer_status', 'get_stl_info',
+    'counterpart_discover_printers', 'counterpart_print_progress', 'counterpart_printer_info', 'counterpart_propose_filaments', 'counterpart_setup_fields', 'get_printer_filaments', 'get_printer_status', 'get_stl_info',
     'inspect_print_file', 'list_3mf_plate_objects', 'list_printer_files', 'list_templates', 'resolve_3mf_ams_slots']);
   // Anything that moves, heats, prints or writes is not read-only and reaches the printer.
   for (const name of ['print_3mf', 'print_3mf_bambu_network', 'start_print', 'start_print_job', 'upload_file', 'pause_print', 'resume_print',
@@ -59,6 +59,9 @@ test('annotations match what the tools do to the printer and files', async t => 
   for (const name of ['print_3mf', 'start_print_job', 'upload_file']) assert.equal(byName[name].idempotentHint, false, name);
   // A slice or local model edit replaces its earlier output of the same name, in the server's temporary directory.
   for (const name of ['scale_stl', 'slice_stl', 'get_slice_settings', 'print_3mf', 'print_3mf_bambu_network', 'print_collar_charm']) assert.equal(byName[name].destructiveHint, true, name);
+  // Discovery listens on the local network and the proposal reads the live AMS; setup fields are this server's own.
+  for (const name of ['counterpart_discover_printers', 'counterpart_propose_filaments']) assert.equal(byName[name].openWorldHint, true, name);
+  assert.equal(byName.counterpart_setup_fields.openWorldHint, false);
   // Local model edits write only to the server's temporary directory only.
   for (const name of ['scale_stl', 'rotate_stl', 'lay_flat', 'get_stl_info']) assert.equal(byName[name].openWorldHint, false, name);
 });

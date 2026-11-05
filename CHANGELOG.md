@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.63] – 2026-11-05
+
+### Added
+
+- `counterpart_discover_printers` finds Bambu printers on the local network from their own SSDP announcements, with serial, model (as `bambu_model` names it), name and firmware. It never connects to a printer. Checked with captured announcement packets; not run against the P1S's live announcements.
+- `counterpart_setup_fields` lists the `.env` settings this server reads for a printer (address, serial, model, access code), with labels, hints, the model choices and the model each serial prefix names; older alias names this server reads first are listed so a client writing a setting removes them. Clients such as Counterpart offer printer setup from it instead of copying this server's model tables. It also reports the slicer this server would run (`slicer`: type, path, whether it is there, and the Bambu profiles folder) with the `SLICER_TYPE`, `SLICER_PATH` and `BAMBU_PROFILES_ROOT` fields, required only when what they default to is missing, so a client can say "Bambu Studio isn't installed" or ask where it is instead of the person editing paths by hand.
+- `counterpart_propose_filaments` proposes which loaded spool prints each part's colour before slicing, with an explicit verdict per part: a colour that isn't loaded says so ("White isn't loaded. Closest loaded: A2 Sunflower Yellow PLA Basic.") instead of quietly printing another colour. A colour that is loaded but not chosen (on the other feed, in another material, or on a spool another colour already prints from) says which. It checks a person's chosen spools against what is loaded now and maps painted slots; a sliced file's painted materials count when it chooses the feed. Each spool carries the filament `profile` `slice_stl` takes, so a client slices from the same read, and an AMS-HT spool is numbered as `print_3mf` takes it (its unit id, 128 and up). Checked against the P1S's AMS and the caliper card's filaments as read on Nov 5; not printed.
+- `get_printer_filaments` trays carry `label` ("A2") and `spool_name` ("Sunflower Yellow PLA Basic"), from Bambu Studio's own colour names.
+
 ## [1.1.62] – 2026-11-05
 
 ### Added
