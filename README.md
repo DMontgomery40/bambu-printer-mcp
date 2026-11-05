@@ -1139,7 +1139,7 @@ Inspect the slicer settings embedded in a saved 3MF template or in an extracted 
 }
 ```
 
-This returns a compact summary of the high-signal settings such as printer preset, default print profile, filament profiles, layer height, infill density, shell counts, support mode, and bed type. It accepts either `source_path` or `template_name`. For 3MF inputs it also writes the extracted settings blob to a temp path so the result can be reused directly, and returns `own_process`: true when the 3MF carries its own process (a designer's project), so `slice_stl` and `print_3mf`'s auto-slice slice it with that process unless the call names `slicer_profile`, `template_name` or `template_3mf_path`.
+This returns a compact summary of the high-signal settings such as printer preset, default print profile, filament profiles, layer height, infill density, shell counts, support mode, and bed type. It accepts either `source_path` or `template_name`. For 3MF inputs it also writes the extracted settings blob to a temp path so the result can be reused directly, and returns `own_process`. With `source_path`, pass the slice's other arguments too (`slicer_profile`, `template_name`, `template_3mf_path`, `layer_height`, `wall_loops`, `sparse_infill_density`, `quality`, `strength`). `own_process` is then true when that `slice_stl` call prints the process the 3MF carries (a designer's project) unchanged.
 
 #### slice_with_template
 

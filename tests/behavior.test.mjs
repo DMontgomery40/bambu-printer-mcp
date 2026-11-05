@@ -2757,6 +2757,22 @@ test("a designer's 3MF slices with its own process; strength never weakens it; a
   const machineOnly = await write3mf("machine-only.3mf", { printer_model: "Bambu Lab P1S" });
   assert.equal(parseJsonResult(await settingsOf(machineOnly)).own_process, false, "settings without a process slice with the preset");
   assert.equal((await settingsOf(bare)).isError, true, "a 3MF with no settings at all has none to report");
+  // The slice's own arguments, as slice_stl takes them: own_process is what that slice does, decided here.
+  const forSlice = async extra => parseJsonResult(await client.callTool({ name: "get_slice_settings", arguments: { source_path: designer, ...extra } })).own_process;
+  assert.equal(await forSlice({ quality: "standard", strength: "standard" }), true, "standard changes nothing");
+  assert.equal(await forSlice({ layer_height: 0.42, nozzle_diameter: "0.6" }), false, "a layer height valid for the slice's own nozzle is checked against it");
+  for (const extra of [{ slicer_profile: path.join(fakeSlicer.tempDir, "mine.json") }, { template_3mf_path: bare }, { layer_height: 0.2 }, { wall_loops: 3 },
+    { sparse_infill_density: "20%" }, { quality: "fine" }, { strength: "strong" }, { enable_support: false }])
+    assert.equal(await forSlice(extra), false, `${Object.keys(extra)[0]} replaces or changes the designer's process`);
+  // With source_path, template_name is the slice's template, as slice_stl takes it, never the file read.
+  const templates = path.join(fakeSlicer.tempDir, "templates");
+  fs.mkdirSync(templates, { recursive: true });
+  fs.writeFileSync(path.join(templates, "house.json"), JSON.stringify({ layer_height: "0.2" }));
+  assert.equal(await forSlice({ template_name: "house", template_dir: templates }), false, "a named template replaces the designer's process");
+  for (const invalid of [{ quality: "bogus" }, { layer_height: -1 }, { sparse_infill_density: "200%" }, { support_type: "organic" },
+    { slicer_profile: path.join(fakeSlicer.tempDir, "mine.json"), layer_height: -1 }])
+    assert.equal((await client.callTool({ name: "get_slice_settings", arguments: { source_path: designer, ...invalid } })).isError, true,
+      `${JSON.stringify(invalid)} is refused, as slice_stl refuses it`);
 });
 
 test("quality scales with the nozzle: draft on a 0.6 mm nozzle is 0.42 mm", async () => {
