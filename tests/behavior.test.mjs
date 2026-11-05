@@ -32,6 +32,10 @@ import { STLManipulator } from "../dist/stl/stl-manipulator.js";
 // Mocked printers never report a started job; tests that cover it opt back in.
 process.env.BAMBU_DISPATCH_CHECK_MS = "0";
 
+// These tests read what the stand-in slicers were given, so no slice is reused (src/slicer/slice-cache.ts)
+// unless a test asks; it also keeps test slices out of the real ~/.cache.
+process.env.SLICE_CACHE ??= "off";
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const REPO_ROOT = path.resolve(__dirname, "..");
@@ -2511,6 +2515,48 @@ async function sliceWithFakeBambuSlicer(t, options) {
   });
 }
 
+// Slicing the same model the same way again reuses the kept slice (src/slicer/slice-cache.ts): the slicer
+// doesn't run, and the result, Studio's result.json included, is the first slice's. Anything that shapes the
+// slice (here the model's bytes) slices again, and SLICE_CACHE=off always slices.
+test("slice_stl reuses an identical earlier slice, and slices again when an input changes", async (t) => {
+  const fakeSlicer = await createFakeBambuSlicer({ result: "p1s-floating-cantilever.json" });
+  t.after(() => fs.rmSync(fakeSlicer.tempDir, { recursive: true, force: true }));
+  const model = path.join(fakeSlicer.tempDir, "model.stl");
+  fs.copyFileSync(SAMPLE_STL, model);
+  const connect = async (extra = {}) => {
+    const transport = new StdioClientTransport({
+      command: process.execPath, args: [SERVER_ENTRY], cwd: fakeSlicer.tempDir,
+      env: { ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "p1s", BAMBU_SERIAL: "", BAMBU_TOKEN: "", BAMBU_SLICER_PROFILE: "",
+        BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot, TEMP_DIR: path.join(fakeSlicer.tempDir, "out"), SLICER_TYPE: "bambustudio",
+        MCP_ALLOW_EXECUTABLE_ARG: "1", SLICE_CACHE: "on", SLICE_CACHE_DIR: path.join(fakeSlicer.tempDir, "cache"), ...extra },
+      stderr: "pipe",
+    });
+    const client = createClient();
+    t.after(async () => { await closeTransport(transport); });
+    await client.connect(transport);
+    return client;
+  };
+  const slice = client => client.callTool({ name: "slice_stl",
+    arguments: { stl_path: model, bambu_model: "p1s", slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false } });
+  const ran = () => { const yes = fs.existsSync(fakeSlicer.argsOutPath); fs.rmSync(fakeSlicer.argsOutPath, { force: true }); return yes; };
+  const client = await connect();
+  const first = await slice(client);
+  assert.equal(first.isError, undefined, first.content?.[0]?.text);
+  assert.equal(ran(), true);
+  fs.rmSync(first.structuredContent.path);
+  // A new server process (an MCP restart) still has it.
+  const again = await slice(await connect());
+  assert.equal(again.isError, undefined, again.content?.[0]?.text);
+  assert.equal(ran(), false, "the slicer did not run again");
+  assert.equal(fs.readFileSync(again.structuredContent.path, "utf8"), "fake sliced 3mf");
+  assert.deepEqual(again.structuredContent.slicer_result, first.structuredContent.slicer_result, "Studio's words come back with it");
+  fs.appendFileSync(model, " ");
+  assert.equal((await slice(client)).isError, undefined);
+  assert.equal(ran(), true, "a changed model slices again");
+  assert.equal((await slice(await connect({ SLICE_CACHE: "off" }))).isError, undefined);
+  assert.equal(ran(), true, "SLICE_CACHE=off always slices");
+});
+
 const studioResult = (name) => JSON.parse(fs.readFileSync(new URL(`./fixtures/studio-result/${name}`, import.meta.url), "utf8"));
 
 // Bambu Studio 02.08.02.61 sliced the fin-down stove gap filler for a P1S and
@@ -2523,6 +2569,9 @@ test("slice_stl returns Bambu Studio's result.json, warnings included, in struct
   assert.match(result.structuredContent.path, /_sliced\.3mf$/);
   assert.deepEqual(result.structuredContent.slicer_result, studioResult("p1s-floating-cantilever.json"));
   assert.match(result.structuredContent.slicer_result.sliced_plates[0].warning_message, /floating cantilever/);
+  // Its verdict and words, so a client never reads result.json's format (Counterpart PRD §8.0 item 9).
+  assert.equal(result.structuredContent.slicer_report.failed, false);
+  assert.match(result.structuredContent.slicer_report.message, /floating cantilever/);
 });
 
 // Bambu Studio's auto-orient tilted the gap filler and failed with return
@@ -2536,6 +2585,8 @@ test("a failed slice_stl starts with Bambu Studio's words and carries its result
   assert.ok(result.content[0].text.startsWith(studioWords), result.content[0].text);
   assert.match(result.content[0].text, /Slicer failed: the slicer exited with code 156 \(Failed slicing the model\./);
   assert.ok(result.structuredContent.message.startsWith(studioWords));
+  assert.equal(result.structuredContent.slicer_report.failed, true);
+  assert.ok(result.structuredContent.slicer_report.message.startsWith(expected.error_string));
 });
 
 // The CLI's own return code fails the slice even when the process exits 0.
