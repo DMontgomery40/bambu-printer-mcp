@@ -2082,6 +2082,8 @@ class BambuPrinterMCPServer {
         metadata_keys: Object.keys(parsed.metadata),
         summary: summarizeSliceSettings(config),
         raw_key_count: Object.keys(config).length,
+        // ownProcessTemplate itself, for a call that names no profile or template, so this can't drift from slicing.
+        own_process: (await ownProcessTemplate({}, sourcePath, undefined)) !== undefined,
       };
     }
 
@@ -2570,7 +2572,7 @@ class BambuPrinterMCPServer {
           },
           {
             name: "get_slice_settings",
-            description: "Inspect slicer settings from a saved 3MF template or a JSON/config slicer profile without slicing anything.",
+            description: "Inspect slicer settings from a saved 3MF template or a JSON/config slicer profile without slicing anything. For a 3MF, own_process is true when the file carries its own process (a designer's Bambu Studio or Orca project), so slice_stl and print_3mf's auto-slice slice it with that process unless the call names slicer_profile, template_name or template_3mf_path.",
             inputSchema: {
               type: "object",
               properties: {
