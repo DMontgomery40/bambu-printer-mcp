@@ -183,7 +183,7 @@ test("a colour loaded only on the other feed says where it is instead of 'isn't 
   assert.equal(result.proposal[1].note, "White is loaded on External, but one print feeds from one source. Closest here: A2 Sunflower Yellow PLA Basic.");
 });
 
-test("a colour that is loaded but not chosen says why, never that it isn't loaded (Codex, PR #110)", () => {
+test("a colour that is loaded but not chosen says why, never that it isn't loaded", () => {
   const near = [tray(0, "#101010", "PLA", { label: "A1", name: "Charcoal PLA" }), tray(1, "#242424", "PLA", { label: "A2", name: "Dark Gray PLA" })];
   const shared = proposeFilaments({ trays: near, filaments: [{ index: 1, colour: "#000000" }, { index: 2, colour: "#101010" }] });
   assert.deepEqual(shared.proposal.map(row => row.slot), [0, 1]);
@@ -194,4 +194,13 @@ test("a colour that is loaded but not chosen says why, never that it isn't loade
   const sliced = proposeFilaments({ trays: [tray(0, "#FFFFFF", "PETG", { label: "A1", name: "White PETG" }), tray(1, "#FEC600", "PLA", { label: "A2", name: "Yellow PLA" })],
     names, sliced: true, filaments: [{ index: 1, colour: "#FFFFFF", material: "PLA" }] });
   assert.equal(sliced.proposal[0].note, "White is loaded on A1 in PETG, not PLA. Closest in PLA: A2 Yellow PLA.");
+});
+
+test("a sliced file's painted material takes part in choosing the feed", () => {
+  const trays = [tray(0, "#000000", "PLA", { label: "A1" }), tray(1, "#FEC600", "PETG", { label: "A2" }), tray(254, "#FFFFFF", "PLA", { label: "External" })];
+  const result = proposeFilaments({ trays, sliced: true, filaments: [{ index: 1, colour: "#FFFFFF", material: "PLA" }], painted: [{ index: 2, colour: "#FEC600", material: "PETG" }] });
+  assert.deepEqual(result.problems, [], "the AMS serves both materials, so the proposal uses it");
+  assert.deepEqual(result.mapping, [{ index: 1, slot: 0 }, { index: 2, slot: 1 }]);
+  const unused = proposeFilaments({ trays, sliced: true, filaments: [{ index: 1, colour: "#FFFFFF", material: "PLA" }], painted: [{ index: 2, colour: "#FEC600", material: "PETG", prints: false }] });
+  assert.equal(unused.proposal[0].slot, 254, "a painted slot this plate never uses doesn't move the feed");
 });

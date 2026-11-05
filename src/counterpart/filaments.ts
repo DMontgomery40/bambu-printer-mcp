@@ -169,7 +169,11 @@ export function proposeFilaments(input: {
   const describe = (tray: ProposalTray) => `${tray.label} ${tray.name}`;
   const colourWords = (colour: string) => names.colour(colour) ?? colour.toUpperCase();
 
-  const matches = matchColours(input.filaments, menu, { requireMaterial: sliced });
+  // A sliced file's painted slots need their material on the same feed: they take part in choosing the feed,
+  // so the proposal never picks a feed that can't print them when another one can.
+  const required = sliced ? (input.painted ?? []).filter(slot => slot.material && slot.prints !== false
+    && !input.filaments.some(filament => filament.index === slot.index)) : [];
+  const matches = matchColours([...input.filaments, ...required], menu, { requireMaterial: sliced }).slice(0, input.filaments.length);
   const proposal: ProposalRow[] = input.filaments.map((filament, i) => {
     const match = matches[i];
     if (!match) return { index: filament.index, verdict: "none" as const };
