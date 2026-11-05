@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.61] – 2026-11-05
+
+### Fixed
+
+- `inspect_print_file`'s preview leaves out filament-change flushing only between a material-switch `M620 S…` and its `M621 S…`. Setup forms such as the H2C start template's `M620 O1` no longer hide everything printed after them, which left a one-filament H2C job with no preview. Checked with synthetic G-code.
+
 ## [1.1.60] – 2026-11-05
 
 ### Added
