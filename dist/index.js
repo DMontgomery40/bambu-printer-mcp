@@ -11,7 +11,7 @@ import fs from "fs";
 import os from "node:os";
 import path from "path";
 import { createServer as createHttpServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { STLManipulator, SLICER_TYPES, normalizeSlicerType, SlicerRunError, } from "./stl/stl-manipulator.js";
 import { BambuNetworkBridge, describeBambuNetworkPrintError } from "./bambu-network-bridge.js";
 import { assertBambuNativeAvailable, bambuNativeControlsAvailable, bambuNativeUnavailableReason, interruptNativeOperations, validateBambuNativeMetadata, buildBambuNativeFanCommand, buildBambuNativeTemperatureCommand, printWithBambuNative, sendCommandWithBambuNative, uploadWithBambuNative, } from "./bambu-native.js";
@@ -23,6 +23,8 @@ import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3M
 import { BambuImplementation, assertDirectPrintSupported, checkedFile, defaultResumeStateDir } from "./printers/bambu.js";
 import { resolveStudioPrintOptions, usedNozzleCount } from "./studio-print-options.js";
 import { inspectPrintFile } from "./safety/print-file.js";
+import { previewPrintFile } from "./safety/print-preview.js";
+import { loadSafe3mfArchive } from "./safety/archive.js";
 import { SERIAL_MODELS, externalStorageState, validatePrinterState } from "./safety/printer-state.js";
 import { isDualNozzleModel } from "./safety/limits.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safety/artifact.js";
@@ -704,6 +706,33 @@ async function resolveTemplateSlicerProfilePath(templatePath, tempDir) {
         return templatePath;
     }
     throw new Error(`Template profile must be a .3mf, .json, or .config file: ${templatePath}`);
+}
+/** inspect_print_file's preview: drawn from the snapshot's own bytes, refused if they aren't the inspected ones. */
+async function previewOfSnapshot(snapshot, plateIndex, sha256) {
+    const bytes = await fs.promises.readFile(snapshot);
+    if (createHash("sha256").update(bytes).digest("hex") !== sha256)
+        throw new Error("The file changed while it was being inspected; nothing was previewed.");
+    let gcode, projectColours;
+    if (snapshot.toLowerCase().endsWith(".3mf")) {
+        const zip = await loadSafe3mfArchive(bytes);
+        const entry = zip.file(`Metadata/plate_${plateIndex + 1}.gcode`);
+        if (!entry)
+            return undefined;
+        gcode = await entry.async("string");
+        const settings = zip.file("Metadata/project_settings.config");
+        if (settings) {
+            try {
+                const parsed = JSON.parse(await settings.async("string"));
+                if (Array.isArray(parsed?.filament_colour))
+                    projectColours = parsed.filament_colour;
+            }
+            catch { /* colours fall back to the G-code header */ }
+        }
+    }
+    else
+        gcode = bytes.toString("utf8");
+    const preview = await previewPrintFile({ gcode, ...(projectColours ? { projectColours } : {}) });
+    return preview ? { ...preview, artifact_sha256: sha256, plate_index: plateIndex } : undefined;
 }
 function hasExplicitSlicerProfile(args) {
     return typeof args?.slicer_profile === "string" && args.slicer_profile.trim().length > 0;
@@ -2640,6 +2669,7 @@ class BambuPrinterMCPServer {
                                 plate_index: { type: "integer", minimum: 0, description: "Zero-based selected plate; defaults to 0. Raw G-code only supports 0." },
                                 nozzle_diameters: { type: "array", minItems: 1, maxItems: 2, items: { type: "number", enum: [0.2, 0.4, 0.6, 0.8] }, description: "Optional requested nozzle diameters to compare with file declarations; this does not observe installed hardware." },
                                 bed_type: { type: "string", enum: [...VALID_BED_TYPES], description: "Optional declared bed type to compare with file metadata." },
+                                include_preview: { type: "boolean", description: "Also return preview: PNG pictures drawn from this exact file's G-code (every extruding line in its filament's colour; the top as it sits on the bed, and the bed side turned over), with the artifact's sha256. Large (tens of KB of base64); for apps that show the person what will print, not for agents." },
                             },
                             required: ["file_path", "bambu_model"],
                         },
@@ -3081,9 +3111,11 @@ class BambuPrinterMCPServer {
                 let result;
                 switch (name) {
                     case "inspect_print_file": {
-                        const allowed = new Set(["file_path", "bambu_model", "plate_index", "nozzle_diameters", "bed_type"]);
+                        const allowed = new Set(["file_path", "bambu_model", "plate_index", "nozzle_diameters", "bed_type", "include_preview"]);
                         if (!args || Object.keys(args).some(key => !allowed.has(key)))
-                            throw new Error("inspect_print_file accepts only file/model/plate/nozzle/bed arguments.");
+                            throw new Error("inspect_print_file accepts only file/model/plate/nozzle/bed/preview arguments.");
+                        if (args.include_preview !== undefined && typeof args.include_preview !== "boolean")
+                            throw new Error("include_preview must be true or false.");
                         if (typeof args.file_path !== "string" || !args.file_path.trim() || args.file_path.includes("\0"))
                             throw new Error("file_path must name a local prepared artifact.");
                         if (typeof args.bambu_model !== "string" || !args.bambu_model.trim())
@@ -3105,6 +3137,8 @@ class BambuPrinterMCPServer {
                             if (extra.signal.aborted)
                                 throw new Error("File inspection cancelled.");
                             const byteLength = (await fs.promises.stat(snapshot)).size;
+                            // The picture is drawn from these same snapshot bytes, so it is of exactly the file inspected.
+                            const preview = args.include_preview === true ? await previewOfSnapshot(snapshot, plateIndex, inspection.sha256) : undefined;
                             return {
                                 receipt_version: "1",
                                 evidence: "file-only",
@@ -3112,6 +3146,7 @@ class BambuPrinterMCPServer {
                                 artifact: { sha256: inspection.sha256, byte_length: byteLength, file_format: path.extname(snapshot).toLowerCase() === ".3mf" ? "3mf" : "gcode" },
                                 selection: { bambu_model: model, plate_index: plateIndex, ...(nozzles === undefined ? {} : { nozzle_diameters: nozzles }), ...(bedType === undefined ? {} : { bed_type: bedType }) },
                                 inspection,
+                                ...(preview ? { preview } : {}),
                             };
                         });
                         break;
