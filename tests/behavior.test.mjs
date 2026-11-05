@@ -2700,6 +2700,12 @@ test("a designer's 3MF slices with its own process; strength never weakens it; a
   assert.equal((await sliceWith(designer, { quality: "fine" })).layer_height, "0.12", "a chosen quality still applies");
   assert.equal((await sliceWith(designer, { sparse_infill_density: "20%" })).sparse_infill_density, "20%", "an explicit value is written as given");
   assert.equal((await sliceWith(bare)).layer_height, "0.2", "a 3MF without its own process keeps the preset");
+  // get_slice_settings says which of the two slice_stl just did, so a client never reads the 3MF itself.
+  const settingsOf = file => client.callTool({ name: "get_slice_settings", arguments: { source_path: file } });
+  assert.equal(parseJsonResult(await settingsOf(designer)).own_process, true, "the designer's 3MF slices with its own process");
+  const machineOnly = await write3mf("machine-only.3mf", { printer_model: "Bambu Lab P1S" });
+  assert.equal(parseJsonResult(await settingsOf(machineOnly)).own_process, false, "settings without a process slice with the preset");
+  assert.equal((await settingsOf(bare)).isError, true, "a 3MF with no settings at all has none to report");
 });
 
 test("quality scales with the nozzle: draft on a 0.6 mm nozzle is 0.42 mm", async () => {
