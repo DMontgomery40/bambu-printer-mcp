@@ -1,6 +1,6 @@
 /**
  * counterpart_setup_fields (counterpart/1): the printers this server drives and the settings it reads for each, by the
- * environment variable names it reads (first canonical, then aliases). A client renders these fields, writes the values
+ * environment variable names it reads (`env`, and older `aliases` it reads first). A client renders these fields, writes the values
  * to this server's .env and never needs its own printer or model tables. Pure: no printer traffic, no secrets returned.
  */
 import { normalizeModel } from "../safety/limits.js";
@@ -40,7 +40,7 @@ export function bambuSetupFields(options) {
 const field = {
     type: "object",
     properties: {
-        name: { type: "string", enum: [...SETUP_FIELD_NAMES] }, env: { type: "string" }, aliases: { type: "array", items: { type: "string" } },
+        name: { type: "string", enum: [...SETUP_FIELD_NAMES] }, env: { type: "string" }, aliases: { type: "array", items: { type: "string" }, description: "Older names this server reads before env: a client writing env removes these, or the old value wins." },
         label: { type: "string" }, hint: { type: "string" }, required: { type: "boolean" }, transform: { type: "string", enum: ["uppercase"] },
         choices: { type: "array", items: { type: "object", properties: { value: { type: "string" }, label: { type: "string" } }, required: ["value", "label"] } },
         fromSerial: { type: "object", properties: { prefixLength: { type: "integer" }, models: { type: "object", additionalProperties: { type: "string" } } }, required: ["prefixLength", "models"] },

@@ -1,6 +1,6 @@
 /**
  * counterpart_setup_fields (counterpart/1): the printers this server drives and the settings it reads for each, by the
- * environment variable names it reads (first canonical, then aliases). A client renders these fields, writes the values
+ * environment variable names it reads (`env`, and older `aliases` it reads first). A client renders these fields, writes the values
  * to this server's .env and never needs its own printer or model tables. Pure: no printer traffic, no secrets returned.
  */
 import { normalizeModel } from "../safety/limits.js";
@@ -11,7 +11,11 @@ export const SETUP_FIELD_NAMES = ["host", "port", "serial", "model", "secret"] a
 export type SetupField = {
   /** The client's form field this is: an address, a port, a serial number, a model choice or a secret. */
   name: typeof SETUP_FIELD_NAMES[number];
-  env: string; aliases?: string[]; label: string; hint?: string; required: boolean;
+  /** The variable to write. */
+  env: string;
+  /** Older names for it that this server reads before `env`: a client writing `env` removes these lines, or the old value wins. */
+  aliases?: string[];
+  label: string; hint?: string; required: boolean;
   /** Written as typed, or upper-cased (Bambu serial numbers). */
   transform?: "uppercase";
   choices?: Array<{ value: string; label: string }>;
@@ -62,7 +66,7 @@ export function bambuSetupFields(options: { server: { name: string; version: str
 const field = {
   type: "object",
   properties: {
-    name: { type: "string", enum: [...SETUP_FIELD_NAMES] }, env: { type: "string" }, aliases: { type: "array", items: { type: "string" } },
+    name: { type: "string", enum: [...SETUP_FIELD_NAMES] }, env: { type: "string" }, aliases: { type: "array", items: { type: "string" }, description: "Older names this server reads before env: a client writing env removes these, or the old value wins." },
     label: { type: "string" }, hint: { type: "string" }, required: { type: "boolean" }, transform: { type: "string", enum: ["uppercase"] },
     choices: { type: "array", items: { type: "object", properties: { value: { type: "string" }, label: { type: "string" } }, required: ["value", "label"] } },
     fromSerial: { type: "object", properties: { prefixLength: { type: "integer" }, models: { type: "object", additionalProperties: { type: "string" } } }, required: ["prefixLength", "models"] },

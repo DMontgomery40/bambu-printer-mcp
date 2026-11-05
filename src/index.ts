@@ -4906,7 +4906,9 @@ class BambuPrinterMCPServer {
             const trays: ProposalTray[] = inventory.trays.flatMap(tray => {
               const colour = normalizeRgbColor(tray.tray_color);
               if (!tray.loaded || tray.slot === null || !colour || !tray.tray_type || !tray.label) return [];
-              return [{ slot: tray.slot, label: tray.label, name: tray.spool_name ?? tray.tray_type, colour: `#${colour.toUpperCase()}`,
+              // print_3mf's tray value: an AMS-HT unit (id 128 and up, one tray) is its unit id, not ams_id × 4 + tray.
+              const slot = tray.ams_id !== null && tray.ams_id >= 128 ? tray.ams_id : tray.slot;
+              return [{ slot, label: tray.label, name: tray.spool_name ?? tray.tray_type, colour: `#${colour.toUpperCase()}`,
                 material: tray.tray_type, filamentId: tray.tray_info_idx ?? "", feed: "ams", sliceable: Boolean(tray.resolved_profile_path),
                 ...(tray.resolved_profile_path ? { profile: tray.resolved_profile_path } : {}) }];
             });

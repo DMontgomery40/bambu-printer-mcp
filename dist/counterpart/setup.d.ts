@@ -3,7 +3,9 @@ export declare const SETUP_FIELD_NAMES: readonly ["host", "port", "serial", "mod
 export type SetupField = {
     /** The client's form field this is: an address, a port, a serial number, a model choice or a secret. */
     name: typeof SETUP_FIELD_NAMES[number];
+    /** The variable to write. */
     env: string;
+    /** Older names for it that this server reads before `env`: a client writing `env` removes these lines, or the old value wins. */
     aliases?: string[];
     label: string;
     hint?: string;
@@ -105,6 +107,7 @@ export declare const SETUP_FIELDS_OUTPUT_SCHEMA: {
                                     items: {
                                         type: string;
                                     };
+                                    description: string;
                                 };
                                 label: {
                                     type: string;
