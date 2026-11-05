@@ -7,7 +7,7 @@ import { normalizeModel } from "../safety/limits.js";
 import { SERIAL_MODELS } from "../safety/printer-state.js";
 import { COUNTERPART_CONTRACT, PRINTER_KINDS } from "./schemas.js";
 
-export const SETUP_FIELD_NAMES = ["host", "port", "serial", "model", "secret"] as const;
+export const SETUP_FIELD_NAMES = ["host", "port", "serial", "model", "secret", "slicer", "slicer-path", "profiles"] as const;
 export type SetupField = {
   /** The client's form field this is: an address, a port, a serial number, a model choice or a secret. */
   name: typeof SETUP_FIELD_NAMES[number];
@@ -16,6 +16,8 @@ export type SetupField = {
   /** Older names for it that this server reads before `env`: a client writing `env` removes these lines, or the old value wins. */
   aliases?: string[];
   label: string; hint?: string; required: boolean;
+  /** A path on this computer (a slicer app, a profiles folder): a client may offer a file chooser. */
+  input?: "path";
   /** Written as typed, or upper-cased (Bambu serial numbers). */
   transform?: "uppercase";
   choices?: Array<{ value: string; label: string }>;
@@ -28,7 +30,39 @@ export type SetupKind = {
   env: Record<string, string>;
   fields: SetupField[];
 };
-export type SetupFields = { contract: typeof COUNTERPART_CONTRACT; server: { name: string; version: string }; kinds: SetupKind[]; model?: string };
+/** The slicer this server runs, as it resolves it now, and the settings that choose it (for every printer). */
+export type SlicerSetup = {
+  type: string;
+  /** The slicer app it would run, and whether that app is there. */
+  path?: string; found: boolean;
+  /** The Bambu profiles folder it would read (Bambu Studio and Orca), and whether it has BBL's profiles. */
+  profilesRoot?: string; profilesFound?: boolean;
+  fields: SetupField[];
+};
+export type SetupFields = { contract: typeof COUNTERPART_CONTRACT; server: { name: string; version: string }; kinds: SetupKind[]; model?: string; slicer?: SlicerSetup };
+
+const SLICER_LABELS: Record<string, string> = {
+  bambustudio: "Bambu Studio", orcaslicer: "OrcaSlicer", "orcaslicer-bambulab": "OrcaSlicer-bambulab (FULU)", "orca-slicer-api": "OrcaSlicer API (remote)",
+  prusaslicer: "PrusaSlicer", cura: "Cura", slic3r: "Slic3r",
+};
+/**
+ * The slicer settings, with what this server resolves now: a client shows "Bambu Studio isn't installed" or asks for
+ * its location instead of the person editing SLICER_PATH by hand. A setting is required only when what it would
+ * default to isn't there.
+ */
+export function slicerSetup(options: { types: readonly string[]; type: string; path?: string; found: boolean; profilesRoot?: string; profilesFound?: boolean; remote?: boolean }): SlicerSetup {
+  const label = SLICER_LABELS[options.type] ?? options.type;
+  const fields: SetupField[] = [
+    { name: "slicer", env: "SLICER_TYPE", label: "Slicer", required: false, choices: options.types.map(value => ({ value, label: SLICER_LABELS[value] ?? value })) },
+  ];
+  if (!options.remote) fields.push({ name: "slicer-path", env: "SLICER_PATH", label: `${label} app`, input: "path", required: !options.found,
+    hint: options.found ? `Found at ${options.path}. Set this only to use another copy.`
+      : options.path ? `${label} isn't at ${options.path}. Install it, or choose where it is.` : `Where ${label} is installed.` });
+  if (options.profilesFound !== undefined) fields.push({ name: "profiles", env: "BAMBU_PROFILES_ROOT", label: "Bambu profiles folder", input: "path", required: !options.profilesFound,
+    hint: options.profilesFound ? `Found at ${options.profilesRoot}. Set this only to use other profiles.` : `The folder with ${label}'s BBL profiles (it holds BBL/machine). Install ${label}, or choose the folder.` });
+  return { type: options.type, ...(options.path !== undefined ? { path: options.path } : {}), found: options.found,
+    ...(options.profilesRoot !== undefined ? { profilesRoot: options.profilesRoot } : {}), ...(options.profilesFound !== undefined ? { profilesFound: options.profilesFound } : {}), fields };
+}
 
 /** Each serial prefix's model in this server's values (bambu_model), where it has one. */
 export function serialModelValues(valid: readonly string[]): Record<string, string> {
@@ -44,7 +78,7 @@ export function modelChoices(valid: readonly string[]): Array<{ value: string; l
   return valid.map(value => ({ value, label: names.get(value) ?? value.toUpperCase() }));
 }
 
-export function bambuSetupFields(options: { server: { name: string; version: string }; models: readonly string[]; serial?: string }): SetupFields {
+export function bambuSetupFields(options: { server: { name: string; version: string }; models: readonly string[]; serial?: string; slicer?: SlicerSetup }): SetupFields {
   const fromSerial = { prefixLength: 3, models: serialModelValues(options.models) };
   const model = options.serial ? fromSerial.models[options.serial.trim().slice(0, 3).toUpperCase()] : undefined;
   return {
@@ -60,6 +94,7 @@ export function bambuSetupFields(options: { server: { name: string; version: str
       ],
     }],
     ...(model ? { model } : {}),
+    ...(options.slicer ? { slicer: options.slicer } : {}),
   };
 }
 
@@ -67,7 +102,7 @@ const field = {
   type: "object",
   properties: {
     name: { type: "string", enum: [...SETUP_FIELD_NAMES] }, env: { type: "string" }, aliases: { type: "array", items: { type: "string" }, description: "Older names this server reads before env: a client writing env removes these, or the old value wins." },
-    label: { type: "string" }, hint: { type: "string" }, required: { type: "boolean" }, transform: { type: "string", enum: ["uppercase"] },
+    label: { type: "string" }, hint: { type: "string" }, required: { type: "boolean" }, input: { type: "string", enum: ["path"] }, transform: { type: "string", enum: ["uppercase"] },
     choices: { type: "array", items: { type: "object", properties: { value: { type: "string" }, label: { type: "string" } }, required: ["value", "label"] } },
     fromSerial: { type: "object", properties: { prefixLength: { type: "integer" }, models: { type: "object", additionalProperties: { type: "string" } } }, required: ["prefixLength", "models"] },
   },
@@ -83,6 +118,10 @@ export const SETUP_FIELDS_OUTPUT_SCHEMA = {
       env: { type: "object", additionalProperties: { type: "string" } }, fields: { type: "array", items: field },
     }, required: ["kind", "label", "env", "fields"] } },
     model: { type: "string" },
+    slicer: { type: "object", properties: {
+      type: { type: "string" }, path: { type: "string" }, found: { type: "boolean" }, profilesRoot: { type: "string" }, profilesFound: { type: "boolean" },
+      fields: { type: "array", items: field },
+    }, required: ["type", "found", "fields"] },
   },
   required: ["contract", "server", "kinds"],
 };

@@ -61,7 +61,7 @@ import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safe
 import { detectProfilesRoot } from "./slicer/profile-flatten.js";
 import { bambuPrinterInfo, bambuSliceCapabilities } from "./counterpart/info.js";
 import { DISCOVER_OUTPUT_SCHEMA, discoverBambu } from "./counterpart/discovery.js";
-import { SETUP_FIELDS_OUTPUT_SCHEMA, bambuSetupFields } from "./counterpart/setup.js";
+import { SETUP_FIELDS_OUTPUT_SCHEMA, bambuSetupFields, slicerSetup, type SlicerSetup } from "./counterpart/setup.js";
 import { PROPOSE_FILAMENTS_INPUT_PROPERTIES, PROPOSE_FILAMENTS_OUTPUT_SCHEMA, NO_COLOUR_NAMES, bambuTrayLabel, loadColourNames, proposeFilaments, spoolName, type ColourNames, type ProposalTray } from "./counterpart/filaments.js";
 import { DESIGN_PROMPTS, FDM_CAPABILITY_GUIDANCE, FDM_CAPABILITY_RESOURCE, FDM_CAPABILITY_URI, SERVER_INSTRUCTIONS } from "./design-guidance.js";
 import { bambuProgress, offlineProgress } from "./counterpart/progress.js";
@@ -349,6 +349,27 @@ function filamentProfileDirectory(): string | undefined {
     const { slicerType, slicerPath } = resolveSlicerConfig(undefined);
     return path.join(detectProfilesRoot(slicerPath, slicerType), "BBL", "filament");
   } catch { return undefined; }
+}
+/** An executable path, or a bare command found on PATH. */
+function executableExists(command: string): boolean {
+  if (!command) return false;
+  if (command.includes("/") || command.includes("\\")) return fs.existsSync(command);
+  return (process.env.PATH ?? "").split(path.delimiter).some(dir => dir && fs.existsSync(path.join(dir, command)));
+}
+/** A Bambu profile tree: BBL's machine profiles, or Orca's packed BBL.opc. */
+function bblProfilesAt(root: string): boolean {
+  return fs.existsSync(path.join(root, "BBL", "machine")) || fs.existsSync(path.join(root, "BBL.opc"));
+}
+/** The slicer this server would run now and the settings that choose it, for counterpart_setup_fields. */
+function slicerSetupNow(): SlicerSetup {
+  let config: { slicerType: string; slicerPath: string };
+  try { config = resolveSlicerConfig(undefined); } catch { config = { slicerType: String(DEFAULT_SLICER_TYPE), slicerPath: "" }; }
+  if (config.slicerType === "orca-slicer-api") return slicerSetup({ types: SLICER_TYPES, type: config.slicerType, found: Boolean(process.env.SLICER_API_URL), remote: true });
+  const bbl = ["bambustudio", "orcaslicer", "orcaslicer-bambulab"].includes(config.slicerType);
+  let profilesRoot: string | undefined;
+  try { profilesRoot = bbl ? detectProfilesRoot(config.slicerPath, config.slicerType) : undefined; } catch { profilesRoot = undefined; }
+  return slicerSetup({ types: SLICER_TYPES, type: config.slicerType, path: config.slicerPath, found: executableExists(config.slicerPath),
+    ...(bbl ? { profilesFound: Boolean(profilesRoot && bblProfilesAt(profilesRoot)), ...(profilesRoot ? { profilesRoot } : {}) } : {}) });
 }
 let colourNamesCache: ColourNames | null = null;
 /** Bambu Studio's own colour names for its filaments, read once from the configured slicer's profiles. */
@@ -4895,7 +4916,7 @@ class BambuPrinterMCPServer {
           }
 
           case "counterpart_setup_fields":
-            result = bambuSetupFields({ server: SERVER_INFO, models: VALID_BAMBU_MODELS, ...(typeof args?.serial === "string" ? { serial: args.serial } : {}) });
+            result = bambuSetupFields({ server: SERVER_INFO, models: VALID_BAMBU_MODELS, slicer: slicerSetupNow(), ...(typeof args?.serial === "string" ? { serial: args.serial } : {}) });
             break;
 
           case "counterpart_propose_filaments": {

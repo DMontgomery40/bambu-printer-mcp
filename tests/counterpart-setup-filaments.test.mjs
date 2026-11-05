@@ -9,7 +9,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import { colourDistance, matchColours, proposeFilaments, loadColourNames, bambuTrayLabel, spoolName, PROPOSE_FILAMENTS_OUTPUT_SCHEMA } from "../dist/counterpart/filaments.js";
 import { parseBambuAdvert, modelFromSerial, modelFromDevModel, DISCOVER_OUTPUT_SCHEMA } from "../dist/counterpart/discovery.js";
-import { bambuSetupFields, SETUP_FIELDS_OUTPUT_SCHEMA } from "../dist/counterpart/setup.js";
+import { bambuSetupFields, SETUP_FIELDS_OUTPUT_SCHEMA, slicerSetup } from "../dist/counterpart/setup.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const validator = new AjvJsonSchemaValidator();
@@ -149,7 +149,7 @@ test("setup fields: the .env names this server reads, its model choices, and the
 test("with no printer configured, the server lists the three tools and answers setup and discovery without a prompt", async t => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "counterpart-setup-"));
   const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "dist/index.js")], cwd: directory,
-    env: { PATH: process.env.PATH ?? "", HOME: directory, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "", PRINTER_HOST: "", BAMBU_SERIAL: "", BAMBU_TOKEN: "" }, stderr: "pipe" });
+    env: { PATH: process.env.PATH ?? "", HOME: directory, MCP_TRANSPORT: "stdio", SLICER_TYPE: "bambustudio", SLICER_PATH: path.join(directory, "no-such", "bambu-studio"), BAMBU_PROFILES_ROOT: "", BAMBU_MODEL: "", PRINTER_HOST: "", BAMBU_SERIAL: "", BAMBU_TOKEN: "" }, stderr: "pipe" });
   transport.stderr?.on("data", () => {});
   const client = new Client({ name: "counterpart-tests", version: "1" });
   t.after(async () => { await client.close(); fs.rmSync(directory, { recursive: true, force: true }); });
@@ -164,6 +164,13 @@ test("with no printer configured, the server lists the three tools and answers s
   assert.equal(setup.isError, undefined);
   assert.equal(setup.structuredContent.model, "p1s");
   assert.equal(setup.structuredContent.server.name, "bambu-printer-mcp");
+  // No Bambu Studio where this server would run it (the Linux desktop case, Nov 5): the client asks for it.
+  validate(SETUP_FIELDS_OUTPUT_SCHEMA, setup.structuredContent);
+  const slicer = setup.structuredContent.slicer;
+  assert.deepEqual([slicer.type, slicer.found, slicer.profilesFound], ["bambustudio", false, false]);
+  assert.deepEqual(slicer.fields.map(field => [field.name, field.env, field.required]),
+    [["slicer", "SLICER_TYPE", false], ["slicer-path", "SLICER_PATH", true], ["profiles", "BAMBU_PROFILES_ROOT", true]]);
+  assert.match(slicer.fields[1].hint, /^Bambu Studio isn't at .*no-such\/bambu-studio\. Install it, or choose where it is\.$/);
   const found = await client.callTool({ name: "counterpart_discover_printers", arguments: { duration_ms: 500 } });
   validate(DISCOVER_OUTPUT_SCHEMA, found.structuredContent);
   assert.ok(["complete", "unavailable"].includes(found.structuredContent.network));
@@ -203,4 +210,16 @@ test("a sliced file's painted material takes part in choosing the feed", () => {
   assert.deepEqual(result.mapping, [{ index: 1, slot: 0 }, { index: 2, slot: 1 }]);
   const unused = proposeFilaments({ trays, sliced: true, filaments: [{ index: 1, colour: "#FFFFFF", material: "PLA" }], painted: [{ index: 2, colour: "#FEC600", material: "PETG", prints: false }] });
   assert.equal(unused.proposal[0].slot, 254, "a painted slot this plate never uses doesn't move the feed");
+});
+
+test("the slicer section asks only for what isn't there", () => {
+  const types = ["bambustudio", "orcaslicer", "prusaslicer"];
+  const found = slicerSetup({ types, type: "bambustudio", path: "/Applications/BambuStudio.app/Contents/MacOS/BambuStudio", found: true, profilesRoot: "/Applications/BambuStudio.app/Contents/Resources/profiles", profilesFound: true });
+  assert.deepEqual(found.fields.map(field => [field.name, field.required]), [["slicer", false], ["slicer-path", false], ["profiles", false]]);
+  assert.deepEqual(found.fields[0].choices.map(choice => choice.label), ["Bambu Studio", "OrcaSlicer", "PrusaSlicer"]);
+  assert.equal(found.fields[1].input, "path");
+  const prusa = slicerSetup({ types, type: "prusaslicer", path: "", found: false });
+  assert.deepEqual(prusa.fields.map(field => [field.name, field.required]), [["slicer", false], ["slicer-path", true]], "no Bambu profiles for PrusaSlicer");
+  assert.equal(prusa.fields[1].hint, "Where PrusaSlicer is installed.");
+  assert.deepEqual(slicerSetup({ types, type: "orca-slicer-api", found: true, remote: true }).fields.map(field => field.name), ["slicer"]);
 });
