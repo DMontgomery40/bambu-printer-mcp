@@ -10,6 +10,7 @@ import { promisify } from 'util';
 import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
 import { execFile } from 'child_process';
+import { keepSlice, restoreSlice, sliceCacheKey } from '../slicer/slice-cache.js';
 import { flattenForCli, detectProfilesRoot, resolveBblMachineProfile } from '../slicer/profile-flatten.js';
 import { applyProcessOverrides, type ProcessOverrides } from '../slicer/process-overrides.js';
 import { profileJsonFiles } from '../slicer/profile-files.js';
@@ -2020,7 +2021,17 @@ export class STLManipulator extends EventEmitter {
           throw new Error(`Unsupported slicer type: ${slicerType}`);
       }
 
-      if (slicerType !== 'orca-slicer-api') {
+      // The Bambu-compatible CLI's slice, kept for reuse: the same model sliced the same way again is restored,
+      // and every check below still runs on it (slice-cache.ts).
+      const cacheRun = cliResult && slicerType !== 'orca-slicer-api'
+        ? { command: slicerPath, args, outputs: [outputFilePath, cliResult.resultPath], locations: [path.dirname(cliResult.resultPath)] } : undefined;
+      const cacheKey = cacheRun ? await sliceCacheKey(cacheRun) : undefined;
+      const restored = !!cacheKey && await restoreSlice(cacheKey, cacheRun!);
+      if (restored) {
+        if (progressCallback) progressCallback(90, 'Reusing the same slice of this model');
+        console.error(`Reusing slice ${cacheKey} for: ${slicerPath} ${args.join(' ')}`);
+      }
+      if (slicerType !== 'orca-slicer-api' && !restored) {
         if (progressCallback) progressCallback(20, `Executing slicer: ${slicerPath} ${args.join(' ')}`);
         console.error(`Executing: ${slicerPath} ${args.join(' ')}`);
 
@@ -2078,6 +2089,7 @@ export class STLManipulator extends EventEmitter {
       if (typeof slicerResult?.return_code === "number" && slicerResult.return_code !== 0) {
         throw new SlicerRunError(`Slicer failed: the slicer exited with code 0, but its result.json reports return_code ${slicerResult.return_code}.`, slicerResult);
       }
+      if (cacheKey && !restored && fs.existsSync(outputFilePath)) await keepSlice(cacheKey, cacheRun!);
 
       if (!fs.existsSync(outputFilePath)) {
           throw new SlicerRunError(`Slicer finished but output file not found: ${outputFilePath}`, slicerResult);

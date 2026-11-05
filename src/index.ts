@@ -1,6 +1,17 @@
 #!/usr/bin/env node
 import {CAMERA_STREAM_TOOLS} from "./printers/camera-tools.js";
 import { withAnnotations } from "./tool-annotations.js";
+import { withRemote } from "./counterpart/remote.js";
+import { slicedFileFacts, slicerReport } from "./counterpart/sliced-file.js";
+
+/** The slicer's verdict beside its result.json (`slicer_report`). */
+function reportOf(result: unknown): { slicer_report?: ReturnType<typeof slicerReport> } {
+  const report = slicerReport(result);
+  return report ? { slicer_report: report } : {};
+}
+function withSlicerReport<T extends { slicer_result?: unknown }>(sliced: T): T & { slicer_report?: ReturnType<typeof slicerReport> } {
+  return { ...sliced, ...reportOf(sliced.slicer_result) };
+}
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -3616,7 +3627,7 @@ class BambuPrinterMCPServer {
             },
             outputSchema: FUSION_EXPORT_OUTPUT_SCHEMA
           }
-        ].map(withAnnotations)
+        ].map(withAnnotations).map(withRemote)
       };
     });
 
@@ -3763,6 +3774,8 @@ class BambuPrinterMCPServer {
                 artifact: { sha256: inspection.sha256, byte_length: byteLength, file_format: path.extname(snapshot).toLowerCase() === ".3mf" ? "3mf" : "gcode" },
                 selection: { bambu_model: model, plate_index: plateIndex, ...(nozzles === undefined ? {} : { nozzle_diameters: nozzles }), ...(bedType === undefined ? {} : { bed_type: bedType }) },
                 inspection,
+                // The plate's estimate and slice settings, and the file's plate count, read here so clients don't parse slicer files.
+                sliced: await slicedFileFacts(snapshot, plateIndex),
                 ...(preview ? { preview } : {}),
               };
             });
@@ -4544,8 +4557,9 @@ class BambuPrinterMCPServer {
               sliceBambuOptions
             );
             await progressNotifications;
-            // The text stays the sliced file's path; slicer_result is the slicer's own result.json, verbatim.
-            return { content: [{ type: "text", text: sliced.path }], structuredContent: sliced };
+            // The text stays the sliced file's path; slicer_result is the slicer's own result.json, verbatim, and
+            // slicer_report its verdict and words, so clients don't read the slicer's format.
+            return { content: [{ type: "text", text: sliced.path }], structuredContent: withSlicerReport(sliced) };
           }
 
           case "print_3mf": {
@@ -5038,7 +5052,7 @@ class BambuPrinterMCPServer {
           tool: name,
           ...(error instanceof PrinterRefusal ? { code: error.code } : {}),
           // The slicer's own result.json; the message starts with its error_string and warnings.
-          ...(error instanceof SlicerRunError && error.slicerResult ? { slicer_result: error.slicerResult } : {}),
+          ...(error instanceof SlicerRunError && error.slicerResult ? { slicer_result: error.slicerResult, ...reportOf(error.slicerResult) } : {}),
         };
 
         // MCP clients validate structuredContent against a declared outputSchema even on
