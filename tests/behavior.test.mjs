@@ -3640,3 +3640,20 @@ test("H2D Pro slicing selects its exact installed preset and refuses an H2D subs
   assert.equal(missing.isError, true, JSON.stringify(missing.content));
   assert.equal(fs.existsSync(fixture.argsOutPath), false, "missing exact preset must stop before CLI execution");
 });
+
+test("two projects' settings extract to distinct files, so concurrent slices can't swap processes", async (t) => {
+  const { extractBambuTemplateSettings } = await import("../dist/3mf_parser.js");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "template-extract-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const write = async (name, layer) => {
+    const zip = new JSZip();
+    zip.file("Metadata/project_settings.config", JSON.stringify({ layer_height: layer }));
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, await zip.generateAsync({ type: "nodebuffer" }));
+    return file;
+  };
+  const [a, b] = await Promise.all([write("a.3mf", "0.16"), write("b.3mf", "0.28")].map(async p => extractBambuTemplateSettings(await p, dir)));
+  assert.notEqual(a, b);
+  assert.equal(JSON.parse(fs.readFileSync(a, "utf8")).layer_height, "0.16");
+  assert.equal(JSON.parse(fs.readFileSync(b, "utf8")).layer_height, "0.28");
+});

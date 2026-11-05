@@ -2,6 +2,7 @@ import JSZip from 'jszip';
 import { parseStringPromise } from 'xml2js';
 import { ThreeMFData, BambuSlicerConfig, ThreeMFMetadata, ThreeMFObject, ThreeMFBuildItem, AMSFilamentMapping, CollarCharmAnalysis, CollarCharmRole, ThreeMFAmsRequirements, ThreeMFPlateObjects } from './types.js';
 import * as fs from 'fs/promises';
+import { createHash } from 'crypto';
 
 // Parses Bambu Studio's JSON config data
 function parseBambuJSONConfig(jsonData: any): Partial<BambuSlicerConfig> {
@@ -258,7 +259,9 @@ export async function extractBambuTemplateSettings(
         if (!file) continue;
 
         const content = await file.async('string');
-        const outputPath = `${outputDir}/${name.replace(/\//g, '_')}`;
+        // Named by content, so two projects sliced at once never share (or overwrite) one settings file.
+        const digest = createHash('sha256').update(content).digest('hex').slice(0, 16);
+        const outputPath = `${outputDir}/${digest}_${name.replace(/\//g, '_')}`;
         await fs.writeFile(outputPath, content, 'utf8');
         return outputPath;
     }
