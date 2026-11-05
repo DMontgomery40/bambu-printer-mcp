@@ -179,11 +179,15 @@ export function proposeFilaments(input: {
       ...(match.distance !== undefined ? { distance: match.distance } : {}), ...(match.materialMismatch ? { materialMismatch: true } : {}) };
     if (row.verdict === "no-colour") row.note = "The model doesn’t say this part’s colour — pick its spool.";
     else if (row.verdict === "closest") {
-      // The colour may be loaded on another feed: say so, since one print feeds from one source.
-      const elsewhere = menu.find(item => item.feed !== tray.feed && colourDistance(item.colour, filament.colour!) <= SAME_COLOUR);
-      row.note = elsewhere
-        ? `${colourWords(filament.colour!)} is loaded on ${elsewhere.label}, but one print feeds from one source. Closest here: ${describe(tray)}.`
-        : `${colourWords(filament.colour!)} isn’t loaded. Closest loaded: ${describe(tray)}.`;
+      // The colour may be loaded but not chosen: on another feed (one print feeds from one source), in another
+      // material, or on a spool another colour of this model already prints from. Say which, never "isn't loaded".
+      const words = colourWords(filament.colour!);
+      const loaded = menu.find(item => item.slot !== tray.slot && colourDistance(item.colour, filament.colour!) <= SAME_COLOUR);
+      const wanted = materialOf(filament.material);
+      row.note = !loaded ? `${words} isn’t loaded. Closest loaded: ${describe(tray)}.`
+        : loaded.feed !== tray.feed ? `${words} is loaded on ${loaded.label}, but one print feeds from one source. Closest here: ${describe(tray)}.`
+        : wanted && materialOf(loaded.material) !== wanted ? `${words} is loaded on ${loaded.label} in ${loaded.material}, not ${filament.material}. Closest in ${filament.material}: ${describe(tray)}.`
+        : `${words} is on ${loaded.label}, which another colour of this model already prints from. Closest other spool: ${describe(tray)}.`;
     }
     if (match.materialMismatch) row.note = `${row.note ? row.note + " " : ""}Prints in ${tray.material}, not ${filament.material}.`;
     return row;
