@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.63] – 2026-11-05
+
+### Added
+
+- `counterpart_discover_printers` finds Bambu printers on the local network from their own SSDP announcements, with serial, model (as `bambu_model` names it), name and firmware. It never connects to a printer. Checked with captured announcement packets; not run against the P1S's live announcements.
+- `counterpart_setup_fields` lists the `.env` settings this server reads for a printer (address, serial, model, access code), with labels, hints, the model choices and the model each serial prefix names. Clients such as Counterpart offer printer setup from it instead of copying this server's model tables.
+- `counterpart_propose_filaments` proposes which loaded spool prints each part's colour before slicing, with an explicit verdict per part: a colour that isn't loaded says so ("White isn't loaded. Closest loaded: A2 Sunflower Yellow PLA Basic.") instead of quietly printing another colour. It checks a person's chosen spools against what is loaded now and maps painted slots. Each spool carries the filament `profile` `slice_stl` takes, so a client slices from the same read. Checked against the P1S's AMS and the caliper card's filaments as read on Nov 5; not printed.
+- `get_printer_filaments` trays carry `label` ("A2") and `spool_name` ("Sunflower Yellow PLA Basic"), from Bambu Studio's own colour names.
+
 ## [1.1.62] – 2026-11-05
 
 ### Added

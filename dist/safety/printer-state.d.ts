@@ -1,4 +1,5 @@
 import { BambuClient } from "bambu-node";
+export declare const MODEL_IDS: Record<string, string>;
 export declare const SERIAL_MODELS: Record<string, string>;
 /** Only raw reports received after this request are evidence. Never read printer.data here. */
 export declare function readFreshPrinterStatus(printer: BambuClient, serial: string, timeoutMs?: number): Promise<any>;
