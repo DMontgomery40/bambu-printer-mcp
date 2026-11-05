@@ -235,7 +235,7 @@ export function renderPrintPreview(gcode, colours = []) {
     const palette = (tool) => parseColour(colours[tool]) ?? [40, 40, 40];
     const used = new Set();
     const draw = (top) => {
-        const depth = new Float32Array(width * height).fill(top ? -Infinity : Infinity);
+        const depth = new Float64Array(width * height).fill(top ? -Infinity : Infinity);
         const toolAt = new Int16Array(width * height).fill(-1);
         for (const s of segments) {
             used.add(s.tool);
