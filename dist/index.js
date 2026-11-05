@@ -805,6 +805,17 @@ async function previewOfSnapshot(snapshot, plateIndex, sha256) {
     const preview = await previewPrintFile({ gcode, ...(projectColours ? { projectColours } : {}) });
     return preview ? { ...preview, artifact_sha256: sha256, plate_index: plateIndex } : undefined;
 }
+/**
+ * The slice's arguments change a resolved process: an explicit value (layer height, walls, infill, supports), or a
+ * quality or strength other than standard. Invalid values throw, as slice_stl's own parsing does.
+ */
+function changesProcess(args) {
+    // slice_stl's own validation of these values (quality, strength, layer height, walls, infill, supports).
+    const nozzle = Number(args.nozzle_diameter || DEFAULT_NOZZLE_DIAMETER);
+    parseProcessOverrides(withPrintQuality(args, nozzle), nozzle);
+    return ["layer_height", "wall_loops", "sparse_infill_density", "enable_support", "support_type", "support_threshold_angle"].some(key => args[key] !== undefined)
+        || (args.quality !== undefined && args.quality !== "standard") || (args.strength !== undefined && args.strength !== "standard");
+}
 function hasExplicitSlicerProfile(args) {
     return typeof args?.slicer_profile === "string" && args.slicer_profile.trim().length > 0;
 }
@@ -1683,7 +1694,12 @@ class BambuPrinterMCPServer {
         }
         return inventory;
     }
-    async inspectSliceSettings(sourcePath) {
+    /**
+     * `sliceArgs`: the slice_stl arguments a client would send with this file (slicer_profile, template_name,
+     * template_3mf_path, layer_height, wall_loops, sparse_infill_density, quality, strength). `requestedTemplatePath`:
+     * their template, resolved. own_process says whether that slice prints the process the 3MF carries, unchanged.
+     */
+    async inspectSliceSettings(sourcePath, sliceArgs = {}, requestedTemplatePath) {
         if (!fs.existsSync(sourcePath)) {
             throw new Error(`Slice settings source not found: ${sourcePath}`);
         }
@@ -1703,8 +1719,10 @@ class BambuPrinterMCPServer {
                 metadata_keys: Object.keys(parsed.metadata),
                 summary: summarizeSliceSettings(config),
                 raw_key_count: Object.keys(config).length,
-                // ownProcessTemplate itself, for a call that names no profile or template, so this can't drift from slicing.
-                own_process: (await ownProcessTemplate({}, sourcePath, undefined)) !== undefined,
+                // ownProcessTemplate itself, with the slice's own arguments, so this can't drift from slicing; an explicit
+                // value or a quality or strength other than standard changes the process the file carries.
+                // Validated first, so an invalid value is refused even when a named profile or template decides the answer.
+                own_process: !changesProcess(sliceArgs) && (await ownProcessTemplate(sliceArgs, sourcePath, requestedTemplatePath)) !== undefined,
             };
         }
         const content = fs.readFileSync(sourcePath, "utf8");
@@ -2116,7 +2134,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "get_slice_settings",
-                        description: "Inspect slicer settings from a saved 3MF template or a JSON/config slicer profile without slicing anything. For a 3MF, own_process is true when the file carries its own process (a designer's Bambu Studio or Orca project), so slice_stl and print_3mf's auto-slice slice it with that process unless the call names slicer_profile, template_name or template_3mf_path.",
+                        description: "Inspect slicer settings from a saved 3MF template or a JSON/config slicer profile without slicing anything. For a 3MF given as source_path, own_process is true when slice_stl, given this call's other arguments as it would take them (slicer_profile, template_name, template_3mf_path, layer_height, wall_loops, sparse_infill_density, quality, strength), prints the process the file carries (a designer's Bambu Studio or Orca project) unchanged.",
                         inputSchema: {
                             type: "object",
                             properties: {
@@ -2126,12 +2144,20 @@ class BambuPrinterMCPServer {
                                 },
                                 template_name: {
                                     type: "string",
-                                    description: "Optional named template from the local registry. If provided, resolves source_path automatically."
+                                    description: "Optional named template from the local registry. Without source_path it is the source read; with source_path it is the slice's template, for own_process."
                                 },
                                 template_dir: {
                                     type: "string",
                                     description: "Optional template directory override when resolving template_name."
-                                }
+                                },
+                                slicer_profile: { type: "string", description: "For own_process: the slicer_profile slice_stl would be given." },
+                                template_3mf_path: { type: "string", description: "For own_process: the template_3mf_path slice_stl would be given." },
+                                layer_height: { type: "number", description: "For own_process: the layer_height slice_stl would be given." },
+                                wall_loops: { type: "number", description: "For own_process: the wall_loops slice_stl would be given." },
+                                sparse_infill_density: { type: "string", description: "For own_process: the sparse_infill_density slice_stl would be given." },
+                                enable_support: { type: "boolean", description: "For own_process: the enable_support slice_stl would be given." },
+                                support_type: { type: "string", description: "For own_process: the support_type slice_stl would be given." },
+                                ...PRINT_QUALITY_PROPERTIES
                             }
                         }
                     },
@@ -3729,7 +3755,10 @@ class BambuPrinterMCPServer {
                         if (!args?.source_path && !args?.template_name) {
                             throw new Error("Missing required parameter: source_path or template_name");
                         }
-                        result = await this.inspectSliceSettings(String(args?.source_path || resolveTemplatePathFromName(["3mf", "json", "config"])));
+                        // With source_path, the other arguments are the slice's (template_name is its template), as slice_stl takes them.
+                        result = args?.source_path
+                            ? await this.inspectSliceSettings(String(args.source_path), args, namedTemplatePath(args, typeof args?.template_name === "string" && args.template_name.trim() ? resolveTemplatePathFromName(["json", "config", "3mf"]) : undefined))
+                            : await this.inspectSliceSettings(String(resolveTemplatePathFromName(["3mf", "json", "config"])));
                         break;
                     case "slice_with_template": {
                         if (!args?.stl_path) {
