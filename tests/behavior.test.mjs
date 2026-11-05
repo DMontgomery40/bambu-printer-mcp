@@ -2658,6 +2658,50 @@ test("slice_stl's quality and strength become the slicer's own layer height, wal
   assert.match(noCopies.content[0].text, /Copies \(repetitions\) need the Bambu Studio or OrcaSlicer CLI, not prusaslicer/);
 });
 
+test("a designer's 3MF slices with its own process; strength never weakens it; a bare 3MF keeps the preset", async (t) => {
+  // 2026-11-04: a designer's caliper card (0.16 mm, 100% infill, 2 walls) was sliced at the preset's
+  // values, and Strong lowered its infill to 25%: its fold hinges and snaps no longer worked.
+  const fakeSlicer = await createFakeBambuSlicer();
+  t.after(() => fs.rmSync(fakeSlicer.tempDir, { recursive: true, force: true }));
+  const transport = new StdioClientTransport({
+    command: process.execPath, args: [SERVER_ENTRY], cwd: fakeSlicer.tempDir,
+    env: { ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "p1s", BAMBU_SERIAL: "", BAMBU_TOKEN: "", BAMBU_SLICER_PROFILE: "",
+      BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot, TEMP_DIR: path.join(fakeSlicer.tempDir, "out"), SLICER_TYPE: "bambustudio", MCP_ALLOW_EXECUTABLE_ARG: "1" },
+    stderr: "pipe",
+  });
+  const client = createClient();
+  t.after(async () => { await closeTransport(transport); });
+  await client.connect(transport);
+  const model = '<?xml version="1.0" encoding="UTF-8"?><model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources><object id="1" type="model"><mesh><vertices><vertex x="0" y="0" z="0"/><vertex x="10" y="0" z="0"/><vertex x="0" y="10" z="0"/><vertex x="0" y="0" z="10"/></vertices><triangles><triangle v1="0" v2="2" v3="1"/><triangle v1="0" v2="1" v3="3"/><triangle v1="0" v2="3" v3="2"/><triangle v1="1" v2="2" v3="3"/></triangles></mesh></object></resources><build><item objectid="1"/></build></model>';
+  const write3mf = async (name, settings) => {
+    const zip = new JSZip();
+    zip.file("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>');
+    zip.file("3D/3dmodel.model", model);
+    if (settings) zip.file("Metadata/project_settings.config", JSON.stringify(settings));
+    const file = path.join(fakeSlicer.tempDir, name);
+    fs.writeFileSync(file, await zip.generateAsync({ type: "nodebuffer" }));
+    return file;
+  };
+  const designer = await write3mf("designer.3mf", { layer_height: "0.16", sparse_infill_density: "100%", wall_loops: "2", top_shell_layers: "6", print_settings_id: "Designer",
+    filament_settings_id: ["Bambu PLA Basic @BBL X1C"], filament_type: ["PLA"], filament_colour: ["#000000"] });
+  const bare = await write3mf("bare.3mf");
+  const sliceWith = async (file, extra = {}) => {
+    const result = await client.callTool({ name: "slice_stl", arguments: { stl_path: file, bambu_model: "p1s", slice_plate: 1, arrange: false, orient: false,
+      slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false, ...extra } });
+    assert.equal(result.isError, undefined, result.content?.[0]?.text);
+    const slicerArgs = JSON.parse(fs.readFileSync(fakeSlicer.argsOutPath, "utf8"));
+    const processPath = slicerArgs[slicerArgs.indexOf("--load-settings") + 1].split(";").at(-1);
+    const { layer_height, wall_loops, sparse_infill_density } = JSON.parse(fs.readFileSync(processPath, "utf8"));
+    return { layer_height, wall_loops, sparse_infill_density };
+  };
+  assert.deepEqual(await sliceWith(designer), { layer_height: "0.16", wall_loops: "2", sparse_infill_density: "100%" }, "the designer's own process");
+  assert.deepEqual(await sliceWith(designer, { strength: "strong" }), { layer_height: "0.16", wall_loops: "4", sparse_infill_density: "100%" },
+    "strong adds walls but keeps the designer's denser infill");
+  assert.equal((await sliceWith(designer, { quality: "fine" })).layer_height, "0.12", "a chosen quality still applies");
+  assert.equal((await sliceWith(designer, { sparse_infill_density: "20%" })).sparse_infill_density, "20%", "an explicit value is written as given");
+  assert.equal((await sliceWith(bare)).layer_height, "0.2", "a 3MF without its own process keeps the preset");
+});
+
 test("quality scales with the nozzle: draft on a 0.6 mm nozzle is 0.42 mm", async () => {
   const { withPrintQuality } = await import("../dist/slicer/print-quality.js");
   assert.equal(withPrintQuality({ quality: "draft" }, 0.6).layer_height, 0.42);

@@ -135,7 +135,7 @@ FUSION_MCP_PORT=9877
 | `FFMPEG_PATH` | `ffmpeg` | No | Trusted executable for RTSP camera snapshots |
 | `MCP_ALLOW_EXECUTABLE_ARG` | disabled | No | Enables per-call executable overrides; normally configure executables in server environment instead |
 | `BAMBU_TEMPLATE_DIR` | `~/Sync/bambu/templates` | No | Named slicing-template registry |
-| `BAMBU_TEMPLATE_3MF_PATH` | | No | Default template 3MF for slicing |
+| `BAMBU_TEMPLATE_3MF_PATH` | | No | Default template 3MF for slicing. A 3MF that carries its own process settings slices with them instead |
 | `TEMP_DIR` | private folder under the system temporary directory | No | Intermediate files; each server instance gets its own folder unless explicitly configured. A relative path is resolved against the server's working directory |
 | `MCP_TRANSPORT` | `stdio` | No | Transport mode: `stdio` or `streamable-http` |
 | `MCP_HTTP_HOST` | `127.0.0.1` | No | HTTP bind address (HTTP transport only) |

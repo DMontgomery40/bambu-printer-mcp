@@ -1198,7 +1198,7 @@ When `slicer_type` is `bambustudio` (the default), these additional parameters a
 | `skip_modified_gcodes` | boolean | Ignore stale custom gcodes in the 3MF |
 | `slice_plate` | number | Which plate to slice (0 = all plates, default: 0) |
 | `quality` | string | `draft`, `standard` or `fine`: the server picks the layer height for the nozzle in use (0.28 and 0.12 mm on 0.4 mm; standard keeps the preset) |
-| `strength` | string | `standard`, `strong` or `max`: the server picks walls and infill (4 walls at 25%, 6 at 40%; standard keeps the preset) |
+| `strength` | string | `standard`, `strong` or `max`: the server picks walls and infill (at least 4 walls and 25%, or 6 and 40%; a process that already has more keeps it; standard keeps the process as it is) |
 | `layer_height` | number | Layer height in mm, such as 0.28, 0.2 or 0.12; at most the nozzle diameter |
 | `wall_loops` | integer | Number of walls, 0 to 1000 |
 | `sparse_infill_density` | string | Sparse infill density, such as `"15%"` |

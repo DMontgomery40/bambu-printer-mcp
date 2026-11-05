@@ -48,7 +48,7 @@ import { importFileViaBambuConnect } from "./bambu-connect.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
 import { FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFAULT_ARGS, FUSION_NEW_DESIGN_OUTPUT_SCHEMA, FUSION_STATUS_OUTPUT_SCHEMA, FusionMcpBridge } from "./fusion-mcp-bridge.js";
 import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue, studioAmsMappingInfo, trayColour } from "./ams-mapping.js";
-import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, parse3MF } from './3mf_parser.js';
+import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, hasBambuProjectSettings, parse3MF } from './3mf_parser.js';
 import type { ThreeMFAmsRequirements } from "./types.js";
 import { BambuImplementation, assertDirectPrintSupported, checkedFile, defaultResumeStateDir } from "./printers/bambu.js";
 import { resolveStudioPrintOptions, usedNozzleCount, type CallerPrintOptions } from "./studio-print-options.js";
@@ -920,6 +920,21 @@ function hasExplicitSlicerProfile(args: any): boolean {
   return typeof args?.slicer_profile === "string" && args.slicer_profile.trim().length > 0;
 }
 
+/**
+ * A 3MF that carries its own process (a designer's project) as its slicing template, when the call names
+ * no profile or template of its own. A configured default profile or template must not replace the
+ * designer's layer height, walls and infill; the machine still comes from the chosen printer preset.
+ */
+/** The template this call names: template_name (resolved by the caller) or template_3mf_path. */
+function namedTemplatePath(args: any, fromName: string | undefined): string | undefined {
+  return fromName || (typeof args?.template_3mf_path === "string" && args.template_3mf_path.trim() ? String(args.template_3mf_path) : undefined);
+}
+
+async function ownProcessTemplate(args: any, modelPath: string, requestedTemplatePath: string | undefined): Promise<string | undefined> {
+  if (hasExplicitSlicerProfile(args) || requestedTemplatePath || !modelPath.toLowerCase().endsWith(".3mf")) return undefined;
+  return await hasBambuProjectSettings(modelPath) ? modelPath : undefined;
+}
+
 async function resolveTemplateFirstSlicerProfilePath(
   args: any,
   configuredProfile: string | undefined,
@@ -1525,8 +1540,10 @@ class BambuPrinterMCPServer {
       nozzleType: resolveNozzleType(args?.nozzle_type),
       nozzleVolumeType: resolveNozzleVolumeType(args?.nozzle_volume_type),
     };
+    // A designer's project slices with its own process here too, as slice_stl and the LAN route do.
+    const ownProcess = await ownProcessTemplate(args, threeMFPath, namedTemplatePath(args, typeof args?.template_name === "string" && args.template_name.trim() ? String(args.template_name) : undefined));
     threeMFPath = await this.stlManipulator.sliceSTL(
-      threeMFPath, slicerType, slicerPath, slicerProfile || undefined,
+      threeMFPath, slicerType, slicerPath, ownProcess ? await resolveTemplateSlicerProfilePath(ownProcess, TEMP_DIR) : slicerProfile || undefined,
       undefined,
       printPreset,
       autoSliceOptions
@@ -2613,7 +2630,7 @@ class BambuPrinterMCPServer {
           },
           {
             name: "slice_stl",
-            description: "Slice an STL or 3MF file using a slicer to generate printable G-code or sliced 3MF. IMPORTANT: bambu_model must be specified to ensure the slicer generates safe G-code for the correct printer. The text result is the sliced file's path. When Bambu Studio or OrcaSlicer writes a result.json, structuredContent.slicer_result carries it verbatim, success or error: error_string, return_code and each sliced_plates[].warning_message, such as a floating cantilever. A failed slice's text starts with those words.",
+            description: "Slice an STL or 3MF file using a slicer to generate printable G-code or sliced 3MF. IMPORTANT: bambu_model must be specified to ensure the slicer generates safe G-code for the correct printer. The text result is the sliced file's path. When Bambu Studio or OrcaSlicer writes a result.json, structuredContent.slicer_result carries it verbatim, success or error: error_string, return_code and each sliced_plates[].warning_message, such as a floating cantilever. A failed slice's text starts with those words. A 3MF that carries its own process settings (a designer's Bambu Studio or Orca project) slices with them unless slicer_profile, template_name or template_3mf_path is given; the machine still comes from bambu_model. quality and strength adjust that process, and strength never lowers its walls or infill.",
             inputSchema: {
               type: "object",
               properties: {
@@ -4325,12 +4342,16 @@ class BambuPrinterMCPServer {
             }
             const sliceModel = await this.resolveBambuModel(args?.bambu_model as string | undefined);
             const nozzleDiam = String(args?.nozzle_diameter || DEFAULT_NOZZLE_DIAMETER);
-            const activeSlicerProfile = await resolveSlicerProfilePath(
-              slicerProfile || undefined,
-              resolveTemplatePathFromName(["json", "config", "3mf"]) || explicitTemplatePath || undefined,
-              TEMP_DIR
-            );
             const explicitSlicerProfile = hasExplicitSlicerProfile(args);
+            const requestedTemplatePath = namedTemplatePath(args, resolveTemplatePathFromName(["json", "config", "3mf"]));
+            const ownProcess3mf = await ownProcessTemplate(args, String(args.stl_path), requestedTemplatePath);
+            const activeSlicerProfile = ownProcess3mf
+              ? await resolveSlicerProfilePath(undefined, ownProcess3mf, TEMP_DIR)
+              : await resolveSlicerProfilePath(
+                slicerProfile || undefined,
+                requestedTemplatePath || explicitTemplatePath || undefined,
+                TEMP_DIR
+              );
             // Resolve printer preset for BambuStudio slicer
             const printerPreset = BAMBU_MODEL_PRESETS[sliceModel]?.(nozzleDiam);
 
@@ -4454,12 +4475,16 @@ class BambuPrinterMCPServer {
             const printBedType = resolveBedType(args?.bed_type as string | undefined);
             const printNozzles = requestedPrintNozzles(args as Record<string, any>);
             const printNozzle = String(printNozzles?.[0] ?? DEFAULT_NOZZLE_DIAMETER);
-            const activeSlicerProfile = await resolveTemplateFirstSlicerProfilePath(
-              args,
-              slicerProfile || undefined,
-              resolveTemplatePathFromName(["json", "config", "3mf"]) || explicitTemplatePath || undefined,
-              TEMP_DIR
-            );
+            const requestedPrintTemplate = namedTemplatePath(args, resolveTemplatePathFromName(["json", "config", "3mf"]));
+            const ownPrintProcess = await ownProcessTemplate(args, String(args.three_mf_path), requestedPrintTemplate);
+            const activeSlicerProfile = ownPrintProcess
+              ? await resolveTemplateSlicerProfilePath(ownPrintProcess, TEMP_DIR)
+              : await resolveTemplateFirstSlicerProfilePath(
+                args,
+                slicerProfile || undefined,
+                requestedPrintTemplate || explicitTemplatePath || undefined,
+                TEMP_DIR
+              );
             const explicitSlicerProfile = hasExplicitSlicerProfile(args);
             const printPreset = BAMBU_MODEL_PRESETS[printModel]?.(printNozzle);
             const plateIndex = args?.plate_index !== undefined ? Number(args.plate_index) : 0;

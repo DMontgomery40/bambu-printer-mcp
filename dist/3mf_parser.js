@@ -219,6 +219,20 @@ export async function parse3MF(filePath) {
         throw new Error(`Failed to parse 3MF file: ${error.message}`);
     }
 }
+/** Whether a 3MF carries its own Bambu Studio/Orca process (a designer's project, not a bare mesh archive). */
+export async function hasBambuProjectSettings(filePath) {
+    try {
+        const zip = await JSZip.loadAsync(await fs.readFile(filePath));
+        const settings = zip.file('Metadata/project_settings.config');
+        if (!settings)
+            return false;
+        const parsed = JSON.parse(await settings.async('string'));
+        return !!parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.layer_height !== undefined;
+    }
+    catch {
+        return false;
+    }
+}
 export async function extractBambuTemplateSettings(filePath, outputDir) {
     const data = await fs.readFile(filePath);
     const zip = await JSZip.loadAsync(data);
