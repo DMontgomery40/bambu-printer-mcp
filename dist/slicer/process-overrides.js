@@ -5,6 +5,8 @@
  * "15%"), so the machine preset and every other process value stay as resolved.
  */
 export const PROCESS_OVERRIDE_KEYS = ["layer_height", "wall_loops", "sparse_infill_density", "enable_support", "support_type", "support_threshold_angle"];
+/** Minimums from a strength choice: the resolved process keeps its own value when it is already higher. */
+export const PROCESS_FLOOR_KEYS = ["wall_loops_floor", "sparse_infill_density_floor"];
 /** Bambu Studio's and OrcaSlicer's support_type values. */
 export const SUPPORT_TYPES = ["normal(auto)", "tree(auto)", "normal(manual)", "tree(manual)"];
 /** Validate the tool arguments; undefined when none are given. */
@@ -33,6 +35,11 @@ export function parseProcessOverrides(args, nozzleDiameter) {
             throw new Error('sparse_infill_density must be a percentage from 0% to 100%, such as "15%".');
         overrides.sparse_infill_density = `${Number(match[1])}%`;
     }
+    // Written by withPrintQuality for strong/max, never by a caller.
+    if (typeof args?.wall_loops_floor === "number")
+        overrides.wall_loops_floor = String(args.wall_loops_floor);
+    if (typeof args?.sparse_infill_density_floor === "string")
+        overrides.sparse_infill_density_floor = args.sparse_infill_density_floor;
     const enableSupport = args?.enable_support;
     if (enableSupport !== undefined) {
         if (typeof enableSupport !== "boolean")
@@ -58,5 +65,15 @@ export function parseProcessOverrides(args, nozzleDiameter) {
 }
 /** The process profile with the overrides written over its values. */
 export function applyProcessOverrides(profile, overrides) {
-    return { ...profile, ...overrides };
+    const { wall_loops_floor: wallFloor, sparse_infill_density_floor: densityFloor, ...exact } = overrides;
+    const out = { ...profile };
+    const number = (value) => {
+        const parsed = Number.parseFloat(String(Array.isArray(value) ? value[0] : value ?? ""));
+        return Number.isFinite(parsed) ? parsed : undefined;
+    };
+    if (wallFloor !== undefined && (number(out.wall_loops) ?? -1) < Number(wallFloor))
+        out.wall_loops = wallFloor;
+    if (densityFloor !== undefined && (number(out.sparse_infill_density) ?? -1) < Number.parseFloat(densityFloor))
+        out.sparse_infill_density = densityFloor;
+    return { ...out, ...exact };
 }

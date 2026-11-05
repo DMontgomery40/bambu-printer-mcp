@@ -2,8 +2,10 @@
  * slice_stl's `quality` and `strength` (PRD §8.4): a client's print-sheet choice, mapped here to the
  * slicer's own numbers so no client carries layer heights, wall counts or infill. Draft and Fine set
  * the layer height for the nozzle in use (0.28 and 0.12 mm on a 0.4 mm nozzle, scaled with it); Strong
- * and Max set walls and infill. Standard sends nothing: the resolved preset decides. An explicit
- * layer_height, wall_loops or sparse_infill_density in the same call wins over these.
+ * and Max raise walls and infill to at least their values: a process that already has more (a
+ * designer's 3MF at 100% infill) keeps it, so a stronger choice never prints weaker. Standard sends
+ * nothing: the resolved process decides. An explicit layer_height, wall_loops or
+ * sparse_infill_density in the same call wins over these and is written as given.
  */
 export declare const PRINT_QUALITIES: readonly ["draft", "standard", "fine"];
 export declare const PRINT_STRENGTHS: readonly ["standard", "strong", "max"];
@@ -21,6 +23,6 @@ export declare const PRINT_QUALITY_PROPERTIES: {
     readonly strength: {
         readonly type: "string";
         readonly enum: readonly ["standard", "strong", "max"];
-        readonly description: "Part strength: standard (the preset's walls and infill), strong or max (more walls and denser infill). The server picks the values; explicit wall_loops or sparse_infill_density win.";
+        readonly description: "Part strength: standard (the process's own walls and infill), strong or max (at least more walls and denser infill; a process that already has more keeps it). The server picks the values; explicit wall_loops or sparse_infill_density win.";
     };
 };
