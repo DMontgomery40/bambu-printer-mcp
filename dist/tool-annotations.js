@@ -31,6 +31,7 @@ export const TOOL_ANNOTATIONS = {
     // Local reads
     inspect_print_file: READ_LOCAL,
     list_3mf_plate_objects: READ_LOCAL,
+    list_3mf_plates: READ_LOCAL,
     get_stl_info: READ_LOCAL,
     list_templates: READ_LOCAL,
     get_slice_settings: LOCAL_OUTPUT, // a 3MF's settings are extracted to a fixed file in the temporary directory

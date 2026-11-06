@@ -12,6 +12,7 @@ import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { keepSlice, restoreSlice, sliceCacheKey } from '../slicer/slice-cache.js';
 import { flattenForCli, detectProfilesRoot, resolveBblMachineProfile } from '../slicer/profile-flatten.js';
+import { plainSlicerError, UNKNOWN_SLICER_ERROR } from '../slicer/slicer-messages.js';
 import { applyProcessOverrides } from '../slicer/process-overrides.js';
 import { profileJsonFiles } from '../slicer/profile-files.js';
 import { materializeOrcaProfilesRoot, stageOrcaCliProfiles } from '../slicer/orca-profile-cache.js';
@@ -122,10 +123,16 @@ const PROFILE_METADATA_KEYS = new Set([
 export class SlicerRunError extends Error {
     constructor(detail, slicerResult) {
         const slicerText = slicerResult ? slicerResultText(slicerResult) : "";
-        super(slicerText ? `${slicerText}\n${detail}` : detail);
+        const words = slicerText ? `${slicerText}\n${detail}` : detail;
+        // A known refusal, or one in the slicer's own words, is said plainly. A fault of the setup (no slicer, a crash,
+        // no output) stays in this server's own words, which say what to fix.
+        const plain = plainSlicerError(words) ?? (slicerText ? UNKNOWN_SLICER_ERROR : undefined);
+        super(plain ? `${plain}\nThe slicer said: ${words}` : words);
         this.slicerResult = slicerResult;
         this.name = "SlicerRunError";
         this.slicerText = slicerText;
+        this.plain = plain;
+        this.words = words;
     }
 }
 /**

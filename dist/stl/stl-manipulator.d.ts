@@ -68,6 +68,10 @@ export type SliceOutput = {
 export declare class SlicerRunError extends Error {
     readonly slicerResult?: SlicerResult | undefined;
     readonly slicerText: string;
+    /** What a person is told for a slicer's refusal: a plain sentence, never its own words (src/slicer/slicer-messages.ts). */
+    readonly plain?: string;
+    /** The slicer's words and this server's detail, after the plain sentence: what slicer_report.slicer_message keeps. */
+    readonly words: string;
     constructor(detail: string, slicerResult?: SlicerResult | undefined);
 }
 export declare class STLManipulator extends EventEmitter {

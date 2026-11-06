@@ -8,6 +8,7 @@ export const REMOTE_SCOPES = {
     get_printer_filaments: "read",
     resolve_3mf_ams_slots: "read",
     list_3mf_plate_objects: "read",
+    list_3mf_plates: "read",
     get_stl_info: "read",
     list_templates: "read",
     list_printer_files: "read",

@@ -2580,7 +2580,7 @@ function writeTemplateJsonFixture(
 
 // `result` names a real Bambu Studio result.json in tests/fixtures/studio-result
 // for the fake CLI to write to its --outputdir; a nonzero `exitCode` fails the run.
-async function createFakeBambuSlicer({ result, exitCode = 0 } = {}) {
+async function createFakeBambuSlicer({ result, exitCode = 0, machine = {} } = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-mcp-template-slicer-"));
   const fakeSlicerPath = path.join(tempDir, "fake-slicer.mjs");
   const argsOutPath = path.join(tempDir, "args.json");
@@ -2596,7 +2596,7 @@ async function createFakeBambuSlicer({ result, exitCode = 0 } = {}) {
   const writeProfile = (kind, profile) => fs.writeFileSync(
     path.join(profilesRoot, "BBL", kind, `${profile.name}.json`), JSON.stringify(profile)
   );
-  writeProfile("machine", { name: "Bambu Lab P1S 0.4 nozzle", nozzle_diameter: ["0.4"], default_print_profile: "Behavior process", default_filament_profile: ["Behavior filament"], machine_start_gcode: "fixture start" });
+  writeProfile("machine", { name: "Bambu Lab P1S 0.4 nozzle", nozzle_diameter: ["0.4"], default_print_profile: "Behavior process", default_filament_profile: ["Behavior filament"], machine_start_gcode: "fixture start", ...machine });
   writeProfile("process", { name: "Behavior process", layer_height: "0.2" });
   writeProfile("filament", { name: "Behavior filament", filament_type: ["PLA"] });
   fs.writeFileSync(
@@ -2693,10 +2693,11 @@ async function sliceWithFakeBambuSlicer(t, options) {
   const client = createClient();
   t.after(async () => { await closeTransport(transport); });
   await client.connect(transport);
-  return client.callTool({
+  const result = await client.callTool({
     name: "slice_stl",
-    arguments: { stl_path: SAMPLE_STL, bambu_model: "p1s", slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false },
+    arguments: { stl_path: SAMPLE_STL, bambu_model: "p1s", slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false, ...options?.arguments },
   });
+  return options?.withSlicer ? { result, fakeSlicer } : result;
 }
 
 // Slicing the same model the same way again reuses the kept slice (src/slicer/slice-cache.ts): the slicer
@@ -2760,17 +2761,20 @@ test("slice_stl returns Bambu Studio's result.json, warnings included, in struct
 
 // Bambu Studio's auto-orient tilted the gap filler and failed with return
 // code -100 (exit 156) and an empty-layer list per plate.
-test("a failed slice_stl starts with Bambu Studio's words and carries its result.json", async (t) => {
+// A person is told a plain sentence; Studio's own words follow for the log, and stay whole in slicer_message.
+test("a failed slice_stl leads with a plain sentence, keeps Bambu Studio's words and carries its result.json", async (t) => {
   const result = await sliceWithFakeBambuSlicer(t, { result: "p1s-empty-layers.json", exitCode: 156 });
   const expected = studioResult("p1s-empty-layers.json");
   assert.equal(result.isError, true);
   assert.deepEqual(result.structuredContent.slicer_result, expected);
+  const plain = "The slicer couldn't slice this model. Its own message is kept for the log.";
   const studioWords = `${expected.error_string}\n${expected.sliced_plates[0].warning_message.trim()}\n`;
-  assert.ok(result.content[0].text.startsWith(studioWords), result.content[0].text);
+  assert.ok(result.content[0].text.startsWith(`${plain}\nThe slicer said: ${studioWords}`), result.content[0].text);
   assert.match(result.content[0].text, /Slicer failed: the slicer exited with code 156 \(Failed slicing the model\./);
-  assert.ok(result.structuredContent.message.startsWith(studioWords));
+  assert.ok(result.structuredContent.message.startsWith(`${plain}\nThe slicer said: ${studioWords}`));
   assert.equal(result.structuredContent.slicer_report.failed, true);
-  assert.ok(result.structuredContent.slicer_report.message.startsWith(expected.error_string));
+  assert.equal(result.structuredContent.slicer_report.message, plain);
+  assert.ok(result.structuredContent.slicer_report.slicer_message.startsWith(expected.error_string));
 });
 
 // The CLI's own return code fails the slice even when the process exits 0.
@@ -2779,7 +2783,7 @@ test("slice_stl fails when Bambu Studio's result.json reports an error but the C
   const expected = studioResult("p1s-empty-layers.json");
   assert.equal(result.isError, true);
   assert.deepEqual(result.structuredContent.slicer_result, expected);
-  assert.ok(result.content[0].text.startsWith(`${expected.error_string}\n`), result.content[0].text);
+  assert.ok(result.content[0].text.startsWith(`The slicer couldn't slice this model. Its own message is kept for the log.\nThe slicer said: ${expected.error_string}\n`), result.content[0].text);
   assert.match(result.content[0].text, /exited with code 0, but its result\.json reports return_code -100\.$/);
 });
 
@@ -2788,6 +2792,16 @@ test("slice_stl without a result.json returns the path and no slicer_result", as
   const result = await sliceWithFakeBambuSlicer(t, {});
   assert.equal(result.isError, undefined, result.content?.[0]?.text);
   assert.deepEqual(result.structuredContent, { path: result.content[0].text });
+});
+
+// Studio's empty-plate refusal reaches a person as a sentence; its words stay in slicer_message for the log.
+test("a slice_stl refusal with no result.json still carries a plain slicer_report", async (t) => {
+  const result = await sliceWithFakeBambuSlicer(t, { exitCode: 206 });
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.slicer_report.failed, true);
+  assert.equal(result.structuredContent.slicer_report.message, "Nothing on this plate can be printed: no part sits fully on the bed. A part is off the plate or across its edge, or the model is bigger than the bed.");
+  assert.match(result.structuredContent.slicer_report.slicer_message, /a plate is empty or has no object fully inside it/);
+  assert.ok(result.content[0].text.startsWith(result.structuredContent.slicer_report.message), result.content[0].text);
 });
 
 // A closed binary STL of axis-aligned boxes, each its own shell.

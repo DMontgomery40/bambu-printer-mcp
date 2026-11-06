@@ -247,3 +247,18 @@ test('inspect_print_file reports the plate estimate, slice settings and plate co
     { plate_count: 1, settings: { layer_height_mm: 0.2, sparse_infill_percent: 15, wall_loops: 2 } });
   await assert.rejects(access(s.networkLog), { code: 'ENOENT' });
 });
+
+// David's kit, plate 3 (Nov 6): Bambu Studio's skip-object mask for a layer of 23 objects, "M624 /g8C/B8AAAA=",
+// was refused as two commands ("g8"), so the plate had no estimate and no picture. Only that one-token form passes.
+test('a skip-object mask whose base64 reads like a command is inspected; a real second command is still refused', async t => {
+  const s = await server(t);
+  const ok = await raw(s, header() + 'M104 S220\nM140 S60\nM624 /g8C/B8AAAA=\nG1 X20 Y20 E1\nM625\n', 'mask.gcode');
+  const result = await s.call({ file_path: ok.path, bambu_model: 'p1s' });
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  for (const line of ['M624 AQ== M104 S400', 'M624 G1 X0', 'M624 /g8C/B8AAAA= M140 S120', 'M624 M104S300', 'M624 G28', 'M624 T1g8', 'M624 g8C']) {
+    const bad = await raw(s, header() + `M104 S220\n${line}\n`, `bad-${line.length}.gcode`);
+    const refused = await s.call({ file_path: bad.path, bambu_model: 'p1s' });
+    assert.equal(refused.isError, true, line);
+    assert.match(refused.content[0].text, /multiple commands on one line/, line);
+  }
+});
