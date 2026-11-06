@@ -12,7 +12,7 @@
 
 ### Changed
 
-- A slicer's refusal reaches a person as a plain sentence. `slicer_report.message`, and the start of a failed `slice_stl`'s text, say what is wrong. Bambu Studio's and OrcaSlicer's empty-plate, off-plate, too-tall, too-large and outside-the-printable-area refusals are matched on their own strings, and so are PrusaSlicer's and CuraEngine's. The slicer's words stay in the new `slicer_report.slicer_message` for logs, and a failure without a result.json carries a `slicer_report` too. A successful slice's warnings are unchanged in `message`. Checked with unit tests and a stand-in slicer.
+- A slicer's refusal reaches a person as a plain sentence. `slicer_report.message`, and the start of a failed `slice_stl`'s text, say what is wrong. Bambu Studio's and OrcaSlicer's empty-plate, off-plate, too-tall, too-large and outside-the-printable-area refusals are matched on their own strings, and so are PrusaSlicer's and CuraEngine's. The slicer's words stay in the new `slicer_report.slicer_message` for logs, and a failure without a result.json carries a `slicer_report` too. A failure of the setup (no slicer, a crash, no output file) keeps this server's own words, which say what to fix. A successful slice's warnings are unchanged in `message`. Checked with unit tests and a stand-in slicer.
 
 ## [1.1.68] – 2026-11-06
 

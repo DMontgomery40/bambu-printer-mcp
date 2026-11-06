@@ -124,8 +124,10 @@ export class SlicerRunError extends Error {
     constructor(detail, slicerResult) {
         const slicerText = slicerResult ? slicerResultText(slicerResult) : "";
         const words = slicerText ? `${slicerText}\n${detail}` : detail;
-        const plain = plainSlicerError(words) ?? UNKNOWN_SLICER_ERROR;
-        super(`${plain}\nThe slicer said: ${words}`);
+        // A known refusal, or one in the slicer's own words, is said plainly. A fault of the setup (no slicer, a crash,
+        // no output) stays in this server's own words, which say what to fix.
+        const plain = plainSlicerError(words) ?? (slicerText ? UNKNOWN_SLICER_ERROR : undefined);
+        super(plain ? `${plain}\nThe slicer said: ${words}` : words);
         this.slicerResult = slicerResult;
         this.name = "SlicerRunError";
         this.slicerText = slicerText;

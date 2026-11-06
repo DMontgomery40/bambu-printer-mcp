@@ -5158,16 +5158,18 @@ class BambuPrinterMCPServer {
           ...(error instanceof PrinterRefusal ? { code: error.code } : {}),
           // The slicer's own result.json; the message starts with its error_string and warnings.
           // A slicer failure always carries slicer_report: the plain sentence a person sees, the slicer's words for the log.
-          ...(error instanceof SlicerRunError ? error.slicerResult
-            ? { slicer_result: error.slicerResult, ...reportOf(error.slicerResult) }
-            : { slicer_report: { ...refusalReport(error.words), message: error.plain } } : {}),
+          // The report always says failed (a result.json that says success can still leave no output file).
+          ...(error instanceof SlicerRunError ? {
+            ...(error.slicerResult ? { slicer_result: error.slicerResult } : {}),
+            slicer_report: { ...refusalReport(error.words), message: error.plain ?? error.words.slice(0, 2000) },
+          } : {}),
         };
 
         // MCP clients validate structuredContent against a declared outputSchema even on
         // errors (SDK 1.32 Client.callTool), so those tools return the error as text only.
         return {
-          // A slicer failure leads with its plain sentence, then the slicer's own words.
-          content: [{ type: "text", text: error instanceof SlicerRunError ? message : `Error: ${message}` }],
+          // A slicer's refusal leads with its plain sentence, then the slicer's own words.
+          content: [{ type: "text", text: error instanceof SlicerRunError && error.plain ? message : `Error: ${message}` }],
           ...(OUTPUT_SCHEMA_TOOLS.has(name) ? {} : { structuredContent: structured }),
           isError: true,
         };

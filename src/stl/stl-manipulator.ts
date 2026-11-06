@@ -229,15 +229,17 @@ export type SliceOutput = { path: string; slicer_result?: SlicerResult };
  */
 export class SlicerRunError extends Error {
   readonly slicerText: string;
-  /** What a person is told: a plain sentence, never the slicer's own words (src/slicer/slicer-messages.ts). */
-  readonly plain: string;
+  /** What a person is told for a slicer's refusal: a plain sentence, never its own words (src/slicer/slicer-messages.ts). */
+  readonly plain?: string;
   /** The slicer's words and this server's detail, after the plain sentence: what slicer_report.slicer_message keeps. */
   readonly words: string;
   constructor(detail: string, readonly slicerResult?: SlicerResult) {
     const slicerText = slicerResult ? slicerResultText(slicerResult) : "";
     const words = slicerText ? `${slicerText}\n${detail}` : detail;
-    const plain = plainSlicerError(words) ?? UNKNOWN_SLICER_ERROR;
-    super(`${plain}\nThe slicer said: ${words}`);
+    // A known refusal, or one in the slicer's own words, is said plainly. A fault of the setup (no slicer, a crash,
+    // no output) stays in this server's own words, which say what to fix.
+    const plain = plainSlicerError(words) ?? (slicerText ? UNKNOWN_SLICER_ERROR : undefined);
+    super(plain ? `${plain}\nThe slicer said: ${words}` : words);
     this.name = "SlicerRunError";
     this.slicerText = slicerText;
     this.plain = plain;

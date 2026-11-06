@@ -27,6 +27,7 @@ export interface ModelPlates {
   licence?: string;
 }
 
+/** For the settings and plate files; the model file can be large and is only scanned. */
 const MAX_METADATA_BYTES = 8 * 1024 * 1024;
 const MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024;
 const MAX_PLATES = 1000;
@@ -44,10 +45,14 @@ export async function listModelPlates(filePath: string, options: { thumbnails?: 
     if (bytes.length > MAX_METADATA_BYTES) throw new Error(`${name} is too large to read.`);
     return bytes.toString("utf8");
   };
-  const model = await text("3D/3dmodel.model");
-  if (!/<(?:\w+:)?model\b/.test(model)) throw new Error("That file is not a 3MF model.");
+  // The model file can hold the whole mesh (a plain 3MF): scanned as bytes, never made one string.
+  const modelBytes = await zip.file("3D/3dmodel.model")?.async("nodebuffer");
+  const head = modelBytes?.subarray(0, 1024 * 1024).toString("utf8") ?? "";
+  if (!/<(?:\w+:)?model\b/.test(head)) throw new Error("That file is not a 3MF model.");
+  // An element named `tag`, plain or with a namespace prefix (<item …>, <p:item …>).
+  const has = (tag: string) => !!modelBytes && [" ", ">", "/", "\n", "\r", "\t"].some(end => modelBytes.includes(`<${tag}${end}`) || modelBytes.includes(`:${tag}${end}`));
   const result: ModelPlates = { plate_count: 0, plates: [] };
-  const metadata = new Map([...model.matchAll(/<metadata\s+name="([^"]+)"[^>]*>([^<]*)<\/metadata>/g)].map(match => [match[1], words(match[2])]));
+  const metadata = new Map([...head.matchAll(/<metadata\s+name="([^"]+)"[^>]*>([^<]*)<\/metadata>/g)].map(match => [match[1], words(match[2])]));
   if (metadata.get("Title")) result.title = metadata.get("Title");
   if (metadata.get("Designer")) result.designer = metadata.get("Designer");
   if (metadata.get("License")) result.licence = metadata.get("License");
@@ -58,14 +63,13 @@ export async function listModelPlates(filePath: string, options: { thumbnails?: 
     return [match[1], words(name?.[1] ?? "")];
   }));
   const plates = new Map<number, ModelPlate>();
-  const numbered = (number: number) => {
-    if (!Number.isSafeInteger(number) || number < 1 || number > MAX_PLATES) throw new Error("The model has an invalid plate number.");
-    return number;
-  };
+  // A plate number out of range is skipped, as a slicer would not show it.
+  const valid = (number: number) => Number.isSafeInteger(number) && number >= 1 && number <= MAX_PLATES;
   for (const match of settings.matchAll(/<plate\b[^>]*>([\s\S]*?)<\/plate>/g)) {
     const id = /<metadata\s+key="plater_id"\s+value="(\d+)"/.exec(match[1]);
     if (!id) continue;
-    const number = numbered(Number(id[1]));
+    const number = Number(id[1]);
+    if (!valid(number)) continue;
     const name = /<metadata\s+key="plater_name"\s+value="([^"]*)"/.exec(match[1]);
     plates.set(number, { index: number - 1, name: words(name?.[1] ?? "") || `Plate ${number}`, sliced: false,
       objects: [...match[1].matchAll(/<metadata\s+key="object_id"\s+value="(\d+)"/g)].flatMap(item => objects.get(item[1]) ? [objects.get(item[1])!] : []) });
@@ -73,7 +77,8 @@ export async function listModelPlates(filePath: string, options: { thumbnails?: 
   for (const name of Object.keys(zip.files)) {
     const match = /^Metadata\/plate_([1-9]\d*)\.(json|gcode)$/.exec(name);
     if (!match) continue;
-    const number = numbered(Number(match[1]));
+    const number = Number(match[1]);
+    if (!valid(number)) continue;
     const plate = plates.get(number) ?? { index: number - 1, name: `Plate ${number}`, objects: [], sliced: false };
     if (match[2] === "gcode") plate.sliced = true;
     else {
@@ -88,7 +93,7 @@ export async function listModelPlates(filePath: string, options: { thumbnails?: 
   result.plates = [...plates.values()].sort((a, b) => a.index - b.index);
   // A standard single-build 3MF has no Bambu plate metadata: it is one plate.
   if (!result.plates.length) result.plates.push({ index: 0, name: "Plate 1", objects: [], sliced: false });
-  const geometry = /<(?:\w+:)?item\b/.test(model) && /<(?:\w+:)?(?:mesh|component)\b/.test(model);
+  const geometry = has("item") && (has("mesh") || has("component"));
   if (!geometry) {
     // A sliced-only file (previews and G-code, no model): only its sliced plates can print.
     result.plates = result.plates.filter(plate => plate.sliced);

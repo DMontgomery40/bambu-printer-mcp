@@ -511,7 +511,9 @@ export async function inspectPrintFile(filePath, options) {
             }
             // Bambu Studio's skip-object start carries one base64 mask of the layer's objects (M624 /g8C/B8AAAA=), whose
             // letters and digits can read as a command; only that exact one-token form is exempt.
-            const objectMask = code === 'M624' && /^\s*[A-Za-z0-9+/]+={0,2}\s*$/.test(argumentsText);
+            const mask = argumentsText.trim();
+            // A whole base64 value (length a multiple of 4) that doesn't itself start like a command (M104S300, G28, T1).
+            const objectMask = code === 'M624' && /^[A-Za-z0-9+/]+={0,2}$/.test(mask) && mask.length % 4 === 0 && !/^[GMT]\d/i.test(mask);
             if (!objectMask && !['M117', 'M118', 'M1002', 'M1006', 'M900', 'M970', 'M983.1', 'G383'].includes(code) && /[GM]\s*\d/i.test(argumentsText))
                 fail('multiple commands on one line are unsupported');
             // Coordinated extrusion closes the startup-only allowance even when the
