@@ -20,13 +20,18 @@ import net from "node:net";
 import path from "node:path";
 import { promisify } from "node:util";
 import { stlMetadata } from "./blender-mcp-bridge.js";
+import { FUSION_ADDIN_COMMIT, FUSION_ADDIN_REPOSITORY } from "./design-app-setup.js";
 const execFileAsync = promisify(execFile);
-/** The faust-machines commit the setup installs; move it only after the PRD §8.9 acceptance check passes. */
-export const FUSION_MCP_PIN = "19b9f1e95192";
+/**
+ * The server and add-in commit fusion_mcp_setup installs (FUSION_ADDIN_COMMIT): David Montgomery's fork of
+ * faust-machines/fusion360-mcp-server with document binding, which fusion_mcp_new_design's bind_document needs, while
+ * that change is reviewed upstream. Move it only after the Counterpart PRD §8.9 acceptance check passes.
+ */
+export const FUSION_MCP_PIN = FUSION_ADDIN_COMMIT.slice(0, 12);
 /** PRD §8.9: Blender's MCP add-on holds the add-in's own default, 9876, so Counterpart's Fusion uses 9877. */
 export const FUSION_ADDIN_DEFAULT_PORT = 9877;
 export const FUSION_MCP_DEFAULT_ARGS = Object.freeze([
-    "--from", `git+https://github.com/faust-machines/fusion360-mcp-server@${FUSION_MCP_PIN}`,
+    "--from", `git+https://github.com/${FUSION_ADDIN_REPOSITORY}@${FUSION_MCP_PIN}`,
     "fusion360-mcp-server", "--mode", "socket",
 ]);
 const DEFAULT_TIMEOUT_MS = 180000;
@@ -149,7 +154,7 @@ function configuration() {
     return { command, args };
 }
 /** Where the add-in listens: faust reads FUSION_MCP_HOST and FUSION_MCP_PORT too. */
-function addinAddress() {
+export function addinAddress() {
     const host = process.env.FUSION_MCP_HOST?.trim() || "localhost";
     const port = Number(process.env.FUSION_MCP_PORT?.trim() || FUSION_ADDIN_DEFAULT_PORT);
     return { host, port: Number.isInteger(port) && port > 0 && port < 65536 ? port : FUSION_ADDIN_DEFAULT_PORT };

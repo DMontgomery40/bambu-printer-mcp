@@ -1,4 +1,4 @@
-// A stdio MCP peer shaped like faust-machines/fusion360-mcp-server at 19b9f1e95192: the same
+// A stdio MCP peer shaped like faust-machines/fusion360-mcp-server at 19b9f1e95192 (the fork the bridge pins adds document binding): the same
 // tool schemas and its "**tool** OK / key: value" text results. Never imports Fusion or runs code.
 import fs from "node:fs";
 import readline from "node:readline";

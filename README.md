@@ -1254,6 +1254,18 @@ Blender. Set the command to your full `uvx` path and the argument array to
 `["blender-mcp"]`. The Claude Desktop extension also offers these two optional
 settings. Printer tools work without Blender configured.
 
+`blender_mcp_setup` checks the MCP for Blender add-on that the configured
+package needs, when the bridge is that package run with `uvx`: which add-on file
+Blender loads (for the running Blender's version), its protocol and the one the
+package expects, whether Blender is listening, and the running add-on's own
+`get_addon_status`. It changes nothing. With `{"update": true}` it stages the
+add-on with the package's own installer (`mcp-for-blender install-addon`) at the
+inspected version, checks that the installed and staged files are both regular
+MCP for Blender add-ons and that the staged one carries the expected protocol,
+keeps the old file as a backup next to it, and renames the new one into place.
+It never starts, stops or edits Blender: re-enable the add-on or restart Blender
+to load it. Another bridge reports `supported: false` and keeps its own installer.
+
 1. Call `blender_mcp_status` with `{"connect": true}` to initialize the server
    and discover its tools and input schemas. A connected MCP server does not
    by itself prove that the Blender addon is running.
@@ -1318,14 +1330,36 @@ Design a part from scratch in Autodesk Fusion through
 free personal-use licence, are yours: this server never installs or requires
 Fusion, and printer tools work without it.
 
-Install exactly commit `19b9f1e95192`. Copy the repository's `addon/` folder at
-that commit to `~/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns/Fusion360MCP`,
-set the add-in to **Run on Startup**, and add these settings next to the Blender
-ones in your env file:
+The bridge and its setup pin [DMontgomery40/fusion360-mcp-server](https://github.com/DMontgomery40/fusion360-mcp-server) at commit
+`86a3016a5a5b`: faust-machines' server and add-in with document binding, which
+`fusion_mcp_new_design`'s `bind_document` needs, while that change is reviewed
+upstream.
+
+On macOS, `fusion_mcp_setup` sets it up. Without arguments it reports, changing
+nothing: whether Fusion is installed, whether the add-in in
+`~/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns/Fusion360MCP`
+is at the pin and runs on startup, whether the login item that gives Fusion
+`FUSION_MCP_PORT` is installed, and whether this server has its Fusion settings.
+With `{"install": true}` it installs what is missing:
+
+- the add-in from the pinned commit's archive, after checking every file against
+  its SHA-256 (a symlink, an extra file or a changed byte installs nothing), set
+  to **Run on Startup**. An add-in already at the pin is left in place;
+- a login LaunchAgent, `com.scantomake.mac.fusion-port`, that runs
+  `launchctl setenv FUSION_MCP_PORT 9877` at login, because Fusion opened from the
+  Dock never reads this server's env file;
+- the settings this server is missing, added to its own `.env` after a copy of
+  the file. A configured `FUSION_MCP_COMMAND` is kept with its arguments, so a
+  reviewed local runtime isn't replaced. The running server uses them at once.
+
+It never starts or quits Fusion; `fusion_mcp_status` checks the connection. On
+other systems, or by hand: copy the repository's `addon/` folder at that commit
+to the AddIns folder above, set it to **Run on Startup**, and add these settings
+next to the Blender ones in your env file:
 
 ```bash
 FUSION_MCP_COMMAND=uvx
-FUSION_MCP_ARGS='["--from","git+https://github.com/faust-machines/fusion360-mcp-server@19b9f1e95192","fusion360-mcp-server","--mode","socket"]'
+FUSION_MCP_ARGS='["--from","git+https://github.com/DMontgomery40/fusion360-mcp-server@86a3016a5a5b","fusion360-mcp-server","--mode","socket"]'
 FUSION_MCP_TIMEOUT_MS=180000
 FUSION_MCP_HOST=localhost
 # The default here; Blender's MCP add-on holds the add-in's own default, 9876.
