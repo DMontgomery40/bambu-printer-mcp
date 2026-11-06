@@ -2744,6 +2744,114 @@ test("slice_stl reuses an identical earlier slice, and slices again when an inpu
 
 const studioResult = (name) => JSON.parse(fs.readFileSync(new URL(`./fixtures/studio-result/${name}`, import.meta.url), "utf8"));
 
+// Nov 6: opening Counterpart's Print sheet started four slices of one model at once, each named model.3mf. They all
+// wrote TEMP_DIR/model_sliced.3mf and TEMP_DIR/result.json, and each run deleted the result.json the others were about
+// to read. Overlapping slices of same-named inputs now each get their own folder, sliced file and result.json.
+async function startOverlapSlicer(t, { holdMs = 0, env = {} } = {}) {
+  const fakeSlicer = await createFakeBambuSlicer();
+  t.after(() => fs.rmSync(fakeSlicer.tempDir, { recursive: true, force: true }));
+  const pids = path.join(fakeSlicer.tempDir, "pids");
+  fs.mkdirSync(pids);
+  const fixtures = fileURLToPath(new URL("./fixtures/studio-result/", import.meta.url));
+  // Writes result.json first, waits (so overlapping runs interleave), then the sliced file: a model in a folder named
+  // "refused" fails the way Studio's empty-layer refusal does; any other succeeds with a cantilever warning.
+  fs.writeFileSync(fakeSlicer.fakeSlicerPath, `#!/usr/bin/env node
+import fs from "node:fs";
+import path from "node:path";
+const args = process.argv.slice(2);
+fs.writeFileSync(path.join(${JSON.stringify(pids)}, String(process.pid)), args.join("\\n"));
+const outputDir = args[args.indexOf("--outputdir") + 1];
+const input = args.at(-1);
+const refused = path.basename(path.dirname(input)) === "refused";
+fs.mkdirSync(outputDir, { recursive: true });
+fs.copyFileSync(path.join(${JSON.stringify(fixtures)}, refused ? "p1s-empty-layers.json" : "p1s-floating-cantilever.json"), path.join(outputDir, "result.json"));
+await new Promise(resolve => setTimeout(resolve, ${holdMs} || 400));
+if (refused) process.exit(156);
+fs.writeFileSync(path.join(outputDir, args[args.indexOf("--export-3mf") + 1]), "sliced " + input);
+`);
+  const transport = new StdioClientTransport({
+    command: process.execPath, args: [SERVER_ENTRY], cwd: fakeSlicer.tempDir,
+    env: { ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "p1s", BAMBU_SERIAL: "", BAMBU_TOKEN: "", BAMBU_SLICER_PROFILE: "",
+      BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot, TEMP_DIR: path.join(fakeSlicer.tempDir, "out"), SLICER_TYPE: "bambustudio",
+      MCP_ALLOW_EXECUTABLE_ARG: "1", SLICE_CACHE: "on", SLICE_CACHE_DIR: path.join(fakeSlicer.tempDir, "cache"), ...env },
+    stderr: "pipe",
+  });
+  const client = createClient();
+  t.after(async () => { await closeTransport(transport); });
+  await client.connect(transport);
+  const model = (folder, extra = "") => {
+    const file = path.join(fakeSlicer.tempDir, folder, "model.stl");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, fs.readFileSync(SAMPLE_STL, "utf8") + extra);
+    return file;
+  };
+  const slice = (stl_path, options) => client.callTool({ name: "slice_stl",
+    arguments: { stl_path, bambu_model: "p1s", slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false } }, undefined, options);
+  return { fakeSlicer, pids, model, slice, cache: path.join(fakeSlicer.tempDir, "cache") };
+}
+
+test("overlapping slices of same-named models each keep their own sliced file and result.json", async (t) => {
+  const { model, slice, fakeSlicer } = await startOverlapSlicer(t);
+  const inputs = [model("first"), model("refused", " "), model("third", "  "), model("fourth", "   ")];
+  const results = await Promise.all(inputs.map(input => slice(input)));
+  const [first, refused, third, fourth] = results;
+  // The refusal is its own: Studio's empty-layer words, never a neighbour's success.
+  assert.equal(refused.isError, true);
+  assert.deepEqual(refused.structuredContent.slicer_result, studioResult("p1s-empty-layers.json"));
+  assert.equal(refused.structuredContent.slicer_report.failed, true);
+  const paths = new Set();
+  for (const [index, result] of [[0, first], [2, third], [3, fourth]]) {
+    assert.equal(result.isError, undefined, result.content?.[0]?.text);
+    assert.deepEqual(result.structuredContent.slicer_result, studioResult("p1s-floating-cantilever.json"));
+    assert.equal(result.structuredContent.slicer_report.failed, false);
+    // Each returned file is the one sliced from its own model.
+    assert.equal(fs.readFileSync(result.structuredContent.path, "utf8"), `sliced ${inputs[index]}`);
+    assert.match(result.structuredContent.path, /model_sliced\.3mf$/);
+    paths.add(result.structuredContent.path);
+  }
+  assert.equal(paths.size, 3, "every slice has its own output path");
+  // The refused slice's folder is gone; the three that worked keep theirs.
+  assert.equal(fs.readdirSync(path.join(fakeSlicer.tempDir, "out", "slices")).length, 3);
+  // Profiles generated for these slices are whole JSON files, never half-written by a neighbour.
+  for (const name of fs.readdirSync(path.join(fakeSlicer.tempDir, "out")).filter(name => name.endsWith(".json")))
+    JSON.parse(fs.readFileSync(path.join(fakeSlicer.tempDir, "out", name), "utf8"));
+  assert.deepEqual(fs.readdirSync(path.join(fakeSlicer.tempDir, "out")).filter(name => name.endsWith(".partial")), []);
+});
+
+test("an identical slice still reuses the kept one from its own folder", async (t) => {
+  const { model, slice, pids } = await startOverlapSlicer(t);
+  const input = model("again");
+  const first = await slice(input);
+  assert.equal(first.isError, undefined, first.content?.[0]?.text);
+  const again = await slice(input);
+  assert.equal(again.isError, undefined, again.content?.[0]?.text);
+  assert.equal(fs.readdirSync(pids).length, 1, "the slicer ran once; the second slice was restored from the cache");
+  assert.notEqual(again.structuredContent.path, first.structuredContent.path);
+  assert.equal(fs.readFileSync(again.structuredContent.path, "utf8"), `sliced ${input}`);
+});
+
+// A client that no longer wants a slice (Counterpart's sheet moved on to newer settings) cancels the call: the
+// slicer is stopped, and nothing half-finished is kept for reuse.
+test("a cancelled slice_stl call stops the slicer and keeps nothing", async (t) => {
+  const { model, slice, pids, cache, fakeSlicer } = await startOverlapSlicer(t, { holdMs: 30000 });
+  const controller = new AbortController();
+  const call = slice(model("cancelled"), { signal: controller.signal });
+  call.catch(() => undefined);
+  const started = Date.now();
+  while (!fs.readdirSync(pids).length && Date.now() - started < 10000) await new Promise(resolve => setTimeout(resolve, 50));
+  const [pid] = fs.readdirSync(pids).map(Number);
+  assert.ok(pid, "the slicer started");
+  controller.abort();
+  await assert.rejects(call);
+  const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const stopping = Date.now();
+  while (alive() && Date.now() - stopping < 5000) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(alive(), false, "the slicer process was stopped");
+  const slices = path.join(fakeSlicer.tempDir, "out", "slices");
+  assert.deepEqual(fs.existsSync(slices) ? fs.readdirSync(slices) : [], [], "the cancelled slice's folder is removed");
+  assert.deepEqual(fs.existsSync(cache) ? fs.readdirSync(cache).filter(name => /^[0-9a-f]{64}$/.test(name)) : [], []);
+});
+
 // Bambu Studio 02.08.02.61 sliced the fin-down stove gap filler for a P1S and
 // warned about a floating cantilever; slice_stl used to drop that warning.
 test("slice_stl returns Bambu Studio's result.json, warnings included, in structuredContent", async (t) => {
@@ -3094,7 +3202,9 @@ test("relative TEMP_DIR and profile, filament and model paths reach the slicer a
     return slicerArgs[slicerArgs.indexOf(flag) + 1];
   };
   const tempRoot = path.join(cwd, "temp");
-  assert.equal(valueOf("--outputdir"), tempRoot);
+  // Each slice writes into a folder of its own under TEMP_DIR (TEMP_DIR/slices/<operation>).
+  const sliceDir = valueOf("--outputdir");
+  assert.equal(path.dirname(sliceDir), path.join(tempRoot, "slices"));
   assert.equal(slicerArgs.at(-1), path.join(cwd, "box.stl"));
   const settings = valueOf("--load-settings").split(";");
   const filaments = valueOf("--load-filaments").split(";");
@@ -3104,7 +3214,7 @@ test("relative TEMP_DIR and profile, filament and model paths reach the slicer a
     assert.ok(fs.existsSync(entry), `${entry} must exist`);
   }
   assert.equal(JSON.parse(fs.readFileSync(settings[1], "utf8")).layer_height, "0.16");
-  const outputPath = path.join(tempRoot, "box_sliced.3mf");
+  const outputPath = path.join(sliceDir, "box_sliced.3mf");
   assert.ok(fs.existsSync(outputPath), "the sliced 3MF must be written under the resolved TEMP_DIR");
   assert.ok(result.content[0].text.includes(outputPath), result.content[0].text);
 });

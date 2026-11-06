@@ -28,6 +28,8 @@ export type SlicerType = typeof SLICER_TYPES[number];
 export declare function normalizeSlicerType(rawSlicerType: string): SlicerType;
 export declare function isBambuCompatibleSlicer(slicerType: SlicerType): boolean;
 export interface BambuSliceOptions {
+    /** The request's own cancellation: aborting it stops the slicer (the MCP client cancelled the call). */
+    signal?: AbortSignal;
     uptodate?: boolean;
     repetitions?: number;
     orient?: boolean;
@@ -82,6 +84,11 @@ export declare class STLManipulator extends EventEmitter {
      * Generate a unique operation ID
      */
     private generateOperationId;
+    /**
+     * A new folder for one slice's outputs, under TEMP_DIR/slices. A sliced file's path stays valid for a day after
+     * its slice (callers print from it); older slice folders are removed as new slices start.
+     */
+    private newSliceFolder;
     private getAvailableProfileRoots;
     private findProfileFile;
     private buildFilamentIdIndex;
