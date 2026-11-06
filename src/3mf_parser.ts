@@ -2,7 +2,9 @@ import JSZip from 'jszip';
 import { parseStringPromise } from 'xml2js';
 import { ThreeMFData, BambuSlicerConfig, ThreeMFMetadata, ThreeMFObject, ThreeMFBuildItem, AMSFilamentMapping, CollarCharmAnalysis, CollarCharmRole, ThreeMFAmsRequirements, ThreeMFPlateObjects } from './types.js';
 import * as fs from 'fs/promises';
-import { createHash } from 'crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHash, randomUUID } from 'node:crypto';
+import * as path from 'node:path';
 
 // Parses Bambu Studio's JSON config data
 function parseBambuJSONConfig(jsonData: any): Partial<BambuSlicerConfig> {
@@ -71,14 +73,23 @@ function parseBambuJSONConfig(jsonData: any): Partial<BambuSlicerConfig> {
     return config;
 }
 
+/** The files a 3MF's slicer settings are read from, first found wins. */
+const SLICER_SETTINGS_FILES = [
+    'Metadata/project_settings.config',
+    'Metadata/Slic3r_PE.config',
+    'Metadata/model_settings.config',
+    'Metadata/slice_info.config'
+];
+
+/** Whether a 3MF carries a slicer settings file at all (readable or not). */
+export async function hasSlicerSettingsFile(filePath: string): Promise<boolean> {
+    const zip = await JSZip.loadAsync(await fs.readFile(filePath));
+    return SLICER_SETTINGS_FILES.some(name => zip.file(name));
+}
+
 async function parseBambuConfig(zip: JSZip): Promise<Partial<BambuSlicerConfig>> {
     // Look for common Bambu config file names
-    const potentialFiles = [
-        'Metadata/project_settings.config',
-        'Metadata/Slic3r_PE.config',
-        'Metadata/model_settings.config',
-        'Metadata/slice_info.config'
-    ];
+    const potentialFiles = SLICER_SETTINGS_FILES;
     let configFile = null;
     let configContent = '';
 
@@ -241,27 +252,50 @@ export async function hasBambuProjectSettings(filePath: string): Promise<boolean
     }
 }
 
+const extractionScope = new AsyncLocalStorage<string[]>();
+
+/** Runs one operation; the directory of every settings file extracted during it is removed when it settles. */
+export async function withExtractedSettingsCleanup<T>(operation: () => Promise<T>): Promise<T> {
+    const dirs: string[] = [];
+    try {
+        return await extractionScope.run(dirs, operation);
+    } finally {
+        await Promise.all(dirs.map(dir => fs.rm(dir, { recursive: true, force: true }).catch(() => undefined)));
+    }
+}
+
+/**
+ * Writes a 3MF's slicer settings to a file of their own and returns its path. Each extraction gets its own directory,
+ * removed when the surrounding withExtractedSettingsCleanup operation settles. `keep` is for a path handed back to the
+ * caller: it is named by content, so repeat calls reuse one file, and written whole before it is renamed into place.
+ */
 export async function extractBambuTemplateSettings(
     filePath: string,
-    outputDir: string
+    outputDir: string,
+    options: { keep?: boolean } = {}
 ): Promise<string> {
     const data = await fs.readFile(filePath);
     const zip = await JSZip.loadAsync(data);
-    const potentialFiles = [
-        'Metadata/project_settings.config',
-        'Metadata/Slic3r_PE.config',
-        'Metadata/model_settings.config',
-        'Metadata/slice_info.config'
-    ];
+    const potentialFiles = SLICER_SETTINGS_FILES;
 
     for (const name of potentialFiles) {
         const file = zip.file(name);
         if (!file) continue;
 
         const content = await file.async('string');
-        // Named by content, so two projects sliced at once never share (or overwrite) one settings file.
-        const digest = createHash('sha256').update(content).digest('hex').slice(0, 16);
-        const outputPath = `${outputDir}/${digest}_${name.replace(/\//g, '_')}`;
+        if (options.keep) {
+            const digest = createHash('sha256').update(content).digest('hex').slice(0, 16);
+            const outputPath = path.join(outputDir, `${digest}_${name.replace(/\//g, '_')}`);
+            const partial = `${outputPath}.${randomUUID()}.partial`;
+            await fs.writeFile(partial, content, 'utf8');
+            await fs.rename(partial, outputPath);
+            return outputPath;
+        }
+        // Its own directory for every extraction, so two slices at once (of different projects or the same one)
+        // never share, overwrite or half-read one settings file.
+        const dir = await fs.mkdtemp(path.join(outputDir, 'slicer-settings-'));
+        extractionScope.getStore()?.push(dir);
+        const outputPath = path.join(dir, name.replace(/\//g, '_'));
         await fs.writeFile(outputPath, content, 'utf8');
         return outputPath;
     }

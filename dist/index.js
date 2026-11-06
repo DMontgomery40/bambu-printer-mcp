@@ -29,7 +29,7 @@ import { importFileViaBambuConnect } from "./bambu-connect.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
 import { FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFAULT_ARGS, FUSION_NEW_DESIGN_OUTPUT_SCHEMA, FUSION_STATUS_OUTPUT_SCHEMA, FusionMcpBridge } from "./fusion-mcp-bridge.js";
 import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue, studioAmsMappingInfo, trayColour } from "./ams-mapping.js";
-import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, hasBambuProjectSettings, parse3MF } from './3mf_parser.js';
+import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, hasBambuProjectSettings, hasSlicerSettingsFile, parse3MF, withExtractedSettingsCleanup } from './3mf_parser.js';
 import { BambuImplementation, assertDirectPrintSupported, checkedFile, defaultResumeStateDir } from "./printers/bambu.js";
 import { resolveStudioPrintOptions, usedNozzleCount } from "./studio-print-options.js";
 import { inspectPrintFile } from "./safety/print-file.js";
@@ -1708,12 +1708,18 @@ class BambuPrinterMCPServer {
         fs.mkdirSync(tempDir, { recursive: true });
         if (extension === ".3mf") {
             const parsed = await parse3MF(sourcePath);
-            const extractedSettingsPath = await extractBambuTemplateSettings(sourcePath, tempDir);
             const config = (parsed.slicerConfig || {});
+            // A 3MF with no settings file says so (raw_key_count 0) rather than failing, so a client can tell a file with
+            // none to keep from one whose settings couldn't be read, which stays an error.
+            const hasSettingsFile = await hasSlicerSettingsFile(sourcePath);
+            if (hasSettingsFile && !Object.keys(config).length)
+                throw new Error(`The slicer settings in ${sourcePath} couldn't be read.`);
+            // Returned to the caller, so it stays.
+            const extractedSettingsPath = hasSettingsFile ? await extractBambuTemplateSettings(sourcePath, tempDir, { keep: true }) : undefined;
             return {
                 source_path: sourcePath,
                 source_type: "3mf",
-                extracted_settings_path: extractedSettingsPath,
+                ...(extractedSettingsPath ? { extracted_settings_path: extractedSettingsPath } : {}),
                 object_count: parsed.objects.length,
                 build_item_count: parsed.build.items.length,
                 metadata_keys: Object.keys(parsed.metadata),
@@ -2134,7 +2140,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "get_slice_settings",
-                        description: "Inspect slicer settings from a saved 3MF template or a JSON/config slicer profile without slicing anything. For a 3MF given as source_path, own_process is true when slice_stl, given this call's other arguments as it would take them (slicer_profile, template_name, template_3mf_path, layer_height, wall_loops, sparse_infill_density, quality, strength), prints the process the file carries (a designer's Bambu Studio or Orca project) unchanged.",
+                        description: "Inspect slicer settings from a saved 3MF template or a JSON/config slicer profile without slicing anything. For a 3MF given as source_path, own_process is true when slice_stl, given this call's other arguments as it would take them (slicer_profile, template_name, template_3mf_path, layer_height, wall_loops, sparse_infill_density, quality, strength), prints the process the file carries (a designer's Bambu Studio or Orca project) unchanged. A 3MF with no slicer settings reports raw_key_count 0; a file that can't be read is an error.",
                         inputSchema: {
                             type: "object",
                             properties: {
@@ -3141,7 +3147,8 @@ class BambuPrinterMCPServer {
                 ].map(withAnnotations).map(withRemote)
             };
         });
-        this.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+        // A designer's settings extracted for this call are removed when it settles.
+        this.server.setRequestHandler(CallToolRequestSchema, (request, extra) => withExtractedSettingsCleanup(async () => {
             const { name, arguments: args } = request.params;
             const sendNativeCommand = (options, execution = {}) => sendCommandWithBambuNative(options, { signal: extra.signal, ...execution });
             const progressToken = extra._meta?.progressToken;
@@ -4349,7 +4356,7 @@ class BambuPrinterMCPServer {
                     isError: true,
                 };
             }
-        });
+        }));
     }
     async startStdio() {
         const transport = new StdioServerTransport();
