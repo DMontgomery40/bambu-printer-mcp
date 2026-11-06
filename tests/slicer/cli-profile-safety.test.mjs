@@ -34,7 +34,7 @@ async function fixture(t, slicerType = 'bambustudio') {
   const executable = path.join(root, 'BambuStudio.app', 'Contents', 'MacOS', 'BambuStudio');
   const capture = path.join(root, 'args.json');
   await fs.mkdir(path.dirname(executable), { recursive: true });
-  await fs.writeFile(executable, `#!${process.execPath}\nconst fs = require('fs'); const path = require('path'); const args = process.argv.slice(2); fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify(args)); fs.copyFileSync(args[args.length - 1], ${JSON.stringify(capture)} + '.input'); fs.writeFileSync(path.join(args[args.indexOf('--outputdir') + 1], args[args.indexOf('--export-3mf') + 1]), 'fixture output');\n`, { mode: 0o755 });
+  await fs.writeFile(executable, `#!${process.execPath}\nconst fs = require('fs'); const path = require('path'); const args = process.argv.slice(2); fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify(args)); fs.copyFileSync(args[args.length - 1], ${JSON.stringify(capture)} + '.input'); const custom = args.includes('--load-custom-gcodes') ? args[args.indexOf('--load-custom-gcodes') + 1] : undefined; if (custom) fs.copyFileSync(custom, ${JSON.stringify(capture)} + '.custom.json'); const output = path.join(args[args.indexOf('--outputdir') + 1], args[args.indexOf('--export-3mf') + 1]); const canned = ${JSON.stringify(capture)} + (custom ? '.paused.3mf' : '.sliced.3mf'); if (fs.existsSync(canned)) fs.copyFileSync(canned, output); else fs.writeFileSync(output, 'fixture output');\n`, { mode: 0o755 });
   const saved = Object.fromEntries(['BAMBU_PROFILES_ROOT', 'BAMBU_SLICER_PROFILE_DIRS', 'BAMBU_CLI_FLATTEN'].map(k => [k, process.env[k]]));
   t.after(() => { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } });
   process.env.BAMBU_PROFILES_ROOT = profiles;
@@ -936,4 +936,59 @@ test('support arguments are validated and written in Bambu Studio string forms',
     { support_threshold_angle: 91 }, { support_threshold_angle: -1 }, { support_threshold_angle: 30.5 }]) {
     assert.throws(() => parseProcessOverrides(bad, 0.4), /enable_support|support_type|support_threshold_angle/, JSON.stringify(bad));
   }
+});
+
+// Files Bambu Studio 02.08.02.61 wrote itself (macOS CLI, 20 mm cube, Nov 6 2026): a project whose
+// Metadata/custom_gcode_per_layer.xml holds a colour change at 0.6 mm and a pause at 1.0 mm (layer 5),
+// and the CLI's own output after slice_stl added a pause before layer 8 (1.6 mm).
+const STUDIO = (name) => new URL(`../fixtures/studio-02.08.02.61/${name}`, import.meta.url);
+async function studioProject(f, plates = 1) {
+  const designer = await JSZip.loadAsync(await fs.readFile(STUDIO('designer-colour-change-and-pause.3mf')));
+  const zip = new JSZip();
+  for (const [name, entry] of Object.entries(designer.files)) {
+    // The fake CLI never reads the input; only the files this server reads before slicing are kept.
+    if (entry.dir || /^Metadata\/(project_settings\.config|plate_\d+\.gcode(\.md5)?)$/.test(name)) continue;
+    zip.file(name, await entry.async('nodebuffer'));
+  }
+  if (plates > 1) {
+    const settings = await designer.file('Metadata/model_settings.config').async('string');
+    const plate = /<plate>[\s\S]*?<\/plate>/.exec(settings)[0];
+    zip.file('Metadata/model_settings.config', settings.replace(plate, plate + '\n  ' + plate.replace('key="plater_id" value="1"', 'key="plater_id" value="2"')));
+  }
+  const file = path.join(f.root, `designer-${plates}.3mf`);
+  await fs.writeFile(file, await zip.generateAsync({ type: 'nodebuffer' }));
+  await fs.copyFile(STUDIO('designer-colour-change-and-pause.3mf'), f.capture + '.sliced.3mf');
+  await fs.copyFile(STUDIO('paused-output.3mf'), f.capture + '.paused.3mf');
+  return file;
+}
+const customGcodes = async (f) => JSON.parse(await fs.readFile(f.capture + '.custom.json', 'utf8'));
+
+test('a pause request keeps the colour change and pause Bambu Studio saved in the project', async t => {
+  const f = await fixture(t);
+  const input = await studioProject(f);
+  await f.slice({ pauseAtLayers: [8], slicePlate: 1 }, undefined, input);
+  const info = await customGcodes(f);
+  assert.equal(info.mode, 'SingleExtruder');
+  assert.deepEqual(info.gcodes.map(g => [g.type, Number(g.print_z.toFixed(4)), g.color]),
+    [['ColorChange', 0.6, '#FF0000'], ['PausePrint', 1, ''], ['PausePrint', 1.6, '']]);
+  assert.equal((await f.args())[(await f.args()).indexOf('--slice') + 1], '1');
+});
+
+test('without a pause request the CLI keeps the project\'s own custom G-codes, so none are passed', async t => {
+  const f = await fixture(t);
+  const input = await studioProject(f);
+  await f.slice({}, undefined, input);
+  assert.equal((await f.args()).includes('--load-custom-gcodes'), false);
+});
+
+test('pauses on a multi-plate project need one plate, or the other plates would lose their own', async t => {
+  const f = await fixture(t);
+  const input = await studioProject(f, 2);
+  for (const options of [{ pauseAtLayers: [8] }, { pauseAtLayers: [8], slicePlate: 0 }]) {
+    await assert.rejects(f.slice(options, undefined, input), /one plate at a time/);
+    await assert.rejects(fs.access(f.capture), { code: 'ENOENT' }, 'refused before any slice');
+  }
+  // Plate 2 has no entries of its own in the project; only the requested pause is passed.
+  await f.slice({ pauseAtLayers: [8], slicePlate: 2 }, undefined, input);
+  assert.deepEqual((await customGcodes(f)).gcodes.map(g => [g.type, Number(g.print_z.toFixed(4))]), [['PausePrint', 1.6]]);
 });

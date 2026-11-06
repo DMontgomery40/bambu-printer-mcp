@@ -225,7 +225,7 @@ function resolveNozzleVolumeType(value) {
     }
     return NOZZLE_VOLUME_TYPES[normalized];
 }
-const VALID_BAMBUSTUDIO_CLI_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate"];
+const VALID_BAMBUSTUDIO_CLI_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"];
 // Map model IDs to BambuStudio --load-machine preset names
 const BAMBU_MODEL_PRESETS = {
     p1s: (n) => `Bambu Lab P1S ${n} nozzle`,
@@ -653,7 +653,7 @@ function resolveBedType(argsBedType) {
 function resolveBambuStudioCliBedType(argsBedType) {
     const bedType = resolveBedType(argsBedType);
     if (!VALID_BAMBUSTUDIO_CLI_BED_TYPES.includes(bedType)) {
-        throw new Error(`BambuStudio CLI bed_type "${bedType}" is not verified. Use a pre-sliced 3MF for SuperTack, or choose one of: ${VALID_BAMBUSTUDIO_CLI_BED_TYPES.join(", ")}`);
+        throw new Error(`BambuStudio CLI bed_type "${bedType}" is not one of: ${VALID_BAMBUSTUDIO_CLI_BED_TYPES.join(", ")}`);
     }
     return bedType;
 }
@@ -1292,9 +1292,6 @@ class BambuPrinterMCPServer {
             return { threeMFPath, autoSliced: false };
         }
         assertUniformCliNozzles(args);
-        if (bedType === "supertack_plate") {
-            throw new Error('BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF for SuperTack or choose textured_plate, cool_plate, engineering_plate, or hot_plate.');
-        }
         console.error(`3MF has no gcode - auto-slicing with ${slicerType} for ${printModel}`);
         const autoSliceOptions = {
             ...(slicerType === "orca-slicer-api" ? {} : {
@@ -1771,9 +1768,6 @@ class BambuPrinterMCPServer {
             throw new Error(`Failed to inspect collar charm 3MF before slicing: ${error.message}`);
         }
         const printPreset = BAMBU_MODEL_PRESETS[printModel]?.(printNozzle);
-        if (bedType === "supertack_plate") {
-            throw new Error('BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF for SuperTack or choose textured_plate, cool_plate, engineering_plate, or hot_plate.');
-        }
         const autoSliceOptions = {
             ...(slicerType === "orca-slicer-api" ? {} : {
                 uptodate: true, ensureOnBed: true, minSave: true, skipModifiedGcodes: true,
@@ -2063,7 +2057,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "list_3mf_plates",
-                        description: "List a Bambu Studio or OrcaSlicer 3MF's plates as its designer laid them out, before slicing: plate_count, and for each plate its index (from 0; slice_stl's slice_plate is index + 1, inspect_print_file's plate_index is index), name, the objects on it and whether the file already holds its G-code (sliced). A plain 3MF without plate metadata is one plate. include_thumbnails adds each plate's own preview from the file (thumbnail_png_base64). Read-only.",
+                        description: "List a Bambu Studio or OrcaSlicer 3MF's plates as its designer laid them out, before slicing: plate_count, and for each plate its index (from 0; slice_stl's slice_plate is index + 1, inspect_print_file's plate_index is index), name, the objects on it, each object copy's identify_id (instances: the ids slice_stl's skip_objects takes) and whether the file already holds its G-code (sliced). A plain 3MF without plate metadata is one plate. include_thumbnails adds each plate's own preview from the file (thumbnail_png_base64). Read-only.",
                         inputSchema: {
                             type: "object",
                             properties: {
@@ -2075,7 +2069,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "list_3mf_plate_objects",
-                        description: "List object IDs from a sliced 3MF plate. Use these IDs with skip_objects during a running print.",
+                        description: "List the objects of a sliced 3MF plate that the printer can skip, one per copy, as Bambu Studio's skip dialog lists them: identify_id (id), name, whether it is already skipped, and labelObjectEnabled (the plate was sliced with object labels, which skipping needs). Use these ids with skip_objects during a running print.",
                         inputSchema: {
                             type: "object",
                             properties: {
@@ -2226,7 +2220,7 @@ class BambuPrinterMCPServer {
                                 bed_type: {
                                     type: "string",
                                     enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"],
-                                    description: "Bed plate type for slicing (default: textured_plate). SuperTack is accepted only for pre-sliced print jobs until the BambuStudio CLI identifier is verified."
+                                    description: "Bed plate type for slicing (default: textured_plate)."
                                 },
                                 nozzle_type: {
                                     type: "string",
@@ -2287,7 +2281,7 @@ class BambuPrinterMCPServer {
                                 bed_type: {
                                     type: "string",
                                     enum: ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"],
-                                    description: "Bed plate type for slicing (default: textured_plate). SuperTack is accepted only for pre-sliced print jobs until the BambuStudio CLI identifier is verified."
+                                    description: "Bed plate type for slicing (default: textured_plate)."
                                 },
                                 nozzle_type: {
                                     type: "string",
@@ -2306,7 +2300,7 @@ class BambuPrinterMCPServer {
                                 arrange: { type: "boolean", description: "Auto-arrange all objects on the build plate with optimal spacing; STL input is arranged by default. Set false only to keep a 3MF's existing layout: an STL that is not already on the plate then fails to slice." },
                                 ensure_on_bed: { type: "boolean", description: "Detect models floating above the bed and lower them onto the build surface. Safety net for imported models with incorrect Z origins." },
                                 clone_objects: { type: "string", description: "Clone the loaded model: total copies as a single integer, e.g. '3'. The Bambu-style CLIs count copies per input file and this tool loads one file, so a comma-separated list is rejected by the slicer." },
-                                skip_objects: { type: "string", description: "Skip specific objects during slicing by index. Comma-separated, e.g. '3,5,10'. Useful for multi-object 3MFs where you only want to print some parts." },
+                                skip_objects: { type: "string", description: "Skip these object copies when slicing, by identify_id, comma-separated (e.g. '78,92'). The ids are the instances list_3mf_plates gives for each plate; they are not positions. Useful for multi-object 3MFs where you only want to print some parts." },
                                 load_filaments: { type: "string", description: "Override filament profiles. Semicolon-separated paths to filament JSON configs, e.g. 'pla_basic.json;petg_cf.json'." },
                                 filament_profile: { type: "string", description: "Compatibility alias for load_filaments. Semicolon-separated Orca/Bambu filament profile JSON paths." },
                                 load_filament_ids: { type: "string", description: "Map filaments to objects/parts. Comma-separated IDs matching load_filaments order, e.g. '1,2,3,1' assigns filament 1 to objects 0 and 3." },
@@ -2764,7 +2758,7 @@ class BambuPrinterMCPServer {
                             properties: {
                                 object_ids: {
                                     type: "array",
-                                    description: "Object IDs to skip. Use list_3mf_plate_objects on the sliced 3MF to find IDs.",
+                                    description: "identify_id values of the object copies to skip. Use list_3mf_plate_objects on the sliced 3MF to find them.",
                                     items: { type: "number" }
                                 },
                                 host: { type: "string", description: "Hostname or IP of the printer (default: value from env)" },
@@ -4089,9 +4083,6 @@ class BambuPrinterMCPServer {
                         }
                         if (!hasGcode) {
                             assertUniformCliNozzles(args);
-                            if (printBedType === "supertack_plate") {
-                                throw new Error('BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF for SuperTack or choose textured_plate, cool_plate, engineering_plate, or hot_plate.');
-                            }
                             console.error(`3MF has no gcode — auto-slicing with ${slicerType} for ${printModel}`);
                             const autoSliceOptions = {
                                 ...(slicerType === "orca-slicer-api" ? { slicePlate: plateIndex + 1 } : {

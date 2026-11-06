@@ -158,7 +158,7 @@ FUSION_MCP_PORT=9877
 | `BAMBU_CLI_FLATTEN` | automatic | No | Legacy setting; BBL profile resolution now always runs when profiles contain inheritance or includes. A false/unset value cannot bypass required machine G-code. Standalone custom files without dependencies pass through. See [slicing guide](https://github.com/DMontgomery40/bambu-printer-mcp/blob/main/docs/SLICING.md). |
 | `BAMBU_PROFILES_ROOT` | derived from `SLICER_PATH` | No | Override path to the selected slicer's `Resources/profiles` directory containing `BBL`. BambuStudio, Orca, and FULU use this tree exclusively for bundled profiles. Useful for non-standard installs or dev environments. A relative path is resolved against the server's working directory. |
 
-SuperTack can be passed for pre-sliced print jobs, but BambuStudio CLI slicing currently fails fast for `supertack_plate` because the accepted CLI bed identifier is not verified. Use a pre-sliced 3MF for SuperTack until this is confirmed.
+`supertack_plate` slices with Bambu Studio's own `Supertack Plate` bed type, so the start G-code heats the bed to the filament's SuperTack temperature. Checked with a real Bambu Studio 02.08.02.61 slice on Nov 6 2026.
 
 ---
 

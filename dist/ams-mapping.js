@@ -70,8 +70,10 @@ export function bridgeAmsMapping2Entry(value, dualNozzle = false) {
         return dualNozzle ? { ams_id: 255, slot_id: 0 } : { ams_id: 255, slot_id: 255 };
     if (value === 254)
         return { ams_id: 254, slot_id: dualNozzle ? 0 : 254 };
+    // An AMS-HT has one slot; its absolute tray index is its own unit id (Bambu Studio 02.08.02.61
+    // DevFilaSystem.cpp:367-368), sent as that unit's ams_id with slot 0 (SelectMachine.cpp:1489-1497).
     if (value >= 128)
-        return { ams_id: 128, slot_id: value - 128 };
+        return { ams_id: value, slot_id: 0 };
     return { ams_id: Math.floor(value / 4), slot_id: value % 4 };
 }
 /** Read every project filament (not just the plate's used ones) from project_settings.config. */

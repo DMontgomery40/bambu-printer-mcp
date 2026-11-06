@@ -27,4 +27,12 @@ export declare function getCollarCharmRolePolicy(): {
     };
 };
 export declare function analyze3MFAmsRequirements(filePath: string, plateIndex?: number): Promise<ThreeMFAmsRequirements>;
+/**
+ * The objects of one sliced plate that the printer can skip, as Bambu Studio lists them in its skip dialog
+ * (02.08.02.61 slic3r/GUI/PartSkipDialog.cpp:734-741, SkipPartCanvas.cpp:690-730): one entry per instance
+ * from Metadata/slice_info.config's plate whose `index` matches (written per instance at bbs_3mf.cpp:8718-8750),
+ * with its identify_id. plate_N.json's bbox_objects are not paired by position: their `id` is an internal
+ * object id the printer doesn't know (BambuStudio.cpp:7374-7382), and copies share a name. The wipe tower
+ * is never a slice_info object.
+ */
 export declare function analyze3MFPlateObjects(filePath: string, plateIndex?: number): Promise<ThreeMFPlateObjects>;

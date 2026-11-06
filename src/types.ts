@@ -87,13 +87,19 @@ export interface ThreeMFAmsRequirements {
 }
 
 export interface ThreeMFPlateObject {
+    /** The instance's identify_id: the id the printer's skip_objects command takes. */
     id: number;
     name: string;
+    /** Already skipped in this file (slice_info's skipped="true"). */
+    skipped: boolean;
+    /** First-layer area and box from plate_N.json, only when the name is unique on the plate. */
     area: number | null;
     bbox: unknown;
 }
 
 export interface ThreeMFPlateObjects {
     plateIndex: number;
+    /** The plate was sliced with object labels, which the printer needs to skip objects. */
+    labelObjectEnabled: boolean;
     objects: ThreeMFPlateObject[];
 }
