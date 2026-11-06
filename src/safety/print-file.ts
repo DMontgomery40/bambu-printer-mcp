@@ -396,7 +396,10 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
            !['','XY','UV'].includes(position) || [...position].some(key=>!inRange(args,key,0,limit[key]))) invalid();
         continue;
       }
-      if(!['M117','M118','M1002','M1006','M900','M970','M983.1','G383'].includes(code) && /[GM]\s*\d/i.test(argumentsText)) fail('multiple commands on one line are unsupported');
+      // Bambu Studio's skip-object start carries one base64 mask of the layer's objects (M624 /g8C/B8AAAA=), whose
+      // letters and digits can read as a command; only that exact one-token form is exempt.
+      const objectMask = code==='M624' && /^\s*[A-Za-z0-9+/]+={0,2}\s*$/.test(argumentsText);
+      if(!objectMask && !['M117','M118','M1002','M1006','M900','M970','M983.1','G383'].includes(code) && /[GM]\s*\d/i.test(argumentsText)) fail('multiple commands on one line are unsupported');
       // Coordinated extrusion closes the startup-only allowance even when the
       // source omits layer comments. Retraction also closes it conservatively.
       if(['G0','G1','G2','G3'].includes(code) && /E/i.test(argumentsText) && /[XY]/i.test(argumentsText)) closeStartupWindow();

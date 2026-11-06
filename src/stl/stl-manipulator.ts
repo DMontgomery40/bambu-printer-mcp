@@ -12,6 +12,7 @@ import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { keepSlice, restoreSlice, sliceCacheKey } from '../slicer/slice-cache.js';
 import { flattenForCli, detectProfilesRoot, resolveBblMachineProfile } from '../slicer/profile-flatten.js';
+import { plainSlicerError, UNKNOWN_SLICER_ERROR } from '../slicer/slicer-messages.js';
 import { applyProcessOverrides, type ProcessOverrides } from '../slicer/process-overrides.js';
 import { profileJsonFiles } from '../slicer/profile-files.js';
 import { materializeOrcaProfilesRoot, stageOrcaCliProfiles } from '../slicer/orca-profile-cache.js';
@@ -228,11 +229,19 @@ export type SliceOutput = { path: string; slicer_result?: SlicerResult };
  */
 export class SlicerRunError extends Error {
   readonly slicerText: string;
+  /** What a person is told: a plain sentence, never the slicer's own words (src/slicer/slicer-messages.ts). */
+  readonly plain: string;
+  /** The slicer's words and this server's detail, after the plain sentence: what slicer_report.slicer_message keeps. */
+  readonly words: string;
   constructor(detail: string, readonly slicerResult?: SlicerResult) {
     const slicerText = slicerResult ? slicerResultText(slicerResult) : "";
-    super(slicerText ? `${slicerText}\n${detail}` : detail);
+    const words = slicerText ? `${slicerText}\n${detail}` : detail;
+    const plain = plainSlicerError(words) ?? UNKNOWN_SLICER_ERROR;
+    super(`${plain}\nThe slicer said: ${words}`);
     this.name = "SlicerRunError";
     this.slicerText = slicerText;
+    this.plain = plain;
+    this.words = words;
   }
 }
 

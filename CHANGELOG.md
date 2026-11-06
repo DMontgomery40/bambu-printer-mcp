@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.69] – 2026-11-06
+
+### Added
+
+- `list_3mf_plates` lists a designer's 3MF plates as Bambu Studio shows them before slicing: index, name, the objects on each plate, whether the plate is already sliced, and optionally the plate's own preview from the file. Clients show a kit's plates from here instead of reading `Metadata/model_settings.config` themselves (Counterpart PRD §8.0 item 9). Checked with unit tests and real Bambu Studio projects.
+
+### Fixed
+
+- File inspection accepts Bambu Studio's skip-object marker when its base64 object mask happens to read like a command (`M624 /g8C/B8AAAA=` contains `g8`). A multi-object plate with such a mask was refused as "multiple commands on one line", so it got no estimate or preview and couldn't be printed. Only the exact one-token `M624 <base64>` form is exempt; anything after the mask is still refused. Checked with inspection tests and a 37-part plate's G-code from Bambu Studio 02.09.
+
+### Changed
+
+- A slicer's refusal reaches a person as a plain sentence. `slicer_report.message`, and the start of a failed `slice_stl`'s text, say what is wrong. Bambu Studio's and OrcaSlicer's empty-plate, off-plate, too-tall, too-large and outside-the-printable-area refusals are matched on their own strings, and so are PrusaSlicer's and CuraEngine's. The slicer's words stay in the new `slicer_report.slicer_message` for logs, and a failure without a result.json carries a `slicer_report` too. A successful slice's warnings are unchanged in `message`. Checked with unit tests and a stand-in slicer.
+
 ## [1.1.68] – 2026-11-06
 
 ### Added

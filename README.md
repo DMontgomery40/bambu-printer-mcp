@@ -1022,6 +1022,17 @@ Dry-run the AMS match without uploading or starting a print. The tool reads `Met
 }
 ```
 
+#### list_3mf_plates
+
+List a designer's 3MF plates as Bambu Studio shows them when the file is opened, before slicing. A downloaded kit's six plates are six plates here too. For each plate it gives `index` (from 0, so `slice_stl`'s `slice_plate` is `index + 1`), `name`, the `objects` on it, and `sliced` (whether the file already holds its G-code). It also gives `plate_count` and the file's `title`, `designer` and `licence` when they're set. A plain 3MF with no plate metadata is one plate. `include_thumbnails` adds each plate's own preview from the file. Read-only.
+
+```json
+{
+  "three_mf_path": "/Users/yourname/Downloads/kit.3mf",
+  "include_thumbnails": true
+}
+```
+
 #### list_3mf_plate_objects
 
 List object IDs from a sliced 3MF plate. Use this before `skip_objects` so you pass real Bambu object IDs instead of display-order guesses.

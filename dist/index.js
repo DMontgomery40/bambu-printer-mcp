@@ -2,7 +2,8 @@
 import { CAMERA_STREAM_TOOLS } from "./printers/camera-tools.js";
 import { withAnnotations } from "./tool-annotations.js";
 import { withRemote } from "./counterpart/remote.js";
-import { slicedFileFacts, slicerReport } from "./counterpart/sliced-file.js";
+import { refusalReport, slicedFileFacts, slicerReport } from "./counterpart/sliced-file.js";
+import { listModelPlates } from "./counterpart/model-plates.js";
 /** The slicer's verdict beside its result.json (`slicer_report`). */
 function reportOf(result) {
     const report = slicerReport(result);
@@ -2061,6 +2062,18 @@ class BambuPrinterMCPServer {
                         }
                     },
                     {
+                        name: "list_3mf_plates",
+                        description: "List a Bambu Studio or OrcaSlicer 3MF's plates as its designer laid them out, before slicing: plate_count, and for each plate its index (from 0; slice_stl's slice_plate is index + 1, inspect_print_file's plate_index is index), name, the objects on it and whether the file already holds its G-code (sliced). A plain 3MF without plate metadata is one plate. include_thumbnails adds each plate's own preview from the file (thumbnail_png_base64). Read-only.",
+                        inputSchema: {
+                            type: "object",
+                            properties: {
+                                three_mf_path: { type: "string", description: "Path to the 3MF (a designer's project, sliced or not)" },
+                                include_thumbnails: { type: "boolean", description: "Include each plate's own preview PNG from the file, base64 (default false)" }
+                            },
+                            required: ["three_mf_path"]
+                        }
+                    },
+                    {
                         name: "list_3mf_plate_objects",
                         description: "List object IDs from a sliced 3MF plate. Use these IDs with skip_objects during a running print.",
                         inputSchema: {
@@ -2250,7 +2263,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "slice_stl",
-                        description: "Slice an STL or 3MF file using a slicer to generate printable G-code or sliced 3MF. IMPORTANT: bambu_model must be specified to ensure the slicer generates safe G-code for the correct printer. The text result is the sliced file's path. When Bambu Studio or OrcaSlicer writes a result.json, structuredContent.slicer_result carries it verbatim, success or error: error_string, return_code and each sliced_plates[].warning_message, such as a floating cantilever. A failed slice's text starts with those words. A 3MF that carries its own process settings (a designer's Bambu Studio or Orca project) slices with them unless slicer_profile, template_name or template_3mf_path is given; the machine still comes from bambu_model. quality and strength adjust that process, and strength never lowers its walls or infill.",
+                        description: "Slice an STL or 3MF file using a slicer to generate printable G-code or sliced 3MF. IMPORTANT: bambu_model must be specified to ensure the slicer generates safe G-code for the correct printer. The text result is the sliced file's path. When Bambu Studio or OrcaSlicer writes a result.json, structuredContent.slicer_result carries it verbatim, success or error: error_string, return_code and each sliced_plates[].warning_message, such as a floating cantilever. structuredContent.slicer_report says whether it failed; for a failure, its message is a plain sentence for a person and slicer_message keeps the slicer's words, which a failed slice's text gives after that sentence. A 3MF that carries its own process settings (a designer's Bambu Studio or Orca project) slices with them unless slicer_profile, template_name or template_3mf_path is given; the machine still comes from bambu_model. quality and strength adjust that process, and strength never lowers its walls or infill.",
                         inputSchema: {
                             type: "object",
                             properties: {
@@ -3367,6 +3380,14 @@ class BambuPrinterMCPServer {
                         };
                         break;
                     }
+                    case "list_3mf_plates": {
+                        if (typeof args?.three_mf_path !== "string" || !args.three_mf_path)
+                            throw new Error("Missing required parameter: three_mf_path");
+                        if (args.include_thumbnails !== undefined && typeof args.include_thumbnails !== "boolean")
+                            throw new Error("include_thumbnails must be a boolean.");
+                        const plates = await listModelPlates(args.three_mf_path, { thumbnails: args.include_thumbnails === true });
+                        return { content: [{ type: "text", text: JSON.stringify(plates) }], structuredContent: plates };
+                    }
                     case "list_3mf_plate_objects": {
                         if (!args?.three_mf_path) {
                             throw new Error("Missing required parameter: three_mf_path");
@@ -4395,13 +4416,16 @@ class BambuPrinterMCPServer {
                     tool: name,
                     ...(error instanceof PrinterRefusal ? { code: error.code } : {}),
                     // The slicer's own result.json; the message starts with its error_string and warnings.
-                    ...(error instanceof SlicerRunError && error.slicerResult ? { slicer_result: error.slicerResult, ...reportOf(error.slicerResult) } : {}),
+                    // A slicer failure always carries slicer_report: the plain sentence a person sees, the slicer's words for the log.
+                    ...(error instanceof SlicerRunError ? error.slicerResult
+                        ? { slicer_result: error.slicerResult, ...reportOf(error.slicerResult) }
+                        : { slicer_report: { ...refusalReport(error.words), message: error.plain } } : {}),
                 };
                 // MCP clients validate structuredContent against a declared outputSchema even on
                 // errors (SDK 1.32 Client.callTool), so those tools return the error as text only.
                 return {
-                    // A slicer failure leads with the slicer's own words.
-                    content: [{ type: "text", text: error instanceof SlicerRunError && error.slicerText ? message : `Error: ${message}` }],
+                    // A slicer failure leads with its plain sentence, then the slicer's own words.
+                    content: [{ type: "text", text: error instanceof SlicerRunError ? message : `Error: ${message}` }],
                     ...(OUTPUT_SCHEMA_TOOLS.has(name) ? {} : { structuredContent: structured }),
                     isError: true,
                 };
