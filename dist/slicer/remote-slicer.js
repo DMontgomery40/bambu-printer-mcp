@@ -10,6 +10,8 @@ const SUPPORTED_OPTIONS = new Set([
     'nozzleType', 'nozzleVolumeType', 'slicePlate',
     // Written into the uploaded process preset before the request, not sent as API options.
     'processOverrides',
+    // The request's cancellation, honoured through isCancelled; never sent.
+    'signal',
 ]);
 function configuration() {
     let url;

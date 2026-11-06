@@ -4644,6 +4644,8 @@ class BambuPrinterMCPServer {
               }
             }
 
+            // A client that cancels this call (it no longer wants the slice) stops the slicer.
+            sliceBambuOptions.signal = extra.signal;
             const sliced = await this.stlManipulator.sliceSTLWithResult(
               String(args.stl_path), slicerType, slicerPath,
               activeSlicerProfile,

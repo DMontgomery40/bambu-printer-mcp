@@ -630,7 +630,12 @@ async function writeTemp(tempDir, kind, leafName, data) {
     const safe = leafName.replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 64);
     const filename = `flat-${kind}-${safe}-${hash}.json`;
     const out = path.join(tempDir, filename);
-    await fs.writeFile(out, serialized, "utf8");
+    // Named by its content: a slice running now may be reading this very file, so it is never rewritten in place.
+    if (!(await fs.stat(out).then(() => true, () => false))) {
+        const partial = `${out}.${crypto.randomUUID()}.partial`;
+        await fs.writeFile(partial, serialized, "utf8");
+        await fs.rename(partial, out);
+    }
     return out;
 }
 /* -------------------------------------------------------------------------- */

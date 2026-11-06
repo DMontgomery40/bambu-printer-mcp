@@ -17,6 +17,8 @@ import { applyProcessOverrides } from '../slicer/process-overrides.js';
 import { profileJsonFiles } from '../slicer/profile-files.js';
 import { materializeOrcaProfilesRoot, stageOrcaCliProfiles } from '../slicer/orca-profile-cache.js';
 import { sliceWithOrcaApi, validateRemoteSliceOptions } from '../slicer/remote-slicer.js';
+/** How long a slice's folder (its sliced file and result.json) is kept: a day, then a later slice removes it. */
+const SLICE_FOLDER_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const readFileAsync = promisify(fs.readFile);
 const writeFileAsync = promisify(fs.writeFile);
 const BAMBU_PROFILE_ROOTS = [
@@ -219,6 +221,24 @@ export class STLManipulator extends EventEmitter {
     generateOperationId() {
         return crypto.randomUUID();
     }
+    /**
+     * A new folder for one slice's outputs, under TEMP_DIR/slices. A sliced file's path stays valid for a day after
+     * its slice (callers print from it); older slice folders are removed as new slices start.
+     */
+    async sliceFolder(operationId) {
+        const root = path.join(this.tempDir, 'slices');
+        await fs.promises.mkdir(root, { recursive: true });
+        const cutoff = Date.now() - SLICE_FOLDER_LIFETIME_MS;
+        for (const name of await fs.promises.readdir(root).catch(() => [])) {
+            const folder = path.join(root, name);
+            const info = await fs.promises.stat(folder).catch(() => undefined);
+            if (info?.isDirectory() && info.mtimeMs < cutoff)
+                await fs.promises.rm(folder, { recursive: true, force: true }).catch(() => undefined);
+        }
+        const folder = path.join(root, operationId);
+        await fs.promises.mkdir(folder);
+        return folder;
+    }
     getAvailableProfileRoots() {
         const selectedRoot = process.env.BAMBU_PROFILES_ROOT;
         return [
@@ -307,7 +327,12 @@ export class STLManipulator extends EventEmitter {
         const serialized = JSON.stringify(value, null, 2);
         const hash = crypto.createHash('sha256').update(serialized).digest('hex').slice(0, 16);
         const outPath = path.join(this.tempDir, `${outputBase}_${suffix}_${hash}.json`);
-        fs.writeFileSync(outPath, serialized);
+        // Named by its content: a slice running now may be reading this very file, so it is never rewritten in place.
+        if (!fs.existsSync(outPath)) {
+            const partial = `${outPath}.${crypto.randomUUID()}.partial`;
+            fs.writeFileSync(partial, serialized);
+            fs.renameSync(partial, outPath);
+        }
         return outPath;
     }
     async resolveBambuLikeSettingsBundle(outputBase, slicerType, slicerProfile, printerPreset, bambuOptions, activeProfilesRoot, preserveOrcaExtrusionMode = false) {
@@ -1398,6 +1423,15 @@ export class STLManipulator extends EventEmitter {
     async sliceSTLOnce(stlFilePath, slicerType, slicerPath, slicerProfile, progressCallback, printerPreset, bambuOptions) {
         const operationId = this.generateOperationId();
         this.activeOperations.set(operationId, true);
+        // A cancelled request stops its slice: the slicer is killed (below) instead of finishing a slice nobody reads.
+        const signal = bambuOptions?.signal;
+        const cancel = () => { if (this.activeOperations.has(operationId))
+            this.activeOperations.set(operationId, false); };
+        if (signal?.aborted) {
+            this.activeOperations.delete(operationId);
+            throw new Error("Slicing operation cancelled");
+        }
+        signal?.addEventListener('abort', cancel, { once: true });
         if (slicerType !== 'orca-slicer-api' && isPathLikeExecutable(slicerPath) && !fs.existsSync(slicerPath)) {
             throw new Error(`Slicer executable not found at: ${slicerPath}`);
         }
@@ -1463,7 +1497,11 @@ export class STLManipulator extends EventEmitter {
                                 throw new Error('Remote slicing process profile does not exist.');
                         }
                         const profileSlicerType = remote ? 'orcaslicer' : slicerType;
-                        const bambuOutputPath = path.join(this.tempDir, outputBase + (remote ? `_${operationId}` : '') + '_sliced.3mf');
+                        // Every local slice writes into a folder of its own (its sliced 3MF and the slicer's result.json), so two
+                        // slices at once, even of same-named inputs, never read, replace or delete each other's files.
+                        const bambuOutputPath = remote
+                            ? path.join(this.tempDir, `${outputBase}_${operationId}_sliced.3mf`)
+                            : path.join(await this.sliceFolder(operationId), `${outputBase}_sliced.3mf`);
                         const outputDir = path.dirname(bambuOutputPath);
                         const selectedProfilesRoot = detectProfilesRoot(remote ? undefined : slicerPath, profileSlicerType);
                         const profilesRoot = !remote && profileSlicerType === 'orcaslicer'
@@ -1712,6 +1750,7 @@ export class STLManipulator extends EventEmitter {
             throw error;
         }
         finally {
+            signal?.removeEventListener('abort', cancel);
             this.activeOperations.delete(operationId);
             for (const file of temporaryFiles) {
                 await fs.promises.rm(file, { force: true }).catch(error => console.error('Could not remove a temporary mesh:', error));
