@@ -1912,8 +1912,10 @@ export class STLManipulator extends EventEmitter {
               if (slicerProfile && !fs.existsSync(slicerProfile)) throw new Error('Remote slicing process profile does not exist.');
             }
             const profileSlicerType = remote ? 'orcaslicer' : slicerType;
-            // Every local slice writes into a folder of its own (its sliced 3MF and the slicer's result.json), so two
-            // slices at once, even of same-named inputs, never read, replace or delete each other's files.
+            // Every local slice writes into a folder of its own, so two slices at once, even of same-named inputs, never
+            // read, replace or delete each other's files. Bambu Studio's CLI (v02.08.02.61) writes fixed names into
+            // --outputdir: result.json, each plate's G-code as plate_<n>.gcode (and its .tmp) before packing it into
+            // the 3MF, and the exported 3MF's .tmp; its own scratch files under the system temp dir are per process.
             const bambuOutputPath = remote
               ? path.join(this.tempDir, `${outputBase}_${operationId}_sliced.3mf`)
               : path.join(sliceDir = await this.newSliceFolder(operationId), `${outputBase}_sliced.3mf`);
