@@ -10,7 +10,6 @@ import fs from "node:fs/promises";
 import { createReadStream, readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { Readable } from "node:stream";
 import { readSafe3mfArchive } from "../safety/archive.js";
 import { inspectPrintFile, type PrintFileInspection } from "../safety/print-file.js";
 import { isDualNozzleModel, normalizeModel, validateTemperature } from "../safety/limits.js";
@@ -20,6 +19,7 @@ import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRem
 import { RTSP_CAMERA_MODELS, TCP_CAMERA_MODELS } from "./camera-models.js";
 import { resolveStudioPrintOptions, usedNozzleCount, type CallerPrintOptions } from "../studio-print-options.js";
 import { Client as FTPClient } from "basic-ftp";
+import { uploadBytes } from "./ftp-upload.js";
 import * as mqtt from "mqtt";
 import {
   BambuClient,
@@ -2530,7 +2530,8 @@ export class BambuImplementation {
         throw new Error(`Refusing to overwrite existing printer file ${absoluteRemote}. Choose a new filename.`);
       }
       const fileData = await fs.readFile(localPath);
-      await client.uploadFrom(Readable.from(fileData), absoluteRemote);
+      // Small writes, so a multi-megabyte job on a slow SD card is not mistaken for a stall.
+      await uploadBytes(client, fileData, absoluteRemote);
     } finally {
       client.close();
     }
