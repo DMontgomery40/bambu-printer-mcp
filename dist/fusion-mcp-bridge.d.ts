@@ -52,6 +52,10 @@ export declare const FUSION_STATUS_OUTPUT_SCHEMA: {
         fusionRunning: {
             type: string;
         };
+        activeDesign: {
+            type: string;
+            description: string;
+        };
         tools: {
             type: string;
             items: {

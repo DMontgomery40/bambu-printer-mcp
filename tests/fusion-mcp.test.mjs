@@ -119,6 +119,38 @@ test("status is connected only when the add-in answers, and the child gets Fusio
   assert.equal(spawn.commandPresent, false, "the bridge's own command settings stay with the bridge");
 });
 
+test("activeDesign comes from the add-in's read-only get_design_type: true with a design, false on its NO_ACTIVE_DESIGN, else absent", async (t) => {
+  const port = await addin(t);
+  const status = async (mode) => {
+    const { client, logPath } = await start(t, mode, { FUSION_MCP_PORT: String(port) });
+    const result = (await client.callTool({ name: "fusion_mcp_status", arguments: {} })).structuredContent;
+    return { result, calls: events(logPath).filter((event) => event.event === "call").map((event) => event.name) };
+  };
+  const open = await status("normal");
+  assert.equal(open.result.connected, true);
+  assert.equal(open.result.activeDesign, true);
+  assert.deepEqual(open.calls, ["ping", "get_design_type"], "one read, nothing that changes the design");
+  // Fusion's Home tab (faust issue #12): the add-in's own error kind says no design is open.
+  const home = await status("no-design");
+  assert.equal(home.result.connected, true);
+  assert.equal(home.result.activeDesign, false);
+  // Any other failure is unknown, never a guess either way.
+  const busy = await status("design-type-error");
+  assert.equal(busy.result.connected, true);
+  assert.equal("activeDesign" in busy.result, false);
+  // Not connected: no design read at all.
+  const down = await status("addin-down");
+  assert.equal(down.result.connected, false);
+  assert.equal("activeDesign" in down.result, false);
+  assert.deepEqual(down.calls, ["ping"]);
+  // A read that never finishes: not connected, the timeout named, and the next status starts a fresh session.
+  const { client: hung } = await start(t, "design-type-hang", { FUSION_MCP_PORT: String(port) });
+  const stuck = (await hung.callTool({ name: "fusion_mcp_status", arguments: { timeout_ms: 500 } })).structuredContent;
+  assert.equal(stuck.connected, false);
+  assert.equal("activeDesign" in stuck, false);
+  assert.match(stuck.error, /timed out/);
+});
+
 test("the add-in probe needs the add-in's own pong, not just an open port", async (t) => {
   const probe = (port, timeoutMs = 1_000) => defaultFusionSystem.addinAnswers("127.0.0.1", port, timeoutMs);
   const requests = [];
