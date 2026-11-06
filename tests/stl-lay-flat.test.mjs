@@ -224,8 +224,9 @@ test("Bambu Studio slices the laid-flat stove gap filler for a P1S with no warni
   const manipulator = new STLManipulator(directory);
   const flat = await manipulator.layFlat(input);
 
-  await manipulator.sliceSTL(flat, "bambustudio", studioCli, undefined, undefined, "Bambu Lab P1S 0.4 nozzle", { bedType: "textured_plate" });
-  const result = JSON.parse(await fs.readFile(path.join(directory, "result.json"), "utf8"));
+  const slice = await manipulator.sliceSTLWithResult(flat, "bambustudio", studioCli, undefined, undefined, "Bambu Lab P1S 0.4 nozzle", { bedType: "textured_plate" });
+  const result = slice.slicer_result;
+  assert.ok(result, "Bambu Studio should return its result.json for this slice");
   assert.equal(result.return_code, 0, result.error_string);
   assert.ok(result.sliced_plates.length > 0);
   for (const plate of result.sliced_plates) assert.equal(plate.warning_message, "", plate.warning_message);

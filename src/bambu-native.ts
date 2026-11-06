@@ -117,14 +117,14 @@ export const BAMBU_NATIVE_CERTIFICATES = ["slicer_base64.cer", "printer.cer"] as
 export const BAMBU_NATIVE_PLUGIN_LIBRARIES = ["libbambu_networking.so", "libBambuSource.so"] as const;
 
 /**
- * The only Linux plug-in build whose PrintParams layout matches the helper
- * (Bambu Studio v02.08.02.61, network agent 02.08.02.54). The setup installs
+ * The pinned Linux plug-in build whose PrintParams layout matches the helper
+ * (Bambu Studio v02.09.01.70, network agent 02.09.01.54). The setup installs
  * exactly these files and the server refuses anything else.
  */
 export const BAMBU_NATIVE_PINNED_PLUGIN = Object.freeze({
-  version: "02.08.02.54",
+  version: "02.09.01.54",
   sha256: Object.freeze({
-    "libbambu_networking.so": "bba49709c8dea14ba70251b43965646c0a5e2cde8fd133c64f764d425691bdf2",
+    "libbambu_networking.so": "a3d3fb6e6568cbf62a81c88248f4ddfee90ecaa47685d5156ada411271aa5ad3",
     "libBambuSource.so": "4e05f16fa02740fd12f0040b9efc3e70d43446c7a1a877c6a3926ef0758ca7db",
   } as Record<(typeof BAMBU_NATIVE_PLUGIN_LIBRARIES)[number], string>),
 });
