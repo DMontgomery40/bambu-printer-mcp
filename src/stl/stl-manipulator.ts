@@ -11,8 +11,10 @@ import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { keepSlice, restoreSlice, sliceCacheKey } from '../slicer/slice-cache.js';
+import { listModelPlates } from '../counterpart/model-plates.js';
 import { flattenForCli, detectProfilesRoot, resolveBblMachineProfile } from '../slicer/profile-flatten.js';
 import { plainSlicerError, UNKNOWN_SLICER_ERROR } from '../slicer/slicer-messages.js';
+import { bambuCliExitCode } from '../slicer/cli-exit-codes.js';
 import { applyProcessOverrides, type ProcessOverrides } from '../slicer/process-overrides.js';
 import { profileJsonFiles } from '../slicer/profile-files.js';
 import { materializeOrcaProfilesRoot, stageOrcaCliProfiles } from '../slicer/orca-profile-cache.js';
@@ -26,11 +28,13 @@ const BAMBU_PROFILE_ROOTS = [
   '/Applications/BambuStudio.app/Contents/Resources/profiles/BBL',
   '/Applications/OrcaSlicer.app/Contents/Resources/profiles/BBL',
 ];
+// curr_bed_type's enum keys (Bambu Studio 02.08.02.61 libslic3r/PrintConfig.cpp:437-445).
 const BAMBU_CLI_BED_TYPES: Record<string, string> = {
   textured_plate: 'Textured PEI Plate',
   cool_plate: 'Cool Plate',
   engineering_plate: 'Engineering Plate',
   hot_plate: 'High Temp Plate',
+  supertack_plate: 'Supertack Plate',
 };
 
 // Define types for progress tracking
@@ -291,38 +295,14 @@ function describeSlicerFailure(
   return `Slicer failed: the slicer ${status}${reason ? ` (${reason})` : ""}. ${error.message.trim()}${output ? `\nSlicer output: ${output}` : ""}`;
 }
 
-// Bambu Studio and OrcaSlicer CLI errors (libslic3r/Utils.hpp). The process
-// exits with the low byte of the code; result.json names the error.
-const BAMBU_CLI_ERRORS: Record<number, string> = {
-  [-2]: "invalid parameters to the slicer",
-  [-3]: "input files not found",
-  [-5]: "preset file cannot be parsed",
-  [-6]: "model file cannot be parsed",
-  [-9]: "copying objects failed",
-  [-17]: "printer is not compatible with the process preset",
-  [-21]: "auto-arranging objects failed",
-  [-22]: "auto-orienting objects failed",
-  [-50]: "a plate is empty or has no object fully inside it; arrange the model or place it on the plate",
-  [-51]: "incorrect slicing parameters",
-  [-52]: "objects extend over the bed boundary",
-  [-60]: "no printable objects remain after skipping",
-  [-61]: "filaments are not compatible with the plate type",
-  [-62]: "the filaments' temperatures differ too much",
-  [-63]: "objects collide in print-by-object mode",
-  [-64]: "objects collide",
-  [-100]: "slicing the model failed",
-  [-101]: "G-code conflicts after slicing",
-  [-102]: "G-code in an unprintable area",
-};
-
 function bambuCliFailureReason(exitCode: unknown, cli: CliResultSource): string | undefined {
   const result = readCliResult(cli);
   if (typeof result?.error_string === "string" && result.error_string.trim()) {
     return `${result.error_string.trim()} [${result.return_code}]`;
   }
   if (typeof exitCode !== "number") return undefined;
-  const code = Object.keys(BAMBU_CLI_ERRORS).map(Number).find(value => (value & 0xff) === exitCode);
-  return code === undefined ? undefined : `${BAMBU_CLI_ERRORS[code]} [${code}]`;
+  const known = bambuCliExitCode(exitCode);
+  return known ? `${known.sentence} [${known.code}]` : undefined;
 }
 
 export class STLManipulator extends EventEmitter {
@@ -816,11 +796,6 @@ export class STLManipulator extends EventEmitter {
   private resolveBambuStudioBedType(bedType?: string): string | undefined {
     if (!bedType) return undefined;
     const normalized = bedType.trim().toLowerCase();
-    if (normalized === 'supertack_plate') {
-      throw new Error(
-        'BambuStudio CLI SuperTack bed type is not verified; use a pre-sliced 3MF or choose textured_plate, cool_plate, engineering_plate, or hot_plate.'
-      );
-    }
     return BAMBU_CLI_BED_TYPES[normalized] || bedType;
   }
 
@@ -1786,34 +1761,38 @@ export class STLManipulator extends EventEmitter {
       this.sliceSTLOnce(stlFilePath, slicerType, slicerPath, slicerProfile, progressCallback, printerPreset, options);
     const layers = bambuOptions?.pauseAtLayers?.length ? bambuOptions.pauseAtLayers : undefined;
     const cli = slicerType === 'bambustudio' || slicerType === 'orcaslicer' || slicerType === 'orcaslicer-bambulab';
-    const plate = bambuOptions?.slicePlate && bambuOptions.slicePlate > 0 ? bambuOptions.slicePlate : 1;
-    // The CLI drops a project's own pauses and colour changes; carry them over.
-    const project = cli && /\.3mf$/i.test(stlFilePath) ? await readProjectCustomGcodes(stlFilePath, plate) : undefined;
-    if (!layers && !project?.gcodes.length) return once(bambuOptions);
-    if (layers && !cli) {
+    // Without new pauses the CLI keeps the project's own pauses and colour changes itself: it loads a
+    // Bambu 3MF's Metadata/custom_gcode_per_layer.xml with the project (Bambu Studio 02.08.02.61
+    // BambuStudio.cpp:1882, bbs_3mf.cpp:2051), so nothing is passed.
+    if (!layers) return once(bambuOptions);
+    if (!cli) {
       throw new Error(`Pausing at a layer needs the Bambu Studio or OrcaSlicer CLI, not ${slicerType}.`);
     }
+    const chosenPlate = bambuOptions?.slicePlate && bambuOptions.slicePlate > 0 ? bambuOptions.slicePlate : undefined;
+    const plate = chosenPlate ?? 1;
+    const threeMf = /\.3mf$/i.test(stlFilePath);
+    // --load-custom-gcodes replaces the whole per-plate map and holds one plate (--slice N, or plate 1 for
+    // --slice 0: BambuStudio.cpp:2224-2233, 4005-4008), so slicing every plate would drop plates 2..n's own.
+    if (threeMf && chosenPlate === undefined && (await listModelPlates(stlFilePath)).plate_count > 1) {
+      throw new Error('Pausing at a layer works on one plate at a time. Choose the plate with slice_plate.');
+    }
+    // The map replaces the project's own entries for this plate, so they are merged in.
+    const project = threeMf ? await readProjectCustomGcodes(stlFilePath, plate) : undefined;
     const customGcodesFile = path.join(this.tempDir, `custom-gcodes-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
     try {
-      let tops: number[] = [];
-      if (layers) {
-        // A pause sits at its layer's exact top Z; learn the tops from a slice without pauses.
-        if (progressCallback) progressCallback(10, `Finding layer heights for the pause before layer ${layers.join(", ")}`);
-        const plain = await once({ ...bambuOptions, pauseAtLayers: undefined, customGcodesFile: undefined });
-        const gcode = await readPlateGcode(plain.path, plate);
-        if (!gcode) throw new Error('The slicer wrote no plate G-code, so the pause layers cannot be placed.');
-        tops = layerTops(gcode);
-      }
-      const info = layers ? customGcodesWithPauses(tops, layers, project) : project!;
-      await fs.promises.writeFile(customGcodesFile, JSON.stringify(info));
+      // A pause sits at its layer's exact top Z; learn the tops from a slice without pauses.
+      if (progressCallback) progressCallback(10, `Finding layer heights for the pause before layer ${layers.join(", ")}`);
+      const plain = await once({ ...bambuOptions, pauseAtLayers: undefined, customGcodesFile: undefined });
+      const plainGcode = await readPlateGcode(plain.path, plate);
+      if (!plainGcode) throw new Error('The slicer wrote no plate G-code, so the pause layers cannot be placed.');
+      const tops = layerTops(plainGcode);
+      await fs.promises.writeFile(customGcodesFile, JSON.stringify(customGcodesWithPauses(tops, layers, project)));
       const result = await once({ ...bambuOptions, customGcodesFile });
-      if (layers) {
-        const gcode = await readPlateGcode(result.path, plate);
-        const placed = gcode ? pausedLayers(gcode, machinePauseGcode(gcode)) : [];
-        const missing = layers.filter(layer => !placed.includes(layer));
-        if (!gcode || missing.length || layerTops(gcode).length !== tops.length) {
-          throw new Error(`The slicer did not place the pause before layer ${(missing.length ? missing : layers).join(", ")}. Nothing was sent to the printer.`);
-        }
+      const gcode = await readPlateGcode(result.path, plate);
+      const placed = gcode ? pausedLayers(gcode, machinePauseGcode(gcode)) : [];
+      const missing = layers.filter(layer => !placed.includes(layer));
+      if (!gcode || missing.length || layerTops(gcode).length !== tops.length) {
+        throw new Error(`The slicer did not place the pause before layer ${(missing.length ? missing : layers).join(", ")}. Nothing was sent to the printer.`);
       }
       return result;
     } finally {

@@ -453,68 +453,66 @@ export async function analyze3MFAmsRequirements(filePath, plateIndex = 0) {
         }),
     };
 }
+/**
+ * The objects of one sliced plate that the printer can skip, as Bambu Studio lists them in its skip dialog
+ * (02.08.02.61 slic3r/GUI/PartSkipDialog.cpp:734-741, SkipPartCanvas.cpp:690-730): one entry per instance
+ * from Metadata/slice_info.config's plate whose `index` matches (written per instance at bbs_3mf.cpp:8718-8750),
+ * with its identify_id. plate_N.json's bbox_objects are not paired by position: their `id` is an internal
+ * object id the printer doesn't know (BambuStudio.cpp:7374-7382), and copies share a name. The wipe tower
+ * is never a slice_info object.
+ */
 export async function analyze3MFPlateObjects(filePath, plateIndex = 0) {
     const data = await fs.readFile(filePath);
     const zip = await JSZip.loadAsync(data);
-    const plateName = `Metadata/plate_${plateIndex + 1}.json`;
-    const plateFile = zip.file(plateName);
-    if (!plateFile) {
-        throw new Error(`3MF is missing ${plateName}; cannot list plate objects.`);
-    }
-    const plateJson = JSON.parse(await plateFile.async('string'));
-    const bboxObjects = Array.isArray(plateJson?.bbox_objects) ? plateJson.bbox_objects : [];
-    const sliceInfoObjects = [];
+    const plateNumber = plateIndex + 1;
     const sliceInfo = zip.file('Metadata/slice_info.config');
-    if (sliceInfo) {
+    if (!sliceInfo) {
+        throw new Error('This 3MF has no Metadata/slice_info.config, so it was not sliced by Bambu Studio or OrcaSlicer and has no skip-object ids. Slice it first.');
+    }
+    const parsed = await parseStringPromise(await sliceInfo.async('string'), { explicitArray: true });
+    const plates = parsed?.config?.plate ?? [];
+    const selected = plates.find(plate => (plate?.metadata ?? [])
+        .some((item) => item?.$?.key === 'index' && Number(item?.$?.value) === plateNumber));
+    if (!selected) {
+        throw new Error(`Plate ${plateNumber} was not sliced in this 3MF, so it has no skip-object ids.`);
+    }
+    const labelObjectEnabled = (selected.metadata ?? [])
+        .some((item) => item?.$?.key === 'label_object_enabled' && item?.$?.value === 'true');
+    const instances = (selected.object ?? []).flatMap((object) => {
+        const id = Number(object?.$?.identify_id);
+        if (!Number.isSafeInteger(id) || id <= 0)
+            return [];
+        return [{ id, name: typeof object.$.name === 'string' ? object.$.name : `object_${id}`, skipped: object.$.skipped === 'true' }];
+    });
+    // First-layer area and box, attached by name only where one instance and one box carry it.
+    const boxes = new Map();
+    const plateFile = zip.file(`Metadata/plate_${plateNumber}.json`);
+    if (plateFile) {
         try {
-            const parsed = await parseStringPromise(await sliceInfo.async('string'), {
-                explicitArray: false,
-                mergeAttrs: true,
-            });
-            const plateNodes = parsed?.config?.plate
-                ? Array.isArray(parsed.config.plate) ? parsed.config.plate : [parsed.config.plate]
-                : [];
-            const plateNumber = plateIndex + 1;
-            const selectedPlate = plateNodes.find((plate) => {
-                const metadata = Array.isArray(plate?.metadata)
-                    ? plate.metadata
-                    : plate?.metadata
-                        ? [plate.metadata]
-                        : [];
-                return metadata.some((item) => item?.key === 'index' && Number(item?.value) === plateNumber);
-            }) || plateNodes[plateIndex] || plateNodes[0];
-            const objectNodes = selectedPlate?.object
-                ? Array.isArray(selectedPlate.object) ? selectedPlate.object : [selectedPlate.object]
-                : [];
-            for (const object of objectNodes) {
-                const id = Number.parseInt(String(object?.identify_id ?? ''), 10);
-                if (!Number.isInteger(id))
+            const plateJson = JSON.parse(await plateFile.async('string'));
+            for (const box of Array.isArray(plateJson?.bbox_objects) ? plateJson.bbox_objects : []) {
+                if (typeof box?.name !== 'string' || box.name === 'wipe_tower')
                     continue;
-                sliceInfoObjects.push({
-                    id,
-                    name: typeof object?.name === 'string' ? object.name : null,
-                });
+                boxes.set(box.name, [...(boxes.get(box.name) ?? []), box]);
             }
         }
         catch {
-            // Fall back to bbox IDs for older or malformed 3MFs.
+            // The ids above still stand without the boxes.
         }
     }
+    const nameCount = new Map();
+    for (const instance of instances)
+        nameCount.set(instance.name, (nameCount.get(instance.name) ?? 0) + 1);
     return {
         plateIndex,
-        objects: bboxObjects
-            .map((object, index) => {
-            const sliceObject = sliceInfoObjects[index];
-            const id = sliceObject?.id ?? Number(object?.id);
-            if (!Number.isInteger(id))
-                return null;
+        labelObjectEnabled,
+        objects: instances.map((instance) => {
+            const box = nameCount.get(instance.name) === 1 && boxes.get(instance.name)?.length === 1 ? boxes.get(instance.name)[0] : undefined;
             return {
-                id,
-                name: sliceObject?.name || (typeof object?.name === 'string' ? object.name : `object_${id}`),
-                area: Number.isFinite(Number(object?.area)) ? Number(object.area) : null,
-                bbox: object?.bbox ?? null,
+                ...instance,
+                area: box && Number.isFinite(Number(box.area)) ? Number(box.area) : null,
+                bbox: box?.bbox ?? null,
             };
-        })
-            .filter((object) => object !== null),
+        }),
     };
 }

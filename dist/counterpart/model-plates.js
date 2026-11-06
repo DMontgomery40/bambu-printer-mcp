@@ -12,6 +12,7 @@ import { readSafe3mfArchive } from "../safety/archive.js";
 const MAX_METADATA_BYTES = 8 * 1024 * 1024;
 const MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024;
 const MAX_PLATES = 1000;
+const MAX_INSTANCES_PER_PLATE = 1000;
 const words = (value) => value
     .replace(/&(?:amp|lt|gt|quot|apos);/g, entity => ({ "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&apos;": "'" }[entity]))
     .replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 256);
@@ -57,7 +58,13 @@ export async function listModelPlates(filePath, options = {}) {
         if (!valid(number))
             continue;
         const name = /<metadata\s+key="plater_name"\s+value="([^"]*)"/.exec(match[1]);
-        plates.set(number, { index: number - 1, name: words(name?.[1] ?? "") || `Plate ${number}`, sliced: false,
+        const instances = [...match[1].matchAll(/<model_instance>([\s\S]*?)<\/model_instance>/g)].flatMap(instance => {
+            const object = /<metadata\s+key="object_id"\s+value="(\d+)"/.exec(instance[1])?.[1];
+            const identify = Number(/<metadata\s+key="identify_id"\s+value="(\d+)"/.exec(instance[1])?.[1]);
+            return object !== undefined && Number.isSafeInteger(identify) && identify > 0
+                ? [{ identify_id: identify, name: objects.get(object) ?? "" }] : [];
+        }).slice(0, MAX_INSTANCES_PER_PLATE);
+        plates.set(number, { index: number - 1, name: words(name?.[1] ?? "") || `Plate ${number}`, sliced: false, instances,
             objects: [...match[1].matchAll(/<metadata\s+key="object_id"\s+value="(\d+)"/g)].flatMap(item => objects.get(item[1]) ? [objects.get(item[1])] : []) });
     }
     for (const name of Object.keys(zip.files)) {
@@ -67,7 +74,7 @@ export async function listModelPlates(filePath, options = {}) {
         const number = Number(match[1]);
         if (!valid(number))
             continue;
-        const plate = plates.get(number) ?? { index: number - 1, name: `Plate ${number}`, objects: [], sliced: false };
+        const plate = plates.get(number) ?? { index: number - 1, name: `Plate ${number}`, objects: [], instances: [], sliced: false };
         if (match[2] === "gcode")
             plate.sliced = true;
         else {
@@ -84,7 +91,7 @@ export async function listModelPlates(filePath, options = {}) {
     result.plates = [...plates.values()].sort((a, b) => a.index - b.index);
     // A standard single-build 3MF has no Bambu plate metadata: it is one plate.
     if (!result.plates.length)
-        result.plates.push({ index: 0, name: "Plate 1", objects: [], sliced: false });
+        result.plates.push({ index: 0, name: "Plate 1", objects: [], instances: [], sliced: false });
     const geometry = has("item") && (has("mesh") || has("component"));
     if (!geometry) {
         // A sliced-only file (previews and G-code, no model): only its sliced plates can print.
