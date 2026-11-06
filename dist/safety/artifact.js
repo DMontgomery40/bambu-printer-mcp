@@ -36,9 +36,12 @@ export async function withPrinterOperation(_host, serial, operation) {
             operations.delete(key);
     }
 }
-/** Inspect and send a private copy, so changes to the user's source cannot change the job. */
-export async function withPrintSnapshot(source, operation) {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-print-"));
+/**
+ * Inspect and send a private copy, so changes to the user's source cannot change the job. `root` is where the copy
+ * goes (the system temporary folder unless the bridge host needs it in a folder its container mounts).
+ */
+export async function withPrintSnapshot(source, operation, root = os.tmpdir()) {
+    const directory = await fs.mkdtemp(path.join(root, "bambu-print-"));
     const snapshot = path.join(directory, path.basename(source));
     let retainUntilExit = false;
     try {

@@ -41,7 +41,7 @@ import {
   type BambuSliceOptions,
   type SlicerType,
 } from "./stl/stl-manipulator.js";
-import { BambuNetworkBridge, describeBambuNetworkPrintError, type BambuNetworkBridgeOptions, type BridgeJobUpdate } from "./bambu-network-bridge.js";
+import { BambuNetworkBridge, bridgeSnapshotRoot, describeBambuNetworkPrintError, type BambuNetworkBridgeOptions, type BridgeJobUpdate } from "./bambu-network-bridge.js";
 import {
   assertBambuNativeAvailable,
   bambuNativeControlsAvailable,
@@ -75,7 +75,7 @@ import { bambuPrinterInfo, bambuSliceCapabilities } from "./counterpart/info.js"
 import { DISCOVER_OUTPUT_SCHEMA, discoverBambu } from "./counterpart/discovery.js";
 import { SETUP_FIELDS_OUTPUT_SCHEMA, bambuSetupFields, slicerSetup, type SlicerSetup } from "./counterpart/setup.js";
 import { PROPOSE_FILAMENTS_INPUT_PROPERTIES, PROPOSE_FILAMENTS_OUTPUT_SCHEMA, NO_COLOUR_NAMES, bambuTrayLabel, loadColourNames, proposeFilaments, spoolName, type ColourNames, type ProposalTray } from "./counterpart/filaments.js";
-import { DESIGN_PROMPTS, FDM_CAPABILITY_GUIDANCE, FDM_CAPABILITY_RESOURCE, FDM_CAPABILITY_URI, SERVER_INSTRUCTIONS } from "./design-guidance.js";
+import { DESIGN_PROMPTS, FDM_CAPABILITY_GUIDANCE, FDM_CAPABILITY_RESOURCE, FDM_CAPABILITY_URI, FDM_SLICING_PROMPT, SERVER_INSTRUCTIONS, slicingGuidance } from "./design-guidance.js";
 import { bambuProgress, offlineProgress } from "./counterpart/progress.js";
 import { makeCounterpart3mf } from "./counterpart/make-3mf.js";
 import { MAKE_3MF_OUTPUT_SCHEMA, PRINT_PROGRESS_OUTPUT_SCHEMA, PRINTER_INFO_OUTPUT_SCHEMA } from "./counterpart/schemas.js";
@@ -2023,7 +2023,7 @@ class BambuPrinterMCPServer {
         amsMapping: mapping,
         params: redactPrintParams(params),
       };
-    }));
+    }, bridgeSnapshotRoot()));
   }
 
   private async handoff3mfViaBambuConnect(
@@ -2387,9 +2387,17 @@ class BambuPrinterMCPServer {
   /** The FDM design guidance as MCP prompts: the client decides when to attach each one. */
   setupPromptHandlers() {
     this.server.setRequestHandler(ListPromptsRequestSchema, async () => ({
-      prompts: DESIGN_PROMPTS.map(({ name, title, description }) => ({ name, title, description })),
+      prompts: [...DESIGN_PROMPTS, FDM_SLICING_PROMPT].map(({ name, title, description }) => ({ name, title, description })),
     }));
     this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
+      if (request.params.name === FDM_SLICING_PROMPT.name) {
+        // The slicer slice_stl uses by default, and what it applies there (as counterpart_printer_info reports it).
+        const slicerType = normalizeSlicerType(DEFAULT_SLICER_TYPE);
+        return {
+          description: FDM_SLICING_PROMPT.description,
+          messages: [{ role: "user" as const, content: { type: "text" as const, text: slicingGuidance(slicerType, bambuSliceCapabilities(slicerType)) } }],
+        };
+      }
       const prompt = DESIGN_PROMPTS.find(item => item.name === request.params.name);
       if (!prompt) throw new McpError(ErrorCode.InvalidParams, `Unknown prompt: ${request.params.name}`);
       return {
@@ -5161,6 +5169,8 @@ class BambuPrinterMCPServer {
       // Closing the MCP transport aborts its active requests before exit cleanup.
       await this.server.close();
       await this.fusion.close();
+      // The FULU host's container (BAMBU_NETWORK_BRIDGE_IMAGE) is removed with the server, not left running.
+      await this.bambuNetwork.stop();
       this.httpRuntime?.httpServer.close();
     } catch (error) {
       console.error("[MCP Shutdown]", error);

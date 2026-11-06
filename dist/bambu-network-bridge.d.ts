@@ -107,6 +107,50 @@ export declare function bambuNetworkCertDir(configDir: string, env?: NodeJS.Proc
 export declare function prepareBambuNetworkCertDir(configDir: string, env?: NodeJS.ProcessEnv): string;
 export declare function defaultBambuNetworkConfigDir(): string;
 /**
+ * FULU's Linux host run in a Docker image (BAMBU_NETWORK_BRIDGE_IMAGE), for a Mac or any machine without the
+ * x86-64 Linux runtime installed natively. The image holds FULU's host runtime in /fulu (pjarczak_bambu_linux_host
+ * and ca-certificates.crt) and the networking plug-in in /plugins (libbambu_networking.so, libBambuSource.so).
+ */
+export type BridgeContainer = {
+    image: string;
+    docker: string;
+    dockerHost?: string;
+    /** A Colima profile started (never stopped or restarted) when Docker doesn't answer. */
+    colima?: {
+        executable: string;
+        profile: string;
+        home?: string;
+    };
+};
+export declare function bridgeContainer(env?: NodeJS.ProcessEnv): BridgeContainer | undefined;
+/**
+ * Where a print's checked snapshot is written when the host runs in the Docker image: inside the agent's config
+ * folder, which the container mounts. The system temporary folder is no good there: Colima shares the home
+ * folder but not /tmp or /var/folders, so the host would see an empty folder. Undefined without the image.
+ */
+export declare function bridgeSnapshotRoot(env?: NodeJS.ProcessEnv): string | undefined;
+/**
+ * The folders the host must see at the same absolute paths: the agent's config folder (the plug-in writes its
+ * logs and session there; a host given a log_dir it can't open aborts, FULU #54), the folder print snapshots are
+ * written to, and the certificate folder.
+ */
+export declare function bridgeContainerMounts(configDir: string, env?: NodeJS.ProcessEnv): string[];
+/**
+ * docker run for the host: stdin/stdout are the bridge's framed protocol; the host is piped through cat (FULU #50).
+ * `--init` puts an init process first, so the SIGTERM docker forwards on stop reaches the host: a shell as the
+ * container's first process ignores it, and the container kept running after the server stopped. `name` lets stop
+ * remove the container even when the docker client was killed.
+ */
+export declare function bridgeContainerArgs(container: BridgeContainer, mounts: string[], name?: string): string[];
+/**
+ * Docker must answer before the host starts. When it doesn't and a Colima profile is configured, that profile is
+ * started without changing Docker's global context; a running profile is never stopped or restarted.
+ */
+export declare function ensureBridgeContainerRuntime(container: BridgeContainer, timeouts?: {
+    infoMs: number;
+    startMs: number;
+}): Promise<void>;
+/**
  * The client identity FULU's GUI gives the plug-in before agent start
  * (GUI_App::init_http_extra_header). Through the Linux bridge FULU presents
  * itself as Bambu Studio at the version its plug-in ABI belongs to
@@ -127,6 +171,9 @@ export declare function linuxPluginLibraryEnv(env: NodeJS.ProcessEnv, platform: 
 export declare class BambuNetworkBridge {
     private child?;
     private commandLine?;
+    /** This bridge's own container, when the host runs in the Docker image: unique, so two servers never remove each other's. */
+    private readonly containerName;
+    private runningContainer?;
     private stdoutBuffer;
     private pending;
     private nextRequestId;
@@ -143,7 +190,7 @@ export declare class BambuNetworkBridge {
      * so LAN sessions run one at a time, as Bambu Studio connects one printer.
      */
     private localSessionTail;
-    resolveBridgeCommand(override?: string): string;
+    resolveBridgeCommand(override?: string, configDir?: string): string;
     resolveConfigDir(override?: string): string;
     resolveCountryCode(override?: string): string;
     getStatus(options?: BambuNetworkBridgeOptions): BambuNetworkBridgeStatus;
@@ -214,7 +261,10 @@ export declare class BambuNetworkBridge {
     private controlTrace;
     callWithAgent(method: string, payload?: JsonObject, options?: BambuNetworkBridgeOptions): Promise<unknown>;
     stop(): Promise<void>;
+    /** A start in progress: concurrent callers wait for it, so a cold Docker host is started (and named) once. */
+    private starting?;
     private ensureStarted;
+    private startBridge;
     private handleStdout;
     private resolvePendingJson;
     private rememberLog;
