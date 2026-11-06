@@ -9,14 +9,15 @@ const DISPLAY_NAMES = new Map(Object.values(SERIAL_MODELS).map(name => [normaliz
 export const BAMBU_CLI_SLICERS = ["bambustudio", "orcaslicer", "orcaslicer-bambulab"];
 /**
  * What slice_stl applies on each backend: the Bambu Studio / OrcaSlicer CLIs take all three; remote orca-slicer-api
- * takes supports and orient but refuses repetitions; PrusaSlicer, Slic3r and Cura take none of them here.
+ * takes supports and orient but refuses repetitions and doesn't split across plates; PrusaSlicer, Slic3r and Cura take none of them here.
  */
 export function bambuSliceCapabilities(slicerType) {
+    // plates: slice_stl's split_to_plates, for a model bigger than the bed (src/slicer/bed-plates.ts).
     if (slicerType === undefined || BAMBU_CLI_SLICERS.includes(slicerType))
-        return { supports: true, copies: true, orient: true };
+        return { supports: true, copies: true, orient: true, plates: true };
     if (slicerType === "orca-slicer-api")
-        return { supports: true, copies: false, orient: true };
-    return { supports: false, copies: false, orient: false };
+        return { supports: true, copies: false, orient: true, plates: false };
+    return { supports: false, copies: false, orient: false, plates: false };
 }
 export function bambuPrinterInfo(options) {
     const model = normalizeModel(options.model);

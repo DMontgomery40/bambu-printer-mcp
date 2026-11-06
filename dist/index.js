@@ -2,7 +2,7 @@
 import { CAMERA_STREAM_TOOLS } from "./printers/camera-tools.js";
 import { withAnnotations } from "./tool-annotations.js";
 import { withRemote } from "./counterpart/remote.js";
-import { slicedFileFacts, slicerReport } from "./counterpart/sliced-file.js";
+import { refusalReport, slicedFileFacts, slicerReport } from "./counterpart/sliced-file.js";
 /** The slicer's verdict beside its result.json (`slicer_report`). */
 function reportOf(result) {
     const report = slicerReport(result);
@@ -37,9 +37,11 @@ import { inspectPrintFile } from "./safety/print-file.js";
 import { previewPrintFile } from "./safety/print-preview.js";
 import { loadSafe3mfArchive } from "./safety/archive.js";
 import { SERIAL_MODELS, externalStorageState, validatePrinterState } from "./safety/printer-state.js";
-import { isDualNozzleModel } from "./safety/limits.js";
+import { MACHINE_LIMITS, isDualNozzleModel } from "./safety/limits.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safety/artifact.js";
 import { detectProfilesRoot } from "./slicer/profile-flatten.js";
+import { machineBed, splitToPlates } from "./slicer/bed-plates.js";
+import { materializeOrcaProfilesRoot } from "./slicer/orca-profile-cache.js";
 import { bambuPrinterInfo, bambuSliceCapabilities } from "./counterpart/info.js";
 import { DISCOVER_OUTPUT_SCHEMA, discoverBambu } from "./counterpart/discovery.js";
 import { SETUP_FIELDS_OUTPUT_SCHEMA, bambuSetupFields, slicerSetup } from "./counterpart/setup.js";
@@ -2242,7 +2244,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "slice_stl",
-                        description: "Slice an STL or 3MF file using a slicer to generate printable G-code or sliced 3MF. IMPORTANT: bambu_model must be specified to ensure the slicer generates safe G-code for the correct printer. The text result is the sliced file's path. When Bambu Studio or OrcaSlicer writes a result.json, structuredContent.slicer_result carries it verbatim, success or error: error_string, return_code and each sliced_plates[].warning_message, such as a floating cantilever. A failed slice's text starts with those words. A 3MF that carries its own process settings (a designer's Bambu Studio or Orca project) slices with them unless slicer_profile, template_name or template_3mf_path is given; the machine still comes from bambu_model. quality and strength adjust that process, and strength never lowers its walls or infill.",
+                        description: "Slice an STL or 3MF file using a slicer to generate printable G-code or sliced 3MF. IMPORTANT: bambu_model must be specified to ensure the slicer generates safe G-code for the correct printer. The text result is the sliced file's path. When Bambu Studio or OrcaSlicer writes a result.json, structuredContent.slicer_result carries it verbatim, success or error: error_string, return_code and each sliced_plates[].warning_message, such as a floating cantilever. structuredContent.slicer_report says whether it failed; for a failure, its message is a plain sentence for a person and slicer_message keeps the slicer's words, which a failed slice's text gives after that sentence. With split_to_plates, an STL or OBJ bigger than the bed is split across plates first (bed_split). A 3MF that carries its own process settings (a designer's Bambu Studio or Orca project) slices with them unless slicer_profile, template_name or template_3mf_path is given; the machine still comes from bambu_model. quality and strength adjust that process, and strength never lowers its walls or infill.",
                         inputSchema: {
                             type: "object",
                             properties: {
@@ -2300,6 +2302,7 @@ class BambuPrinterMCPServer {
                                 skip_modified_gcodes: { type: "boolean", description: "Strip custom start/end gcodes embedded in the 3MF. Recommended for downloaded 3MFs since custom gcodes from other users' profiles may be unsafe for your printer." },
                                 pause_at_layers: { type: "array", items: { type: "integer", minimum: 2 }, description: "Pause before each of these layers (1-based, as Bambu Studio and OrcaSlicer number them in the preview), for example to drop in magnets or nuts. The slicer writes the printer's own pause G-code there (M400 U1 on Bambu printers); the printer stops by itself and waits for Resume. Bambu Studio or OrcaSlicer CLI only. Pauses already in a project 3MF are kept." },
                                 slice_plate: { type: "number", description: "Which plate index to slice. 0 = all plates for local slicers; remote slicing defaults to plate 1 and rejects 0. Use 1, 2, etc. to slice only a specific plate in multi-plate 3MF projects." },
+                                split_to_plates: { type: "boolean", description: "For an STL or OBJ: when the model doesn't fit the printer's bed (the machine preset's printable area, excluded areas and height), split it into its separate parts, each kept whole and parts laid out close together kept together, and arrange them on as many plates as needed. structuredContent.bed_split then says fits: true (nothing changed), or gives three_mf_path (the multi-plate project 3MF, sliced here: plate slice_plate, default 1, or 0 for all), plates (index from 0, name, objects) and a plain message; slice another plate by slicing three_mf_path with slice_plate and arrange false. A part larger than the bed is an error whose message names it and its size against the bed's (bed_split.too_large). Bambu Studio and OrcaSlicer CLI only; not with scale, rotate or copies." },
                                 ...PRINT_QUALITY_PROPERTIES,
                                 layer_height: { type: "number", exclusiveMinimum: 0, description: "Layer height in mm, such as 0.28 (draft), 0.2 (standard) or 0.12 (fine). Written as the process preset's layer_height over the machine and process preset this tool resolves; at most the nozzle diameter. Bambu-compatible slicers only." },
                                 wall_loops: { type: "integer", minimum: 0, maximum: 1000, description: "Number of walls (perimeters), written as the process preset's wall_loops. Bambu-compatible slicers only." },
@@ -3987,12 +3990,57 @@ class BambuPrinterMCPServer {
                                 console.warn("Could not resolve live printer filaments for slicing:", filamentError);
                             }
                         }
-                        const sliced = await this.stlManipulator.sliceSTLWithResult(String(args.stl_path), slicerType, slicerPath, activeSlicerProfile, undefined, // progressCallback
+                        // A model bigger than the bed: split into its parts and arranged on as many plates as it needs
+                        // (src/slicer/bed-plates.ts), then that project is sliced, one plate (slice_plate, default 1) or all (0).
+                        let slicePath = String(args.stl_path);
+                        let bedSplit;
+                        if (args?.split_to_plates === true && /\.(stl|obj)$/i.test(slicePath)) {
+                            if (!bambuSliceCapabilities(slicerType).plates) {
+                                throw new Error(`split_to_plates needs the Bambu Studio or OrcaSlicer CLI, not ${slicerType}; nothing was sliced.`);
+                            }
+                            const transformed = ["scale", "rotate", "rotate_x", "rotate_y", "repetitions", "clone_objects"].filter(key => args?.[key] !== undefined && !(key === "repetitions" && Number(args.repetitions) === 1));
+                            if (transformed.length)
+                                throw new Error(`split_to_plates can't be combined with ${transformed.join(", ")}; nothing was sliced.`);
+                            let profilesRoot;
+                            try {
+                                profilesRoot = detectProfilesRoot(slicerPath, slicerType);
+                            }
+                            catch (error) {
+                                console.error(`split_to_plates: no profile tree for ${slicerType} (${error instanceof Error ? error.message : String(error)}).`);
+                            }
+                            // The same profile source slicing uses: an OrcaSlicer install's BBL.opc cache is unpacked first.
+                            const cacheRoot = profilesRoot && slicerType === "orcaslicer" ? await materializeOrcaProfilesRoot(profilesRoot, TEMP_DIR) : profilesRoot;
+                            let bed;
+                            try {
+                                bed = await machineBed(cacheRoot, printerPreset, MACHINE_LIMITS[sliceModel]?.volume);
+                            }
+                            finally {
+                                if (cacheRoot && cacheRoot !== profilesRoot)
+                                    await fs.promises.rm(cacheRoot, { recursive: true, force: true });
+                            }
+                            const printerName = printerPreset?.replace(/^Bambu Lab /, "").replace(/ [\d.]+ nozzle$/, "");
+                            // Named by the model's bytes and the bed: different models, or one model on different beds, never share a file.
+                            const modelHash = createHash("sha256").update(await fs.promises.readFile(slicePath)).update(JSON.stringify(bed)).digest("hex").slice(0, 12);
+                            bedSplit = await splitToPlates({ modelPath: slicePath, bed, printer: printerName,
+                                outPath: path.join(TEMP_DIR, `${path.basename(slicePath, path.extname(slicePath))}_plates_${modelHash}.3mf`) });
+                            if (!bedSplit.fits && !("three_mf_path" in bedSplit)) {
+                                // A part bigger than the bed: said plainly, nothing sliced.
+                                await progressNotifications;
+                                return { content: [{ type: "text", text: bedSplit.message }], isError: true,
+                                    structuredContent: { slicer_report: { failed: true, message: bedSplit.message }, bed_split: bedSplit } };
+                            }
+                            if (!bedSplit.fits) {
+                                slicePath = bedSplit.three_mf_path;
+                                // The project keeps the arrangement: exactly what a client slicing that 3MF's plate sends.
+                                Object.assign(sliceBambuOptions, { arrange: false, orient: false, ensureOnBed: false, slicePlate: sliceBambuOptions.slicePlate ?? 1 });
+                            }
+                        }
+                        const sliced = await this.stlManipulator.sliceSTLWithResult(slicePath, slicerType, slicerPath, activeSlicerProfile, undefined, // progressCallback
                         printerPreset, sliceBambuOptions);
                         await progressNotifications;
                         // The text stays the sliced file's path; slicer_result is the slicer's own result.json, verbatim, and
                         // slicer_report its verdict and words, so clients don't read the slicer's format.
-                        return { content: [{ type: "text", text: sliced.path }], structuredContent: withSlicerReport(sliced) };
+                        return { content: [{ type: "text", text: sliced.path }], structuredContent: { ...withSlicerReport(sliced), ...(bedSplit ? { bed_split: bedSplit } : {}) } };
                     }
                     case "print_3mf": {
                         if (!args?.three_mf_path) {
@@ -4387,13 +4435,16 @@ class BambuPrinterMCPServer {
                     tool: name,
                     ...(error instanceof PrinterRefusal ? { code: error.code } : {}),
                     // The slicer's own result.json; the message starts with its error_string and warnings.
-                    ...(error instanceof SlicerRunError && error.slicerResult ? { slicer_result: error.slicerResult, ...reportOf(error.slicerResult) } : {}),
+                    // A slicer failure always carries slicer_report: the plain sentence a person sees, the slicer's words for the log.
+                    ...(error instanceof SlicerRunError ? error.slicerResult
+                        ? { slicer_result: error.slicerResult, ...reportOf(error.slicerResult) }
+                        : { slicer_report: { ...refusalReport(error.words), message: error.plain } } : {}),
                 };
                 // MCP clients validate structuredContent against a declared outputSchema even on
                 // errors (SDK 1.32 Client.callTool), so those tools return the error as text only.
                 return {
-                    // A slicer failure leads with the slicer's own words.
-                    content: [{ type: "text", text: error instanceof SlicerRunError && error.slicerText ? message : `Error: ${message}` }],
+                    // A slicer failure leads with its plain sentence, then the slicer's own words.
+                    content: [{ type: "text", text: error instanceof SlicerRunError ? message : `Error: ${message}` }],
                     ...(OUTPUT_SCHEMA_TOOLS.has(name) ? {} : { structuredContent: structured }),
                     isError: true,
                 };

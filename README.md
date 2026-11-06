@@ -1190,6 +1190,7 @@ When `slicer_type` is `bambustudio` (the default), these additional parameters a
 | `orient` | boolean | Auto-orient model for optimal printability |
 | `arrange` | boolean | Auto-arrange objects on the build plate |
 | `ensure_on_bed` | boolean | Lift floating models onto the bed |
+| `split_to_plates` | boolean | For an STL or OBJ bigger than the printer's bed: split it into its separate parts, each kept whole (parts laid out close together, and parts inside one another, stay together as they were), and arrange them on as many plates as needed, inside the machine preset's `printable_area`, clear of its `bed_exclude_area` and under its `printable_height`. `structuredContent.bed_split` is `{ fits: true }` when nothing needed changing; otherwise it gives the multi-plate project 3MF (`three_mf_path`, the same bytes for the same model and bed), its `plates` (`index` from 0, `name`, `objects`) and a plain `message`. That project is what gets sliced: plate `slice_plate` (default 1), or 0 for all. A part larger than the bed is an error whose text and `slicer_report.message` name it and its size against the bed's (`bed_split.too_large`). Not with `scale`, rotations or copies. `counterpart_printer_info` says where it works (`capabilities.slicing.plates`). |
 | `clone_objects` | string | Clone counts per object, comma-separated (e.g. `"1,3,1,10"`) |
 | `skip_objects` | string | Object indices to skip, comma-separated (e.g. `"3,5,10"`) |
 | `load_filaments` | string | Filament profile paths, semicolon-separated |

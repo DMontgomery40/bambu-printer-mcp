@@ -3,12 +3,13 @@ import { type PrinterInfo } from "./schemas.js";
 export declare const BAMBU_CLI_SLICERS: readonly ["bambustudio", "orcaslicer", "orcaslicer-bambulab"];
 /**
  * What slice_stl applies on each backend: the Bambu Studio / OrcaSlicer CLIs take all three; remote orca-slicer-api
- * takes supports and orient but refuses repetitions; PrusaSlicer, Slic3r and Cura take none of them here.
+ * takes supports and orient but refuses repetitions and doesn't split across plates; PrusaSlicer, Slic3r and Cura take none of them here.
  */
 export declare function bambuSliceCapabilities(slicerType: string | undefined): {
     supports: boolean;
     copies: boolean;
     orient: boolean;
+    plates: boolean;
 };
 export declare function bambuPrinterInfo(options: {
     server: {

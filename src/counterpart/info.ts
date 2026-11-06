@@ -12,12 +12,13 @@ export const BAMBU_CLI_SLICERS = ["bambustudio", "orcaslicer", "orcaslicer-bambu
 
 /**
  * What slice_stl applies on each backend: the Bambu Studio / OrcaSlicer CLIs take all three; remote orca-slicer-api
- * takes supports and orient but refuses repetitions; PrusaSlicer, Slic3r and Cura take none of them here.
+ * takes supports and orient but refuses repetitions and doesn't split across plates; PrusaSlicer, Slic3r and Cura take none of them here.
  */
-export function bambuSliceCapabilities(slicerType: string | undefined): { supports: boolean; copies: boolean; orient: boolean } {
-  if (slicerType === undefined || (BAMBU_CLI_SLICERS as readonly string[]).includes(slicerType)) return { supports: true, copies: true, orient: true };
-  if (slicerType === "orca-slicer-api") return { supports: true, copies: false, orient: true };
-  return { supports: false, copies: false, orient: false };
+export function bambuSliceCapabilities(slicerType: string | undefined): { supports: boolean; copies: boolean; orient: boolean; plates: boolean } {
+  // plates: slice_stl's split_to_plates, for a model bigger than the bed (src/slicer/bed-plates.ts).
+  if (slicerType === undefined || (BAMBU_CLI_SLICERS as readonly string[]).includes(slicerType)) return { supports: true, copies: true, orient: true, plates: true };
+  if (slicerType === "orca-slicer-api") return { supports: true, copies: false, orient: true, plates: false };
+  return { supports: false, copies: false, orient: false, plates: false };
 }
 
 export function bambuPrinterInfo(options: { server: { name: string; version: string }; host: string; serial?: string; model?: string; slicerType?: string }): PrinterInfo {

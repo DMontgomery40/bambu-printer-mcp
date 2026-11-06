@@ -2396,7 +2396,7 @@ function writeTemplateJsonFixture(
 
 // `result` names a real Bambu Studio result.json in tests/fixtures/studio-result
 // for the fake CLI to write to its --outputdir; a nonzero `exitCode` fails the run.
-async function createFakeBambuSlicer({ result, exitCode = 0 } = {}) {
+async function createFakeBambuSlicer({ result, exitCode = 0, machine = {} } = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-mcp-template-slicer-"));
   const fakeSlicerPath = path.join(tempDir, "fake-slicer.mjs");
   const argsOutPath = path.join(tempDir, "args.json");
@@ -2412,7 +2412,7 @@ async function createFakeBambuSlicer({ result, exitCode = 0 } = {}) {
   const writeProfile = (kind, profile) => fs.writeFileSync(
     path.join(profilesRoot, "BBL", kind, `${profile.name}.json`), JSON.stringify(profile)
   );
-  writeProfile("machine", { name: "Bambu Lab P1S 0.4 nozzle", nozzle_diameter: ["0.4"], default_print_profile: "Behavior process", default_filament_profile: ["Behavior filament"], machine_start_gcode: "fixture start" });
+  writeProfile("machine", { name: "Bambu Lab P1S 0.4 nozzle", nozzle_diameter: ["0.4"], default_print_profile: "Behavior process", default_filament_profile: ["Behavior filament"], machine_start_gcode: "fixture start", ...machine });
   writeProfile("process", { name: "Behavior process", layer_height: "0.2" });
   writeProfile("filament", { name: "Behavior filament", filament_type: ["PLA"] });
   fs.writeFileSync(
@@ -2509,10 +2509,11 @@ async function sliceWithFakeBambuSlicer(t, options) {
   const client = createClient();
   t.after(async () => { await closeTransport(transport); });
   await client.connect(transport);
-  return client.callTool({
+  const result = await client.callTool({
     name: "slice_stl",
-    arguments: { stl_path: SAMPLE_STL, bambu_model: "p1s", slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false },
+    arguments: { stl_path: SAMPLE_STL, bambu_model: "p1s", slicer_path: fakeSlicer.fakeSlicerPath, use_printer_filaments: false, ...options?.arguments },
   });
+  return options?.withSlicer ? { result, fakeSlicer } : result;
 }
 
 // Slicing the same model the same way again reuses the kept slice (src/slicer/slice-cache.ts): the slicer
@@ -2576,17 +2577,20 @@ test("slice_stl returns Bambu Studio's result.json, warnings included, in struct
 
 // Bambu Studio's auto-orient tilted the gap filler and failed with return
 // code -100 (exit 156) and an empty-layer list per plate.
-test("a failed slice_stl starts with Bambu Studio's words and carries its result.json", async (t) => {
+// A person is told a plain sentence; Studio's own words follow for the log, and stay whole in slicer_message.
+test("a failed slice_stl leads with a plain sentence, keeps Bambu Studio's words and carries its result.json", async (t) => {
   const result = await sliceWithFakeBambuSlicer(t, { result: "p1s-empty-layers.json", exitCode: 156 });
   const expected = studioResult("p1s-empty-layers.json");
   assert.equal(result.isError, true);
   assert.deepEqual(result.structuredContent.slicer_result, expected);
+  const plain = "The slicer couldn't slice this model. Its own message is kept for the log.";
   const studioWords = `${expected.error_string}\n${expected.sliced_plates[0].warning_message.trim()}\n`;
-  assert.ok(result.content[0].text.startsWith(studioWords), result.content[0].text);
+  assert.ok(result.content[0].text.startsWith(`${plain}\nThe slicer said: ${studioWords}`), result.content[0].text);
   assert.match(result.content[0].text, /Slicer failed: the slicer exited with code 156 \(Failed slicing the model\./);
-  assert.ok(result.structuredContent.message.startsWith(studioWords));
+  assert.ok(result.structuredContent.message.startsWith(`${plain}\nThe slicer said: ${studioWords}`));
   assert.equal(result.structuredContent.slicer_report.failed, true);
-  assert.ok(result.structuredContent.slicer_report.message.startsWith(expected.error_string));
+  assert.equal(result.structuredContent.slicer_report.message, plain);
+  assert.ok(result.structuredContent.slicer_report.slicer_message.startsWith(expected.error_string));
 });
 
 // The CLI's own return code fails the slice even when the process exits 0.
@@ -2595,7 +2599,7 @@ test("slice_stl fails when Bambu Studio's result.json reports an error but the C
   const expected = studioResult("p1s-empty-layers.json");
   assert.equal(result.isError, true);
   assert.deepEqual(result.structuredContent.slicer_result, expected);
-  assert.ok(result.content[0].text.startsWith(`${expected.error_string}\n`), result.content[0].text);
+  assert.ok(result.content[0].text.startsWith(`The slicer couldn't slice this model. Its own message is kept for the log.\nThe slicer said: ${expected.error_string}\n`), result.content[0].text);
   assert.match(result.content[0].text, /exited with code 0, but its result\.json reports return_code -100\.$/);
 });
 
@@ -2604,6 +2608,70 @@ test("slice_stl without a result.json returns the path and no slicer_result", as
   const result = await sliceWithFakeBambuSlicer(t, {});
   assert.equal(result.isError, undefined, result.content?.[0]?.text);
   assert.deepEqual(result.structuredContent, { path: result.content[0].text });
+});
+
+// David's six-plate kit (Nov 6) was one STL wider than his P1S: Bambu Studio refused it with "One of the plate is
+// empty". With split_to_plates the model's parts go on plates and that project is sliced, plate 1 unless asked.
+const P1S_BED = { printable_area: ["0x0", "256x0", "256x256", "0x256"], bed_exclude_area: ["0x0", "18x0", "18x28", "0x28"], printable_height: "250" };
+test("slice_stl split_to_plates arranges a model wider than the bed on plates and slices that project", async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "split-plates-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const kit = path.join(directory, "kit.stl");
+  fs.writeFileSync(kit, boxesStl([[[0, 0, 0], [200, 200, 10]], [[300, 0, 0], [500, 200, 10]], [[600, 0, 0], [800, 200, 10]]]));
+  const { result, fakeSlicer } = await sliceWithFakeBambuSlicer(t, { result: "p1s-success.json", machine: P1S_BED, withSlicer: true,
+    arguments: { stl_path: kit, split_to_plates: true, arrange: true, orient: true, ensure_on_bed: true } });
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  const split = result.structuredContent.bed_split;
+  assert.equal(split.fits, false);
+  assert.equal(split.plates.length, 3);
+  assert.deepEqual(split.plates[0], { index: 0, name: "Plate 1", objects: ["Part 1"] });
+  assert.match(split.message, /bigger than the P1S bed \(256 × 256 mm, 250 mm tall\), so its 3 parts are arranged on 3 plates/);
+  assert.match(split.three_mf_path, /kit_plates_[0-9a-f]{12}\.3mf$/);
+  const args = JSON.parse(fs.readFileSync(fakeSlicer.argsOutPath, "utf8"));
+  // The project was sliced as a client slices one of its plates: plate 1, the arrangement kept.
+  assert.equal(args[args.indexOf("--slice") + 1], "1");
+  assert.equal(args.at(-1), split.three_mf_path);
+  assert.ok(!args.includes("--arrange") || args[args.indexOf("--arrange") + 1] === "0", JSON.stringify(args));
+  assert.ok(!args.includes("--orient") || args[args.indexOf("--orient") + 1] === "0", JSON.stringify(args));
+  assert.ok(!args.includes("--ensure-on-bed"), JSON.stringify(args));
+  // Another plate: the same project with slice_plate.
+  const second = await sliceWithFakeBambuSlicer(t, { result: "p1s-success.json", machine: P1S_BED, withSlicer: true,
+    arguments: { stl_path: kit, split_to_plates: true, slice_plate: 2 } });
+  const again = JSON.parse(fs.readFileSync(second.fakeSlicer.argsOutPath, "utf8"));
+  assert.equal(again[again.indexOf("--slice") + 1], "2");
+});
+
+test("slice_stl split_to_plates leaves a model that fits the bed to the slicer", async (t) => {
+  const { result, fakeSlicer } = await sliceWithFakeBambuSlicer(t, { result: "p1s-success.json", machine: P1S_BED, withSlicer: true,
+    arguments: { split_to_plates: true } });
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  assert.deepEqual(result.structuredContent.bed_split, { fits: true });
+  const args = JSON.parse(fs.readFileSync(fakeSlicer.argsOutPath, "utf8"));
+  assert.equal(args.at(-1), SAMPLE_STL);
+});
+
+test("slice_stl split_to_plates names a part bigger than the bed, plainly, and slices nothing", async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "split-plates-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const kit = path.join(directory, "kit.stl");
+  fs.writeFileSync(kit, boxesStl([[[0, 0, 0], [100, 150, 10]], [[400, 0, 0], [700, 120, 40]]]));
+  const { result, fakeSlicer } = await sliceWithFakeBambuSlicer(t, { machine: P1S_BED, withSlicer: true, arguments: { stl_path: kit, split_to_plates: true } });
+  assert.equal(result.isError, true);
+  const sentence = "Part 2 is 300 × 120 mm and 40 mm tall, larger than the P1S bed (256 × 256 mm, 250 mm tall), so it can't be printed on it as it is. Scale it down or cut it into pieces that fit.";
+  assert.equal(result.content[0].text, sentence);
+  assert.deepEqual(result.structuredContent.slicer_report, { failed: true, message: sentence });
+  assert.deepEqual(result.structuredContent.bed_split.too_large, [{ name: "Part 2", size_mm: [300, 120, 40] }]);
+  assert.equal(fs.existsSync(fakeSlicer.argsOutPath), false, "the slicer never ran");
+});
+
+// Studio's empty-plate refusal reaches a person as a sentence; its words stay in slicer_message for the log.
+test("a slice_stl refusal with no result.json still carries a plain slicer_report", async (t) => {
+  const result = await sliceWithFakeBambuSlicer(t, { exitCode: 206 });
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.slicer_report.failed, true);
+  assert.equal(result.structuredContent.slicer_report.message, "Nothing on this plate can be printed: no part sits fully on the bed. A part is off the plate or across its edge, or the model is bigger than the bed.");
+  assert.match(result.structuredContent.slicer_report.slicer_message, /a plate is empty or has no object fully inside it/);
+  assert.ok(result.content[0].text.startsWith(result.structuredContent.slicer_report.message), result.content[0].text);
 });
 
 // A closed binary STL of axis-aligned boxes, each its own shell.

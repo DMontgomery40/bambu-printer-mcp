@@ -75,6 +75,7 @@ export type PrinterInfo = {
             supports: boolean;
             copies: boolean;
             orient: boolean;
+            plates?: boolean;
         };
     };
 };
@@ -165,6 +166,9 @@ export declare const PRINTER_INFO_OUTPUT_SCHEMA: {
                             type: string;
                         };
                         orient: {
+                            type: string;
+                        };
+                        plates: {
                             type: string;
                         };
                     };

@@ -12,6 +12,7 @@ import * as crypto from 'crypto';
 import { execFile } from 'child_process';
 import { keepSlice, restoreSlice, sliceCacheKey } from '../slicer/slice-cache.js';
 import { flattenForCli, detectProfilesRoot, resolveBblMachineProfile } from '../slicer/profile-flatten.js';
+import { plainSlicerError, UNKNOWN_SLICER_ERROR } from '../slicer/slicer-messages.js';
 import { applyProcessOverrides } from '../slicer/process-overrides.js';
 import { profileJsonFiles } from '../slicer/profile-files.js';
 import { materializeOrcaProfilesRoot, stageOrcaCliProfiles } from '../slicer/orca-profile-cache.js';
@@ -122,10 +123,14 @@ const PROFILE_METADATA_KEYS = new Set([
 export class SlicerRunError extends Error {
     constructor(detail, slicerResult) {
         const slicerText = slicerResult ? slicerResultText(slicerResult) : "";
-        super(slicerText ? `${slicerText}\n${detail}` : detail);
+        const words = slicerText ? `${slicerText}\n${detail}` : detail;
+        const plain = plainSlicerError(words) ?? UNKNOWN_SLICER_ERROR;
+        super(`${plain}\nThe slicer said: ${words}`);
         this.slicerResult = slicerResult;
         this.name = "SlicerRunError";
         this.slicerText = slicerText;
+        this.plain = plain;
+        this.words = words;
     }
 }
 /**

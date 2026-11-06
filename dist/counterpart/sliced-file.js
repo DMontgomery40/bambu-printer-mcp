@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { loadSafe3mfArchive, readBoundedPrintFile } from "../safety/archive.js";
+import { plainSlicerError, UNKNOWN_SLICER_ERROR } from "../slicer/slicer-messages.js";
 const number = (value) => {
     const parsed = typeof value === "number" ? value : typeof value === "string" ? Number.parseFloat(value) : NaN;
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
@@ -92,6 +93,11 @@ async function readFacts(filePath, plateIndex) {
     return { ...(plates.size ? { plate_count: plates.size } : {}), ...(estimate ? { estimate } : {}), settings };
 }
 const clean = (text) => text.replace(/\r\n?/g, "\n").replace(/[\x00-\x09\x0b-\x1f\x7f]/g, " ").trim();
+/** A refusal's report: the plain sentence, and the slicer's words kept beside it. */
+export function refusalReport(words) {
+    const raw = clean(words).slice(0, 2000);
+    return { failed: true, message: plainSlicerError(raw) ?? UNKNOWN_SLICER_ERROR, ...(raw ? { slicer_message: raw } : {}) };
+}
 export function slicerReport(result) {
     if (!result || typeof result !== "object" || Array.isArray(result))
         return undefined;
@@ -105,6 +111,6 @@ export function slicerReport(result) {
     const error = typeof value.error_string === "string" ? clean(value.error_string) : "";
     const words = [...new Set([...(failed && error ? [error] : []), ...warnings])].join("\n").slice(0, 2000);
     if (failed)
-        return { failed, message: words || `The slicer could not slice this model (return code ${String(value.return_code)}).` };
-    return { failed, ...(words ? { message: words } : {}), ...(plateCount ? { plate_count: plateCount } : {}) };
+        return refusalReport(words || `return code ${String(value.return_code)}`);
+    return { failed, ...(words ? { message: words, slicer_message: words } : {}), ...(plateCount ? { plate_count: plateCount } : {}) };
 }

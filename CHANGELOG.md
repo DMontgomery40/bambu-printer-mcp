@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.68] – 2026-11-06
+
+### Added
+
+- `slice_stl` `split_to_plates`: a model bigger than the bed is split across plates. An STL or OBJ that doesn't fit the printer's bed is split into its separate parts, each kept whole. Parts laid out within 20 mm of each other stay together as the designer grouped them, and a part inside another stays with it, in the same mesh object, so a hollow part's cavity shell still makes it hollow. They are arranged on as many plates as needed, inside the machine preset's printable area, clear of its excluded areas (the P1S purge-chute corner) and under its printable height. The result is a deterministic multi-plate project 3MF, `bed_split.plates` (`index`, `name`, `objects`, the shape clients use for a designer's plates) and a plain message, and plate 1 (or `slice_plate`) of that project is sliced. A part larger than the bed is an error that names the part and its size against the bed's. `counterpart_printer_info` reports `capabilities.slicing.plates`. Checked with unit tests and a stand-in slicer. A kit's single 850 × 521 mm STL (54 parts) split into 4 plates for a P1S, and Bambu Studio 02.09 on macOS sliced every plate without errors.
+
+### Fixed
+
+- File inspection accepts Bambu Studio's skip-object marker when its base64 object mask happens to read like a command (`M624 /g8C/B8AAAA=` has `g8`). Such a plate was refused as "multiple commands on one line", so it had no estimate, no preview and couldn't be printed; plate 3 of a 37-part kit hit this. Only the exact one-token `M624 <base64>` form is exempt; anything after the mask is still refused. Checked with inspection tests and the real plate's G-code from Bambu Studio 02.09.
+
+### Changed
+
+- A slicer's refusal reaches a person as a plain sentence. `slicer_report.message` and the start of a failed `slice_stl`'s text say what is wrong, for example the empty-plate, off-plate, too-tall and outside-the-printable-area refusals of Bambu Studio and OrcaSlicer, matched on their own strings. The slicer's words stay in the new `slicer_report.slicer_message` for logs, and a failure without a result.json carries a `slicer_report` too. A successful slice's warnings are unchanged in `message`.
+
 ## [1.1.67] – 2026-11-06
 
 ### Added
