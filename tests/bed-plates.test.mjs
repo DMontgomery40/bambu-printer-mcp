@@ -92,7 +92,10 @@ test("separate boxes laid out wider than the bed are arranged across plates, eac
 
 test("the same model and bed give the same 3MF bytes", async (t) => {
   const stl = boxesStl([box(0, 0, 200, 200, 10), box(300, 0, 200, 200, 10)]);
-  const first = await split(t, stl), second = await split(t, stl);
+  const first = await split(t, stl);
+  // A later second: anything stamped with the time would change.
+  await new Promise(resolve => setTimeout(resolve, 2100));
+  const second = await split(t, stl);
   assert.deepEqual(fs.readFileSync(first.outPath), fs.readFileSync(second.outPath));
 });
 

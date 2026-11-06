@@ -511,7 +511,8 @@ export async function splitToPlates(options) {
     placed.sort((a, b) => a.plate - b.plate || whole.indexOf(a.bodies[0]) - whole.indexOf(b.bodies[0]));
     const { xml } = modelXml(positions, placed);
     const zip = new JSZip();
-    const entry = { date: ZIP_DATE };
+    // No folder entries: JSZip would stamp them with the current time, and the bytes would differ.
+    const entry = { date: ZIP_DATE, createFolders: false };
     zip.file("[Content_Types].xml", CONTENT_TYPES, entry);
     zip.file("_rels/.rels", RELATIONSHIPS, entry);
     zip.file("3D/3dmodel.model", xml, entry);
