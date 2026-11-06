@@ -860,12 +860,10 @@ console.error('Errors'); process.exit(206);
   process.env.FAKE_RESULT_JSON = JSON.stringify({ return_code: -52, error_string: 'Some objects are located over the boundary of the heated bed.' });
   await assert.rejects(slice(), /the slicer exited with code 206 \(Some objects are located over the boundary of the heated bed\. \[-52\]\)/);
 
-  // macOS writes no result.json; an earlier run's must not be reused. Each slice has its own folder, so the earlier
-  // run's result.json stays in its own and this run's reason comes from its exit code.
+  // macOS writes no result.json; an earlier run's must not be reused. Each slice has its own folder, removed when the
+  // slice fails, so this run's reason comes from its own exit code.
   delete process.env.FAKE_RESULT_JSON;
-  const earlier = (await fs.readdir(path.join(f.root, 'out', 'slices'))).map(name => path.join(f.root, 'out', 'slices', name, 'result.json'));
-  assert.equal(earlier.length, 1);
-  await fs.access(earlier[0]);
+  assert.deepEqual(await fs.readdir(path.join(f.root, 'out', 'slices')), [], "the failed slice's folder is gone");
   await assert.rejects(slice(), /the slicer exited with code 206 \(a plate is empty or has no object fully inside it; arrange the model or place it on the plate \[-50\]\)/);
 });
 

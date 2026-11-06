@@ -88,7 +88,7 @@ export declare class STLManipulator extends EventEmitter {
      * A new folder for one slice's outputs, under TEMP_DIR/slices. A sliced file's path stays valid for a day after
      * its slice (callers print from it); older slice folders are removed as new slices start.
      */
-    private sliceFolder;
+    private newSliceFolder;
     private getAvailableProfileRoots;
     private findProfileFile;
     private buildFilamentIdIndex;

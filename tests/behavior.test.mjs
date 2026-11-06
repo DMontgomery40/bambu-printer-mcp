@@ -2810,6 +2810,8 @@ test("overlapping slices of same-named models each keep their own sliced file an
     paths.add(result.structuredContent.path);
   }
   assert.equal(paths.size, 3, "every slice has its own output path");
+  // The refused slice's folder is gone; the three that worked keep theirs.
+  assert.equal(fs.readdirSync(path.join(fakeSlicer.tempDir, "out", "slices")).length, 3);
   // Profiles generated for these slices are whole JSON files, never half-written by a neighbour.
   for (const name of fs.readdirSync(path.join(fakeSlicer.tempDir, "out")).filter(name => name.endsWith(".json")))
     JSON.parse(fs.readFileSync(path.join(fakeSlicer.tempDir, "out", name), "utf8"));
@@ -2831,7 +2833,7 @@ test("an identical slice still reuses the kept one from its own folder", async (
 // A client that no longer wants a slice (Counterpart's sheet moved on to newer settings) cancels the call: the
 // slicer is stopped, and nothing half-finished is kept for reuse.
 test("a cancelled slice_stl call stops the slicer and keeps nothing", async (t) => {
-  const { model, slice, pids, cache } = await startOverlapSlicer(t, { holdMs: 30000 });
+  const { model, slice, pids, cache, fakeSlicer } = await startOverlapSlicer(t, { holdMs: 30000 });
   const controller = new AbortController();
   const call = slice(model("cancelled"), { signal: controller.signal });
   call.catch(() => undefined);
@@ -2845,6 +2847,8 @@ test("a cancelled slice_stl call stops the slicer and keeps nothing", async (t) 
   const stopping = Date.now();
   while (alive() && Date.now() - stopping < 5000) await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(alive(), false, "the slicer process was stopped");
+  const slices = path.join(fakeSlicer.tempDir, "out", "slices");
+  assert.deepEqual(fs.existsSync(slices) ? fs.readdirSync(slices) : [], [], "the cancelled slice's folder is removed");
   assert.deepEqual(fs.existsSync(cache) ? fs.readdirSync(cache).filter(name => /^[0-9a-f]{64}$/.test(name)) : [], []);
 });
 

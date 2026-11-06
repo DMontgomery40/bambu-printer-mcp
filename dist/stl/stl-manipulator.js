@@ -225,7 +225,7 @@ export class STLManipulator extends EventEmitter {
      * A new folder for one slice's outputs, under TEMP_DIR/slices. A sliced file's path stays valid for a day after
      * its slice (callers print from it); older slice folders are removed as new slices start.
      */
-    async sliceFolder(operationId) {
+    async newSliceFolder(operationId) {
         const root = path.join(this.tempDir, 'slices');
         await fs.promises.mkdir(root, { recursive: true });
         const cutoff = Date.now() - SLICE_FOLDER_LIFETIME_MS;
@@ -327,12 +327,11 @@ export class STLManipulator extends EventEmitter {
         const serialized = JSON.stringify(value, null, 2);
         const hash = crypto.createHash('sha256').update(serialized).digest('hex').slice(0, 16);
         const outPath = path.join(this.tempDir, `${outputBase}_${suffix}_${hash}.json`);
-        // Named by its content: a slice running now may be reading this very file, so it is never rewritten in place.
-        if (!fs.existsSync(outPath)) {
-            const partial = `${outPath}.${crypto.randomUUID()}.partial`;
-            fs.writeFileSync(partial, serialized);
-            fs.renameSync(partial, outPath);
-        }
+        // A slice running now may be reading this very file (it is named by its content): write it whole elsewhere and
+        // rename it into place, so a reader never sees it truncated or half-written.
+        const partial = `${outPath}.${crypto.randomUUID()}.partial`;
+        fs.writeFileSync(partial, serialized);
+        fs.renameSync(partial, outPath);
         return outPath;
     }
     async resolveBambuLikeSettingsBundle(outputBase, slicerType, slicerProfile, printerPreset, bambuOptions, activeProfilesRoot, preserveOrcaExtrusionMode = false) {
@@ -1431,7 +1430,6 @@ export class STLManipulator extends EventEmitter {
             this.activeOperations.delete(operationId);
             throw new Error("Slicing operation cancelled");
         }
-        signal?.addEventListener('abort', cancel, { once: true });
         if (slicerType !== 'orca-slicer-api' && isPathLikeExecutable(slicerPath) && !fs.existsSync(slicerPath)) {
             throw new Error(`Slicer executable not found at: ${slicerPath}`);
         }
@@ -1448,7 +1446,10 @@ export class STLManipulator extends EventEmitter {
         let cliResult;
         const orcaTemporaryDirectories = [];
         const temporaryFiles = [];
+        // This slice's own folder (local Bambu-compatible CLI): removed if the slice fails or is cancelled.
+        let sliceDir;
         try {
+            signal?.addEventListener('abort', cancel, { once: true });
             if (progressCallback)
                 progressCallback(0, `Starting slicing with ${slicerType}...`);
             switch (slicerType) {
@@ -1501,7 +1502,7 @@ export class STLManipulator extends EventEmitter {
                         // slices at once, even of same-named inputs, never read, replace or delete each other's files.
                         const bambuOutputPath = remote
                             ? path.join(this.tempDir, `${outputBase}_${operationId}_sliced.3mf`)
-                            : path.join(await this.sliceFolder(operationId), `${outputBase}_sliced.3mf`);
+                            : path.join(sliceDir = await this.newSliceFolder(operationId), `${outputBase}_sliced.3mf`);
                         const outputDir = path.dirname(bambuOutputPath);
                         const selectedProfilesRoot = detectProfilesRoot(remote ? undefined : slicerPath, profileSlicerType);
                         const profilesRoot = !remote && profileSlicerType === 'orcaslicer'
@@ -1742,6 +1743,9 @@ export class STLManipulator extends EventEmitter {
         }
         catch (error) {
             console.error(`Slicing failed for ${stlFilePath}:`, error);
+            // Nothing in a failed or cancelled slice's folder is handed back (its result.json is already in the error).
+            if (sliceDir)
+                await fs.promises.rm(sliceDir, { recursive: true, force: true }).catch(() => undefined);
             this.emit('operationError', {
                 operationId,
                 type: 'slice',
