@@ -80,23 +80,30 @@ export function paintedStates(paint) {
     }
     return states;
 }
+export const PAINT_LIMITS = { meshBytes: MAX_MESH_BYTES, totalBytes: MAX_MESH_TOTAL };
 /**
  * Per component file and sub-object id, the painting of that mesh. Only files that contain painting are read in full.
+ * `unread` names the mesh files past the read limits: their painting is unknown, never taken as unpainted.
  */
-async function readPainting(zip, paths) {
+async function readPainting(zip, paths, limits) {
     const result = new Map();
+    const unread = new Set();
     let total = 0;
     for (const path of paths) {
         const file = zip.file(path);
         if (!file)
             continue;
-        // A mesh past the read budget is taken as unpainted (its part's own filament), never a failed listing.
+        // A mesh past the read budget is not read: its painting is unknown, and the listing says so.
         const size = file._data?.uncompressedSize;
-        if (size !== undefined && (size > MAX_MESH_BYTES || total + size > MAX_MESH_TOTAL))
+        if (size !== undefined && (size > limits.meshBytes || total + size > limits.totalBytes)) {
+            unread.add(path);
             continue;
+        }
         const bytes = await file.async("nodebuffer");
-        if (bytes.length > MAX_MESH_BYTES || (total += bytes.length) > MAX_MESH_TOTAL)
+        if (bytes.length > limits.meshBytes || (total += bytes.length) > limits.totalBytes) {
+            unread.add(path);
             continue;
+        }
         if (!bytes.includes("paint_color=\""))
             continue;
         const text = bytes.toString("utf8");
@@ -118,7 +125,7 @@ async function readPainting(zip, paths) {
             result.set(`${path}#${object[1]}`, paint);
         }
     }
-    return result;
+    return { painting: result, unread };
 }
 function projectFilaments(config) {
     const list = (key) => Array.isArray(config[key]) ? config[key].map(String) : [];
@@ -135,7 +142,7 @@ function describe(index, project, name) {
  * The filaments each plate prints with, keyed by plate number. `settings` is model_settings.config, `model` the root
  * 3D/3dmodel.model text.
  */
-export async function plateFilaments(zip, settings, model, plates) {
+export async function plateFilaments(zip, settings, model, plates, limits = PAINT_LIMITS) {
     const text = async (name) => {
         const file = zip.file(name);
         if (!file)
@@ -216,7 +223,9 @@ export async function plateFilaments(zip, settings, model, plates) {
             for (const objectId of plate.objectIds)
                 for (const path of components.get(objectId)?.values() ?? [])
                     paintPaths.add(path);
-    const painting = await readPainting(zip, paintPaths);
+    const { painting, unread } = await readPainting(zip, paintPaths, limits);
+    // Plates with a part whose painting couldn't be read: they list every declared filament and say they're incomplete.
+    const incomplete = new Set();
     const global = (key) => intOf(config[key]) ?? 0;
     const FEATURES = ["wall_filament", "sparse_infill_filament", "solid_infill_filament"];
     const result = new Map();
@@ -250,6 +259,14 @@ export async function plateFilaments(zip, settings, model, plates) {
                 const label = part.name || object.name;
                 const path = components.get(objectId)?.get(part.id);
                 const paint = path ? painting.get(`${path}#${part.id}`) : undefined;
+                // Its mesh is past the read limits: any declared filament may be painted on, so all of them are offered
+                // (a spare row, never a missing one), and the plate is marked incomplete.
+                // A sliced plate needs no painting: Studio's plate_N.json names its filaments, whatever another plate shares.
+                if (path && unread.has(path) && part.subtype === "normal_part" && !plate.slicedFilamentIds) {
+                    incomplete.add(plate.number);
+                    for (let index = 1; index <= declared; index++)
+                        add(index, label);
+                }
                 for (const state of paint?.states ?? [])
                     if (part.subtype === "normal_part")
                         add(state, label);
@@ -321,5 +338,5 @@ export async function plateFilaments(zip, settings, model, plates) {
         result.set(plate.number, [...used.entries()].sort((a, b) => a[0] - b[0]).map(([index, name]) => describe(index, project, name)));
     }
     // Every filament the project declares, used on a plate or not: slice_stl takes one profile per declared filament.
-    return { plates: result, project: Array.from({ length: declared }, (_, i) => describe(i + 1, project)) };
+    return { plates: result, incomplete, project: Array.from({ length: declared }, (_, i) => describe(i + 1, project)) };
 }

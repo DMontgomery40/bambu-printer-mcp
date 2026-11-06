@@ -1,4 +1,4 @@
-import { type PlateFilament } from "./plate-filaments.js";
+import { type PaintLimits, type PlateFilament } from "./plate-filaments.js";
 export interface ModelPlate {
     /** Zero-based, as inspect_print_file's plate_index; slice_stl's slice_plate is index + 1. */
     index: number;
@@ -21,6 +21,11 @@ export interface ModelPlate {
      * Bambu Studio does for the objects on this plate (see plate-filaments.ts). Filaments of other plates never appear.
      */
     filaments: PlateFilament[];
+    /**
+     * false when the plate's list may hold filaments it doesn't print: a part's mesh was too large to read its painting,
+     * so every declared filament is listed rather than risk leaving out one that prints. A client offers them all.
+     */
+    filaments_complete: boolean;
     /** The plate's own preview from the file (Metadata/plate_N.png), when asked for and present. */
     thumbnail_png_base64?: string;
 }
@@ -38,4 +43,5 @@ export interface ModelPlates {
 }
 export declare function listModelPlates(filePath: string, options?: {
     thumbnails?: boolean;
+    paintLimits?: PaintLimits;
 }): Promise<ModelPlates>;
