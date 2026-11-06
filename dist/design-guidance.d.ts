@@ -23,4 +23,18 @@ export declare const FDM_CAPABILITY_RESOURCE: {
     description: string;
 };
 export declare const DESIGN_PROMPTS: DesignPrompt[];
+/**
+ * How this server's configured slicer orients, makes supports and checks a slice: the slicer-specific half of a
+ * design pass's print plan (the fdm_slicing prompt). `capabilities` is what slice_stl applies on that backend, as
+ * counterpart_printer_info reports it.
+ */
+export declare function slicingGuidance(slicerType: string, capabilities: {
+    supports: boolean;
+    orient: boolean;
+}): string;
+export declare const FDM_SLICING_PROMPT: {
+    name: string;
+    title: string;
+    description: string;
+};
 export declare const SERVER_INSTRUCTIONS: string;

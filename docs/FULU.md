@@ -80,6 +80,7 @@ This is an optional, advanced connection path. The MCP implements the framed std
 | Setting | Purpose |
 |---|---|
 | `BAMBU_NETWORK_BRIDGE_COMMAND` | Full trusted shell command for the host binary or platform wrapper. Do not point this at the slicer GUI or another MCP server. |
+| `BAMBU_NETWORK_BRIDGE_IMAGE` | Instead of a command: a Docker image holding FULU's Linux host. See [Run the host in Docker](#run-the-host-in-docker). A command, when set, wins. |
 | `BAMBU_MODEL` | Exact target printer model; required for printing. |
 | `BAMBU_DEV_ID` | Fallback device ID if no printer serial is resolved. An explicit tool `dev_id` takes priority over the serial and this setting; use it when several printers are configured. |
 | `BAMBU_NETWORK_CONFIG_DIR` | Persistent writable agent config/log directory. Default: `~/.config/bambu-printer-mcp/bambu-network`. |
@@ -148,6 +149,26 @@ export BAMBU_NETWORK_BRIDGE_COMMAND="PJARCZAK_BAMBU_PLUGIN_DIR='$HOME/Library/Ap
 The upstream [Lima wrapper](https://github.com/FULU-Foundation/OrcaSlicer-bambulab/blob/main/tools/pjarczak_bambu_linux_host/pjarczak-bambu-linux-host-wrapper) needs an already prepared Linux instance, the correct host architecture, and mounted files. It accepts `PJARCZAK_MAC_LIMA_INSTANCE` for the instance name and `PJARCZAK_LIMACTL` for a specific `limactl` executable. Follow the runtime instructions shipped with your FULU build; older install/verify scripts are not guaranteed to be included in every current package.
 
 The Linux guest must see the project file and writable config/log directory at the same absolute paths the MCP passes. A Docker/VM wrapper that mounts only the runtime libraries is insufficient for printing. If files are missing or the host crashes with an architecture error, resolve the upstream runtime installation before trying print commands.
+
+### Run the host in Docker
+
+On a Mac, or any machine without the x86-64 Linux runtime installed natively, the server can run FULU's Linux host in a Docker image itself. Set `BAMBU_NETWORK_BRIDGE_IMAGE` instead of `BAMBU_NETWORK_BRIDGE_COMMAND`:
+
+| Setting | Purpose |
+|---|---|
+| `BAMBU_NETWORK_BRIDGE_IMAGE` | The image. It holds FULU's host runtime in `/fulu` (`pjarczak_bambu_linux_host` and `ca-certificates.crt`) and the 02.05.02.5x networking plug-in in `/plugins` (`libbambu_networking.so`, `libBambuSource.so`), on an x86-64 Linux with glibc 2.38 or later (Ubuntu 24.04). |
+| `BAMBU_NETWORK_BRIDGE_DOCKER` | The `docker` executable. Default `docker` on the server's `PATH`; a desktop client's `PATH` often lacks Homebrew, so give the full path. |
+| `BAMBU_NETWORK_BRIDGE_DOCKER_HOST` | Optional `docker --host`, such as a Colima profile's `unix://…/docker.sock`. The global Docker context is never changed. |
+| `BAMBU_NETWORK_BRIDGE_COLIMA_PROFILE` | Optional. When Docker doesn't answer, the server runs `colima start --profile <name> --activate=false` once and waits for it. A running profile is never stopped or restarted. |
+| `BAMBU_NETWORK_BRIDGE_COLIMA_HOME` | Optional `COLIMA_HOME` for that profile. |
+| `BAMBU_NETWORK_BRIDGE_COLIMA` | Optional `colima` executable. Default `colima`. |
+
+The server runs `docker run --rm -i --platform linux/amd64 --network host` with the image's host piped through `cat` (FULU #50) and the plug-in paths, CA bundle and country/expected-version settings passed in. It mounts, at the same absolute paths, the folders the host must see:
+
+- the agent's config folder (`BAMBU_NETWORK_CONFIG_DIR`, or this server's own default). The host aborts when it can't open that folder (FULU #54). Each print's checked snapshot is written to `print-snapshots` inside it, because the plug-in uploads that file;
+- `BAMBU_NETWORK_CERT_DIR`, when it is set outside the config folder.
+
+The Docker VM must share those folders with the computer. Colima shares your home folder by default, but not `/tmp` or `/var/folders` (macOS's temporary folders), which is why the snapshots don't go there. A folder the VM doesn't share is mounted empty, and the host then can't start or upload.
 
 ## Probe without printing
 
