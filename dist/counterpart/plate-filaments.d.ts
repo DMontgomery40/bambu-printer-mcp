@@ -56,6 +56,12 @@ export declare function readModelObjects(settings: string): ObjectEntry[];
  * two bits, or, when both are set, 3 + the next nibble + 15 for every preceding 0b1111 nibble.
  */
 export declare function paintedStates(paint: string): number[];
+/** How much mesh text is read for painting: one file, and all of them together. */
+export interface PaintLimits {
+    meshBytes: number;
+    totalBytes: number;
+}
+export declare const PAINT_LIMITS: PaintLimits;
 export interface PlateLayout {
     /** 1-based plate number. */
     number: number;
@@ -73,8 +79,9 @@ export interface PlateLayout {
  * The filaments each plate prints with, keyed by plate number. `settings` is model_settings.config, `model` the root
  * 3D/3dmodel.model text.
  */
-export declare function plateFilaments(zip: JSZip, settings: string, model: string, plates: PlateLayout[]): Promise<{
+export declare function plateFilaments(zip: JSZip, settings: string, model: string, plates: PlateLayout[], limits?: PaintLimits): Promise<{
     plates: Map<number, PlateFilament[]>;
+    incomplete: Set<number>;
     project: PlateFilament[];
 }>;
 export {};
