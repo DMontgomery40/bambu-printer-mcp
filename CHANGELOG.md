@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.71] – 2026-11-06
+
+### Changed
+
+- Pin the optional Linux X2D networking plug-in to Bambu Studio 02.09.01.70’s agent 02.09.01.54 after checking its offered archive and required library SHA-256 values, public certificates and matching native-helper `PrintParams` layout. Existing Linux X2D installations rerun `bambu-printer-mcp-native-setup` after the package update. Offline 0.4 mm single-PLA slices for all twelve supported models pass file inspection; this does not verify other multi-material jobs, Linux plug-in loading or physical printing. H3C remains unsupported.
+- Require future printer-model and MCP-contract changes to be checked against Scan to Make’s Mac, iPhone/iPad, Android and Linux clients, with changes made only where the contract affects a client.
+
 ## [1.1.70] – 2026-11-06
 
 ### Fixed

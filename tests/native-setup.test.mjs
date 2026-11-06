@@ -173,7 +173,7 @@ test("PrintParams layout ignores comments and defaults but detects layout change
   ];
   for (const variant of variants) assert.notDeepEqual(printParamsLayout(variant), printParamsLayout(header));
   assert.throws(() => printParamsLayout("struct Other {};"), /PrintParams not found/);
-  assert.equal(agentVersion('#define BAMBU_NETWORK_AGENT_VERSION         "02.08.02.54"'), "02.08.02.54");
+  assert.equal(agentVersion('#define BAMBU_NETWORK_AGENT_VERSION         "02.09.01.54"'), "02.09.01.54");
 });
 
 function updateFetcher({ tag, offered, header }) {

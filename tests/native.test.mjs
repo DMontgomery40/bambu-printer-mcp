@@ -363,7 +363,7 @@ for (const [label, options, message] of [
   ["a missing plug-in", { installedPlugin: false }, /networking plug-in is not installed.*bambu-printer-mcp-native-setup/],
   ["an arm64 host", { arch: "arm64" }, /requires macOS or x86-64 Linux/],
   ["a missing tunnel library", { tunnelLibrary: false }, /libBambuSource\.so is missing beside/],
-  ["an unpinned plug-in", { unpinnedOptIn: false }, /is not the pinned Bambu plug-in 02\.08\.02\.54/],
+  ["an unpinned plug-in", { unpinnedOptIn: false }, /is not the pinned Bambu plug-in 02\.09\.01\.54/],
 ]) {
   test(`Linux X2D print with ${label} fails before touching the printer`, async t => {
     const s = await server(t, { platform: "linux", model: "", ...options });

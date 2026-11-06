@@ -92,7 +92,9 @@ Verified software: the [October 23 nightly](https://github.com/OrcaSlicer/OrcaSl
 
 ## Multi-colour CLI support and version limits
 
-Bambu Studio 02.09.01.70 emits `M104 M S<temperature>` when the temperature changes after the first layer. The inspector accepts that marker while retaining independent heater and material limits. Isolated macOS P1S 0.4 single- and two-colour output from the [official 2.9 release](https://github.com/bambulab/BambuStudio/releases/tag/v02.09.01.70) is checked against the exact generated files. This verifies slicer/file compatibility, not physical printing or H3C nine-tool support.
+Bambu Studio 02.09.01.70 emits `M104 M S<temperature>` when the temperature changes after the first layer. The inspector accepts that marker while retaining independent heater and material limits. Isolated macOS P1S 0.4 single- and two-colour output from the [official 2.9.1 release](https://github.com/bambulab/BambuStudio/releases/tag/v02.09.01.70) is checked against the exact generated files. Additional offline 0.4 mm, single-PLA cube slices for A1, A1 mini, P1P, P1S, P2S, X1C, X1E, H2S, H2D, H2D Pro, H2C and X2D passed the current file inspector using that exact release archive. These are slicer/file checks, not multi-material validation for those other models or physical printing. H3C (nine nozzles, serial prefix `32X`) remains unsupported and fails the model gate.
+
+The optional Linux X2D native helper pins networking plug-in 02.09.01.54 from Studio 2.9.1. Its `PrintParams` source layout, archive and required library checksums were verified. Linux plug-in loading and physical X2D dispatch were not tested for this version; rerun `bambu-printer-mcp-native-setup` after updating the package.
 
 The CLI can crash when a project uses a filament after the first but its
 loaded profiles leave `filament_colour` at a single-entry default. The MCP

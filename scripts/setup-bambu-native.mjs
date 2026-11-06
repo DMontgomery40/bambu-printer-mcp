@@ -21,15 +21,15 @@ const BUILD_SCRIPT = path.join(PACKAGE_ROOT, "scripts/build-bambu-native.sh");
 const DOWNLOAD_TIMEOUT_MS = 300_000;
 const MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024;
 
-// Bambu Studio v02.08.02.61 declares network agent 02.08.02.54 with the same
+// Bambu Studio v02.09.01.70 declares network agent 02.09.01.54 with the same
 // PrintParams layout as native/bambu-native-print.cpp. The server owns the
 // version and library checksums; this adds where to download them from.
 export const PINNED = Object.freeze({
-  studioTag: "v02.08.02.61",
+  studioTag: "v02.09.01.70",
   plugin: Object.freeze({
     version: BAMBU_NATIVE_PINNED_PLUGIN.version,
-    url: `https://public-cdn.bblmw.com/upgrade/studio/plugins/${BAMBU_NATIVE_PINNED_PLUGIN.version}/f1a94b8828/linux_${BAMBU_NATIVE_PINNED_PLUGIN.version}.zip`,
-    sha256: "a7ea8ccec85ab5a7b8959a5697f7be957d58da82e67aad1cb0ad9b3cdf5baed6",
+    url: `https://public-cdn.bblmw.com/upgrade/studio/plugins/${BAMBU_NATIVE_PINNED_PLUGIN.version}/61dbe71463/linux_${BAMBU_NATIVE_PINNED_PLUGIN.version}.zip`,
+    sha256: "fffba3ebfd919dd5154ba613b6e3b3ab759a533b3f3c39841519030e7cc9b56a",
     // The networking plug-in opens the eMMC file tunnel through libBambuSource
     // in its own directory; without it uploads fail with -4.
     members: BAMBU_NATIVE_PINNED_PLUGIN.sha256,
