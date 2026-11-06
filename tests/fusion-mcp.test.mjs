@@ -87,9 +87,9 @@ test("Fusion proxy preserves polymorphic content while typed tools advertise out
     assert.equal(tools.find((tool) => tool.name === name)?.outputSchema?.type, "object", name);
   }
   assert.equal(tools.find((tool) => tool.name === "fusion_mcp_call").outputSchema, undefined);
-  assert.equal(FUSION_MCP_PIN, "19b9f1e95192");
-  assert.deepEqual(FUSION_MCP_DEFAULT_ARGS, ["--from", "git+https://github.com/faust-machines/fusion360-mcp-server@19b9f1e95192", "fusion360-mcp-server", "--mode", "socket"]);
-  assert.match(tools.find((tool) => tool.name === "fusion_mcp_status").description, /19b9f1e95192/);
+  assert.equal(FUSION_MCP_PIN, "86a3016a5a5b");
+  assert.deepEqual(FUSION_MCP_DEFAULT_ARGS, ["--from", "git+https://github.com/DMontgomery40/fusion360-mcp-server@86a3016a5a5b", "fusion360-mcp-server", "--mode", "socket"]);
+  assert.match(tools.find((tool) => tool.name === "fusion_mcp_status").description, /86a3016a5a5b/);
 });
 
 test("status without configuration reports it and starts nothing", async (t) => {

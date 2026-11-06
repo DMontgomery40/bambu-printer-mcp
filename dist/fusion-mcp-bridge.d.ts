@@ -1,6 +1,10 @@
 import { type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-/** The faust-machines commit the setup installs; move it only after the PRD §8.9 acceptance check passes. */
-export declare const FUSION_MCP_PIN = "19b9f1e95192";
+/**
+ * The server and add-in commit fusion_mcp_setup installs (FUSION_ADDIN_COMMIT): David Montgomery's fork of
+ * faust-machines/fusion360-mcp-server with document binding, which fusion_mcp_new_design's bind_document needs, while
+ * that change is reviewed upstream. Move it only after the Counterpart PRD §8.9 acceptance check passes.
+ */
+export declare const FUSION_MCP_PIN: string;
 /** PRD §8.9: Blender's MCP add-on holds the add-in's own default, 9876, so Counterpart's Fusion uses 9877. */
 export declare const FUSION_ADDIN_DEFAULT_PORT = 9877;
 export declare const FUSION_MCP_DEFAULT_ARGS: readonly string[];
@@ -25,6 +29,11 @@ export type FusionSystem = {
  */
 export declare function fusionLaunchArguments(port: number): string[];
 export declare const defaultFusionSystem: FusionSystem;
+/** Where the add-in listens: faust reads FUSION_MCP_HOST and FUSION_MCP_PORT too. */
+export declare function addinAddress(): {
+    host: string;
+    port: number;
+};
 export declare const FUSION_STATUS_OUTPUT_SCHEMA: {
     type: "object";
     properties: {

@@ -18,6 +18,8 @@ export const REMOTE_SCOPES = {
     counterpart_printer_info: "read",
     counterpart_print_progress: "read",
     fusion_mcp_status: "read",
+    blender_mcp_setup: "read", // checks only; update raises it
+    fusion_mcp_setup: "read", // checks only; install raises it
     // design
     slice_stl: "design",
     lay_flat: "design",
@@ -69,6 +71,8 @@ export const REMOTE_SCOPES = {
 const RAISED_BY = {
     fusion_mcp_status: { launch: "design" }, // starts Fusion on this computer
     blender_mcp_status: { connect: "design" }, // connects to Blender
+    blender_mcp_setup: { update: "raw" }, // replaces the add-on in the person's Blender
+    fusion_mcp_setup: { install: "raw" }, // installs into the person's Fusion, a login item and this server's .env
 };
 /**
  * Overrides of a server's own configuration (both printer MCPs use the same names): the printer it targets, its

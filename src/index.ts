@@ -57,7 +57,8 @@ import {
 } from "./bambu-native.js";
 import { importFileViaBambuConnect } from "./bambu-connect.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
-import { FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFAULT_ARGS, FUSION_NEW_DESIGN_OUTPUT_SCHEMA, FUSION_STATUS_OUTPUT_SCHEMA, FusionMcpBridge } from "./fusion-mcp-bridge.js";
+import { FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFAULT_ARGS, FUSION_MCP_PIN, FUSION_NEW_DESIGN_OUTPUT_SCHEMA, FUSION_STATUS_OUTPUT_SCHEMA, FusionMcpBridge, addinAddress } from "./fusion-mcp-bridge.js";
+import { BLENDER_SETUP_OUTPUT_SCHEMA, BlenderAddonSetup, FUSION_ADDIN_REPOSITORY, FUSION_SETUP_OUTPUT_SCHEMA, FusionAddinSetup, defaultSetupSystem, parseAddonHandshake, type BlenderAddonHandshake } from "./design-app-setup.js";
 import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue, studioAmsMappingInfo, trayColour } from "./ams-mapping.js";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, hasBambuProjectSettings, hasSlicerSettingsFile, parse3MF, withExtractedSettingsCleanup } from './3mf_parser.js';
 import type { ThreeMFAmsRequirements } from "./types.js";
@@ -1385,6 +1386,9 @@ class BambuPrinterMCPServer {
   private bambuNetwork: BambuNetworkBridge;
   private readonly blender = new BlenderMcpBridge();
   private readonly fusion = new FusionMcpBridge();
+  // Downloads and installer output are staged in this server's own temporary folder.
+  private readonly blenderSetup = new BlenderAddonSetup(() => this.blenderAddonHandshake(), { ...defaultSetupSystem, tmp: TEMP_DIR });
+  private readonly fusionSetup = new FusionAddinSetup(() => addinAddress().port, FUSION_MCP_DEFAULT_ARGS, { ...defaultSetupSystem, tmp: TEMP_DIR });
   private stlManipulator: STLManipulator;
   private readonly runtimeConfig: RuntimeConfig;
   private httpRuntime?: { transport: StreamableHTTPServerTransport; httpServer: HttpServer };
@@ -1447,6 +1451,14 @@ class BambuPrinterMCPServer {
     this.setupResourceHandlers();
     this.setupPromptHandlers();
     this.setupToolHandlers();
+  }
+
+  /** The running Blender add-on's get_addon_status, read through this server's Blender bridge (undefined when it has none). */
+  private async blenderAddonHandshake(): Promise<BlenderAddonHandshake | undefined> {
+    const signal = AbortSignal.timeout(20_000);
+    const status = await this.blender.status({ connect: true, timeout_ms: 15_000 }, signal) as { connected?: boolean; tools?: { name?: string }[] };
+    if (status?.connected !== true || !status.tools?.some(tool => tool.name === "get_addon_status")) return undefined;
+    return parseAddonHandshake(await this.blender.call({ tool_name: "get_addon_status", arguments: {}, timeout_ms: 15_000 }, signal));
   }
 
   /**
@@ -3602,8 +3614,28 @@ class BambuPrinterMCPServer {
             outputSchema: MAKE_3MF_OUTPUT_SCHEMA
           },
           {
+            name: "blender_mcp_setup",
+            description: "Check or update the MCP for Blender add-on that the configured Blender bridge (BLENDER_MCP_COMMAND uvx, BLENDER_MCP_ARGS naming mcp-for-blender or blender-mcp) needs. Without update: which add-on file Blender loads, its protocol and the protocol the package expects, whether Blender is listening and the running add-on's own handshake. Changes nothing. With update: true, stages the add-on with the package's own installer (mcp-for-blender install-addon) at the inspected version, checks it, keeps the old file as a backup next to it and renames the new one into place. Never starts, stops or edits Blender; a running Blender uses the new add-on once it is re-enabled or restarted. A custom bridge returns supported false.",
+            inputSchema: {
+              type: "object",
+              properties: { update: { type: "boolean", description: "Replace the installed add-on with the package's own (default false: check only)." } },
+              additionalProperties: false
+            },
+            outputSchema: BLENDER_SETUP_OUTPUT_SCHEMA
+          },
+          {
+            name: "fusion_mcp_setup",
+            description: `Check or install what the Fusion bridge needs on macOS: Autodesk Fusion itself (found, never installed), the Fusion360MCP add-in from ${FUSION_ADDIN_REPOSITORY} at ${FUSION_MCP_PIN} (every file checked against its pinned SHA-256) set to run on startup, a login item that sets FUSION_MCP_PORT for Fusion however it is opened, and this server's FUSION_MCP_* settings. Without install: reports them and changes nothing. With install: true, installs what is missing and adds the missing settings to this server's own .env (after a copy of it), keeping a configured FUSION_MCP_COMMAND and its arguments. Never starts or quits Fusion; check the connection with fusion_mcp_status.`,
+            inputSchema: {
+              type: "object",
+              properties: { install: { type: "boolean", description: "Install what is missing (default false: check only)." } },
+              additionalProperties: false
+            },
+            outputSchema: FUSION_SETUP_OUTPUT_SCHEMA
+          },
+          {
             name: "fusion_mcp_status",
-            description: `Check Autodesk Fusion through the configured Fusion MCP server (faust-machines/fusion360-mcp-server): whether it is configured, Fusion is running, the Fusion360MCP add-in answers on its port, and the server's tools and schemas. connected is true only when the add-in answers. With launch: true, starts Fusion on macOS when it is not running and waits up to 90 s for the add-in. Configure FUSION_MCP_COMMAND (uvx) and FUSION_MCP_ARGS (${JSON.stringify(FUSION_MCP_DEFAULT_ARGS)}).`,
+            description: `Check Autodesk Fusion through the configured Fusion MCP server (fusion360-mcp-server, faust-machines or the pinned fork with document binding): whether it is configured, Fusion is running, the Fusion360MCP add-in answers on its port, and the server's tools and schemas. connected is true only when the add-in answers. With launch: true, starts Fusion on macOS when it is not running and waits up to 90 s for the add-in. Configure FUSION_MCP_COMMAND (uvx) and FUSION_MCP_ARGS (${JSON.stringify(FUSION_MCP_DEFAULT_ARGS)}), or run fusion_mcp_setup.`,
             inputSchema: {
               type: "object",
               properties: {
@@ -5033,6 +5065,16 @@ class BambuPrinterMCPServer {
 
           case "counterpart_make_3mf":
             result = await makeCounterpart3mf(args ?? {});
+            break;
+
+          case "blender_mcp_setup":
+            if (args?.update !== undefined && typeof args.update !== "boolean") throw new Error("update must be a boolean.");
+            result = args?.update === true ? await this.blenderSetup.update(extra.signal) : await this.blenderSetup.check();
+            break;
+
+          case "fusion_mcp_setup":
+            if (args?.install !== undefined && typeof args.install !== "boolean") throw new Error("install must be a boolean.");
+            result = args?.install === true ? await this.fusionSetup.install(extra.signal) : await this.fusionSetup.check();
             break;
 
           case "fusion_mcp_status":

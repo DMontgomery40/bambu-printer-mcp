@@ -115,6 +115,10 @@ export const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
   // The standard route preserves scene objects and needs a new output path; a configured legacy bridge promises neither.
   blender_mcp_edit_model: hints(false, true, false, true),
   fusion_mcp_status: hints(false, false, true, true), // launch: true starts Fusion on this computer
+  // Install add-ons into the person's own Blender or Fusion: the add-on file is replaced (kept as a backup), and
+  // the Fusion add-in folder, a login item and this server's .env are written. Repeating finds them current.
+  blender_mcp_setup: hints(false, true, true, true),
+  fusion_mcp_setup: hints(false, true, true, true),
   fusion_mcp_call: hints(false, true, false, true), // any Fusion tool, including execute_code
   fusion_mcp_new_design: hints(false, false, false, true), // opens another new document
   fusion_mcp_export: hints(false, false, true, true), // never overwrites; a repeat fails and changes nothing
