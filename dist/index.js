@@ -30,7 +30,7 @@ import { importFileViaBambuConnect } from "./bambu-connect.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
 import { FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFAULT_ARGS, FUSION_MCP_PIN, FUSION_NEW_DESIGN_OUTPUT_SCHEMA, FUSION_STATUS_OUTPUT_SCHEMA, FusionMcpBridge, addinAddress } from "./fusion-mcp-bridge.js";
 import { BLENDER_SETUP_OUTPUT_SCHEMA, BlenderAddonSetup, FUSION_ADDIN_REPOSITORY, FUSION_SETUP_OUTPUT_SCHEMA, FusionAddinSetup, defaultSetupSystem, parseAddonHandshake } from "./design-app-setup.js";
-import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue, studioAmsMappingInfo, trayColour } from "./ams-mapping.js";
+import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue, studioAmsMapping, studioAmsMappingInfo, trayColour } from "./ams-mapping.js";
 import { analyze3MFAmsRequirements, analyze3MFPlateObjects, analyzeCollarCharm3MF, extractBambuTemplateSettings, getCollarCharmRolePolicy, hasBambuProjectSettings, hasSlicerSettingsFile, parse3MF, withExtractedSettingsCleanup } from './3mf_parser.js';
 import { BambuImplementation, assertDirectPrintSupported, checkedFile, defaultResumeStateDir } from "./printers/bambu.js";
 import { resolveStudioPrintOptions, usedNozzleCount } from "./studio-print-options.js";
@@ -1429,7 +1429,8 @@ class BambuPrinterMCPServer {
             const resumeFile = await checkedFile(inspection, snapshot);
             // The options Bambu Studio's Send dialog would send; explicit ones win.
             const studio = resolveStudioPrintOptions(printModel, callerPrintOptions(args), { usedNozzles: usedNozzleCount(inspection) });
-            let mapping = finalAmsMapping?.slice();
+            // Bambu Studio maps only the plate's own filaments; every other project filament is -1 (SelectMachine.cpp:1463-1500).
+            let mapping = finalAmsMapping ? studioAmsMapping(finalAmsMapping, inspection.usedFilamentPositions) : undefined;
             if (finalAmsSlots) {
                 if (finalAmsSlots.length !== inspection.usedFilamentPositions.length)
                     throw new Error("ams_slots must supply exactly one physical tray per used filament.");
@@ -2057,7 +2058,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "list_3mf_plates",
-                        description: "List a Bambu Studio or OrcaSlicer 3MF's plates as its designer laid them out, before slicing: plate_count, and for each plate its index (from 0; slice_stl's slice_plate is index + 1, inspect_print_file's plate_index is index), name, the objects on it, each object copy's identify_id (instances: the ids slice_stl's skip_objects takes) and whether the file already holds its G-code (sliced). A plain 3MF without plate metadata is one plate. include_thumbnails adds each plate's own preview from the file (thumbnail_png_base64). Read-only.",
+                        description: "List a Bambu Studio or OrcaSlicer 3MF's plates as its designer laid them out, before slicing: plate_count, and for each plate its index (from 0; slice_stl's slice_plate is index + 1, inspect_print_file's plate_index is index), name, the objects on it, each object copy's identify_id (instances: the ids slice_stl's skip_objects takes) whether the file already holds its G-code (sliced), and filaments: the project filaments that plate prints with and only those (index from 1 = slice_stl's load_filaments/filament_colours position and print_3mf's ams_mapping position + 1; colour, material, filament_id, and the first part using it), from the slice when there is one, otherwise worked out as Bambu Studio does from the plate's parts, painting, support, layer ranges and tool changes. project_filaments lists every filament the project declares, used or not (slice_stl takes one load_filaments profile per declared filament). A plain 3MF without plate metadata is one plate. include_thumbnails adds each plate's own preview from the file (thumbnail_png_base64). Read-only.",
                         inputSchema: {
                             type: "object",
                             properties: {
@@ -2862,7 +2863,7 @@ class BambuPrinterMCPServer {
                                 use_ams: { type: "boolean", description: "Whether to use the AMS (default: auto-detect from 3MF)" },
                                 ams_mapping: {
                                     type: "array",
-                                    description: "Project-level AMS mapping array. Position = project filament index, value = absolute AMS tray (0-3=AMS 0, 4-7=AMS 1, 8-11=AMS 2, 128+=AMS-HT, 254=external, -1=unused). On dual-nozzle printers (H2D, H2D Pro, H2C, X2D) 254 is the LEFT/deputy nozzle external spool and 255 the RIGHT/main nozzle external spool, matching Bambu Studio's virtual tray ids; the gcode header's filament_map (1=left, 2=right) says which nozzle each filament was sliced for. Prefer ams_slots unless you know the project-level layout.",
+                                    description: "Project-level AMS mapping array. Position = project filament index, value = absolute AMS tray. Positions the selected plate does not print are sent as -1, as Bambu Studio sends them, whatever is passed there (0-3=AMS 0, 4-7=AMS 1, 8-11=AMS 2, 128+=AMS-HT, 254=external, -1=unused). On dual-nozzle printers (H2D, H2D Pro, H2C, X2D) 254 is the LEFT/deputy nozzle external spool and 255 the RIGHT/main nozzle external spool, matching Bambu Studio's virtual tray ids; the gcode header's filament_map (1=left, 2=right) says which nozzle each filament was sliced for. Prefer ams_slots unless you know the project-level layout.",
                                     items: { type: "number" }
                                 },
                                 ams_slots: {

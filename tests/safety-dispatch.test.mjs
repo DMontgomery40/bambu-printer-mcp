@@ -29,10 +29,10 @@ function safetyStatus({ model = "p1s", nozzle = "0.4", state = "IDLE", ...raw } 
   };
 }
 
-async function fixture(t, { model = "p1s", nozzle = "0.4", nozzleDiameters, material = "PLA", gcode = "M104 S220\nM140 S60\nG1 X10 Y10 Z1\n", raw = false, project = {} } = {}) {
+async function fixture(t, { model = "p1s", nozzle = "0.4", nozzleDiameters, material = "PLA", gcode = "M104 S220\nM140 S60\nG1 X10 Y10 Z1\n", raw = false, project = {}, plateFilamentIds = [0], name = "job.gcode.3mf" } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-safety-dispatch-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
-  const file = path.join(dir, raw ? "job.gcode" : "job.gcode.3mf");
+  const file = path.join(dir, raw ? "job.gcode" : name);
   const nozzles = (nozzleDiameters ?? [nozzle]).map(String);
   const content = `; printer_model = Bambu Lab ${model === "a1mini" ? "A1 mini" : model.toUpperCase()}\n; nozzle_diameter = ${nozzles.join(";")}\n; filament_type = ${material}\n${nozzles.length === 2 ? `; filament_map = ${material.split(";").map(() => 1).join(",")}\n; physical_extruder_map = 1,0\n` : ""}; filament_colour = #FFFFFF\n; curr_bed_type = Textured PEI Plate\n${gcode}`;
   if (raw) await fs.writeFile(file, content);
@@ -40,7 +40,7 @@ async function fixture(t, { model = "p1s", nozzle = "0.4", nozzleDiameters, mate
     const zip = new JSZip();
     zip.file("3D/3dmodel.model", '<?xml version="1.0"?><model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources><object id="1" type="model" name="cube.stl"><mesh><vertices/><triangles/></mesh></object></resources><build><item objectid="1"/></build></model>');
     zip.file("Metadata/plate_1.gcode", content);
-    zip.file("Metadata/plate_1.json", JSON.stringify({ filament_ids: [0] }));
+    zip.file("Metadata/plate_1.json", JSON.stringify({ filament_ids: plateFilamentIds }));
     zip.file("Metadata/project_settings.config", JSON.stringify({ printer_model: model, nozzle_diameter: nozzles, filament_type: [material], curr_bed_type: "Textured PEI Plate", ...project }));
     await fs.writeFile(file, await zip.generateAsync({ type: "nodebuffer" }));
   }
@@ -1002,6 +1002,26 @@ for (const tool of ["print_3mf", "print_3mf_bambu_network"]) {
       assert.deepEqual(events.find(event => event.action === "publish")?.payload.print.ams_mapping, [0]);
     } else {
       assert.equal(events.find(event => event.action === "bridge-frame" && event.method === "net.start_print")?.payload.params.ams_mapping, "[0]");
+    }
+  });
+
+  // Nov 6: a P1S plate that prints only project filament 3 was sent trays for filaments 1 and 2 too. Bambu Studio
+  // sends -1 for every filament the plate doesn't print (SelectMachine.cpp:1463-1500); the chosen tray stays put.
+  test(`${tool} sends a tray only for the filaments the plate prints, as Bambu Studio does`, async (t) => {
+    const { client, eventsPath } = await interceptedMcp(t, {
+      model: "p1s", realBridgeRequest: true,
+      ams: { tray_now: "255", ams: [{ id: "0", tray: [0, 1, 2, 3].map(id => ({ id: String(id), tray_type: "PLA", nozzle_temp_min: "190", nozzle_temp_max: "240" })) }] },
+    });
+    const file = await fixture(t, { material: "PLA;PLA;PLA", gcode: "M104 S220\nM140 S60\nM620 S2A\nT2\nM621 S2A\nG1 X10 Y10 Z1\n", project: { filament_type: ["PLA", "PLA", "PLA"] }, plateFilamentIds: [2], name: "job.3mf" });
+    const result = await client.callTool({ name: tool, arguments: { three_mf_path: file, bambu_model: "p1s", bed_type: "textured_plate", use_ams: true, ams_mapping: [3, 3, 1] } });
+    assert.notEqual(result.isError, true, result.content?.[0]?.text);
+    const events = (await fs.readFile(eventsPath, "utf8")).trim().split("\n").map(JSON.parse);
+    if (tool === "print_3mf") {
+      assert.deepEqual(events.find(event => event.action === "publish")?.payload.print.ams_mapping, [-1, -1, 1, -1, -1]);
+    } else {
+      const params = events.find(event => event.action === "bridge-frame" && event.method === "net.start_print")?.payload.params;
+      assert.equal(params.ams_mapping, "[-1,-1,1]");
+      assert.deepEqual(JSON.parse(params.ams_mapping_info).map(entry => entry.ams), [-1, -1, 1]);
     }
   });
 
