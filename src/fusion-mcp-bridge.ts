@@ -189,6 +189,11 @@ function failed(result: CallToolResult, name: string): boolean {
   return result.isError === true || resultText(result).trimStart().startsWith(`**${name}** ERROR`);
 }
 
+/** The add-in's error kind from faust's "**tool** ERROR (KIND)" heading (fusion360_mcp/server.py), when it failed with one. */
+function errorKind(result: CallToolResult, name: string): string | undefined {
+  return new RegExp(`^\\*\\*${name}\\*\\* ERROR \\(([A-Z_]+)\\)`).exec(resultText(result).trimStart())?.[1];
+}
+
 /** The value of one "  key: value" line in faust's text result. */
 function resultField(result: CallToolResult, key: string): string | undefined {
   for (const line of resultText(result).split("\n")) {
@@ -242,6 +247,7 @@ export const FUSION_STATUS_OUTPUT_SCHEMA = {
     connected: { type: "boolean", description: "The Fusion MCP server started and the add-in answered its ping." },
     addinReachable: { type: "boolean", description: "The Fusion360MCP add-in answered a ping on FUSION_MCP_HOST:FUSION_MCP_PORT (default localhost:9877) within 2 s. Another program on that port, such as Blender's MCP add-on, does not count." },
     fusionRunning: { type: "boolean" },
+    activeDesign: { type: "boolean", description: "When connected: whether Fusion has a design open, from the add-in's read-only get_design_type (false is its NO_ACTIVE_DESIGN). The pinned add-in refuses every design command, fusion_mcp_new_design included, without one (faust issue #12). Absent when unknown." },
     tools: { type: "array", items: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } },
     launched: { type: "boolean", description: "This call started Fusion." },
     transport: { type: "string" },
@@ -448,6 +454,18 @@ export class FusionMcpBridge {
         if (addinReachable && live.tools.some(tool => tool.name === "ping")) {
           const ping = await this.invoke(live, options, dispatched, "ping", {});
           result.connected = !failed(ping, "ping");
+        }
+        // Whether a design is open, from the add-in itself. get_design_type reads the active document's Design product
+        // (the add-in's _design(), as every design command does) and changes nothing; with no design it fails with the
+        // add-in's own error kind NO_ACTIVE_DESIGN (its hints.py). Any other answer leaves activeDesign out: unknown.
+        if (result.connected === true && live.tools.some(tool => tool.name === "get_design_type")) {
+          let read: CallToolResult;
+          // A read that didn't finish (timeout, cancel, lost connection): Fusion isn't usable now. request() closes the
+          // cut-off session and names what happened, which status reports as its error.
+          try { read = await this.invoke(live, options, dispatched, "get_design_type", {}); }
+          catch (error) { result.connected = false; throw error; }
+          if (!failed(read, "get_design_type")) result.activeDesign = true;
+          else if (errorKind(read, "get_design_type") === "NO_ACTIVE_DESIGN") result.activeDesign = false;
         }
       });
     } catch (error) {

@@ -17,6 +17,7 @@ const tools = [
   { name: "export_stl", inputSchema: object({ body_name: { type: "string" }, file_path: { type: "string" } }, ["body_name"]) },
   { name: "export_f3d", inputSchema: object({ file_path: { type: "string" } }) },
   { name: "get_parameters", inputSchema: object() },
+  { name: "get_design_type", inputSchema: object() },
   { name: "set_parameter", inputSchema: object({ name: { type: "string" }, value: { type: "number" } }, ["name", "value"]) },
 ];
 if (mode === "binding") {
@@ -47,6 +48,9 @@ reader.on("line", (line) => {
   if (mode === "mixed-content") return send(request.id, {content: [{type: "text", text: "Visible sketch result"}, {type: "image", mimeType: "image/png", data: "aW1hZ2U="}], structuredContent: {sketch: "Sketch1"}});
   if (name === "ping") return mode === "addin-down" ? error(request.id, name, "CONNECTION", "Fusion 360 not reachable") : ok(request.id, name, { pong: "True" });
   if (mode === "no-design") return error(request.id, name, "NO_ACTIVE_DESIGN", "No active design");
+  if (name === "get_design_type" && mode === "design-type-hang") return;
+  if (name === "get_design_type") return mode === "design-type-error" ? error(request.id, name, "UNKNOWN", "Fusion is busy")
+    : ok(request.id, name, { design_type: "parametric", design_type_id: 1 });
   if (name === "new_document") return ok(request.id, name, {document: "Untitled", document_id: "owned-document-token", document_binding: 1, parametric: "True"});
   if (name === "execute_code") {
     const marker = /^# BAMBU_FUSION (\w+)/.exec(args.code)?.[1];
