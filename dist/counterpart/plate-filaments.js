@@ -172,14 +172,21 @@ export async function plateFilaments(zip, settings, model, plates) {
     // Model object order (1-based in layer_config_ranges.xml): the build items' order, as Studio creates the objects.
     const buildItems = [...model.matchAll(/<(?:\w+:)?item\b([^>]*)\/?>/g)].map(item => item[1]);
     const order = [...new Set(buildItems.flatMap(item => /\bobjectid="(\d+)"/.exec(item)?.[1] ?? []))];
-    // An object none of whose build items is printable prints nothing (PartPlate.cpp:1321 skips each such instance).
+    // Each build item adds its object's next instance, with its own printable flag (bbs_3mf.cpp:4183-4185, 4375-4380);
+    // a plate names its copies by object_id and instance_id (bbs_3mf.cpp:4717-4719), and the CLI skips each copy that
+    // isn't printable (PartPlate.cpp:1311-1322).
     const printableItems = new Map();
     for (const item of buildItems) {
         const id = /\bobjectid="(\d+)"/.exec(item)?.[1];
         if (id)
-            printableItems.set(id, (printableItems.get(id) ?? false) || !/\bprintable="(?:0|false)"/.test(item));
+            printableItems.set(id, [...(printableItems.get(id) ?? []), !/\bprintable="(?:0|false)"/.test(item)]);
     }
-    const unprintable = new Set([...printableItems].flatMap(([id, printable]) => printable ? [] : [id]));
+    const printableCopy = (objectId, instanceId) => {
+        const flags = printableItems.get(objectId);
+        if (!flags)
+            return true;
+        return instanceId === undefined ? flags.some(Boolean) : flags[instanceId] !== false;
+    };
     const rangeExtruders = new Map();
     const ranges = await text("Metadata/layer_config_ranges.xml");
     for (const object of ranges.matchAll(/<object\b[^>]*\bid="(\d+)"[^>]*>([\s\S]*?)<\/object>/g)) {
@@ -219,9 +226,13 @@ export async function plateFilaments(zip, settings, model, plates) {
             if (!used.has(index) || (!used.get(index) && name))
                 used.set(index, name || undefined);
         };
-        for (const objectId of plate.objectIds) {
+        // An object counts once on a plate when any of its copies there prints.
+        const printing = plate.instances?.length
+            ? [...new Set(plate.instances.filter(copy => printableCopy(copy.objectId, copy.instanceId)).map(copy => copy.objectId))]
+            : plate.objectIds.filter(objectId => printableCopy(objectId));
+        for (const objectId of printing) {
             const object = objects.get(objectId);
-            if (!object || unprintable.has(objectId))
+            if (!object)
                 continue;
             const objectInt = (key) => intOf(object.settings.get(key));
             const parts = object.parts.length ? object.parts : [{ id: "", subtype: "normal_part", name: "", settings: new Map() }];

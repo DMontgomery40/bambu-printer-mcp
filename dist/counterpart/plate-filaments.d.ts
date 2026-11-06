@@ -61,6 +61,11 @@ export interface PlateLayout {
     number: number;
     /** model_settings.config object ids with an instance on this plate, in plate order. */
     objectIds: string[];
+    /** Each copy on the plate: its object and that object's instance_id (model_settings.config <model_instance>). */
+    instances?: {
+        objectId: string;
+        instanceId: number;
+    }[];
     /** Metadata/plate_N.json filament_ids (0-based) when the file holds this plate's slice. */
     slicedFilamentIds?: number[];
 }
