@@ -14,7 +14,7 @@ import { Readable } from "node:stream";
 import { readSafe3mfArchive } from "../safety/archive.js";
 import { inspectPrintFile, type PrintFileInspection } from "../safety/print-file.js";
 import { isDualNozzleModel, normalizeModel, validateTemperature } from "../safety/limits.js";
-import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, describeAmsTrayRange } from "../ams-mapping.js";
+import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, describeAmsTrayRange, studioAmsMapping } from "../ams-mapping.js";
 import { describeHmsKey, hiddenHmsKeys, hiddenHmsNotices, reportedHmsKey, unchippedNozzles, validatePrinterState, manualHeatingRequirements, type PrinterStateRequirements } from "../safety/printer-state.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRemotePath, cancelPendingPrinterOperations } from "../safety/artifact.js";
 import { RTSP_CAMERA_MODELS, TCP_CAMERA_MODELS } from "./camera-models.js";
@@ -1175,7 +1175,9 @@ export class BambuImplementation {
     let baseMapping: number[];
     if (options.amsMapping && options.amsMapping.length > 0) {
       for (const v of options.amsMapping) validateTrayValue(v, "ams_mapping");
-      baseMapping = options.amsMapping.slice();
+      // Bambu Studio sends a tray only for the filaments the plate prints and -1 for every other project filament
+      // (SelectMachineDialog::get_ams_mapping_result, SelectMachine.cpp:1463-1500): so does this route.
+      baseMapping = studioAmsMapping(options.amsMapping, inspection.usedFilamentPositions);
     } else if (options.amsSlots && options.amsSlots.length > 0) {
       for (const v of options.amsSlots) validateTrayValue(v, "amsSlots");
       const positions = projectMetadata.usedFilamentPositions;

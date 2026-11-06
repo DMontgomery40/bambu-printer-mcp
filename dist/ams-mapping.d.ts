@@ -36,3 +36,9 @@ export declare function trayColour(rawStatus: any, tray: number): string | undef
  * Filament-map nozzle 1 (left) is cloud nozzle 1 and 2 (right) is 0 (CloudTaskNozzleId).
  */
 export declare function studioAmsMappingInfo(filaments: ProjectFilament[], mapping: number[], colourOfTray: (tray: number) => string | undefined): Array<Record<string, unknown>>;
+/**
+ * A project-level ams_mapping as Bambu Studio sends it: the caller's tray for each filament the selected plate prints,
+ * -1 for every project filament it doesn't (SelectMachineDialog::get_ams_mapping_result, SelectMachine.cpp:1463-1500,
+ * maps only the plate's own filaments). A tray for an unused filament is never sent to the printer.
+ */
+export declare function studioAmsMapping(mapping: number[], usedPositions: number[]): number[];
