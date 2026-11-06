@@ -10,7 +10,6 @@ import fs from "node:fs/promises";
 import { createReadStream, readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { Readable } from "node:stream";
 import { readSafe3mfArchive } from "../safety/archive.js";
 import { inspectPrintFile } from "../safety/print-file.js";
 import { isDualNozzleModel, normalizeModel, validateTemperature } from "../safety/limits.js";
@@ -20,6 +19,7 @@ import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRem
 import { RTSP_CAMERA_MODELS, TCP_CAMERA_MODELS } from "./camera-models.js";
 import { resolveStudioPrintOptions, usedNozzleCount } from "../studio-print-options.js";
 import { Client as FTPClient } from "basic-ftp";
+import { uploadBytes } from "./ftp-upload.js";
 import * as mqtt from "mqtt";
 import { BambuClient, GCodeFileCommand, GCodeLineCommand, PushAllCommand, UpdateFanCommand, UpdateLightCommand, } from "bambu-node";
 /**
@@ -1088,7 +1088,13 @@ export class BambuImplementation {
             validatePrinterState(confirmedStatus, requirements);
         this.assertPrintPreflight(confirmedStatus, preflight);
         assertActive();
-        await this.ftpUpload(host, token, options.filePath, remoteUploadPath);
+        try {
+            await this.ftpUpload(host, token, options.filePath, remoteUploadPath);
+        }
+        catch (error) {
+            // Nothing has been sent to the printer but (part of) a file, so the print certainly did not start.
+            throw new PrinterRefusal("printer-upload-failed", `The print file did not reach the printer (${error instanceof Error ? error.message : String(error)}). No print was started.`);
+        }
         // Uploads can be long. Recheck current state before the command is dispatched.
         const dispatchStatus = await this.getSafetyStatus(host, serial, token);
         if (legacyContainer)
@@ -2266,7 +2272,8 @@ export class BambuImplementation {
                 throw new Error(`Refusing to overwrite existing printer file ${absoluteRemote}. Choose a new filename.`);
             }
             const fileData = await fs.readFile(localPath);
-            await client.uploadFrom(Readable.from(fileData), absoluteRemote);
+            // Small writes, so a multi-megabyte job on a slow SD card is not mistaken for a stall.
+            await uploadBytes(client, fileData, absoluteRemote);
         }
         finally {
             client.close();

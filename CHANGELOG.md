@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.74] – 2026-11-06
+
+### Fixed
+
+- `print_3mf` and every other FTPS upload no longer fail a multi-megabyte job with "Timeout (data socket)" while it is still uploading. `ftpUpload` handed the whole file to basic-ftp as one write (`Readable.from(buffer)`). basic-ftp's `TransferWatchdog` counts progress by the data socket's `bytesWritten`, which takes in a single write all at once, so while a P1S stored the file at SD-card speed the count never moved and the upload was declared stalled after 15 s. The bytes are now written in 64 KiB pieces, so progress is seen as the printer takes them; an upload still fails after 15 s if the printer stops taking data. When the upload of a `print_3mf` job fails, the error now carries `code: "printer-upload-failed"` (counterpart/1), so a client knows no print command was sent: Counterpart had marked the failed base plate as "could not confirm a print start". Counterpart's 4.6 MB scan rig base plate failed this way on a P1S, and the same 4.6 MB upload of a scratch file reproduced it (a 1 KB upload worked). Checked with a local FTP server that stores at 4 MB/s against basic-ftp 6.2.3 and 6.2.6: a single write times out, the pieces arrive intact, and a server that stops reading still times out.
+
 ## [1.1.73] – 2026-11-06
 
 ### Fixed
