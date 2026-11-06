@@ -186,7 +186,9 @@ export async function plateFilaments(zip, settings, model, plates) {
         const objectId = order[Number(object[1]) - 1];
         if (!objectId)
             continue;
-        rangeExtruders.set(objectId, [...object[2].matchAll(/<option\s+opt_key="extruder"\s*>\s*(\d+)\s*<\/option>/g)].map(match => Number(match[1])).filter(id => id > 0));
+        // A range's extruder sets all three feature filaments; a range's own feature filament overrides one
+        // (apply_to_print_region_config and resolve_filament_value, PrintObject.cpp:3069-3079, 3134-3137).
+        rangeExtruders.set(objectId, [...object[2].matchAll(/<option\s+opt_key="(?:extruder|wall_filament|sparse_infill_filament|solid_infill_filament)"\s*>\s*(\d+)\s*<\/option>/g)].map(match => Number(match[1])).filter(id => id > 0));
     }
     const toolChanges = new Map();
     const custom = await text("Metadata/custom_gcode_per_layer.xml");
@@ -207,7 +209,7 @@ export async function plateFilaments(zip, settings, model, plates) {
                     paintPaths.add(path);
     const painting = await readPainting(zip, paintPaths);
     const global = (key) => intOf(config[key]) ?? 0;
-    const globalSupport = (boolOf(config.enable_support) ?? false) || (intOf(config.raft_layers) ?? 0) > 0;
+    const FEATURES = ["wall_filament", "sparse_infill_filament", "solid_infill_filament"];
     const result = new Map();
     for (const plate of plates) {
         const used = new Map();
@@ -227,6 +229,10 @@ export async function plateFilaments(zip, settings, model, plates) {
                 if (["negative_part", "support_blocker", "support_enforcer"].includes(part.subtype))
                     continue;
                 const partInt = (key) => intOf(part.settings.get(key));
+                // What the slicer prints the part with (region_config_from_model_volume, PrintObject.cpp:3105-3150): the
+                // project's feature filaments, replaced by the object's and then the part's extruder when one is set
+                // (non-zero), then by a feature filament the part, else the object, sets above 0.
+                const extruderSet = (partInt("extruder") ?? 0) > 0 || (objectInt("extruder") ?? 0) > 0;
                 const ownExtruder = partInt("extruder") || objectInt("extruder") || 1;
                 const label = part.name || object.name;
                 const path = components.get(objectId)?.get(part.id);
@@ -235,8 +241,15 @@ export async function plateFilaments(zip, settings, model, plates) {
                     if (part.subtype === "normal_part")
                         add(state, label);
                 // A modifier's own filament counts whatever its paint (Model.cpp:3384-3390).
-                if (part.subtype !== "normal_part" || !paint || paint.ownFilament)
-                    add(ownExtruder, label);
+                if (part.subtype !== "normal_part" || !paint || paint.ownFilament) {
+                    if (extruderSet)
+                        add(ownExtruder, label);
+                    // Neither the part nor its object names an extruder: the project's feature filaments print it (each
+                    // above 0; a project without them prints with filament 1, ModelVolume::extruder_id's default).
+                    else
+                        for (const key of FEATURES)
+                            add(global(key) > 0 ? global(key) : 1, label);
+                }
                 for (const key of ["wall_filament", "solid_infill_filament", "sparse_infill_filament"]) {
                     const own = partInt(key);
                     if (own !== undefined) {
@@ -246,38 +259,30 @@ export async function plateFilaments(zip, settings, model, plates) {
                     else if ((objectInt(key) ?? 0) > 0)
                         add(objectInt(key), label);
                 }
-                // Feature filaments when the object or part separates them (PartPlate.cpp:1338-1381).
-                const partSeparate = boolOf(part.settings.get("separate_filaments_for_features"));
-                const objectSeparate = boolOf(object.settings.get("separate_filaments_for_features"));
-                if (partSeparate || (partSeparate === undefined && objectSeparate)) {
-                    for (const key of ["wall_filament", "sparse_infill_filament", "solid_infill_filament"]) {
-                        const own = partInt(key) ?? 0, ofObject = objectInt(key) ?? 0;
-                        if (own)
-                            add(own, label);
-                        else if (ofObject && partSeparate === undefined && objectSeparate)
-                            add(ofObject, label);
-                        else if (global(key) && partSeparate === undefined && objectSeparate === undefined && global("sparse_infill_filament"))
-                            add(global(key), label);
-                    }
-                }
+                // separate_filaments_for_features gates these only in Studio's plate list (PartPlate.cpp:1338-1381): it isn't
+                // a slicer setting in 02.08.02.61 (libslic3r never reads it), and the slice applies the part's or object's
+                // feature filaments whatever it says (PrintObject.cpp:3124-3150), as the loop above does.
             }
             for (const extruder of rangeExtruders.get(objectId) ?? [])
                 add(extruder, object.name);
-            // Support and raft (PartPlate.cpp:1383-1418): the object's own setting, else the project's.
-            const objectSupport = boolOf(object.settings.get("enable_support"));
-            const objectRaft = objectInt("raft_layers");
-            const support = objectSupport !== undefined || objectRaft !== undefined
-                ? (objectSupport ?? false) || (objectRaft ?? 0) > 0 : globalSupport;
+            // Support and raft as the slice resolves them: each setting the object's own, else the project's, one key at a
+            // time (PrintObject::object_config_from_model_object, PrintObject.cpp:3052-3063). Studio's plate list resolves
+            // the pair together (PartPlate.cpp:1383-1393), which drops support an object with only a raft override prints.
+            const setting = (key) => object.settings.has(key) ? object.settings.get(key) : config[key];
+            const support = (boolOf(setting("enable_support")) ?? false) || (intOf(setting("raft_layers")) ?? 0) > 0;
             if (support) {
-                add(objectInt("support_interface_filament") || global("support_interface_filament") || undefined);
-                add(objectInt("support_filament") || global("support_filament") || undefined);
+                // 0 is "default": the support prints with the object's own filament (Print.cpp:490-501).
+                add(intOf(setting("support_interface_filament")) || undefined);
+                add(intOf(setting("support_filament")) || undefined);
             }
         }
         for (const extruder of toolChanges.get(plate.number) ?? [])
             add(extruder);
-        // Objects the settings don't describe (a plain 3MF) print with filament 1, ModelVolume::extruder_id's default.
+        // Objects the settings don't describe (a plain 3MF) name no extruder: the project's feature filaments print them,
+        // else filament 1 (ModelVolume::extruder_id's default).
         if (!used.size && (plate.objectIds.some(id => !objects.has(id)) || (!objects.size && buildItems.length)))
-            add(1);
+            for (const key of FEATURES)
+                add(global(key) > 0 ? global(key) : 1);
         // A mixed filament slot prints as its component filaments (PartPlate.cpp:1437-1449, expand_mixed_filaments in
         // FilamentMixer.cpp:460-478; components are 1-based, comma-separated, FilamentMixer.cpp:165-180).
         const mixed = Array.isArray(config.filament_is_mixed) ? config.filament_is_mixed.map(value => boolOf(value) === true) : [];
