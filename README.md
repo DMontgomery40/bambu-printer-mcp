@@ -1035,7 +1035,7 @@ List a designer's 3MF plates as Bambu Studio shows them when the file is opened,
 
 #### list_3mf_plate_objects
 
-List object IDs from a sliced 3MF plate. Use this before `skip_objects` so you pass real Bambu object IDs instead of display-order guesses.
+List the objects of a sliced 3MF plate that the printer can skip, one per copy, with each copy's `identify_id` from `Metadata/slice_info.config`, as Bambu Studio's skip dialog lists them. Use this before `skip_objects` so you pass real Bambu object IDs instead of display-order guesses.
 
 ```json
 {
@@ -1202,7 +1202,7 @@ When `slicer_type` is `bambustudio` (the default), these additional parameters a
 | `arrange` | boolean | Auto-arrange objects on the build plate |
 | `ensure_on_bed` | boolean | Lift floating models onto the bed |
 | `clone_objects` | string | Clone counts per object, comma-separated (e.g. `"1,3,1,10"`) |
-| `skip_objects` | string | Object indices to skip, comma-separated (e.g. `"3,5,10"`) |
+| `skip_objects` | string | `identify_id`s of the object copies to skip, comma-separated (e.g. `"78,92"`); `list_3mf_plates` gives them per plate as `instances` |
 | `load_filaments` | string | Filament profile paths, semicolon-separated |
 | `load_filament_ids` | string | Filament-to-object mapping, comma-separated. STL input only: Bambu Studio's CLI refuses it for a 3MF, where each object or part names its own filament (see `counterpart_make_3mf`) |
 | `nozzle_volume_type` | string | Installed nozzle flow type: `standard` or `high_flow` (default: `BAMBU_NOZZLE_VOLUME_TYPE`, else the preset's Standard default). `high_flow` uses the presets' High Flow values, such as the filament's High Flow max volumetric speed, and is refused if the machine preset declares no High Flow variant. Also on `slice_with_template`. |

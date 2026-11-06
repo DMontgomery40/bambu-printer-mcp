@@ -46,7 +46,7 @@ const EXPECTED_BAMBU_MODELS = ["p1s", "p1p", "p2s", "x1c", "x1e", "a1", "a1mini"
 async function writeSliced3mfFixture({
   name = "h2-project-filament",
   bambuModel = "h2s",
-  bedType = "Cool Plate SuperTack",
+  bedType = "Supertack Plate",
   projectFilamentIds = ["GFG02", "GFG01", "GFL00", "GFL03"],
   projectFilamentColors = ["#FFFFFF", "#FF911A80", "#DCF478", "#DCF478"],
   projectFilamentTypes = ["PETG", "PETG", "PLA", "PLA"],
@@ -95,7 +95,9 @@ function stubFreshSafetyStatus(bambu, model) {
         ams: { tray_now: "254", ams: [
           { id: "0", tray: [{ id: "1", tray_type: "PETG", nozzle_temp_min: "220", nozzle_temp_max: "260" }, { id: "2", tray_type: "PETG", nozzle_temp_min: "220", nozzle_temp_max: "260" }] },
           { id: "3", tray: [{ id: "3", tray_type: "PLA", nozzle_temp_min: "190", nozzle_temp_max: "240" }] },
-          { id: "128", tray: [{ id: "0", tray_type: "PETG", nozzle_temp_min: "220", nozzle_temp_max: "260" }, { id: "3", tray_type: "PETG", nozzle_temp_min: "220", nozzle_temp_max: "260" }] },
+          // Each AMS-HT is its own unit (id 128 + n) with one tray, id 0.
+          { id: "128", tray: [{ id: "0", tray_type: "PETG", nozzle_temp_min: "220", nozzle_temp_max: "260" }] },
+          { id: "131", tray: [{ id: "0", tray_type: "PETG", nozzle_temp_min: "220", nozzle_temp_max: "260" }] },
         ] },
       },
       observation: { source: "mqtt", requestedAt: now, receivedAt: now, identitySource: "report" },
@@ -812,41 +814,60 @@ test("3MF AMS requirement analysis falls back when slice_info.config is not XML"
   }
 });
 
-test("3MF plate object analysis lists Bambu object ids for skip_objects", async () => {
+test("skip-object listing gives every copy its own identify_id from slice_info, never paired by position", async () => {
+  // Bambu Studio's GUI slice (h2d_gui_sliced): 20 copies of two objects, so names repeat and
+  // plate_1.json's bbox_objects carry internal ids (6495, 6476, ...) the printer doesn't know.
   const fixture = path.join(REPO_ROOT, "tests/fixtures/h2d_gui_sliced");
+  const sliceInfo = fs.readFileSync(path.join(fixture, "slice_info.config"), "utf8");
   const zip = new JSZip();
   zip.file("Metadata/plate_1.json", fs.readFileSync(path.join(fixture, "plate_1.json"), "utf8"));
-  zip.file("Metadata/slice_info.config", fs.readFileSync(path.join(fixture, "slice_info.config"), "utf8"));
+  zip.file("Metadata/slice_info.config", sliceInfo);
   const tempPath = path.join(os.tmpdir(), `plate-objects-${Date.now()}.3mf`);
   fs.writeFileSync(tempPath, await zip.generateAsync({ type: "nodebuffer" }));
-
   try {
     const plateObjects = await analyze3MFPlateObjects(tempPath, 0);
-    assert.equal(plateObjects.objects.length, 20);
-    assert.deepEqual(
-      plateObjects.objects.slice(0, 2).map((object) => object.id),
-      [5997, 6277]
-    );
-    assert.equal(plateObjects.objects[0].name, "mk2 collarID.stl_1");
-    assert.equal(plateObjects.objects[0].area, 1152.0546875);
+    const expected = [...sliceInfo.matchAll(/<object identify_id="(\d+)" name="([^"]+)"/g)].map(m => [Number(m[1]), m[2]]);
+    assert.equal(expected.length, 20);
+    assert.deepEqual(plateObjects.objects.map(o => [o.id, o.name]), expected);
+    assert.equal(plateObjects.labelObjectEnabled, true);
+    // Copies share a name, so no first-layer box can be told apart for them.
+    assert.ok(plateObjects.objects.every(o => o.area === null && o.bbox === null && o.skipped === false));
+    // Plate 2 was not sliced in this file: no ids, rather than plate 1's.
+    await assert.rejects(analyze3MFPlateObjects(tempPath, 1), /Plate 2 was not sliced/);
   } finally {
     fs.rmSync(tempPath, { force: true });
   }
 });
 
-test("3MF plate object analysis falls back to bbox ids without slice_info object ids", async () => {
+test("skip-object listing of a Bambu Studio CLI slice with three copies", async () => {
+  // Bambu Studio 02.08.02.61 CLI slice of three cube copies (Nov 6 2026): slice_info identify_ids 15, 26, 37;
+  // plate_1.json bbox_objects ids 50, 51, 52 are internal object ids.
+  const file = path.join(REPO_ROOT, "tests/fixtures/studio-02.08.02.61/p1s-three-copies.3mf");
+  const plateObjects = await analyze3MFPlateObjects(file, 0);
+  assert.deepEqual(plateObjects.objects.map(o => [o.id, o.name, o.area]), [[15, "cube.stl_1", 400], [26, "cube.stl_2", 400], [37, "cube.stl_3", 400]]);
+  assert.ok(plateObjects.objects.every(o => Array.isArray(o.bbox) && o.bbox.length === 4));
+  // The wipe tower's box is never a skippable object, even when plate_N.json lists one.
+  const zip = await JSZip.loadAsync(fs.readFileSync(file));
+  const plate = JSON.parse(await zip.file("Metadata/plate_1.json").async("string"));
+  plate.bbox_objects.push({ id: 1001, name: "wipe_tower", area: 100, bbox: [0, 0, 10, 10] });
+  zip.file("Metadata/plate_1.json", JSON.stringify(plate));
+  const withTower = path.join(os.tmpdir(), `plate-objects-tower-${Date.now()}.3mf`);
+  fs.writeFileSync(withTower, await zip.generateAsync({ type: "nodebuffer" }));
+  try {
+    assert.deepEqual((await analyze3MFPlateObjects(withTower, 0)).objects.map(o => o.id), [15, 26, 37]);
+  } finally {
+    fs.rmSync(withTower, { force: true });
+  }
+});
+
+test("skip-object listing refuses a 3MF without slice_info instead of offering internal bbox ids", async () => {
   const fixture = path.join(REPO_ROOT, "tests/fixtures/h2d_gui_sliced");
   const zip = new JSZip();
   zip.file("Metadata/plate_1.json", fs.readFileSync(path.join(fixture, "plate_1.json"), "utf8"));
   const tempPath = path.join(os.tmpdir(), `plate-objects-bbox-${Date.now()}.3mf`);
   fs.writeFileSync(tempPath, await zip.generateAsync({ type: "nodebuffer" }));
-
   try {
-    const plateObjects = await analyze3MFPlateObjects(tempPath, 0);
-    assert.deepEqual(
-      plateObjects.objects.slice(0, 2).map((object) => object.id),
-      [6495, 6496]
-    );
+    await assert.rejects(analyze3MFPlateObjects(tempPath, 0), /slice_info\.config/);
   } finally {
     fs.rmSync(tempPath, { force: true });
   }
@@ -1224,7 +1245,7 @@ test("H2 ams_mapping2 preserves external spool and HT tray encodings", async () 
     assert.deepEqual(publishedPayload.print.ams_mapping2, [
       { ams_id: 254, slot_id: 254 },
       { ams_id: 128, slot_id: 0 },
-      { ams_id: 128, slot_id: 3 },
+      { ams_id: 131, slot_id: 0 },
       { ams_id: 3, slot_id: 3 },
     ]);
   } finally {
@@ -1258,7 +1279,23 @@ test("dual-nozzle tray values admit 255 as the right/main external spool; single
   assert.deepEqual(bridgeAmsMapping2Entry(255, false), { ams_id: 255, slot_id: 255 });
   assert.deepEqual(bridgeAmsMapping2Entry(254, true), { ams_id: 254, slot_id: 0 });
   assert.deepEqual(bridgeAmsMapping2Entry(-1, true), { ams_id: 255, slot_id: 255 });
-  assert.deepEqual(bridgeAmsMapping2Entry(131, true), { ams_id: 128, slot_id: 3 });
+});
+
+test("AMS-HT trays map to their own unit with slot 0, as Bambu Studio's GetTrayIndexMap does", () => {
+  // Bambu Studio 02.08.02.61 DevFilaSystem.cpp:367-368: an AMS-HT (N3S) tray index is its ams_id; one slot, 0.
+  for (const dual of [false, true]) {
+    assert.deepEqual(bridgeAmsMapping2Entry(128, dual), { ams_id: 128, slot_id: 0 });
+    assert.deepEqual(bridgeAmsMapping2Entry(129, dual), { ams_id: 129, slot_id: 0 });
+    assert.deepEqual(bridgeAmsMapping2Entry(131, dual), { ams_id: 131, slot_id: 0 });
+    // Four-slot AMS units keep ams_id * 4 + slot_id (DevFilaSystem.cpp:371-372).
+    assert.deepEqual(bridgeAmsMapping2Entry(0, dual), { ams_id: 0, slot_id: 0 });
+    assert.deepEqual(bridgeAmsMapping2Entry(7, dual), { ams_id: 1, slot_id: 3 });
+    assert.deepEqual(bridgeAmsMapping2Entry(15, dual), { ams_id: 3, slot_id: 3 });
+  }
+  // External spools are unchanged.
+  assert.deepEqual(bridgeAmsMapping2Entry(254, false), { ams_id: 254, slot_id: 254 });
+  assert.deepEqual(bridgeAmsMapping2Entry(254, true), { ams_id: 254, slot_id: 0 });
+  assert.deepEqual(bridgeAmsMapping2Entry(255, true), { ams_id: 255, slot_id: 0 });
 });
 
 for (const model of ["h2d", "h2dpro"]) test(`${model} project_file uses official virtual-spool wire mapping and validates nozzle binding`, async () => {
