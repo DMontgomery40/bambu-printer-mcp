@@ -334,6 +334,22 @@ export async function inspectPrintFile(filePath, options) {
                 return undefined;
             if (entries.length === nozzleDiameters.length)
                 return entries;
+            // Orca 2.5 ConfigOptionVector::get_at repeats a singleton volume type.
+            // Require the sliced plate's complete physical selection to corroborate
+            // it; project defaults alone and the nozzle_flow alias cannot fill gaps.
+            if (keys[0] === 'nozzle_volume_type' && dualNozzle && nozzleDiameters.length === 2 && entries.length === 1) {
+                const selected = (key) => consistent(metadataValues(headers, [key]), value => {
+                    const values = normalizedEntries(value);
+                    return values?.length === 2 ? values : undefined;
+                }, `selected ${key.replace(/_/g, ' ')}`);
+                const ids = selected('printer_extruder_id');
+                const variants = selected('printer_extruder_variant');
+                const extruders = selected('extruder_type');
+                if (ids.some((id, index) => id !== String(index + 1)) ||
+                    variants.some((variant, index) => variant !== `${extruders[index]}_${entries[0]}`))
+                    return undefined;
+                return [entries[0], entries[0]];
+            }
             if (!variantRows)
                 return undefined;
             // Bambu GUI projects may store nozzle types per extruder variant, while
@@ -374,7 +390,8 @@ export async function inspectPrintFile(filePath, options) {
             return resolved;
         }, keys[0].replace(/_/g, ' ')) : undefined;
     };
-    const nozzleFlows = nozzleMetadata(['nozzle_flow', 'nozzle_volume_type']);
+    const flowDeclarations = [nozzleMetadata(['nozzle_flow']), nozzleMetadata(['nozzle_volume_type'])].filter(value => value !== undefined);
+    const nozzleFlows = flowDeclarations.length ? consistent(flowDeclarations, normalizedEntries, 'nozzle flow') : undefined;
     const nozzleTypes = nozzleMetadata(['nozzle_type'], true);
     const materials = consistent(metadataValues(metadata, ['filament_type']), value => {
         const values = list(value);
