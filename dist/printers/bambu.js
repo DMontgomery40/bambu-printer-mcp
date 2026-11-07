@@ -1089,7 +1089,7 @@ export class BambuImplementation {
         this.assertPrintPreflight(confirmedStatus, preflight);
         assertActive();
         try {
-            await this.ftpUpload(host, token, options.filePath, remoteUploadPath);
+            await this.ftpUpload(host, token, options.filePath, remoteUploadPath, options.onUploadProgress);
         }
         catch (error) {
             // Nothing has been sent to the printer but (part of) a file, so the print certainly did not start.
@@ -2248,7 +2248,7 @@ export class BambuImplementation {
      * into the target directory, then uploadFrom uses the full relative path
      * again, resulting in e.g. /cache/cache/file.3mf).
      */
-    async ftpUpload(host, token, localPath, remotePath) {
+    async ftpUpload(host, token, localPath, remotePath, onProgress) {
         const client = new FTPClient(15000);
         try {
             await client.access({
@@ -2273,7 +2273,7 @@ export class BambuImplementation {
             }
             const fileData = await fs.readFile(localPath);
             // Small writes, so a multi-megabyte job on a slow SD card is not mistaken for a stall.
-            await uploadBytes(client, fileData, absoluteRemote);
+            await uploadBytes(client, fileData, absoluteRemote, { onProgress });
         }
         finally {
             client.close();

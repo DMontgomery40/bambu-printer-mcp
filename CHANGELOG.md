@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A large `print_3mf` upload to a P1S no longer fails with "Timeout (data socket)" when the printer's SD card pauses mid-file. The upload now waits up to 120 s for the printer to take more data. FTP commands keep their 15 s limit, so a printer that has really stopped is still reported. On Nov 6 an 18.4 MB plate stopped at 13,287,424 bytes for more than the 15 s limit 1.1.74 used for the upload. Checked with a local FTP server that pauses for twice the command timeout partway through a 12 MB file: it now completes with the exact bytes, and fails with only the command limit. The live check of an 18.4 MB upload to the P1S is recorded at release.
+
+### Added
+
+- `print_3mf` reports its LAN upload as MCP progress (counterpart/1) when the call has a progress token: `progress` is bytes sent, `total` the file's bytes, and `_meta["counterpart/stage"]` is `"upload"`, at most once per whole percent. Until now a client saw nothing between requesting the print and its result, so nobody could tell how far a failed upload got. Checked with unit tests and a local FTP server.
+
 ## [1.1.76] – 2026-11-06
 
 ### Added

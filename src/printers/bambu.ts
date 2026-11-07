@@ -172,6 +172,8 @@ function isP2SModelName(model: unknown): boolean {
 }
 
 interface BambuPrintOptionsInternal {
+  /** Bytes sent to the printer so far over FTPS, and the file's size (LAN route). */
+  onUploadProgress?: (sent: number, total: number) => void;
   projectName: string;
   filePath: string;
   bambuModel?: string;
@@ -1257,7 +1259,7 @@ export class BambuImplementation {
     this.assertPrintPreflight(confirmedStatus, preflight);
     assertActive();
     try {
-      await this.ftpUpload(host, token, options.filePath, remoteUploadPath);
+      await this.ftpUpload(host, token, options.filePath, remoteUploadPath, options.onUploadProgress);
     } catch (error) {
       // Nothing has been sent to the printer but (part of) a file, so the print certainly did not start.
       throw new PrinterRefusal("printer-upload-failed", `The print file did not reach the printer (${error instanceof Error ? error.message : String(error)}). No print was started.`);
@@ -2510,7 +2512,8 @@ export class BambuImplementation {
     host: string,
     token: string,
     localPath: string,
-    remotePath: string
+    remotePath: string,
+    onProgress?: (sent: number, total: number) => void
   ): Promise<void> {
     const client = new FTPClient(15_000);
     try {
@@ -2536,7 +2539,7 @@ export class BambuImplementation {
       }
       const fileData = await fs.readFile(localPath);
       // Small writes, so a multi-megabyte job on a slow SD card is not mistaken for a stall.
-      await uploadBytes(client, fileData, absoluteRemote);
+      await uploadBytes(client, fileData, absoluteRemote, { onProgress });
     } finally {
       client.close();
     }
