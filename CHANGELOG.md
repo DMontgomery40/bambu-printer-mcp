@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.78] – 2026-11-07
+
+### Fixed
+
+- Accept OrcaSlicer 2.5.0 dual-nozzle slices whose `nozzle_volume_type` contains one shared value. Resolve it only when the selected plate explicitly declares both physical extruder ids, types and matching nozzle variants; missing or conflicting selections still fail. This fixes the “unknown or malformed nozzle flow metadata” rejection reproduced with the official macOS build on H2C and X2D. The original output files pass inspection after the fix, with nozzle mapping and independent heater/material limits preserved. No physical print was run.
+
 ## [1.1.77] – 2026-11-07
 
 ### Fixed

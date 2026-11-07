@@ -57,3 +57,5 @@ Special thanks to [FULU Foundation](https://www.fulu.org/), [Louis Rossmann](htt
 This is community recognition, separate from code authorship in this repository. The optional FULU bridge uses Bambu's networking runtime; see the [FULU setup guide](./docs/FULU.md) for the direct LAN alternative and current validation limits.
 
 Thanks to the [MQTT.js contributors](https://github.com/mqttjs/MQTT.js/releases/tag/v5.16.1), [proxy-addr maintainers](https://github.com/jshttp/proxy-addr/releases/tag/v2.0.8), and [source-map-js maintainers](https://github.com/7rulnik/source-map-js) for the reconnect and security fixes incorporated in 1.1.31. This recognizes upstream dependency work separately from authorship in this repository.
+
+Thanks to the [OrcaSlicer contributors](https://github.com/OrcaSlicer/OrcaSlicer/releases/tag/v2.5.0) for the published 2.5.0 source and macOS build used to reproduce and validate shared nozzle-flow metadata. This credits upstream software and contracts; it does not claim hardware verification or authorship of this repository’s fix.
