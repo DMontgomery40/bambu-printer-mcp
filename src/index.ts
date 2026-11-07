@@ -83,6 +83,7 @@ import { MAKE_3MF_OUTPUT_SCHEMA, PRINT_PROGRESS_OUTPUT_SCHEMA, PRINTER_INFO_OUTP
 import { parseProcessOverrides } from "./slicer/process-overrides.js";
 import { PRINT_QUALITY_PROPERTIES, withPrintQuality } from "./slicer/print-quality.js";
 import { PrinterRefusal } from "./refusal.js";
+import { uploadProgressReporter } from "./upload-progress.js";
 import { machinePauseGcode, parsePauseLayers, pausedLayers, readPlateGcode } from "./slicer/layer-pauses.js";
 
 dotenv.config();
@@ -3739,6 +3740,15 @@ class BambuPrinterMCPServer {
               .catch(() => {});
           };
 
+      // counterpart/1: print_3mf reports its FTPS upload as MCP progress (src/upload-progress.ts).
+      const reportUpload = progressToken === undefined
+        ? undefined
+        : uploadProgressReporter(params => {
+            progressNotifications = progressNotifications
+              .then(() => extra.sendNotification({ method: "notifications/progress", params: { progressToken, ...params } }))
+              .catch(() => {});
+          });
+
       const host = String(args?.host || DEFAULT_HOST);
       const bambuSerial = String(args?.bambu_serial || DEFAULT_BAMBU_SERIAL);
       const bambuToken = String(args?.bambu_token || DEFAULT_BAMBU_TOKEN);
@@ -4867,6 +4877,7 @@ class BambuPrinterMCPServer {
               bedType: printBedType,
               ...callerPrintOptions(args),
               timelapse: args?.timelapse !== undefined ? Boolean(args.timelapse) : undefined,
+              onUploadProgress: reportUpload,
             });
             // Report what the printer did, not merely that a command was published.
             break;
@@ -4932,6 +4943,7 @@ class BambuPrinterMCPServer {
               bedType: printBedType,
               ...callerPrintOptions(args),
               timelapse: args?.timelapse !== undefined ? Boolean(args.timelapse) : false,
+              onUploadProgress: reportUpload,
             });
 
             result = {

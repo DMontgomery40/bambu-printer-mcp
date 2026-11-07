@@ -3,6 +3,8 @@ import { inspectPrintFile, type PrintFileInspection } from "../safety/print-file
 import { type PrinterStateRequirements } from "../safety/printer-state.js";
 export declare function assertDirectPrintSupported(model: string | undefined, serial?: string): void;
 interface BambuPrintOptionsInternal {
+    /** Bytes sent to the printer so far over FTPS, and the file's size (LAN route). */
+    onUploadProgress?: (sent: number, total: number) => void;
     projectName: string;
     filePath: string;
     bambuModel?: string;

@@ -1192,6 +1192,16 @@ test("print preflight rechecks printer state before upload", async (t) => {
   assertNoDispatch(events);
 });
 
+test("print3mf hands its upload progress callback to the FTPS upload", async (t) => {
+  const file = await fixture(t);
+  const { printer } = isolatedPrinter();
+  const reported = [];
+  const upload = printer.ftpUpload;
+  printer.ftpUpload = async (host, token, local, remote, onProgress) => { onProgress?.(5, 10); onProgress?.(10, 10); return upload(host, token, local, remote); };
+  await printer.print3mf(host, serial, token, { projectName: "progress", filePath: file, bambuModel: "p1s", useAMS: false, onUploadProgress: (sent, total) => reported.push([sent, total]) }).catch(() => undefined);
+  assert.deepEqual(reported, [[5, 10], [10, 10]]);
+});
+
 test("a failed upload refuses with a stable code and sends no print command", async (t) => {
   const file = await fixture(t);
   const { printer, events } = isolatedPrinter();
