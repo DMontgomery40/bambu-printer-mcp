@@ -1634,7 +1634,6 @@ class BambuPrinterMCPServer {
         const { threeMFPath, autoSliced } = await this.ensurePrintableThreeMFPath(args, printModel, printPreset, printBedType);
         const threeMfFilename = path.basename(threeMFPath);
         const projectName = String(args?.project_name || threeMfFilename.replace(/\.3mf$/i, ""));
-        markPrintCommandSent();
         const handoff = await importFileViaBambuConnect({
             filePath: threeMFPath,
             name: projectName,

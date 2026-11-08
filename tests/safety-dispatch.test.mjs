@@ -659,7 +659,7 @@ for (const [name, changes, error] of [
   });
 }
 
-async function interceptedMcp(t, { blockBridgeInitialization = false, realBridgeRequest = false, model = "p1s", nozzleDiameters = [0.4], ams, bridgeResponse = { ok: true, value: 0 }, bridgeResponses = {}, localPrint } = {}) {
+async function interceptedMcp(t, { connectUnavailable = false, blockBridgeInitialization = false, realBridgeRequest = false, model = "p1s", nozzleDiameters = [0.4], ams, bridgeResponse = { ok: true, value: 0 }, bridgeResponses = {}, localPrint } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-bridge-safety-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const eventsPath = path.join(dir, "events.jsonl");
@@ -668,6 +668,7 @@ async function interceptedMcp(t, { blockBridgeInitialization = false, realBridge
   const preload = path.join(dir, "boundaries.mjs");
   await fs.writeFile(preload, `
     import fs from 'node:fs';
+    ${connectUnavailable ? `const exists = fs.existsSync; fs.existsSync = target => target === '/Applications/Bambu Connect.app' ? false : exists(target);` : ''}
     import { BambuImplementation } from ${JSON.stringify(pathToFileURL(path.join(root, "dist/printers/bambu.js")).href)};
     import { BambuNetworkBridge } from ${JSON.stringify(pathToFileURL(path.join(root, "dist/bambu-network-bridge.js")).href)};
     import { STLManipulator } from ${JSON.stringify(pathToFileURL(path.join(root, "dist/stl/stl-manipulator.js")).href)};
@@ -1464,4 +1465,12 @@ test("counterpart dispatch truth brackets the actual print3mf transport", async 
       assert.equal(printOutcome(error), "unknown"); return true;
     });
   });
+});
+
+test("a failed Connect import never reports that a print command may have been sent", async (t) => {
+  const { client } = await interceptedMcp(t, {connectUnavailable: true});
+  const file = await fixture(t);
+  const result = await client.callTool({name:"print_3mf", arguments:{three_mf_path:file,bambu_model:"p1s",connection_mode:"bambu_connect"}});
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.printOutcome, "not-sent");
 });
