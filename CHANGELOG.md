@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Accept an unambiguous single external slot reported as 255 on single-nozzle X1C firmware 01.12 while retaining material checks, explicit mapping validation and dual-nozzle selection.
+
+
 ## [1.1.90] – 2026-11-12
 
 ### Added
