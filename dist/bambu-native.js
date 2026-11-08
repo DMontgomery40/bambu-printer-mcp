@@ -131,7 +131,7 @@ function isRegularFile(file) {
  */
 function resolveNativeInstall() {
     if (!isBambuNativePlatform()) {
-        throw new Error("Bambu native X2D transport requires macOS or x86-64 Linux and Bambu's networking plug-in.");
+        throw new Error("Bambu native transport requires macOS or x86-64 Linux and Bambu's networking plug-in.");
     }
     const helper = resolveNativeHelper();
     if (process.platform !== "linux")

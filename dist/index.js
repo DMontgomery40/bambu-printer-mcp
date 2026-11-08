@@ -206,6 +206,11 @@ function callerPrintOptions(args) {
 // the dual-nozzle H2 path. Keep it in this gate so pre-sliced multi-filament
 // jobs take the correct branch instead of the legacy 5-slot mapping.
 const H2_BAMBU_MODELS = new Set(["h2d", "h2dpro", "h2s", "h2c", "x2d"]);
+// Models that may print and upload over connection_mode=bambu_native. X2D
+// defaults to it. X1C opts in: firmware 01.12.00.00 was seen refusing every
+// direct FTPS STOR with 553 while Bambu Studio's plug-in still printed.
+const NATIVE_ROUTE_MODELS = new Set(["x2d", "x1c"]);
+const NATIVE_ROUTE_RESTRICTION = "connection_mode=bambu_native is restricted to X2D and X1C.";
 const VALID_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"];
 const VALID_NOZZLE_TYPES = ["stainless_steel", "hardened_steel", "tungsten_carbide", "brass"];
 /** The installed hotend material. Bambu machine presets assume the stock nozzle; the print gate compares this with the printer. */
@@ -1427,7 +1432,7 @@ class BambuPrinterMCPServer {
         const { threeMFPath, autoSliced } = await this.ensurePrintableThreeMFPath(args, printModel, printPreset, printBedType);
         const { useAMS, finalAmsMapping, finalAmsSlots } = await this.resolveAmsPrintSettings(threeMFPath, args, host, bambuSerial, bambuToken, printModel, printNozzle);
         if (native && args.use_ams !== false && !useAMS) {
-            throw new Error("Native X2D printing requires ams_mapping, ams_slots, auto_match_ams, or explicit use_ams: false for an external spool.");
+            throw new Error("Native printing requires ams_mapping, ams_slots, auto_match_ams, or explicit use_ams: false for an external spool.");
         }
         const threeMfFilename = path.basename(threeMFPath);
         const projectName = String(args?.project_name || args?.task_name || threeMfFilename.replace(/\.3mf$/i, ''));
@@ -1659,18 +1664,18 @@ class BambuPrinterMCPServer {
     async print3mfViaBambuNative(args, host, bambuSerial, bambuToken, onUpdate, signal) {
         assertBambuNativeAvailable();
         const model = await this.resolveBambuModel(args.bambu_model);
-        if (model !== "x2d")
-            throw new Error("connection_mode=bambu_native is restricted to X2D.");
+        if (!NATIVE_ROUTE_MODELS.has(model))
+            throw new Error(NATIVE_ROUTE_RESTRICTION);
         return this.print3mfViaBambuNetwork({ ...args, bambu_model: model, connection_type: "lan", bambu_network_method: "start_local_print" }, host, bambuSerial, bambuToken, { onUpdate, signal });
     }
     async uploadFileViaBambuNative(args, host, bambuSerial, bambuToken, onUpdate, signal) {
         if (args.print)
             throw new Error("Native upload never starts printing; use print_3mf.");
         // Resolve and enforce the model first, as the print path does, so a
-        // non-X2D request is never told to install the native helper.
+        // request for another model is never told to install the native helper.
         const model = await this.resolveBambuModel(args.bambu_model);
-        if (model !== "x2d")
-            throw new Error("connection_mode=bambu_native is restricted to X2D.");
+        if (!NATIVE_ROUTE_MODELS.has(model))
+            throw new Error(NATIVE_ROUTE_RESTRICTION);
         assertBambuNativeAvailable();
         const unsupported = ["use_ams", "ams_mapping", "ams_mapping2", "ams_mapping_info", "nozzle_mapping", "nozzles_info",
             "bed_leveling", "flow_calibration", "vibration_calibration", "layer_inspect", "timelapse"];
@@ -2531,7 +2536,7 @@ class BambuPrinterMCPServer {
                                 connection_mode: {
                                     type: "string",
                                     enum: ["lan_mqtt_ftps", "bambu_native"],
-                                    description: "Upload transport; bambu_native uses the installed Bambu networking plug-in for X2D and never starts printing."
+                                    description: "Upload transport; bambu_native uses the installed Bambu networking plug-in for X2D or X1C and never starts printing."
                                 },
                                 bambu_model: {
                                     type: "string",
@@ -2840,7 +2845,7 @@ class BambuPrinterMCPServer {
                                 connection_mode: {
                                     type: "string",
                                     enum: ["lan_mqtt_ftps", "bambu_network", "bambu_native", "bambu_connect"],
-                                    description: "Print path: bambu_connect hands a printable file to the signed-in Bambu Connect app for cloud-mode review; X2D otherwise defaults to bambu_native (Bambu Studio's installed local networking plug-in, storing the job on a ready SD card or USB stick, otherwise internal eMMC); lan_mqtt_ftps is the legacy direct MQTT/FTPS path; bambu_network uses the FULU bridge."
+                                    description: "Print path: bambu_connect hands a printable file to the signed-in Bambu Connect app for cloud-mode review; X2D otherwise defaults to bambu_native (Bambu Studio's installed local networking plug-in, storing the job on a ready SD card or USB stick, otherwise internal eMMC); X1C may opt in to bambu_native, for example when its firmware refuses FTPS uploads with 553; lan_mqtt_ftps is the legacy direct MQTT/FTPS path; bambu_network uses the FULU bridge."
                                 },
                                 try_emmc_print: { type: "boolean", description: "X2D native printing: true stores the job on internal storage (eMMC), false on the SD card or USB stick (refused unless the printer reports one ready). Omit to use the card when ready, else eMMC; BAMBU_NATIVE_TRY_EMMC_PRINT sets a server default." },
                                 connection_type: { type: "string", enum: ["cloud", "lan"], description: "BambuNetwork connection type when connection_mode is bambu_network; cloud uses restored internet printing, lan uses local bridge printing." },
@@ -3284,7 +3289,9 @@ class BambuPrinterMCPServer {
                         ? linuxEmergency(() => nativeCommand(), signal => this.bambu.sendStopOverMqtt(host, bambuSerial, bambuToken, signal))
                         : nativeCommand;
                 }
-                if (route.mode === "bambu_native")
+                // Native controls are X2D-only. Another model printed natively (X1C)
+                // is stopped, paused and resumed over direct MQTT, as its default route is.
+                if (route.mode === "bambu_native" && x2dTarget)
                     throw new Error(nativeUnavailableReason());
                 if (route.mode !== "bambu_network")
                     return undefined;

@@ -1,6 +1,12 @@
 import { CameraStreams, type FrameOptions } from "./camera-stream.js";
 import { inspectPrintFile, type PrintFileInspection } from "../safety/print-file.js";
 import { type PrinterStateRequirements } from "../safety/printer-state.js";
+/**
+ * X1C firmware 01.12.00.00 was seen refusing every FTPS STOR with
+ * "553 Could not create file." (card ready and writable, Developer Mode on)
+ * while Bambu Studio's networking plug-in still printed. Name that route.
+ */
+export declare function ftpsRefusalHint(error: unknown, model: string | undefined): string;
 export declare function assertDirectPrintSupported(model: string | undefined, serial?: string): void;
 interface BambuPrintOptionsInternal {
     /** Bytes sent to the printer so far over FTPS, and the file's size (LAN route). */
