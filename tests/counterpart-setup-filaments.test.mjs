@@ -10,6 +10,7 @@ import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv
 import { colourDistance, matchColours, proposeFilaments, loadColourNames, bambuTrayLabel, spoolName, PROPOSE_FILAMENTS_OUTPUT_SCHEMA } from "../dist/counterpart/filaments.js";
 import { parseBambuAdvert, modelFromSerial, modelFromDevModel, DISCOVER_OUTPUT_SCHEMA } from "../dist/counterpart/discovery.js";
 import { bambuSetupFields, SETUP_FIELDS_OUTPUT_SCHEMA, slicerSetup } from "../dist/counterpart/setup.js";
+import { RTSP_CAMERA_MODELS, TCP_CAMERA_MODELS } from "../dist/printers/camera-models.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const validator = new AjvJsonSchemaValidator();
@@ -137,6 +138,7 @@ test("setup fields: the .env names this server reads, its model choices, and the
   assert.equal(result.model, "p1s");
   const [kind] = result.kinds;
   assert.equal(kind.kind, "bambu");
+  assert.equal(kind.cameraSnapshot, true, "a setup check can ask camera_snapshot for a picture");
   assert.deepEqual(kind.fields.map(field => [field.name, field.env, field.required]),
     [["host", "PRINTER_HOST", true], ["serial", "BAMBU_SERIAL", true], ["model", "BAMBU_MODEL", true], ["secret", "BAMBU_TOKEN", true]]);
   const model = kind.fields.find(field => field.name === "model");
@@ -164,6 +166,12 @@ test("with no printer configured, the server lists the three tools and answers s
   assert.equal(setup.isError, undefined);
   assert.equal(setup.structuredContent.model, "p1s");
   assert.equal(setup.structuredContent.server.name, "bambu-printer-mcp");
+  // cameraSnapshot: true holds for every model this server offers: each has a camera_snapshot transport.
+  const [bambuKind] = setup.structuredContent.kinds;
+  assert.equal(bambuKind.cameraSnapshot, true);
+  const offered = bambuKind.fields.find(field => field.name === "model").choices.map(choice => choice.value);
+  assert.ok(offered.length > 0);
+  assert.deepEqual(offered.filter(model => !TCP_CAMERA_MODELS.has(model) && !RTSP_CAMERA_MODELS.has(model)), [], "every offered model has a camera transport");
   // No Bambu Studio where this server would run it (the Linux desktop case, Nov 5): the client asks for it.
   validate(SETUP_FIELDS_OUTPUT_SCHEMA, setup.structuredContent);
   const slicer = setup.structuredContent.slicer;

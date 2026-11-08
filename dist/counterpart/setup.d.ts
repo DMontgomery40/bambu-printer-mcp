@@ -29,6 +29,12 @@ export type SetupKind = {
     label: string;
     /** Values this server needs for the kind whatever the person enters (MCP_TRANSPORT, PRINTER_TYPE). */
     env: Record<string, string>;
+    /**
+     * Whether camera_snapshot reads this kind's camera with only the settings these fields write, so a client's setup
+     * check can ask for a picture as well as the status. What else the computer needs (ffmpeg for RTSP models) is
+     * reported in camera_snapshot's own error. Every kind declares it; a client reads it missing as an older server.
+     */
+    cameraSnapshot: boolean;
     fields: SetupField[];
 };
 /** The slicer this server runs, as it resolves it now, and the settings that choose it (for every printer). */
@@ -118,6 +124,10 @@ export declare const SETUP_FIELDS_OUTPUT_SCHEMA: {
                         additionalProperties: {
                             type: string;
                         };
+                    };
+                    cameraSnapshot: {
+                        type: string;
+                        description: string;
                     };
                     fields: {
                         type: string;

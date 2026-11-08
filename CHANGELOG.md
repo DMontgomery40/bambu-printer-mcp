@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.82] – 2026-11-08
+
+### Added
+
+- `counterpart_setup_fields` says for each printer kind whether `camera_snapshot` reads its camera with only the settings the fields write (`cameraSnapshot`). It is `true` for Bambu: every offered model has a camera transport, chosen by the model field; RTSP models (X1, P2S, H2, X2D) still need ffmpeg, as `camera_snapshot` always has. A client such as Counterpart can then ask for a camera picture in its setup check only where the MCP says it can, instead of deciding by the printer type's name. Every kind declares it; a client reads it missing as an older server. Checked with the setup-fields tests; no printer contacted.
+
 ## [1.1.79] – 2026-11-08
 
 ### Fixed
