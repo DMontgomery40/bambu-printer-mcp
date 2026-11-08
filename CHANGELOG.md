@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- X1C can print and upload over the native route with `connection_mode: "bambu_native"` (Bambu Studio's networking plug-in, after `npm run build:native` on macOS). An X1C on firmware 01.12.00.00, with LAN Only and Developer Mode on and a ready, writable SD card, answers every direct FTPS `STOR` with `553 Could not create file.`, so `print_3mf` and `upload_file` cannot reach it, while Bambu Studio prints normally. The X1C default stays `lan_mqtt_ftps` and is not redirected; an X1C upload that fails with 553 now says to retry with `bambu_native`. The native route keeps the shared inspection, AMS mapping and fresh printer-state checks. Native controls stay X2D-only, so `cancel_print`, `pause_print` and `resume_print` named `bambu_native` for another model now use direct MQTT instead of failing with "The selected printer is not an X2D." Checked with mocked transport regressions and one physical X1C print on macOS (firmware 01.12.00.00, AMS 2 Pro slot, job stored on the SD card); Linux, other X1C firmware and X1E are untested, and X1E stays excluded.
+
 ### Fixed
 
 - `print_3mf` no longer refuses external-spool prints on a single-nozzle X1C (firmware 01.12.00.00, AMS attached) with "External spool report is ambiguous for this nozzle". That firmware reports its one `vir_slot` as id 255 (`ams_id` 255, `slot_id` 0) while `ams.tray_now` is 254. A single external slot on a single-nozzle printer is now accepted for external spool 254 and its reported material is still checked; two or more slots still fail, explicit tray 255 stays rejected, and dual-nozzle selection is unchanged. Checked with unit tests on a synthetic X1C report; no physical print was run.

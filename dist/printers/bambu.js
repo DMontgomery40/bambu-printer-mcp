@@ -140,6 +140,19 @@ const MODEL_ID_TO_NAME = {
     C13: "X1E",
 };
 const H2_MODEL_NAMES = new Set(["h2", "h2c", "h2d", "h2dpro", "h2d pro", "h2s", "x2d"]);
+/**
+ * X1C firmware 01.12.00.00 was seen refusing every FTPS STOR with
+ * "553 Could not create file." (card ready and writable, Developer Mode on)
+ * while Bambu Studio's networking plug-in still printed. Name that route.
+ */
+export function ftpsRefusalHint(error, model) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (normalizeModel(model) !== "x1c" || (error?.code !== 553 && !/^553\b/.test(message)))
+        return "";
+    return ' X1C firmware 01.12.00.00 has been seen refusing every direct FTPS upload this way. ' +
+        'Retry with connection_mode: "bambu_native", which uploads through Bambu Studio\'s networking plug-in ' +
+        '(on macOS, first run npm run build:native in the package directory; on Linux, bambu-printer-mcp-native-setup).';
+}
 export function assertDirectPrintSupported(model, serial) {
     if (model?.trim().toLowerCase() === "x2d" || serial?.trim().toUpperCase().startsWith("20P")) {
         throw new Error("X2D direct printing is not supported through legacy MQTT/FTPS. Use the native eMMC route via print_3mf (macOS, or Linux with the native helper installed). " +
@@ -1093,7 +1106,7 @@ export class BambuImplementation {
         }
         catch (error) {
             // Nothing has been sent to the printer but (part of) a file, so the print certainly did not start.
-            throw new PrinterRefusal("printer-upload-failed", `The print file did not reach the printer (${error instanceof Error ? error.message : String(error)}). No print was started.`);
+            throw new PrinterRefusal("printer-upload-failed", `The print file did not reach the printer (${error instanceof Error ? error.message : String(error)}). No print was started.${ftpsRefusalHint(error, model)}`);
         }
         // Uploads can be long. Recheck current state before the command is dispatched.
         const dispatchStatus = await this.getSafetyStatus(host, serial, token);
@@ -1763,8 +1776,17 @@ export class BambuImplementation {
                 const destination = path.posix.join(path.posix.dirname(remotePath), uniquePrintName(remotePath));
                 if (upload)
                     await upload(snapshot, destination, assertActive);
-                else
-                    await this.ftpUpload(host, token, snapshot, `/${destination}`);
+                else {
+                    try {
+                        await this.ftpUpload(host, token, snapshot, `/${destination}`);
+                    }
+                    catch (error) {
+                        const hint = ftpsRefusalHint(error, model);
+                        if (hint && error instanceof Error)
+                            error.message += hint;
+                        throw error;
+                    }
+                }
                 return { status: "success", uploaded: true, remotePath: destination, printRequested: false, inspected: printable };
             }));
         }
