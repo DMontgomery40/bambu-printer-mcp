@@ -796,6 +796,10 @@ export class BambuNetworkBridge {
         await pump();
         await new Promise(resolve => setTimeout(resolve, timing.pollMs));
       }
+      // A delayed wake can cross the deadline while replies are queued in the host.
+      // Drain once more before inspecting replies or disconnecting.
+      assertActive();
+      await pump();
     };
     const certificateReadyWithin = async (ms: number) => {
       const deadline = Date.now() + ms;
@@ -805,6 +809,8 @@ export class BambuNetworkBridge {
         if (certificateReady) return true;
         await new Promise(resolve => setTimeout(resolve, timing.pollMs));
       } while (Date.now() < deadline);
+      assertActive();
+      await pump();
       return certificateReady;
     };
 
@@ -998,6 +1004,9 @@ export class BambuNetworkBridge {
           await pump();
           if (!done()) await new Promise(resolve => setTimeout(resolve, timing.pollMs));
         }
+        // Read replies queued during the last sleep, even if it overshot the deadline.
+        assertActive();
+        await pump();
         return done();
       };
       const settle = async (ms: number) => { await waitFor(() => false, ms); };

@@ -162,9 +162,15 @@ test('remote async failure is terminal and never automatically resubmits', async
 });
 
 test('remote deadline aborts a stalled response without retry and warns that work may continue', async t => {
-  const f = await fixture(t, () => {});
+  let received;
+  const arrived = new Promise(resolve => { received = resolve; });
+  const f = await fixture(t, () => received());
   process.env.SLICER_API_TIMEOUT_MS = '50';
-  await assert.rejects(f.slice(), /timed out.*may continue/i);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const rejected = assert.rejects(f.slice(), /timed out.*may continue/i);
+  await arrived; // Exercise a dispatched request, independent of CPU/IO scheduling.
+  t.mock.timers.tick(50);
+  await rejected;
   assert.equal(f.requests.length, 1);
 });
 
@@ -231,9 +237,21 @@ test('remote cancellation during HTTP aborts the wait and never resubmits', asyn
 });
 
 test('remote deadline also aborts a stalled response body', async t => {
+  let consumed;
+  const reading = new Promise(resolve => { consumed = resolve; });
+  const read = ReadableStreamDefaultReader.prototype.read;
+  t.mock.method(ReadableStreamDefaultReader.prototype, 'read', async function (...args) {
+    const part = await read.apply(this, args);
+    if (part.value && new TextDecoder().decode(part.value) === 'unfinished result') consumed();
+    return part;
+  });
   const f = await fixture(t, (_req, res) => { res.writeHead(200); res.write('unfinished result'); });
   process.env.SLICER_API_TIMEOUT_MS = '50';
-  await assert.rejects(f.slice(), /timed out.*may continue/i);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const rejected = assert.rejects(f.slice(), /timed out.*may continue/i);
+  await reading; // Headers and a body chunk were consumed; the remaining body is stalled.
+  t.mock.timers.tick(50);
+  await rejected;
   assert.equal(f.requests.length, 1);
 });
 
