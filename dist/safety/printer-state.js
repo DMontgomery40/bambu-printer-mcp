@@ -131,11 +131,17 @@ export function isCancelledX2DJob(raw, model) {
         finiteNumber(raw.print_error) === 0 && finiteNumber(raw.fail_reason) === 0x0300400c &&
         [raw.gcode_file, raw.subtask_name].some(value => typeof value === "string" && value.trim().length > 0);
 }
-/** Bambu Studio 2.8.2.61 marks FAILED as finished. Limit P1S recovery to
+/** Models observed retaining FAILED for a named prior job while explicitly reporting
+ * idle with no print error and no HMS: P1S (#87) and A1 firmware 01.08.01.00 after a
+ * user-stopped job. Add a model only with that hardware evidence. */
+export const FINISHED_WHEN_FAILED_IDLE_MODELS = new Set(["p1s", "a1"]);
+/** Bambu Studio 2.8.2.61 marks FAILED as finished. Limit recovery to the models above and
  * a named prior job explicitly reporting idle, no print error and no HMS.
  * Dispatch rechecks the observed job identity. */
-export function isFinishedP1SJob(raw, model) {
-    return normalizeModel(model) === "p1s" && raw.gcode_state === "FAILED" && raw.print_type === "idle" &&
+export function isFinishedIdleJob(raw, model) {
+    const normalized = normalizeModel(model);
+    return normalized !== undefined && FINISHED_WHEN_FAILED_IDLE_MODELS.has(normalized) &&
+        raw.gcode_state === "FAILED" && raw.print_type === "idle" &&
         finiteNumber(raw.print_error) === 0 && Array.isArray(raw.hms) && raw.hms.length === 0 &&
         [raw.gcode_file, raw.subtask_name].some(value => typeof value === "string" && value.trim().length > 0);
 }
@@ -329,7 +335,7 @@ export function isPauseNotice(raw, requireIdle) {
 }
 function validateErrors(raw, requireIdle, serial, model) {
     const state = typeof raw.gcode_state === "string" ? raw.gcode_state.toUpperCase() : "UNKNOWN";
-    const terminal = isCancelledX2DJob(raw, model) || isFinishedP1SJob(raw, model);
+    const terminal = isCancelledX2DJob(raw, model) || isFinishedIdleJob(raw, model);
     if (requireIdle && !["IDLE", "FINISH"].includes(state) && !terminal)
         throw new PrinterRefusal("printer-not-ready", `Printer state ${state} is not safely idle.`);
     if (!requireIdle && !["IDLE", "FINISH", "RUNNING", "PAUSE"].includes(state) && !terminal)

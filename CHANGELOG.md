@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- An A1 that keeps `FAILED` after a stopped job no longer blocks every new print with "Printer state FAILED is not safely idle." It gets the same recovery the P1S got in 1.1.46: only a named prior job explicitly reporting `print_type: idle`, `print_error: 0` and no HMS entries qualifies, and dispatch still rechecks that the job has not changed. The allowed models are now one list, `FINISHED_WHEN_FAILED_IDLE_MODELS` (`p1s`, `a1`), and `isFinishedP1SJob` is renamed `isFinishedIdleJob`. Other models in the same state still refuse. Evidence: an A1 on firmware 01.08.01.00 reported exactly this state after a user-stopped job; with the change applied locally, the next `print_3mf` dispatched and the printer then reported `FINISH` for all 234 layers. Regressions cover both models and the models still excluded.
+
 ## [1.1.79] – 2026-11-08
 
 ### Fixed

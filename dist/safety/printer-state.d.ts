@@ -51,10 +51,14 @@ export declare function finiteNumber(value: unknown): number | undefined;
  * and print dispatch rechecks the identity of the observed job.
  */
 export declare function isCancelledX2DJob(raw: Record<string, any>, model: string): boolean;
-/** Bambu Studio 2.8.2.61 marks FAILED as finished. Limit P1S recovery to
+/** Models observed retaining FAILED for a named prior job while explicitly reporting
+ * idle with no print error and no HMS: P1S (#87) and A1 firmware 01.08.01.00 after a
+ * user-stopped job. Add a model only with that hardware evidence. */
+export declare const FINISHED_WHEN_FAILED_IDLE_MODELS: ReadonlySet<string>;
+/** Bambu Studio 2.8.2.61 marks FAILED as finished. Limit recovery to the models above and
  * a named prior job explicitly reporting idle, no print error and no HMS.
  * Dispatch rechecks the observed job identity. */
-export declare function isFinishedP1SJob(raw: Record<string, any>, model: string): boolean;
+export declare function isFinishedIdleJob(raw: Record<string, any>, model: string): boolean;
 /** Nozzles whose reported diameter and type are configured settings rather than chip readings. */
 export declare function unchippedNozzles(raw: unknown): number[];
 export type HmsEntry = {
