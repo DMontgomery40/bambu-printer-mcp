@@ -1005,8 +1005,7 @@ export class BambuNetworkBridge {
           if (!done()) await new Promise(resolve => setTimeout(resolve, timing.pollMs));
         }
         // Read replies queued during the last sleep, even if it overshot the deadline.
-        assertActive();
-        await pump();
+        if (!done()) { assertActive(); await pump(); }
         return done();
       };
       const settle = async (ms: number) => { await waitFor(() => false, ms); };
