@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StdioClientTransport } from "./support/stdio.mjs";
 import { FUSION_MCP_DEFAULT_ARGS, FUSION_MCP_PIN, FusionMcpBridge, defaultFusionSystem, fusionLaunchArguments } from "../dist/fusion-mcp-bridge.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");

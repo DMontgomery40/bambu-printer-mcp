@@ -6,7 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StdioClientTransport } from "./support/stdio.mjs";
 
 const serverEntry = fileURLToPath(new URL("../dist/index.js", import.meta.url));
 const printerModule = new URL("../dist/printers/bambu.js", import.meta.url).href;

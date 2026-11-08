@@ -263,7 +263,7 @@ test('remote deadline also aborts a stalled response body', async t => {
 
 async function mcpFixture(t, f) {
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
-  const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+  const { StdioClientTransport } = await import('./support/stdio.mjs');
   const { fileURLToPath, pathToFileURL } = await import('node:url');
   const root = fileURLToPath(new URL('..', import.meta.url));
   const eventsPath = path.join(f.dir, 'printer-events.jsonl');

@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StdioClientTransport, terminateChildProcess } from "./support/stdio.mjs";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import JSZip from "jszip";
 import { bridgeAmsMapping2Entry, hasAmsMappingInput, normalizeAmsMappingObject, normalizeBridgeAmsTrayValue } from "../dist/ams-mapping.js";
@@ -150,14 +150,7 @@ async function closeTransport(transport) {
   try { await transport.close(); } catch { }
 }
 
-async function terminateChildProcess(childProcess) {
-  if (childProcess.exitCode !== null) return;
-  childProcess.kill("SIGTERM");
-  await Promise.race([
-    once(childProcess, "exit"),
-    sleep(2000).then(() => { if (childProcess.exitCode === null) childProcess.kill("SIGKILL"); }),
-  ]);
-}
+
 
 function parseJsonResult(toolResult) {
   const text = toolResult.content?.[0]?.text;

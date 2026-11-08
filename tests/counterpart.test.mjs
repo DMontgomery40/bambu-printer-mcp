@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import JSZip from "jszip";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StdioClientTransport } from "./support/stdio.mjs";
 import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv";
 import { bambuProgress, bambuState, formatHmsCode, hmsUrl, offlineProgress, stageWords, TASK_CANCELLED } from "../dist/counterpart/progress.js";
 import { bambuPrinterInfo } from "../dist/counterpart/info.js";

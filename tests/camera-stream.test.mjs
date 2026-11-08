@@ -12,7 +12,7 @@ import {CameraStreams} from '../dist/printers/camera-stream.js';
 import {openTcpCameraSource, openRtspCameraSource, mjpegParser} from '../dist/printers/camera-sources.js';
 import {BambuImplementation} from '../dist/printers/bambu.js';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
-import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
+import {StdioClientTransport} from './support/stdio.mjs';
 
 const picture = value => sharp({create: {width: 640, height: 360, channels: 3, background: {r:value,g:value,b:value}}}).jpeg().toBuffer();
 const until = async check => { for(let i=0;i<400;i++){if(await check())return;await new Promise(r=>setTimeout(r,5));}throw Error('timed out'); };
