@@ -1,8 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 /**
- * A printer refusal with a stable code, returned as structuredContent.code on the tool's error, so clients
- * such as Counterpart act on the code instead of matching the message (whose words, HMS numbers and
- * firmware details change with the printer). Neither one starts a print.
+ * A printer refusal with a stable diagnostic code, retained for existing clients.
+ * Counterpart uses structuredContent.printOutcome for dispatch truth, never
+ * these firmware-specific codes or the message.
  *
  * - printer-command-rejected: the printer refused the print command itself (for Bambu, HMS 0500-0500-0001-0007,
  *   MQTT command verification); the file was uploaded and the command sent, but nothing is printing.

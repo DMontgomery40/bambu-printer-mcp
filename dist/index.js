@@ -4423,7 +4423,7 @@ class BambuPrinterMCPServer {
                         : `Check parameters and try again. Error: ${message}`,
                     message,
                     tool: name,
-                    ...(error instanceof PrinterRefusal ? { code: error.code } : {}), ...(name === "print_3mf" ? { printOutcome: printOutcome(error) } : {}),
+                    ...(error instanceof PrinterRefusal ? { code: error.code } : {}), ...(["print_3mf", "upload_gcode"].includes(name) ? { printOutcome: printOutcome(error) } : {}),
                     // The slicer's own result.json; the message starts with its error_string and warnings.
                     // A slicer failure always carries slicer_report: the plain sentence a person sees, the slicer's words for the log.
                     // The report always says failed (a result.json that says success can still leave no output file).

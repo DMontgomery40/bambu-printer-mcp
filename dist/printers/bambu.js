@@ -1799,6 +1799,7 @@ export class BambuImplementation {
         const printer = await this.getPrinter(host, serial, token);
         assertActive();
         const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
+        markPrintCommandSent();
         try {
             await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remotePath }));
         }
