@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `print_3mf` no longer refuses external-spool prints on a single-nozzle X1C (firmware 01.12.00.00, AMS attached) with "External spool report is ambiguous for this nozzle". That firmware reports its one `vir_slot` as id 255 (`ams_id` 255, `slot_id` 0) while `ams.tray_now` is 254. A single external slot on a single-nozzle printer is now accepted for external spool 254 and its reported material is still checked; two or more slots still fail, explicit tray 255 stays rejected, and dual-nozzle selection is unchanged. Checked with unit tests on a synthetic X1C report; no physical print was run.
+
 ## [1.1.78] – 2026-11-07
 
 ### Fixed

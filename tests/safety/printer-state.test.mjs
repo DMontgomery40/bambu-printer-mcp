@@ -317,6 +317,26 @@ test('single-nozzle printers still reject tray 255 and two external spool report
   assert.throws(() => check(fresh({vir_slot:[{id:'254',tray_type:'PLA'},{id:'255',tray_type:'PLA'}]})),/ambiguous/i);
   assert.doesNotThrow(() => check(fresh({vir_slot:[{id:'254',tray_type:'PLA'}]})));
 });
+// X1C firmware 01.12.00.00 printing from the external spool (AMS also attached) reports its one vir_slot as
+// id 255 (ams_id 255, slot_id 0, also vt_tray.id 255) while ams.tray_now is 254.
+const x1cSerial='00M000000000000';
+const x1c=(vir_slot)=>fresh({model_id:'BL-P001',modules:[{name:'ota',sn:x1cSerial}],ams:{tray_now:'254'},
+  vt_tray:{id:'255',tray_type:'TPU'},ams_id:255,slot_id:0,tray_id:254,vir_slot},{model:'X1C',serial:x1cSerial});
+const x1cReq=(extra={})=>req({model:'x1c',materials:['TPU'],usedFilamentPositions:[0],requireLoadedFilament:true,...extra});
+test('single-nozzle X1C accepts its one external slot reported as 255 for external spool 254', () => {
+  const result=check(x1c([{id:'255',tray_type:'TPU',nozzle_temp_min:'200',nozzle_temp_max:'250'}]),x1cReq());
+  assert.equal(result.model,'x1c');
+  assert.deepEqual(result.filaments.map(({trayIndex,material})=>({trayIndex,material})),[{trayIndex:254,material:'TPU'}]);
+  // The slot's reported material is still compared with the job.
+  assert.throws(() => check(x1c([{id:'255',tray_type:'PLA'}]),x1cReq()),/PLA.*contradicts/);
+  // Explicit tray 255 stays rejected on single-nozzle printers.
+  assert.throws(() => check(x1c([{id:'255',tray_type:'TPU'}]),x1cReq({useAMS:true,amsMapping:[255],requireLoadedFilament:false})),/mapping/i);
+});
+test('single-nozzle X1C still rejects two external slot reports', () => {
+  for(const slots of [[{id:'254',tray_type:'TPU'},{id:'255',tray_type:'TPU'}],[{id:'255',tray_type:'TPU'},{id:'255',tray_type:'TPU'}]]) {
+    assert.throws(() => check(x1c(slots),x1cReq()),/External spool report is ambiguous/);
+  }
+});
 
 // X2D re-raises this camera entry (serious level) at every boot. Bambu lists it for
 // the X2D with empty text, so its screen, Studio and Handy never show it.
