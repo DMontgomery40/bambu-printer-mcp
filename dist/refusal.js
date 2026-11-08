@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 /**
  * A printer refusal with a stable code, returned as structuredContent.code on the tool's error, so clients
  * such as Counterpart act on the code instead of matching the message (whose words, HMS numbers and
@@ -15,4 +16,19 @@ export class PrinterRefusal extends Error {
         this.code = code;
         this.name = "PrinterRefusal";
     }
+}
+const printDispatch = new AsyncLocalStorage();
+export function withPrintDispatch(run) {
+    return printDispatch.run({ attempted: false }, run);
+}
+/** Call immediately before handing a print command to a transport. An acknowledgement may then be lost. */
+export function markPrintCommandSent() {
+    const dispatch = printDispatch.getStore();
+    if (dispatch)
+        dispatch.attempted = true;
+}
+export function printOutcome(error) {
+    if (error instanceof PrinterRefusal && error.code === "printer-command-rejected")
+        return "rejected";
+    return printDispatch.getStore()?.attempted === false ? "not-sent" : "unknown";
 }

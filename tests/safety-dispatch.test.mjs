@@ -1444,3 +1444,24 @@ test("H2D project_file encodes flow calibration on and off; auto has no verified
   }
   assert.deepEqual(sent, { off: { flow_cali: 0, extrude_cali_flag: 0 }, on: { flow_cali: 1, extrude_cali_flag: 0 }, auto: { flow_cali: 0, extrude_cali_flag: 0 } });
 });
+
+// The Nov 6 P1S refusal: no fresh status, no upload and no print command.
+test("counterpart dispatch truth brackets the actual print3mf transport", async (t) => {
+  const { withPrintDispatch, printOutcome } = await import("../dist/refusal.js");
+  const file = await fixture(t);
+  const { printer, events } = isolatedPrinter();
+  printer.getSafetyStatus = async () => { throw new Error("Timed out waiting for a fresh MQTT safety report"); };
+  await withPrintDispatch(async () => {
+    await assert.rejects(printer.print3mf(host, serial, token, { projectName: "job", filePath: file, bambuModel: "p1s", useAMS: false }), error => {
+      assert.equal(printOutcome(error), "not-sent"); return true;
+    });
+  });
+  assertNoDispatch(events);
+  const after = isolatedPrinter();
+  after.printer.getPrinter = async () => ({ publish: async () => { throw new Error("reply lost"); } });
+  await withPrintDispatch(async () => {
+    await assert.rejects(after.printer.print3mf(host, serial, token, { projectName: "job", filePath: file, bambuModel: "p1s", useAMS: false }), error => {
+      assert.equal(printOutcome(error), "unknown"); return true;
+    });
+  });
+});

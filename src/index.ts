@@ -82,7 +82,7 @@ import { makeCounterpart3mf } from "./counterpart/make-3mf.js";
 import { MAKE_3MF_OUTPUT_SCHEMA, PRINT_PROGRESS_OUTPUT_SCHEMA, PRINTER_INFO_OUTPUT_SCHEMA } from "./counterpart/schemas.js";
 import { parseProcessOverrides } from "./slicer/process-overrides.js";
 import { PRINT_QUALITY_PROPERTIES, withPrintQuality } from "./slicer/print-quality.js";
-import { PrinterRefusal } from "./refusal.js";
+import { PrinterRefusal, withPrintDispatch, markPrintCommandSent, printOutcome } from "./refusal.js";
 import { uploadProgressReporter } from "./upload-progress.js";
 import { machinePauseGcode, parsePauseLayers, pausedLayers, readPlateGcode } from "./slicer/layer-pauses.js";
 
@@ -1951,6 +1951,7 @@ class BambuPrinterMCPServer {
             throw new Error("The printer's SD card or USB stick is no longer ready. Check it and start the print again.");
           }
           assertActive();
+          markPrintCommandSent();
         } });
         assertActive();
         this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements, resumeFile, false);
@@ -1965,7 +1966,7 @@ class BambuPrinterMCPServer {
           validatePrinterState(dispatchStatus, requirements);
           this.bambu.assertPrintPreflight(dispatchStatus, preflight);
         },
-        assertDispatchAllowed: method => { if (method === bridgeMethod || method === cloudFallbackMethod) assertActive(); },
+        assertDispatchAllowed: method => { if (method === bridgeMethod || method === cloudFallbackMethod) { assertActive(); markPrintCommandSent(); } },
         onDispatched: method => { if (method === bridgeMethod || method === cloudFallbackMethod) retainForDispatchedUpload(); },
       };
       let jobUpdates: BridgeJobUpdate[] = [];
@@ -2050,6 +2051,7 @@ class BambuPrinterMCPServer {
     const projectName = String(
       args?.project_name || threeMfFilename.replace(/\.3mf$/i, "")
     );
+    markPrintCommandSent();
     const handoff = await importFileViaBambuConnect({
       filePath: threeMFPath,
       name: projectName,
@@ -3709,7 +3711,7 @@ class BambuPrinterMCPServer {
     });
 
     // A designer's settings extracted for this call are removed when it settles.
-    this.server.setRequestHandler(CallToolRequestSchema, (request, extra) => withExtractedSettingsCleanup(async () => {
+    this.server.setRequestHandler(CallToolRequestSchema, (request, extra) => withPrintDispatch(() => withExtractedSettingsCleanup(async () => {
       const { name, arguments: args } = request.params;
       const sendNativeCommand = (
         options: Parameters<typeof sendCommandWithBambuNative>[0],
@@ -5155,7 +5157,7 @@ class BambuPrinterMCPServer {
             : `Check parameters and try again. Error: ${message}`,
           message,
           tool: name,
-          ...(error instanceof PrinterRefusal ? { code: error.code } : {}),
+          ...(error instanceof PrinterRefusal ? { code: error.code } : {}), ...(name === "print_3mf" ? { printOutcome: printOutcome(error) } : {}),
           // The slicer's own result.json; the message starts with its error_string and warnings.
           // A slicer failure always carries slicer_report: the plain sentence a person sees, the slicer's words for the log.
           // The report always says failed (a result.json that says success can still leave no output file).
@@ -5174,7 +5176,7 @@ class BambuPrinterMCPServer {
           isError: true,
         };
       }
-    }));
+    })));
   }
 
   async startStdio() {

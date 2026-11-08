@@ -14,3 +14,9 @@ export declare class PrinterRefusal extends Error {
     readonly code: RefusalCode;
     constructor(code: RefusalCode, message: string);
 }
+/** counterpart/1 print_3mf errors describe dispatch truth independently of firmware-specific codes. */
+export type PrintOutcome = "not-sent" | "unknown" | "rejected";
+export declare function withPrintDispatch<T>(run: () => T): T;
+/** Call immediately before handing a print command to a transport. An acknowledgement may then be lost. */
+export declare function markPrintCommandSent(): void;
+export declare function printOutcome(error: unknown): PrintOutcome;

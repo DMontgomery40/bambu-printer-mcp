@@ -1,4 +1,4 @@
-import { PrinterRefusal } from "../refusal.js";
+import { PrinterRefusal, markPrintCommandSent } from "../refusal.js";
 import {CameraStreams, type FrameOptions} from "./camera-stream.js";
 import {openTcpCameraSource, openRtspCameraSource} from "./camera-sources.js";
 import {cameraNumber} from "./camera-tools.js";
@@ -1273,6 +1273,7 @@ export class BambuImplementation {
     assertActive();
     if (legacyContainer) {
       const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
+      markPrintCommandSent();
       try { await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath })); } catch (error) { watcher.dispose(); throw error; }
       this.recordCheckedJob(host, serial, remoteProjectPath, requirements, resumeFile);
       const dispatch = await watcher.settled();
@@ -1354,6 +1355,7 @@ export class BambuImplementation {
     }
 
     const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
+    markPrintCommandSent();
     try { await printer.publish(projectFileCmd); } catch (error) { watcher.dispose(); throw error; }
     this.recordCheckedJob(host, serial, remoteProjectPath, requirements, resumeFile);
     await new Promise((resolve) => setTimeout(resolve, 300));
