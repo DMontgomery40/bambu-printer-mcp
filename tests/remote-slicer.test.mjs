@@ -240,9 +240,14 @@ test('remote deadline also aborts a stalled response body', async t => {
   let consumed;
   const reading = new Promise(resolve => { consumed = resolve; });
   const read = ReadableStreamDefaultReader.prototype.read;
+  const chunks = new WeakMap();
   t.mock.method(ReadableStreamDefaultReader.prototype, 'read', async function (...args) {
     const part = await read.apply(this, args);
-    if (part.value && new TextDecoder().decode(part.value) === 'unfinished result') consumed();
+    if (part.value) {
+      const text = (chunks.get(this) ?? '') + new TextDecoder().decode(part.value);
+      chunks.set(this, text);
+      if (text === 'unfinished result') consumed();
+    }
     return part;
   });
   const f = await fixture(t, (_req, res) => { res.writeHead(200); res.write('unfinished result'); });
