@@ -1,3 +1,4 @@
+import {trackedMkdtemp} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -17,7 +18,7 @@ const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const unsupportedX2D = /X2D direct printing is not supported.*native eMMC/i;
 
 async function fixture(t, sliced = true, physicalNozzle = 0) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-x2d-safety-"));
+  const dir = await trackedMkdtemp(path.join(os.tmpdir(), "bambu-x2d-safety-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, sliced ? "cube.gcode.3mf" : "cube.3mf");
   const zip = new JSZip();

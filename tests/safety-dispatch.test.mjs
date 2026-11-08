@@ -1,3 +1,4 @@
+import {trackedMkdtemp} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -30,7 +31,7 @@ function safetyStatus({ model = "p1s", nozzle = "0.4", state = "IDLE", ...raw } 
 }
 
 async function fixture(t, { model = "p1s", nozzle = "0.4", nozzleDiameters, material = "PLA", gcode = "M104 S220\nM140 S60\nG1 X10 Y10 Z1\n", raw = false, project = {}, plateFilamentIds = [0], name = "job.gcode.3mf" } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-safety-dispatch-"));
+  const dir = await trackedMkdtemp(path.join(os.tmpdir(), "bambu-safety-dispatch-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, raw ? "job.gcode" : name);
   const nozzles = (nozzleDiameters ?? [nozzle]).map(String);
@@ -348,7 +349,7 @@ function restarted(job, resumeStateDir) {
 }
 
 async function recordFolder(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-resume-"));
+  const dir = await trackedMkdtemp(path.join(os.tmpdir(), "bambu-resume-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   return dir;
 }
@@ -660,7 +661,7 @@ for (const [name, changes, error] of [
 }
 
 async function interceptedMcp(t, { blockBridgeInitialization = false, realBridgeRequest = false, model = "p1s", nozzleDiameters = [0.4], ams, bridgeResponse = { ok: true, value: 0 }, bridgeResponses = {}, localPrint } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-bridge-safety-"));
+  const dir = await trackedMkdtemp(path.join(os.tmpdir(), "bambu-bridge-safety-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const eventsPath = path.join(dir, "events.jsonl");
   const releasePath = path.join(dir, "release-agent");
@@ -714,7 +715,7 @@ async function interceptedMcp(t, { blockBridgeInitialization = false, realBridge
   `);
   const transport = new StdioClientTransport({ command: process.execPath, args: ["--import", preload, path.join(root, "dist/index.js")], cwd: dir, stderr: "pipe", env: { ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: "", BAMBU_PRINTER_MODEL: "", BAMBU_PRINTER_HOST: host, BAMBU_PRINTER_SERIAL: serial, BAMBU_SERIAL: serial, BAMBU_PRINTER_ACCESS_TOKEN: token, BAMBU_TOKEN: token, BAMBU_DEV_ID: serial, BAMBU_NETWORK_BRIDGE_COMMAND: "",
     // Each server keeps its own resume records: a job another test started must never be resumable here.
-    BAMBU_RESUME_STATE_DIR: await fs.mkdtemp(path.join(os.tmpdir(), "bambu-resume-server-")) } });
+    BAMBU_RESUME_STATE_DIR: await trackedMkdtemp(path.join(os.tmpdir(), "bambu-resume-server-")) } });
   const client = new Client({ name: "safety-dispatch-tests", version: "1" }, { capabilities: { elicitation: { form: {} } } });
   client.setRequestHandler(ElicitRequestSchema, async () => ({ action: "accept", content: { confirmed: true } }));
   t.after(() => client.close());
@@ -1369,7 +1370,7 @@ test("bridge snapshots are retained only after handoff, including an uncertain r
 
 /** A BambuStudio.conf with David's saved P1S (C12) Send dialog options. */
 async function davidStudioConf(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "studio-conf-"));
+  const dir = await trackedMkdtemp(path.join(os.tmpdir(), "studio-conf-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, "BambuStudio.conf");
   await fs.writeFile(file, `${JSON.stringify({ C12: { bed_leveling: "on", flow_cali: "auto", nozzle_offset_cali: "auto", timelapse: "off" } }, null, 4)}\n# MD5 checksum 00\n`);

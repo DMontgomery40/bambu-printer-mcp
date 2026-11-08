@@ -1,3 +1,4 @@
+import {trackedMkdtempSync} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -30,7 +31,7 @@ async function assertProcessExited(pid) {
 }
 
 async function start(t, mode = "normal", overrides = {}) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-blender-test-"));
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-blender-test-"));
   const logPath = path.join(directory, "peer.jsonl");
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -268,7 +269,7 @@ test("Legacy Blender bridge reports process completion honestly and rejects expl
 
 test("blender_mcp_setup reads the running add-on's own handshake through the configured bridge", async (t) => {
   // A stand-in uvx: `python -c` answers the package's add-on inspection; anything else runs the Blender MCP peer.
-  const tools = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-blender-setup-"));
+  const tools = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-blender-setup-"));
   const addons = path.join(tools, "Library", "Application Support", "Blender", "5.0", "scripts", "addons");
   fs.mkdirSync(addons, { recursive: true });
   fs.writeFileSync(path.join(addons, "addon.py"), 'bl_info = {"name": "MCP for Blender"}\nADDON_PROTOCOL_VERSION = 15\n');

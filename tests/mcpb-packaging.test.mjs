@@ -1,3 +1,4 @@
+import {trackedMkdtempSync} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -13,7 +14,7 @@ import { packageMcpb } from "../scripts/package-mcpb.mjs";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 test("MCPB archive preserves runtime and licenses without local secrets or pruning developer dependencies", { timeout: 180_000 }, async (t) => {
-  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-mcpb-test-"));
+  const fixture = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-mcpb-test-"));
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
   for (const name of ["package.json", "package-lock.json", "manifest.json", "dist", "src", "patches", "native", "LICENSE", "README.md"]) {
     fs.cpSync(path.join(ROOT, name), path.join(fixture, name), { recursive: true });
@@ -108,7 +109,7 @@ test("MCPB archive preserves runtime and licenses without local secrets or pruni
 });
 
 test("npm version updates the extension manifest without requiring a Git checkout", (t) => {
-  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-mcpb-version-"));
+  const fixture = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-mcpb-version-"));
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
   fs.mkdirSync(path.join(fixture, "scripts"));
   fs.copyFileSync(path.join(ROOT, "scripts/sync-manifest-version.mjs"), path.join(fixture, "scripts/sync-manifest-version.mjs"));
