@@ -48,9 +48,9 @@
   "author": "David Montgomery",
   "license": "GPL-2.0",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "bambu-node": "3.22.21",
-    "basic-ftp": "^6.2.3",
+    "basic-ftp": "^6.2.6",
     "dotenv": "^16.3.1",
     "jszip": "^3.10.2",
     "mqtt": "^5.16.1",
