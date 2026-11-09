@@ -145,7 +145,8 @@ FUSION_MCP_PORT=9877
 | `MCP_HTTP_PATH` | `/mcp` | No | HTTP endpoint path (HTTP transport only) |
 | `MCP_HTTP_STATEFUL` | `true` | No | Enable stateful HTTP sessions |
 | `MCP_HTTP_JSON_RESPONSE` | `true` | No | Return structured JSON alongside text responses |
-| `MCP_HTTP_ALLOWED_ORIGINS` | | No | Comma-separated list of allowed CORS origins |
+| `MCP_HTTP_ALLOWED_ORIGINS` | | No | Comma-separated list of allowed browser origins. When unset, a request with an `Origin` header is accepted only if that origin's host is an allowed host; `null` and app-scheme origins must be listed here |
+| `MCP_HTTP_ALLOWED_HOSTS` | | No | Comma-separated extra hostnames or IP addresses (a port is ignored) that the `Host` header may name, besides `localhost`, `127.0.0.1`, `[::1]` and `MCP_HTTP_HOST`. Other hosts get 403, which blocks DNS rebinding. With a wildcard `MCP_HTTP_HOST` (`0.0.0.0`/`::`), Host is checked only when this is set |
 | `BLENDER_MCP_COMMAND` | | No | Trusted executable for a standard stdio Blender MCP server, e.g. full path to `uvx` |
 | `BLENDER_MCP_ARGS` | `[]` | No | JSON array of server arguments, e.g. `["blender-mcp"]`; no shell parsing |
 | `BLENDER_MCP_TIMEOUT_MS` | `120000` | No | Connection/discovery/call deadline, 100–300000 ms; interrupted edits are never retried automatically |

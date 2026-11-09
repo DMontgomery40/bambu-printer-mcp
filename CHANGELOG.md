@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.80] – 2026-11-09
+
+### Security
+
+- The streamable-http transport refuses requests whose Host header is not a loopback name, the bind address or an `MCP_HTTP_ALLOWED_HOSTS` entry, which blocks DNS rebinding from web pages. Without `MCP_HTTP_ALLOWED_ORIGINS`, it also refuses browser origins on other hosts, including the opaque `null` origin and app schemes; list those origins to keep them. A server bound to a specific non-loopback address that browsers reach by another name or IP needs that name in `MCP_HTTP_ALLOWED_HOSTS`. A wildcard bind (`0.0.0.0` or `::`) without `MCP_HTTP_ALLOWED_HOSTS` keeps accepting any Host and warns on stderr
+- A malformed Host header gets 400 instead of crashing the HTTP server, and a failing request gets 500 instead of ending the process
+
 ## [1.1.79] – 2026-11-08
 
 ### Fixed

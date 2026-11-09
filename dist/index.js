@@ -757,6 +757,33 @@ function normalizePath(pathValue) {
         return "/mcp";
     return value.startsWith("/") ? value : `/${value}`;
 }
+/**
+ * The lowercase hostname of a Host header, without its port or a trailing dot; undefined when malformed.
+ * `bareIpv6` accepts an unbracketed IPv6 address, as a bind address or configured host is written but a Host header is not.
+ */
+function hostHeaderName(value, bareIpv6 = false) {
+    if (!value)
+        return undefined;
+    const bracketed = bareIpv6 && !value.startsWith("[") && value.indexOf(":") !== value.lastIndexOf(":") ? `[${value}]` : value;
+    try {
+        const url = new URL(`http://${bracketed}`);
+        return url.pathname === "/" && !url.username && !url.password && !url.search && !url.hash ? url.hostname.toLowerCase().replace(/\.$/, "") : undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
+/**
+ * Hostnames a request's Host header may name, which blocks DNS rebinding: loopback names, a specific bind address and
+ * MCP_HTTP_ALLOWED_HOSTS. Undefined (no check) only for a wildcard bind with no configured hosts.
+ */
+function allowedRequestHostnames(httpHost, configured) {
+    const bind = hostHeaderName(httpHost, true);
+    const wildcard = bind === "0.0.0.0" || bind === "[::]";
+    if (wildcard && configured.size === 0)
+        return undefined;
+    return new Set(["localhost", "127.0.0.1", "[::1]", ...(bind && !wildcard ? [bind] : []), ...configured]);
+}
 function parseCsvEnv(value) {
     if (!value)
         return new Set();
@@ -858,6 +885,7 @@ function readRuntimeConfig() {
         statefulSession: parseBooleanEnv(process.env.MCP_HTTP_STATEFUL, true),
         enableJsonResponse: parseBooleanEnv(process.env.MCP_HTTP_JSON_RESPONSE, true),
         allowedOrigins: parseCsvEnv(process.env.MCP_HTTP_ALLOWED_ORIGINS),
+        allowedHosts: new Set([...parseCsvEnv(process.env.MCP_HTTP_ALLOWED_HOSTS)].flatMap(host => hostHeaderName(host, true) ?? [])),
         blenderBridgeCommand: process.env.BLENDER_MCP_BRIDGE_COMMAND?.trim() || undefined,
         ffmpegPath: process.env.FFMPEG_PATH?.trim() || undefined,
         allowExecutableArg: parseBooleanEnv(process.env.MCP_ALLOW_EXECUTABLE_ARG, false),
@@ -4468,28 +4496,57 @@ class BambuPrinterMCPServer {
         }
     }
     async startHttp() {
-        const { httpHost, httpPort, httpPath, statefulSession, enableJsonResponse, allowedOrigins } = this.runtimeConfig;
+        const { httpHost, httpPort, httpPath, statefulSession, enableJsonResponse, allowedOrigins, allowedHosts } = this.runtimeConfig;
+        const allowedHostnames = allowedRequestHostnames(httpHost, allowedHosts);
+        if (!allowedHostnames) {
+            console.error(`[MCP HTTP] Bound to ${httpHost} without MCP_HTTP_ALLOWED_HOSTS: Host headers are not checked, so DNS rebinding is not blocked.`);
+        }
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: statefulSession ? () => randomUUID() : undefined,
             enableJsonResponse,
         });
         await this.server.connect(transport);
+        const reject = (res, status, message) => {
+            res.writeHead(status);
+            res.end(message);
+        };
         const httpServer = createHttpServer(async (req, res) => {
-            const url = new URL(req.url ?? "/", `http://${req.headers.host}`);
-            if (url.pathname !== httpPath) {
-                res.writeHead(404);
-                res.end("Not found");
-                return;
-            }
-            if (allowedOrigins.size > 0) {
-                const origin = req.headers.origin ?? "";
-                if (origin && !allowedOrigins.has(origin)) {
-                    res.writeHead(403);
-                    res.end("Forbidden");
-                    return;
+            try {
+                const hostname = hostHeaderName(req.headers.host);
+                if (!hostname)
+                    return reject(res, 400, "Bad Request");
+                if (allowedHostnames && !allowedHostnames.has(hostname))
+                    return reject(res, 403, "Forbidden");
+                const url = new URL(req.url ?? "/", "http://localhost");
+                if (url.pathname !== httpPath)
+                    return reject(res, 404, "Not found");
+                const origin = req.headers.origin;
+                if (origin) {
+                    if (allowedOrigins.size > 0) {
+                        if (!allowedOrigins.has(origin))
+                            return reject(res, 403, "Forbidden");
+                    }
+                    else if (allowedHostnames) {
+                        let originHostname;
+                        try {
+                            originHostname = new URL(origin).hostname.toLowerCase();
+                        }
+                        catch {
+                            originHostname = undefined;
+                        }
+                        if (!originHostname || !allowedHostnames.has(originHostname))
+                            return reject(res, 403, "Forbidden");
+                    }
                 }
+                await transport.handleRequest(req, res);
             }
-            await transport.handleRequest(req, res);
+            catch (error) {
+                console.error("[MCP HTTP] Request failed:", error);
+                if (!res.headersSent)
+                    reject(res, 500, "Internal Server Error");
+                else
+                    res.end();
+            }
         });
         httpServer.listen(httpPort, httpHost, () => {
             console.error(`Bambu Printer MCP server running on http://${httpHost}:${httpPort}${httpPath}`);

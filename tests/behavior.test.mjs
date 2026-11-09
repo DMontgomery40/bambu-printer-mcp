@@ -3910,6 +3910,58 @@ test("streamable-http transport: initialize, list tools, call success + origin r
   assert.equal(wrongPathResponse.status, 404);
 });
 
+test("streamable-http transport: rejects DNS-rebinding hosts and foreign origins by default, and survives a malformed Host", async (t) => {
+  const port = await getFreePort();
+  const endpoint = `http://127.0.0.1:${port}/mcp`;
+  const childProcess = spawn(process.execPath, [SERVER_ENTRY], {
+    cwd: REPO_ROOT,
+    env: {
+      ...process.env,
+      MCP_TRANSPORT: "streamable-http",
+      MCP_HTTP_HOST: "127.0.0.1",
+      MCP_HTTP_PORT: String(port),
+      MCP_HTTP_PATH: "/mcp",
+      MCP_HTTP_ALLOWED_ORIGINS: "",
+      MCP_HTTP_ALLOWED_HOSTS: "Printer-MCP.lan:3000, fe80::1",
+    },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let stderrOutput = "";
+  childProcess.stderr?.on("data", (chunk) => { stderrOutput += chunk.toString(); });
+  t.after(async () => { await terminateChildProcess(childProcess); });
+  await waitForHttpServerReady(endpoint);
+
+  const body = JSON.stringify({
+    jsonrpc: "2.0", id: 1, method: "initialize",
+    params: { protocolVersion: "2025-11-05", capabilities: {}, clientInfo: { name: "host-test", version: "1.0.0" } },
+  });
+  // fetch() cannot set Host, so write the request on a raw socket.
+  const rawResponse = async (headers) => {
+    const socket = net.connect(port, "127.0.0.1");
+    const lines = [
+      "POST /mcp HTTP/1.1", ...headers,
+      "Content-Type: application/json", "Accept: application/json, text/event-stream",
+      `Content-Length: ${Buffer.byteLength(body)}`, "Connection: close", "", body,
+    ];
+    socket.end(lines.join("\r\n"));
+    let response = "";
+    socket.on("data", (chunk) => { response += chunk.toString(); });
+    await once(socket, "close");
+    return response;
+  };
+  const rawStatus = async (headers) => Number(/^HTTP\/1\.1 (\d{3})/.exec(await rawResponse(headers))?.[1]);
+
+  assert.equal(await rawStatus([`Host: evil.example:${port}`]), 403, `rebinding Host must be refused. stderr: ${stderrOutput}`);
+  assert.equal(await rawStatus([`Host: 127.0.0.1:${port}`, `Origin: http://evil.example:${port}`]), 403, "foreign Origin must be refused by default");
+  assert.equal(await rawStatus(["Host: a b"]), 400, "malformed Host must get 400");
+  assert.equal(await rawStatus([`Host: ::1`]), 400, "an unbracketed IPv6 Host header is malformed");
+  assert.equal(await rawStatus([`Host: [fe80::1]:${port}`, "Origin: null"]), 403, "an opaque null origin is refused by default");
+  assert.equal(childProcess.exitCode, null, `server must survive a malformed Host. stderr: ${stderrOutput}`);
+  assert.equal(await rawStatus([`Host: localhost.:${port}`, `Origin: http://localhost:${port}`]), 200, "a local browser origin stays allowed, with or without a trailing dot");
+  // The session is already initialized, so the MCP transport itself answers with a JSON-RPC error: the host was let through.
+  assert.match(await rawResponse([`Host: printer-mcp.lan:${port}`]), /"jsonrpc":"2\.0"/, "MCP_HTTP_ALLOWED_HOSTS extends the allowed hosts");
+});
+
 test("slice_stl schema: all BambuStudio slicer options present with correct types and descriptions", async (t) => {
   const transport = new StdioClientTransport({
     command: process.execPath,
