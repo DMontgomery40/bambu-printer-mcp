@@ -75,10 +75,15 @@ export const CAD_TOOLS = [
             type: "object",
             properties: {
                 inputs: {
-                    type: "object",
-                    additionalProperties: { type: "string" },
-                    maxProperties: 16,
-                    description: "Explicit input aliases mapped to allowed files. Immutable snapshots are exposed to build() as INPUTS[alias].",
+                    type: "array",
+                    maxItems: 16,
+                    items: {
+                        type: "object",
+                        properties: { name: { type: "string" }, path: { type: "string" } },
+                        required: ["name", "path"],
+                        additionalProperties: false,
+                    },
+                    description: "Explicit named files [{name, path}]. Immutable snapshots are exposed to build() as INPUTS[name]; nested path is declared for remote path policy.",
                 },
                 mode: {
                     type: "string",
@@ -218,7 +223,7 @@ export const CAD_DESIGN_PROMPT = {
     title: "Parametric code-CAD design",
     description: "MCP-owned rules for headless build123d designs and one-call parameter revisions.",
     text: `Use code-CAD for dimensioned functional designs and parameter edits. Build in millimetres with build123d 0.13.0; the MCP owns the Python environment, execution, export, validation and rendering. Check cad_status and use cad_setup with install: true when needed. No Blender, Fusion, network or printer access is available to your script.
-Declare exactly one top-level P = {...} dictionary of JSON-compatible literal named parameters. Put every functional dimension in P; derive geometry from P. Define build() to return a build123d Shape or Compound of disjoint solid parts. Do not put construction or exports in a __main__ block: cad_run calls build() and exports the result. Imports, functions and derived P entries are fine. Parameters are applied to the literal defaults before derived expressions execute. For solid designs without inputs, the script and parameters file alone reconstruct it. For input-dependent designs, declare inputs as an alias-to-path object: cad_run snapshots only those allowed files, exposes INPUTS[alias] to your script, and saves an inputs manifest. Retain the snapshots too for recovery; subsequent script_path edits reuse them unless inputs is explicitly supplied. No other personal files are readable. For a mesh-only experiment use mode: "mesh" and return a trimesh.Trimesh from build(); it exports and checks STL plus six renders, with step: null and an explicit reason. It does not manufacture a fake parametric STEP or promise scan-cleanup capability.
+Declare exactly one top-level P = {...} dictionary of JSON-compatible literal named parameters. Put every functional dimension in P; derive geometry from P. Define build() to return a build123d Shape or Compound of disjoint solid parts. Do not put construction or exports in a __main__ block: cad_run calls build() and exports the result. Imports, functions and derived P entries are fine. Parameters are applied to the literal defaults before derived expressions execute. For solid designs without inputs, the script and parameters file alone reconstruct it. For input-dependent designs, declare inputs as an array of {name, path} files: cad_run snapshots only those allowed files, exposes INPUTS[alias] to your script, and saves an inputs manifest. Retain the snapshots too for recovery; subsequent script_path edits reuse them unless inputs is explicitly supplied. No other personal files are readable. For a mesh-only experiment use mode: "mesh" and return a trimesh.Trimesh from build(); it exports and checks STL plus six renders, with step: null and an explicit reason. It does not manufacture a fake parametric STEP or promise scan-cleanup capability.
 Call cad_run with script, output_dir and a plain name. It saves <name>.py and <name>.parameters.json before running, then exports <name>.stl and <name>.step in a fresh subfolder. For an edit, one cad_run with script_path pointing to the earlier .py, parameters containing just the changed dimension, output_dir and name regenerates it without resending the script. Existing parameter values are retained; unknown names and type changes are refused. A killed run can be retried from its checkpoint in a new workspace; mutations are never replayed automatically.
 The result includes paths, millimetre bounds/size, mesh and STEP volumes, solid count, watertight/manifold/winding/STEP checks, six orthographic renders (front, back, left, right, top, bottom) and contact sheet. Inspect all six; revise visible defects. A valid mesh or nominal parameter does not prove the requested dimension: measure the actual exported interfaces. Use cad_check_fit on a model and reference STL with an explicit rigid transform; report raw-scan interference and minimum gap. Calipers are authoritative but disagreement with a scan is unresolved measurement evidence, not permission to silently rescale it. Check assembly/insertion paths and actual articulated poses, not sums of local joint limits or reference points alone. Printing, clearance under load, supports and motion need separate evidence. Apply fdm_design and fdm_slicing too; never invoke a printer as part of constructing CAD.`,
 };

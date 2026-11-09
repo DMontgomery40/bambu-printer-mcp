@@ -46,6 +46,11 @@ test("stdio exposes confined CAD contracts, MCP-owned prompt, scopes and counter
       .arguments.reference,
     "path",
   );
+  assert.equal(
+    tools.find((t) => t.name === "cad_run")._meta["counterpart/remote"]
+      .arguments.path,
+    "path",
+  );
   const status = (await c.callTool({ name: "cad_status", arguments: {} }))
     .structuredContent;
   assert.equal(status.ready, false);

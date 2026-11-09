@@ -76,7 +76,7 @@ test(
     const meshResult = await call("cad_run", {
       script: meshSource,
       mode: "mesh",
-      inputs: { scan: original.stl },
+      inputs: [{ name: "scan", path: original.stl }],
       output_dir: dir,
       name: "mesh-edit",
       timeout_ms: 180000,
@@ -103,7 +103,7 @@ test(
     const inverted = await call("cad_run", {
       script: invertedSource,
       mode: "mesh",
-      inputs: { scan: original.stl },
+      inputs: [{ name: "scan", path: original.stl }],
       output_dir: dir,
       name: "inverted",
       timeout_ms: 180000,
@@ -190,8 +190,32 @@ test(
     );
     assert.equal(logReply.isError, true);
     assert.equal(await fs.readFile(logTarget, "utf8"), "unchanged");
+    const inputBefore = await fs.readFile(original.stl);
+    const inputWrite = await c.callTool(
+      {
+        name: "cad_run",
+        arguments: {
+          script:
+            "from pathlib import Path\nP={}\ndef build():\n Path(INPUTS['scan']).write_bytes(b'no')\n",
+          inputs: [{ name: "scan", path: original.stl }],
+          mode: "mesh",
+          output_dir: dir,
+          name: "input-write",
+          timeout_ms: 180000,
+        },
+      },
+      undefined,
+      { timeout: 240000 },
+    );
+    assert.equal(inputWrite.isError, true);
+    assert.match(
+      inputWrite.content[0].text,
+      /permitted|denied|Permission|Read-only/i,
+    );
+    assert.deepEqual(await fs.readFile(original.stl), inputBefore);
     const attacks = [
       "import socket\nsocket.create_connection(('192.0.2.1',443),timeout=1)",
+      `from pathlib import Path\nPath(${JSON.stringify(original.stl)}).read_bytes()`,
       `from pathlib import Path\nPath(${JSON.stringify(path.join(dir, "outside.txt"))}).write_text('no')`,
       `from pathlib import Path\nlist(Path(${JSON.stringify(path.join(os.homedir(), ".ssh"))}).iterdir())`,
     ];

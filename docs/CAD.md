@@ -2,7 +2,7 @@
 
 Code-CAD makes dimensioned functional parts without starting a design app. It uses build123d 0.13.0 (OpenCascade), with pinned trimesh, Manifold3D and Pillow for mesh checks and rendering. Blender and Fusion integrations remain available and unchanged. Whether mesh cleanup in this environment can replace Blender is being tested separately; this release adds no cleanup algorithms.
 
-A local prototype made a holder cavity at 65.800 × 28.800 mm, performed an exact +1 mm height edit in 137 seconds, and produced a valid articulated-unicorn mesh and STEP in 657 seconds after two historical Blender attempts timed out at 901 seconds with no model. The unicorn had actual endpoint errors and joint collisions in a claimed pose; the holders met calipers but collided with the inflated raw scan. The sample is small, the environments differed, and no physical print or fit was verified. These results justify an optional tool for measured parts, not a promise that every design works.
+A local prototype made a holder cavity at 65.800 × 28.800 mm, performed an exact +1 mm height edit in 137 seconds, and produced a valid articulated-unicorn mesh and STEP in 657 seconds after two historical Blender attempts timed out at 901 seconds with no model. The unicorn had actual endpoint errors and joint collisions in a claimed pose; the holders met calipers but collided with the inflated raw scan. Initial holder worker passes took 238–893 seconds, including the cold native-import stall; code-CAD is not uniformly fast. The sample is small, the environments differed, and no physical print or fit was verified. These results justify an optional tool for measured parts, not a promise that every design works.
 
 ## Leave it out or remove it
 
@@ -34,9 +34,9 @@ Subprocesses have wall deadlines, bounded diagnostics, inherited-hard-limit-awar
 
 ## Output and input paths
 
-By default CAD outputs and selected inputs must be under this MCP instance's `TEMP_DIR`, the root already used for generated STL files. Additional roots are trusted configuration **`CAD_OUTPUT_DIRS`**, separated by `:` on macOS/Linux. Calls cannot add roots or executables. Paths are canonicalized; a symlink that leaves the roots is refused. The caller supplies an existing output directory, and each run creates a private unique child folder there. Repeating a call never overwrites an earlier output.
+By default CAD outputs and selected inputs must be under this MCP instance's `TEMP_DIR`, the root already used for generated STL files. Additional roots are trusted configuration **`CAD_OUTPUT_DIRS`**, separated by `:` on macOS/Linux. Calls cannot add roots or executables. Paths are canonicalized; a symlink that leaves the roots is refused. The caller supplies an existing output directory, and each run creates a private unique child folder there. Repeating a call never overwrites an earlier output. The automatically created default `TEMP_DIR` is temporary and is deleted when the MCP exits. For checkpoints and renders that must survive an MCP restart, configure a persistent `TEMP_DIR` or `CAD_OUTPUT_DIRS` and choose an `output_dir` there. A configured `TEMP_DIR` is retained. This follows the existing STL storage policy; the environment and saved designs have separate lifetimes.
 
-Inputs are an explicit alias-to-path object with up to 16 local regular files, at most 64 MiB each / 256 MiB total. The MCP snapshots them into the job's read-only `inputs/` folder. Scripts use `INPUTS["alias"]`; original user files and unrelated home files are not exposed. A path allowed by this MCP may still be refused by a remote client's narrower path policy.
+Inputs are an explicit array of `{name, path}` entries with up to 16 local regular files, at most 64 MiB each / 256 MiB total. The MCP snapshots them into the job's read-only `inputs/` folder. Scripts use `INPUTS["alias"]`; original user files and unrelated home files are not exposed. A path allowed by this MCP may still be refused by a remote client's narrower path policy.
 
 ## Script and edit contract
 
@@ -76,7 +76,7 @@ def build():
     return scan
 ```
 
-Call with `mode: "mesh"` and `inputs: {"scan": "/allowed/scan.stl"}`. A mesh-mode `build()` returns `trimesh.Trimesh`; the MCP exports STL, independently checks it and creates the same six renders. It reports **`step: null`** with `step_unavailable`, since a mesh edit has no parametric B-rep. It does not create a misleading faceted STEP. STEP-specific checks/volume are null, and `valid` refers to the mesh checks. This input/mesh path is infrastructure for experiments, not a scan-cleanup feature.
+Call with `mode: "mesh"` and `inputs: [{"name": "scan", "path": "/allowed/scan.stl"}]`. A mesh-mode `build()` returns `trimesh.Trimesh`; the MCP exports STL, independently checks it and creates the same six renders. It reports **`step: null`** with `step_unavailable`, since a mesh edit has no parametric B-rep. It does not create a misleading faceted STEP. STEP-specific checks/volume are null, and `valid` refers to the mesh checks. This input/mesh path is infrastructure for experiments, not a scan-cleanup feature.
 
 ## Scan fit
 

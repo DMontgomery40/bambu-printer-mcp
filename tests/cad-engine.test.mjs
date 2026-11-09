@@ -274,10 +274,11 @@ test("a stalled macOS import is repaired once, only for owned native regular fil
             path.join(data, "runtime", "bin", "python"),
             "stub",
           );
-          await fs.writeFile(
-            path.join(data, "runtime", "lib", "native.so"),
-            "native",
-          );
+          for (let i = 0; i < 12; i++)
+            await fs.writeFile(
+              path.join(data, "runtime", "lib", `native${i}.so`),
+              "native",
+            );
           await fs.writeFile(path.join(root, "outside.so"), "untouched");
           await fs.symlink(
             path.join(root, "outside.so"),
@@ -286,7 +287,7 @@ test("a stalled macOS import is repaired once, only for owned native regular fil
         }
         if (args.includes("imports") && ++imports === 1)
           throw Error("CAD process timed out");
-        if (file === "/usr/bin/codesign") signed.push(args.at(-1));
+        if (file === "/usr/bin/codesign") signed.push(args.slice(3));
         if (args.includes("smoke"))
           return {
             stdout: JSON.stringify({
@@ -302,9 +303,17 @@ test("a stalled macOS import is repaired once, only for owned native regular fil
     },
   });
   const result = await e.setup({ install: true });
-  assert.equal(result.repaired_native_files, 1);
+  assert.equal(result.repaired_native_files, 12);
   assert.equal(imports, 2);
-  assert.deepEqual(signed, [path.join(data, "runtime", "lib", "native.so")]);
+  assert.equal(signed.length, 1, "sign owned native files in a bounded batch");
+  assert.equal(signed.flat().length, 12);
+  assert.ok(
+    signed
+      .flat()
+      .every((file) =>
+        file.startsWith(path.join(data, "runtime", "lib", "native")),
+      ),
+  );
 });
 
 test("deadline termination removes an actual spawned descendant PID", async (t) => {
@@ -321,7 +330,10 @@ test("deadline termination removes an actual spawned descendant PID", async (t) 
     /timed out/,
   );
   const pid = Number(await fs.readFile(file, "utf8"));
-  assert.ok(Number.isInteger(pid) && pid > 1, "fixture must record its descendant before the deadline");
+  assert.ok(
+    Number.isInteger(pid) && pid > 1,
+    "fixture must record its descendant before the deadline",
+  );
   let alive = true;
   for (let i = 0; i < 40; i++) {
     try {
@@ -354,7 +366,7 @@ test("declared CAD input snapshots exclude files outside the allowed roots", asy
   await assert.rejects(
     engine.run({
       script: "P={}\ndef build(): pass",
-      inputs: { scan: path.join(root, "private.stl") },
+      inputs: [{ name: "scan", path: path.join(root, "private.stl") }],
       mode: "mesh",
       output_dir: path.join(root, "allowed"),
       name: "part",

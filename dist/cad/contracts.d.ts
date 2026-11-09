@@ -76,10 +76,20 @@ export declare const CAD_TOOLS: ({
         properties: {
             inputs: {
                 type: string;
-                additionalProperties: {
+                maxItems: number;
+                items: {
                     type: string;
+                    properties: {
+                        name: {
+                            type: string;
+                        };
+                        path: {
+                            type: string;
+                        };
+                    };
+                    required: string[];
+                    additionalProperties: boolean;
                 };
-                maxProperties: number;
                 description: string;
             };
             mode: {

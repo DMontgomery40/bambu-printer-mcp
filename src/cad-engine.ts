@@ -198,7 +198,7 @@ export class CadEngine {
       await fs.mkdir(env.TMPDIR!, { recursive: true });
       await fs.unlink(path.join(this.dataDir, "ready.json")).catch(() => {});
       const python = path.join(this.dataDir, "runtime", "bin", "python");
-      const opts = { env, cwd: this.dataDir, signal, timeoutMs: 300_000 };
+      const opts = { env, cwd: this.dataDir, signal, timeoutMs: 600_000 };
       if (
         !(await fs.stat(python).then(
           (s) => s.isFile(),
@@ -247,7 +247,9 @@ export class CadEngine {
           )
         )
           throw error;
-        repaired = await this.repairNative(signal);
+        repaired = await this.repairNative(signal).catch(e => {
+          throw new Error(`CAD native import stalled; owned-runtime signature repair failed: ${e}. The runtime is not ready.`);
+        });
         await this.system
           .run(python, ["-I", path.join(ASSETS, "worker.py"), "imports"], {
             ...opts,
@@ -308,8 +310,17 @@ export class CadEngine {
       .digest("hex");
   }
   private async repairNative(signal?: AbortSignal): Promise<number> {
-    let count = 0;
+    const owned: string[] = [];
     const env = this.environment(this.dataDir);
+    const deadline = Date.now() + 180_000;
+    const remaining = (limit: number) => {
+      const ms = Math.min(limit, deadline - Date.now());
+      if (ms <= 0)
+        throw new Error(
+          "CAD native signature repair exceeded its 180-second deadline; runtime is not ready.",
+        );
+      return ms;
+    };
     const visit = async (dir: string): Promise<void> => {
       for (const e of await fs.readdir(dir, { withFileTypes: true })) {
         signal?.throwIfAborted();
@@ -318,21 +329,8 @@ export class CadEngine {
         else if (
           e.isFile() &&
           (/\.(?:so|dylib)$/.test(e.name) || /^python3\.12$/.test(e.name))
-        ) {
-          await this.system
-            .run("/usr/bin/xattr", ["-d", "com.apple.provenance", file], {
-              env,
-              timeoutMs: 10_000,
-              signal,
-            })
-            .catch(() => {});
-          await this.system.run(
-            "/usr/bin/codesign",
-            ["--force", "--sign", "-", file],
-            { env, timeoutMs: 20_000, signal },
-          );
-          count++;
-        }
+        )
+          owned.push(file);
       }
     };
     for (const dir of ["runtime", "python"])
@@ -343,7 +341,24 @@ export class CadEngine {
         )
       )
         await visit(path.join(this.dataDir, dir));
-    return count;
+    // Both tools accept multiple paths. Batching avoids hundreds of expensive macOS launches on cold files.
+    for (let offset = 0; offset < owned.length; offset += 20) {
+      const batch = owned.slice(offset, offset + 20);
+      signal?.throwIfAborted();
+      await this.system
+        .run("/usr/bin/xattr", ["-d", "com.apple.provenance", ...batch], {
+          env,
+          timeoutMs: remaining(10_000),
+          signal,
+        })
+        .catch(() => {});
+      await this.system.run(
+        "/usr/bin/codesign",
+        ["--force", "--sign", "-", ...batch],
+        { env, timeoutMs: remaining(30_000), signal },
+      );
+    }
+    return owned.length;
   }
   private async inputFile(value: unknown, extension: string): Promise<string> {
     if (
@@ -400,7 +415,30 @@ export class CadEngine {
     const mode = args.mode ?? "solid";
     if (mode !== "solid" && mode !== "mesh")
       throw new Error("mode must be solid or mesh.");
-    let requestedInputs = args.inputs;
+    let requestedInputs: unknown;
+    if (args.inputs !== undefined) {
+      if (!Array.isArray(args.inputs) || args.inputs.length > 16)
+        throw new Error(
+          "inputs must be an array of at most 16 {name, path} files.",
+        );
+      const named: Record<string, string> = Object.create(null);
+      for (const item of args.inputs) {
+        if (
+          !item ||
+          typeof item !== "object" ||
+          Array.isArray(item) ||
+          Object.keys(item).some((k) => k !== "name" && k !== "path") ||
+          typeof item.name !== "string" ||
+          typeof item.path !== "string" ||
+          Object.prototype.hasOwnProperty.call(named, item.name)
+        )
+          throw new Error(
+            "Each input needs a unique name and an allowed path.",
+          );
+        named[item.name] = item.path;
+      }
+      requestedInputs = named;
+    }
     if (requestedInputs === undefined && typeof args.script_path === "string") {
       const file = args.script_path.replace(/\.py$/i, ".inputs.json");
       try {
