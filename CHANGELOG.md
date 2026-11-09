@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.83] – 2026-11-09
+
+### Added
+
+- Add optional confined code-CAD tools (`cad_status`, `cad_setup`, `cad_run`, `cad_check_fit`) and MCP-owned `cad_design` instructions for dimensioned parts and parameter edits. Setup installs pinned build123d/mesh libraries only on request; `CAD_ENABLED=0` leaves the family out. Explicit read-only input snapshots also support mesh experiments without claiming a scan-cleanup replacement. No printer, installed app or Fusion-bridge behavior changes.
+
 ## [1.1.79] – 2026-11-08
 
 ### Fixed

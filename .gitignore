@@ -48,3 +48,5 @@ native/*.dSYM/
 !/docs/SETUP.md
 !/docs/CAMERA-STREAM.md
 !/docs/prd/scan-to-print-PRD.md
+
+!/docs/CAD.md

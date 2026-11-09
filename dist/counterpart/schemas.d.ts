@@ -60,6 +60,14 @@ export type PrinterInfo = {
         name?: string;
     };
     capabilities: {
+        cad?: {
+            contract: string;
+            status: string;
+            setup: string;
+            run: string;
+            checkFit: string;
+            prompt: string;
+        };
         progress: boolean;
         layers: boolean;
         camera: "bambu-tcp" | "rtsp" | "http-snapshot" | "none";
@@ -122,6 +130,31 @@ export declare const PRINTER_INFO_OUTPUT_SCHEMA: {
         capabilities: {
             type: string;
             properties: {
+                cad: {
+                    type: string;
+                    properties: {
+                        contract: {
+                            type: string;
+                            const: string;
+                        };
+                        status: {
+                            type: string;
+                        };
+                        setup: {
+                            type: string;
+                        };
+                        run: {
+                            type: string;
+                        };
+                        checkFit: {
+                            type: string;
+                        };
+                        prompt: {
+                            type: string;
+                        };
+                    };
+                    required: string[];
+                };
                 progress: {
                     type: string;
                 };
