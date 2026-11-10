@@ -2746,7 +2746,8 @@ async function sliceWithFakeBambuSlicer(t, options) {
 // A slicer that waits on a dialog (Bambu Studio behind AppKit's "reopen windows?" alert: no CPU, no output) is stopped
 // after SLICER_STALL_SECONDS and reported with the stable code slicer-waiting-on-dialog, never as the slicer's verdict on
 // the model (no slicer_report, which clients treat as a refusal that holds Print).
-test("slice_stl stops a slicer that waits on a dialog and reports slicer-waiting-on-dialog", async (t) => {
+const macOnly = process.platform !== "darwin" && "the stall check runs on macOS only";
+test("slice_stl stops a slicer that waits on a dialog and reports slicer-waiting-on-dialog", { skip: macOnly }, async (t) => {
   const started = Date.now();
   const result = await sliceWithFakeBambuSlicer(t, { behaviour: "stall", env: { SLICER_STALL_SECONDS: "1" } });
   assert.equal(result.isError, true);
@@ -2756,7 +2757,7 @@ test("slice_stl stops a slicer that waits on a dialog and reports slicer-waiting
   assert.ok(Date.now() - started < 15_000, `reported in ${Date.now() - started} ms, not at a long timeout`);
 });
 
-test("slice_stl lets a slicer that computes without writing run to completion", async (t) => {
+test("slice_stl lets a slicer that computes without writing run to completion", { skip: macOnly }, async (t) => {
   const result = await sliceWithFakeBambuSlicer(t, { behaviour: "busy", env: { SLICER_STALL_SECONDS: "1" } });
   assert.equal(result.isError, undefined, result.content?.[0]?.text);
 });
@@ -2778,6 +2779,22 @@ test("slice_stl gives a Bambu-compatible slicer its own home folder on macOS", a
   assert.ok(launch.home.startsWith(path.join(fakeSlicer.tempDir, "out") + path.sep), launch.home);
   assert.equal(fs.readdirSync(inherited).length, 0);
   assert.ok(!fs.existsSync(launch.home), "the home is removed after the slice");
+});
+
+// watchForStall itself, on every platform with ps or /proc: an idle child is reported, a computing one and one that
+// exits are not.
+test("watchForStall reports an idle child, not a computing or finished one", async () => {
+  const { watchForStall } = await import("../dist/slicer/slicer-launch.js");
+  const run = (script, ms) => new Promise(resolve => {
+    const child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+    let stalled = false;
+    watchForStall(child, 1, () => { stalled = true; child.kill("SIGKILL"); });
+    const timer = setTimeout(() => child.kill("SIGKILL"), ms);
+    child.on("exit", () => { clearTimeout(timer); resolve(stalled); });
+  });
+  assert.equal(await run('console.log("started"); setInterval(() => {}, 1 << 30)', 10_000), true, "idle after starting");
+  assert.equal(await run('for (const end = Date.now() + 2500; Date.now() < end;) Math.sqrt(Math.random())', 10_000), false, "computing");
+  assert.equal(await run('console.log("done")', 10_000), false, "finished");
 });
 
 test("slicer stall settings and CPU times parse as ps writes them", async () => {

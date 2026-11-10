@@ -8,7 +8,7 @@
 
 ### Added
 
-- A Bambu-compatible slicer that uses no CPU and writes nothing for `SLICER_STALL_SECONDS` (default 20; 0 turns it off) is stopped and reported with the stable `structuredContent.code` `slicer-waiting-on-dialog`. The message says to open the slicer once, answer what it shows and slice again; nothing is sent to the printer. It carries no `slicer_report`, because it is no verdict on the model. Previously such a slice waited until the client gave up.
+- On macOS, a Bambu-compatible slicer that uses no CPU and writes nothing for `SLICER_STALL_SECONDS` (default 20; 0 turns it off) is stopped and reported with the stable `structuredContent.code` `slicer-waiting-on-dialog`. The message says to open the slicer once, answer what it shows and slice again; nothing is sent to the printer. It carries no `slicer_report`, because it is no verdict on the model. Previously such a slice waited until the client gave up.
 
 ## [1.1.79] – 2026-11-08
 

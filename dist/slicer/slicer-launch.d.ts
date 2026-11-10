@@ -3,14 +3,17 @@ import { SlicerStalled } from "../refusal.js";
 export interface SlicerLaunch {
     /** The environment for the slicer process (undefined: inherit this server's). */
     env?: NodeJS.ProcessEnv;
-    /** Whether a slice that stalls is stopped and reported (see watchForStall). */
-    watchStall: boolean;
+    /** Seconds without CPU or output after which the slice is stopped and reported (watchForStall); 0: never. */
+    stallSeconds: number;
     /** Removes this launch's home folder. */
     cleanup(): Promise<void>;
 }
 /**
  * The launch for one slice. On macOS a Bambu-compatible CLI gets its own empty home folder (always: an inherited
- * CFFIXED_USER_HOME is replaced, since a home that held a stalled slice may hold the history that stalled it).
+ * CFFIXED_USER_HOME is replaced, since a home that held a stalled slice may hold the history that stalled it), and
+ * is watched for stalls. A new folder each slice, not one kept in the data folder, so no crash history can build up
+ * in it. Elsewhere nothing changes: no AppKit, and a slicer there may run behind a wrapper (AppImage, Flatpak) whose
+ * own CPU says nothing about the slicer's.
  */
 export declare function prepareSlicerLaunch(slicerType: string, tempDir: string, platform?: NodeJS.Platform): Promise<SlicerLaunch>;
 /**
@@ -28,4 +31,4 @@ export declare function parseCpuTime(text: string): number | undefined;
  */
 export declare function watchForStall(child: ChildProcess, seconds: number, onStall: () => void): () => void;
 /** The failure for a slicer stopped by watchForStall. */
-export declare function slicerStalled(slicerType: string, seconds: number): SlicerStalled;
+export declare function stalledSlicerError(slicerType: string, seconds: number): SlicerStalled;

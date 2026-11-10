@@ -19,7 +19,7 @@ import { applyProcessOverrides } from '../slicer/process-overrides.js';
 import { profileJsonFiles } from '../slicer/profile-files.js';
 import { materializeOrcaProfilesRoot, stageOrcaCliProfiles } from '../slicer/orca-profile-cache.js';
 import { sliceWithOrcaApi, validateRemoteSliceOptions } from '../slicer/remote-slicer.js';
-import { prepareSlicerLaunch, slicerStallSeconds, slicerStalled, watchForStall } from '../slicer/slicer-launch.js';
+import { prepareSlicerLaunch, stalledSlicerError, watchForStall } from '../slicer/slicer-launch.js';
 /** How long a slice's folder (its sliced file and result.json) is kept: a day, then a later slice removes it. */
 const SLICE_FOLDER_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const readFileAsync = promisify(fs.readFile);
@@ -1664,14 +1664,14 @@ export class STLManipulator extends EventEmitter {
                 // A Bambu-compatible CLI runs in a home folder of its own (macOS), and one that waits on a dialog is stopped
                 // and reported instead of waiting forever (src/slicer/slicer-launch.ts).
                 const launch = await prepareSlicerLaunch(slicerType, this.tempDir);
-                const stallSeconds = launch.watchStall ? slicerStallSeconds() : 0;
+                const stallSeconds = launch.stallSeconds;
                 let stalled = false;
                 // Execute the slicer
                 try {
                     await new Promise((resolve, reject) => {
                         const process = execFile(slicerPath, args, launch.env ? { env: launch.env } : {}, (error, stdout, stderr) => {
                             if (stalled) {
-                                reject(slicerStalled(slicerType, stallSeconds));
+                                reject(stalledSlicerError(slicerType, stallSeconds));
                             }
                             else if (error) {
                                 console.error(`Slicer Error: ${error.message}`);
