@@ -337,16 +337,21 @@ function lidCore(info, o) {
             // the hook, the single-use strain at its stop, closing by thumb (<= 25 N) and holding (>= 5 N); round 2's linear
             // rule is kept for comparison
             const t0 = performance.now(), ruleLa = la, table = [];
-            const judge = (l) => { const a = armAnswer({ l, b: bArm, h0: lw, y: yU, alpha: 30, alphaR: 45 }, { full: true }), st = armAnswer({ l, b: bArm, h0: lw, y: stop, alpha: 30, alphaR: 45 }, { full: true }); return { a, st, ok: a.strain <= STRAIN_REPEATED && st.strain <= 0.017 && a.W <= 25 && (a.Wout ?? Infinity) >= 5 }; };
-            const ruleJ = judge(ruleLa);
+            // search with the fast arm (the hook's push not fed back: about 10-15% less strain, so a 1.15 margin), confirm the
+            // chosen length with the full one and step on if it is over (the full call is 20x slower: 4.2 s per lid otherwise)
+            const judge = (l, full = false) => { const m = full ? 1 : 1.15; const a = armAnswer({ l, b: bArm, h0: lw, y: yU, alpha: 30, alphaR: 45 }, { full }), st = armAnswer({ l, b: bArm, h0: lw, y: stop, alpha: 30, alphaR: 45 }, { full }); return { a, st, ok: a.strain * m <= STRAIN_REPEATED && st.strain * m <= 0.017 && a.W <= 25 && (a.Wout ?? Infinity) >= 5 }; };
+            const ruleJ = judge(ruleLa, true);
             let chosen = null, cj = ruleJ;
             for (let l = 6; l <= sn.length + 1e-9; l = Number((l * 1.08).toFixed(3))) {
                 const j = judge(Math.min(l, sn.length));
                 table.push({ label: `arm ${f(Math.min(l, sn.length))} long: close ${j.a.W.toFixed(1)} N, hold ${j.a.Wout === null ? "locks" : j.a.Wout.toFixed(1) + " N"}`, massG: 0, strain: j.a.strain, ok: j.ok, why: j.ok ? undefined : j.a.strain > STRAIN_REPEATED ? `strain ${(100 * j.a.strain).toFixed(2)}%` : j.st.strain > 0.017 ? "over-bends at its stop" : j.a.W > 25 ? "too stiff to close by thumb" : "holds under 5 N" });
                 if (j.ok) {
-                    chosen = Math.min(l, sn.length);
-                    cj = j;
-                    break;
+                    const jf = judge(Math.min(l, sn.length), true);
+                    if (jf.ok) {
+                        chosen = Math.min(l, sn.length);
+                        cj = jf;
+                        break;
+                    }
                 }
                 if (l >= sn.length)
                     break;

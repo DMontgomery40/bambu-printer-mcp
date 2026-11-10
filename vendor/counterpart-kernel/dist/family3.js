@@ -166,6 +166,7 @@ export function hook(o) {
         s = s.cut(cylinder({ d: hole.d, x: [-1, t + 1], y, z: W / 2 }), cone({ d1: hole.d, d2: headD + 2, x: [t - k2, t + 1], y, z: W / 2 }));
     const reqs = [thicknessIs({ name: `hook ${t} thick`, at: [reach / 2, t / 2, W / 2], axis: "y", t }),
         holeIs({ name: `screw holes ${hole.d} (${hole.why})`, at: [0.5, ys[0], W / 2], axis: "x", d: hole.d, tol: 0.08 }),
+        ...ys.map((y, i) => holeIs({ name: `countersink ${headD} at the plate's face, screw ${i + 1}`, at: [t - 0.05, y, W / 2], axis: "x", d: headD - 0.1, tol: 0.08 })),
         derived("printed on its side: the J lies in the layers, so its bending runs along them", true, "z = the hook's width", "bending within layers")];
     if (ENGINE)
         reqs.push(sized({ feature: "hook", requirement: `holds ${kg} kg in the J with SF ${SF} (sized to ${needSF.toFixed(2)}), moves at most ${f3(Math.max(1, reach / 50))} mm`, model: `planar frame (physics engine solveFrame), the wall pushing only, screws high; stress concentration x${k.toFixed(2)}`,

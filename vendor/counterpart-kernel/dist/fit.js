@@ -122,8 +122,14 @@ export function decideFit(spec, ctx) {
     const bore = r3(n + u + 2 * clear);
     const closeNeeded = bore - (n - u); // diameter the split must take up
     if (u > 0.5) {
-        const g = r3(Math.PI * closeNeeded);
-        throw new KernelError(`${ctx.feature}: the ${n} mm size is only known to +-${u} (${source}). A pinch split would need a ${g} mm gap to cover that (g >= 2 pi u), and crush ribs take a set, so: ask for a caliper measurement of ${ctx.what ?? "the object"}'s diameter, or use fingerBore({ around, fit, height }) (elastic fingers in the print plane take up +-1) for a light hold.`);
+        // too uncertain for ribs; a screw-pinched split that closes from above the largest to the smallest still grips, if
+        // the split stays under a quarter of the ring (worker run A5r asked "grips" for a +-1 handle and was refused)
+        const g = Math.ceil(Math.PI * closeNeeded * 2) / 2;
+        if (g > 0.25 * Math.PI * n)
+            throw new KernelError(`${ctx.feature}: the ${n} mm size is only known to +-${u} (${source}). A pinch split would need a ${g} mm gap to cover that, over a quarter of the ring: ask for a caliper measurement of ${ctx.what ?? "the object"}'s diameter, or use fingerBore({ around, fit, height }) for a light hold.`);
+        const closes = r3(g / Math.PI), holds = [r3(bore - closes), r3(bore - 0.05)];
+        return { ...base, primitive: "split-pinch clamp", modelled_per_side: r3(clear + u / 2), split: { gap: g, closes_diameter_by: closes }, holds,
+            reasoning: `${what}. The size is too uncertain (+-${u}) for crush ribs, and a grip that holds comes from a screw, so: split-pinch clamp, bore ${bore} (above the largest size, ${r3(n + u)}, print correction ${corr} included) and a ${g} mm split that closes it by up to ${closes}, so the screw grips anything from ${holds[0]} to ${holds[1]} mm.` };
     }
     const g = Math.max(ctx.splitGap ?? 2, Math.ceil(Math.PI * closeNeeded * 2) / 2);
     const closes = r3(g / Math.PI);

@@ -82,6 +82,17 @@ test(
     assert.equal(bad.isError, true);
     assert.match(JSON.stringify(bad.structuredContent), /may import only/);
 
+    // a declared input (a scan) read by name inside both sandboxes, and a pocket shaped from it
+    await fs.writeFile(path.join(dir, "scan.stl"), cube(20, [-10, -10, 0]));
+    const pocketed = `import { rect, part, scanPocket, scanSizes, loadMesh } from "counterpart-kernel";
+export const P = { depth: 12 };
+export function build(P) { const scan = loadMesh("scan"); const h = scanSizes(scan).height;
+  return part("tray", scanPocket(rect({ size: [30, 30], r: 2 }).extrude({ z: [0, 3 + P.depth] }), scan, { depth: Math.min(P.depth, h), at: [0, 0, 3] })); }
+`;
+    const tray = (await call("cad_run", { engine: "counterpart", script: pocketed, inputs: [{ name: "scan", path: path.join(dir, "scan.stl") }], output_dir: dir, name: "tray" })).structuredContent;
+    assert.equal(tray.valid, true, JSON.stringify(tray).slice(0, 500));
+    assert.ok(tray.parts[0].passing.some((p) => /clears the pocket/.test(p)), JSON.stringify(tray.parts[0]).slice(0, 800));
+
     await fs.writeFile(path.join(dir, "far.stl"), cube(10, [500, 0, 0]));
     await fs.writeFile(path.join(dir, "inside.stl"), cube(4, [2, 40, 10]));
     const clear = (await call("cad_check_fit", { engine: "counterpart", model: run.stl, reference: path.join(dir, "far.stl"), clearance_mm: 1 })).structuredContent;

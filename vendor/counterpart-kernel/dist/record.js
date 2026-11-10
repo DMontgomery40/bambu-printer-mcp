@@ -52,7 +52,7 @@ export function objectMesh(o) {
  * across the face (round 2's adapter widened it at solve time; the engine's own record reader does not). Widen thin
  * box and plane-within ranges to 3 mm about their middle, and say so in the load's words.
  */
-const MIN_REGION = 3;
+const MIN_REGION = 5; // the engine voxelises at 1.5 cells across the thinnest wall: 3 mm caught one or two voxels and moved with the grid
 function widenLoad(l) {
     if (!("at" in l) || !l.at)
         return l;

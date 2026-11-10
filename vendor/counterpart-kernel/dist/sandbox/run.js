@@ -37,7 +37,7 @@ export function sandboxCommand(script, o) {
         `--max-old-space-size=${Math.max(256, memMB - 512)}`, "--import", pathToFileURL(join(dist, "sandbox", "preload.js")).href,
         join(dist, "cli.js"), "run", scriptAbs, "--out", out, ...(o.name ? ["--name", o.name] : []), ...(o.args ?? []),
     ];
-    const env = { CP_SANDBOX_ROOTS: roots.join("|"), CP_SANDBOX_KERNEL: pathToFileURL(dist).href + "/", CP_SANDBOX_SCRIPT: pathToFileURL(scriptAbs).href, PHYSICS_THREADS: String(o.threads ?? 0), COUNTERPART_PHYSICS_THREADS: String(o.threads ?? 0), CP_INPUTS: JSON.stringify(inputs) };
+    const env = { CP_SANDBOX_ROOTS: roots.join("|"), CP_SANDBOX_KERNEL: pathToFileURL(dist).href + "/", CP_SANDBOX_SCRIPT: pathToFileURL(scriptAbs).href, PHYSICS_THREADS: String(o.threads ?? 0), CP_SANDBOX_THREADS: String(o.threads ?? 0), CP_SANDBOX_INPUTS: JSON.stringify(inputs) };
     return { argv, env, reads, out };
 }
 export function runSandboxed(script, o) {

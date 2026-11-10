@@ -20,7 +20,7 @@ async function load() {
     // registers more (contact passes rebuilding coarse levels) can evict one still in use; a worker then waits for a
     // message it already consumed (physics/src/solid/worker.ts; seen 2026-11-10 on two worker runs, all threads parked
     // on futexes). Until the physics lab fixes it, proofs run on the main thread unless COUNTERPART_PHYSICS_THREADS asks.
-    process.env.PHYSICS_THREADS = process.env.COUNTERPART_PHYSICS_THREADS ?? "0";
+    process.env.PHYSICS_THREADS = process.env.COUNTERPART_PHYSICS_THREADS ?? process.env.CP_SANDBOX_THREADS ?? "0";
     if (!existsSync(join(PHYS, "beam", "frame2d.js")))
         return null;
     const u = (p) => pathToFileURL(join(PHYS, p)).href;

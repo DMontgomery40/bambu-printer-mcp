@@ -303,7 +303,12 @@ export function rack(o) {
     void bw;
     void bd;
     const wallMounted = mount.kind !== "desk";
-    const mounted = wallMount(mount.kind === "screws" ? { ...mount, count: mount.count ?? Math.min(n, 3) } : mount, { x: [-width / 2, width / 2], H, xs, feature: "rack", plateIncluded: true });
+    // screws behind the pockets cannot be reached with a driver (worker run A9r drilled holes through the front wall):
+    // they go in wings beyond the end walls, as on the holder
+    const wing = mount.kind === "screws" ? (mount.head ?? 9) + 6 : 0;
+    const mounted = mount.kind === "screws"
+        ? wallMount({ ...mount, count: 2 }, { x: [-width / 2 - wing, width / 2 + wing], H, xs: [-width / 2 - wing / 2, width / 2 + wing / 2], feature: "rack" })
+        : wallMount(mount, { x: [-width / 2, width / 2], H, xs, feature: "rack", plateIncluded: true });
     const plateT = wallMounted ? mounted.plateT : 0;
     const cy = plateT + wall * 0 + cd / 2 + (wallMounted ? 0 : 0);
     const od = cd + (wallMounted ? wall : 2 * wall);
@@ -438,7 +443,7 @@ export function bracket(o) {
     const k = (headD - hole.d) / 2;
     for (const y of ys)
         s = s.cut(cylinder({ d: hole.d, x: [-1, t + 1], y, z: zs }), cone({ d1: hole.d, d2: headD + 2, x: [t - k, t + 1], y, z: zs }));
-    s = s.require(...reqs, thicknessIs({ name: `shelf arm ${tArm}`, at: [o.shelf - 3, o.height - tArm / 2, 2], axis: "y", t: tArm }), holeIs({ name: `screw holes ${hole.d} (${hole.why}), ${f3(ys[1] - ys[0])} mm apart`, at: [0.5, ys[0], zs], axis: "x", d: hole.d, tol: 0.08 }), derived(`printed on its side: the L lies in the layers, so the bending at the corner runs along them`, true, "z = the bracket's width", "bending within layers"));
+    s = s.require(...reqs, thicknessIs({ name: `shelf arm ${tArm}`, at: [o.shelf - 3, o.height - tArm / 2, 2], axis: "y", t: tArm }), holeIs({ name: `screw holes ${hole.d} (${hole.why}), ${f3(ys[1] - ys[0])} mm apart`, at: [0.5, ys[0], zs], axis: "x", d: hole.d, tol: 0.08 }), ...ys.map((y, i) => holeIs({ name: `countersink ${headD} at the leg's face, screw ${i + 1}`, at: [t - 0.05, y, zs], axis: "x", d: headD - 0.1, tol: 0.08 })), derived(`printed on its side: the L lies in the layers, so the bending at the corner runs along them`, true, "z = the bracket's width", "bending within layers"));
     return s.require(facts({
         from: "bracket", down: [0, -1, 0],
         parameters: form === "truss" ? [{ name: "leg", value: t, unit: "mm", feature: "bracket", id: "bracket.leg", sized: true }, { name: "arm", value: tArm, unit: "mm", feature: "bracket", id: "bracket.arm", sized: true },

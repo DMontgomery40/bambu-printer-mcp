@@ -335,7 +335,7 @@ export function scanPocket(body, scan, o) {
 export function loadMesh(name) {
     let declared = {};
     try {
-        declared = JSON.parse(process.env.CP_INPUTS ?? "{}");
+        declared = JSON.parse(process.env.CP_SANDBOX_INPUTS ?? "{}");
     }
     catch {
         declared = {};
