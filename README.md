@@ -1550,3 +1550,7 @@ Thank you to **[FULU Foundation](https://www.fulu.org/), [Louis Rossmann](https:
 Some printer command surfaces and workflow priorities were informed by [Bambuddy](https://github.com/maziggy/bambuddy), an AGPL-3.0 Bambu Lab printer management project. This project does not vendor Bambuddy code.
 
 </details>
+
+### Print dispatch truth (`counterpart/1`)
+
+An error from `print_3mf` or `upload_gcode` carries `structuredContent.printOutcome`: `not-sent` means no print command was handed to a transport (including fresh-report timeouts, preparation failures and upload failures); `unknown` means a command may have reached the printer; `rejected` means the printer refused the command. A file upload alone is not a print command. Clients use this field, never error wording or firmware codes, to distinguish “Not started” from a print that needs checking. Missing or unrecognized values cannot prove nothing was sent. Other structured error fields remain compatible.

@@ -660,7 +660,7 @@ for (const [name, changes, error] of [
   });
 }
 
-async function interceptedMcp(t, { blockBridgeInitialization = false, realBridgeRequest = false, model = "p1s", nozzleDiameters = [0.4], ams, bridgeResponse = { ok: true, value: 0 }, bridgeResponses = {}, localPrint } = {}) {
+async function interceptedMcp(t, { connectUnavailable = false, blockBridgeInitialization = false, realBridgeRequest = false, model = "p1s", nozzleDiameters = [0.4], ams, bridgeResponse = { ok: true, value: 0 }, bridgeResponses = {}, localPrint } = {}) {
   const dir = await trackedMkdtemp(path.join(os.tmpdir(), "bambu-bridge-safety-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const eventsPath = path.join(dir, "events.jsonl");
@@ -669,6 +669,7 @@ async function interceptedMcp(t, { blockBridgeInitialization = false, realBridge
   const preload = path.join(dir, "boundaries.mjs");
   await fs.writeFile(preload, `
     import fs from 'node:fs';
+    ${connectUnavailable ? `const exists = fs.existsSync; fs.existsSync = target => target === '/Applications/Bambu Connect.app' ? false : exists(target);` : ''}
     import { BambuImplementation } from ${JSON.stringify(pathToFileURL(path.join(root, "dist/printers/bambu.js")).href)};
     import { BambuNetworkBridge } from ${JSON.stringify(pathToFileURL(path.join(root, "dist/bambu-network-bridge.js")).href)};
     import { STLManipulator } from ${JSON.stringify(pathToFileURL(path.join(root, "dist/stl/stl-manipulator.js")).href)};
@@ -1444,4 +1445,51 @@ test("H2D project_file encodes flow calibration on and off; auto has no verified
     sent[label] = { flow_cali: print.flow_cali, extrude_cali_flag: print.extrude_cali_flag };
   }
   assert.deepEqual(sent, { off: { flow_cali: 0, extrude_cali_flag: 0 }, on: { flow_cali: 1, extrude_cali_flag: 0 }, auto: { flow_cali: 0, extrude_cali_flag: 0 } });
+});
+
+// The Nov 6 P1S refusal: no fresh status, no upload and no print command.
+test("counterpart dispatch truth brackets the actual print3mf transport", async (t) => {
+  const { withPrintDispatch, printOutcome } = await import("../dist/refusal.js");
+  const file = await fixture(t);
+  const { printer, events } = isolatedPrinter();
+  printer.getSafetyStatus = async () => { throw new Error("Timed out waiting for a fresh MQTT safety report"); };
+  await withPrintDispatch(async () => {
+    await assert.rejects(printer.print3mf(host, serial, token, { projectName: "job", filePath: file, bambuModel: "p1s", useAMS: false }), error => {
+      assert.equal(printOutcome(error), "not-sent"); return true;
+    });
+  });
+  assertNoDispatch(events);
+  const after = isolatedPrinter();
+  after.printer.getPrinter = async () => ({ publish: async () => { throw new Error("reply lost"); } });
+  await withPrintDispatch(async () => {
+    await assert.rejects(after.printer.print3mf(host, serial, token, { projectName: "job", filePath: file, bambuModel: "p1s", useAMS: false }), error => {
+      assert.equal(printOutcome(error), "unknown"); return true;
+    });
+  });
+});
+
+test("a failed Connect import never reports that a print command may have been sent", async (t) => {
+  const { client } = await interceptedMcp(t, {connectUnavailable: true});
+  const file = await fixture(t);
+  const result = await client.callTool({name:"print_3mf", arguments:{three_mf_path:file,bambu_model:"p1s",connection_mode:"bambu_connect"}});
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.printOutcome, "not-sent");
+});
+
+test("counterpart dispatch truth brackets the raw G-code transport", async (t) => {
+  const { withPrintDispatch, printOutcome } = await import("../dist/refusal.js");
+  const file = await fixture(t, { raw: true });
+  for (const phase of ["preflight", "dispatch"]) {
+    const { printer, events } = isolatedPrinter();
+    if (phase === "preflight") printer.getSafetyStatus = async () => { throw new Error("fresh report unavailable"); };
+    else printer.getPrinter = async () => ({ publish: async () => { throw new Error("reply lost"); } });
+    await withPrintDispatch(async () => {
+      await assert.rejects(printer.uploadFile(host, serial, token, file, "job.gcode", true, "p1s"), error => {
+        assert.equal(printOutcome(error), phase === "preflight" ? "not-sent" : "unknown");
+        return true;
+      });
+    });
+    if (phase === "preflight") assertNoDispatch(events);
+    else assert.equal(events.filter(event => event.action === "upload").length, 1);
+  }
 });
