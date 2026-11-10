@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Accept a job sliced for the P1S on a printer that reports itself as a P1P. A P1P with the enclosure upgrade kit keeps its P1P identity while its jobs use the P1S preset, so every model value is refused: `p1s` fails the fresh identity check (`requested p1s, observed p1p`) and `p1p` fails the file check (`file model p1s contradicts requested model p1p`). Bambu Studio sends these jobs: its P1P entry lists the P1S in `compatible_machine`, and the two models have the same limits here. The file is still checked against the printer's own limits, the fresh identity, nozzle, material and temperature checks are unchanged, and no other cross-model job is accepted.
+
 ## [1.1.85] – 2026-11-10
 
 ### Fixed

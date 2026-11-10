@@ -27,6 +27,12 @@ export declare const MACHINE_LIMITS: Readonly<Record<string, {
  * (VIRTUAL_TRAY_DEPUTY_ID). The single-nozzle H2S is deliberately absent. */
 export declare const DUAL_NOZZLE_MODELS: ReadonlySet<string>;
 export declare function isDualNozzleModel(model: unknown): boolean;
+/** File models a printer accepts besides its own, keyed by the printer's observed model.
+ * A P1P with the enclosure upgrade kit still reports itself as a P1P, while its jobs are sliced with the P1S
+ * preset. Bambu Studio sends those jobs: resources/printers/C11.json (P1P) lists C12 (P1S) in compatible_machine.
+ * The two models have identical MACHINE_LIMITS, and the file is still checked against the printer's own limits. */
+export declare const ACCEPTED_FILE_MODELS: Readonly<Record<string, ReadonlySet<string>>>;
+export declare function fileModelFitsPrinter(fileModel: string, printerModel: string): boolean;
 export declare function normalizeModel(value: unknown): string | undefined;
 export declare function normalizeMaterial(value: unknown): string | undefined;
 export declare function validateTemperature(component: 'nozzle' | 'bed' | 'chamber', value: unknown, model: string, materials?: string[]): number;
