@@ -308,6 +308,9 @@ precedence.
 
 ## Quick troubleshooting
 
+**A slice that never finishes on a Mac.** Bambu Studio's command line opens a hidden window to draw plate thumbnails. If the slicer once crashed while restoring its windows, macOS asks "reopen windows?" in a modal alert, and the slicer waits at 0% CPU for an answer. Since 1.1.84 each slice runs with an empty `CFFIXED_USER_HOME` of its own under `TEMP_DIR`, where macOS finds no crash history. A slicer that still uses no CPU and writes nothing for `SLICER_STALL_SECONDS` (default 20) is stopped and reported as `slicer-waiting-on-dialog`. Open the slicer once, answer what it shows, quit it, and slice again.
+
+
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `3MF does not contain any Metadata/plate_<n>.gcode` | File is a mesh `.3mf`, not a sliced one | Re-slice and export the sliced file |
