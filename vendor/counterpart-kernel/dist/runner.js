@@ -17,7 +17,7 @@ import { JITTER, ENGINE } from "./exact/bsp.js";
 import { isFacts, mergeFacts } from "./facts.js";
 import { partRecord } from "./record.js";
 import { prove } from "./prove.js";
-import { SIZING, isSizing } from "./sizing.js";
+import { SIZING, OVERRIDES, isSizing } from "./sizing.js";
 export function defaultResolution(minFeature) {
     const h = minFeature / 4;
     return Math.min(0.5, Math.max(0.05, Number.isFinite(h) ? h : 0.5));
@@ -295,6 +295,51 @@ export async function runScript(scriptPath, opts = {}) {
                     results.splice(0, results.length, ...again.parts);
                 }
             }
+        }
+        // Walls with no fast model (holder, rack): the whole-part proof is the model (the slow path). When the script left
+        // the wall to the kernel and the proof shows far more margin than the target needs, scale the wall down by the
+        // engine's own answer (SF about t^1.5 for a wall bending under a pull, kept to whole lines and >= 4 lines) and
+        // prove once more; keep it if it passes with the band and uses less material.
+        for (let i = 0; i < results.length; i++) {
+            const r = results[i], rec = r.record, ph = r.physics;
+            const wp = rec?.parameters?.find((q) => q.free && (q.id === "holder.wall" || q.id === "rack.wall"));
+            if (!rec || !ph || !wp || typeof wp.value !== "number")
+                continue;
+            const st = ph.answers.find((a) => /^strength/.test(a.id)), sk = ph.answers.find((a) => /^stiffness/.test(a.id));
+            const req = rec.requirements.find((q) => q.holds), dreq = rec.requirements.find((q) => q.deflection);
+            const sfw = sfOf(st), dw = sfOf(sk), need = (req?.holds?.safetyFactor ?? 3) * 1.25, dmax = dreq?.deflection?.max ?? Infinity;
+            if (!st || st.verdict !== "pass" || !(sfw > 1.6 * need) || (Number.isFinite(dw) && dw > 0.5 * dmax))
+                continue;
+            const t = wp.value, line = 0.42, tNew = Math.max(4 * line, Math.ceil((t * Math.pow((need * 1.15) / sfw, 1 / 1.5)) / line) * line);
+            if (tNew > t - 0.2)
+                continue;
+            const t1 = performance.now();
+            const wid = wp.id;
+            OVERRIDES[wid] = Number(tNew.toFixed(3));
+            let again = null;
+            try {
+                again = await runScript(scriptPath, { ...opts, outDir: undefined, render: false, _sizingPass: true });
+            }
+            catch {
+                again = null;
+            }
+            finally {
+                delete OVERRIDES[wid];
+            }
+            const a2 = again?.parts[i], st2 = a2?.physics?.answers.find((a) => /^strength/.test(a.id)), sk2 = a2?.physics?.answers.find((a) => /^stiffness/.test(a.id));
+            const keep = !!a2 && st2?.verdict === "pass" && (!sk2 || sk2.verdict === "pass") && Math.abs(a2.check.volume) < Math.abs(r.check.volume) && a2.checks.every((c) => c.pass || !r.checks.find((d) => d.name === c.name)?.pass);
+            const rep = { feature: wp.feature ?? "holder", requirement: `holds with SF ${(need / 1.25).toFixed(0)} outside the engine's band (${need.toFixed(2)}), deflects at most ${dmax} mm`,
+                model: "the whole-part proof (the slow path: no fast model for a cup's walls), the wall scaled as SF ~ t^1.5 from this run's answer",
+                chosen: keep ? `wall ${tNew.toFixed(2)} (from ${t})` : `wall ${t} (a ${tNew.toFixed(2)} mm wall ${st2 ? `proved SF ${sfOf(st2)}${st2.verdict !== "pass" ? `, ${st2.verdict}` : ""}` : "did not build"})`,
+                predicted: { massG: 0, sf: need * 1.15 }, table: [], evaluated: 2, ms: performance.now() - t1,
+                confirmed: { sf: sfw, verdict: st.verdict, defl: Number.isFinite(dw) ? dw : undefined, rebuilt: { k: 1, sf: sfOf(st2), verdict: st2?.verdict ?? "?", kept: keep ? "rebuilt" : "first" }, ms: performance.now() - t1 } };
+            if (keep && again) {
+                results[i] = a2;
+                (results[i].sizing ??= []).push(rep);
+            }
+            else
+                (r.sizing ??= []).push(rep);
+            tPhysics = (tPhysics ?? 0) + (performance.now() - t1);
         }
         tPhysics = (tPhysics ?? 0) + (performance.now() - tc);
     }

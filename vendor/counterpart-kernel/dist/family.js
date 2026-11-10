@@ -198,7 +198,7 @@ export function holder(o) {
     const fx = {
         from: "holder", supports: mounted.supports,
         // the walls are the parameter a strength fix changes as a whole (local thickening does not help: physics round 2)
-        parameters: [{ name: "wall", value: wall, unit: "mm", feature: "holder", id: "holder.wall" }, { name: "floor", value: floor, unit: "mm", feature: "holder", id: "holder.floor" }],
+        parameters: [{ name: "wall", value: wall, unit: "mm", feature: "holder", id: "holder.wall", free: o.wall === undefined }, { name: "floor", value: floor, unit: "mm", feature: "holder", id: "holder.floor" }],
         object: { name: ob.name ?? "object", kg: mass.kg, prism: { outline, axis: "z", span: [floor, floor + objH] }, size: { nominal: size, uncertainty: rec.object.uncertainty, source: rec.object.source } },
         loads: [
             { id: "weight", kind: "weight", kg: mass.kg, at: { plane: { point: [0, cy, floor], normal: [0, 0, 1] }, within: [[-cw / 2, cw / 2], [cy - cd / 2, cy + cd / 2], [floor - 0.6, floor + 0.6]] }, why: `the ${mass.kg} kg object${mass.assumed ? " (assumed: its volume full of water)" : ""} on the floor` },
@@ -344,6 +344,7 @@ export function rack(o) {
     }
     const fx = {
         from: "rack", supports: mounted.supports,
+        parameters: [{ name: "wall", value: wall, unit: "mm", feature: "rack", id: "rack.wall", free: o.wall === undefined }],
         object: { name: ob.name ?? "object", kg: mass.kg, prism: { outline: ol.map(([u, v]) => [u + xs[0], v + pcy(0)]), axis: "z", span: [floor, floor + objH] }, size: { nominal: Math.min(...sz[0]), uncertainty: rec.object.uncertainty, source: rec.object.source } },
         loads: [
             ...Array.from({ length: nRows }, (_, j) => xs.map((x, i) => ({ id: `weight.${j * n + i + 1}`, kind: "weight", kg: masses[i].kg, at: { plane: { point: [x, pcy(i, j), floor], normal: [0, 0, 1] }, within: [[x - cws[i] / 2, x + cws[i] / 2], [pcy(i, j) - cds[i] / 2, pcy(i, j) + cds[i] / 2], [floor - 0.6, floor + 0.6]] }, why: `object ${j * n + i + 1}, ${masses[i].kg} kg${masses[i].assumed ? " (assumed: its volume of water)" : ""}` }))).flat(),
