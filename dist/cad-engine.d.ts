@@ -25,7 +25,7 @@ export declare class CadEngine {
     private confined;
     setup(args: CadArguments, signal?: AbortSignal): Promise<Record<string, unknown>>;
     private fingerprint;
-    private repairNative;
+    private requireSupportedStorage;
     private inputFile;
     run(args: CadArguments, signal?: AbortSignal): Promise<Record<string, unknown>>;
     checkFit(args: CadArguments, signal?: AbortSignal): Promise<Record<string, unknown>>;

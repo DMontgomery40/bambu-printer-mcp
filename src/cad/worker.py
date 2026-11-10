@@ -50,7 +50,12 @@ def scan_loader(inputs):
         if not isinstance(m, trimesh.Trimesh) or not len(m.vertices) or not np.isfinite(m.vertices).all():
             raise ValueError('Scan must contain a finite triangle mesh.')
         factor = 1000.0 if source_units == 'm' else 1.0
-        matrix = trimesh.geometry.align_vectors(axes[up_axis], [0,0,1])
+        # Smallest rotation; aligning an axis must not add an arbitrary yaw.
+        direction = np.asarray(axes[up_axis], dtype=float)
+        rotation_axis = np.cross(direction, [0,0,1])
+        angle = float(np.arccos(np.clip(direction[2], -1, 1)))
+        matrix = (np.eye(4) if angle == 0 else
+                  trimesh.transformations.rotation_matrix(angle, rotation_axis if np.linalg.norm(rotation_axis) else [1,0,0]))
         m.apply_scale(factor)
         m.apply_transform(matrix)
         lift = -float(m.bounds[0,2]) if ground else 0.0

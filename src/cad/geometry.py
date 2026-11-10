@@ -48,13 +48,13 @@ def render(m, folder):
         im = Image.new('RGB', (800, 800), '#f5f5f2')
         draw = ImageDraw.Draw(im)
         xy = tri[:, :, [u, v]].copy()
-        xy[:, :, 0] *= sign if depth == 1 else 1
+        xy[:, :, 0] *= sign * (-1 if depth == 1 else 1)
         lo, hi = xy.min(axis=(0, 1)), xy.max(axis=(0, 1))
         extent = max(hi - lo)
         if extent <= 0: raise ValueError('Empty mesh extent')
         xy = (xy - (lo + hi) / 2) * (680 / extent) + 400
         xy[:, :, 1] = 800 - xy[:, :, 1]
-        light = np.zeros(3); light[depth] = sign * .85; light[v] = .45; light[u] = -.3
+        light = np.zeros(3); light[depth] = sign * .85; light[v] = .45; light[u] = -.3 * sign * (-1 if depth == 1 else 1)
         light /= np.linalg.norm(light)
         shades = .4 + .6 * np.clip(normals @ light, 0, 1)
         for i in np.argsort(centres[:, depth] * sign):

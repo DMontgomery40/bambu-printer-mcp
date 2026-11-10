@@ -348,3 +348,46 @@ test("macOS setup refuses external, network and ownership-disabled storage befor
     assert.equal((await engine.status()).ready, false);
   }
 });
+
+test("fit scratch copies are removed after success and failure", async (t) => {
+  const { CadEngine } = await import("../dist/cad-engine.js");
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "cad-fit-cleanup-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const model = path.join(root, "model.stl");
+  await fs.writeFile(model, "fixture");
+  let fail = false;
+  const engine = new CadEngine({
+    dataDir: path.join(root, "data"),
+    outputRoots: [root],
+    system: {
+      platform: "linux",
+      run: async () => {
+        if (fail) throw Error("fit failed");
+        return { stdout: JSON.stringify({ clear: true }) };
+      },
+    },
+  });
+  engine.status = async () => ({
+    configured: true,
+    ready: true,
+    python: "stub",
+    build123d: "0.13.0",
+    platform: "linux",
+  });
+  assert.equal(
+    (await engine.checkFit({ model, reference: model })).clear,
+    true,
+  );
+  fail = true;
+  await assert.rejects(
+    engine.checkFit({ model, reference: model }),
+    /fit failed/,
+  );
+  assert.equal(
+    (await fs.readdir(path.join(root, "data"))).some((n) =>
+      n.startsWith("fit-"),
+    ),
+    false,
+  );
+  assert.equal(await fs.readFile(model, "utf8"), "fixture");
+});

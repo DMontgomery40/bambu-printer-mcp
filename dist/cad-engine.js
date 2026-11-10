@@ -430,20 +430,25 @@ export class CadEngine {
             if (!status.ready)
                 throw new Error(status.error);
             const job = await fs.mkdtemp(path.join(this.dataDir, "fit-"));
-            await fs.copyFile(model, path.join(job, "model.stl"));
-            await fs.copyFile(reference, path.join(job, "reference.stl"));
-            const request = path.join(job, "request.json");
-            await fs.writeFile(request, JSON.stringify({
-                model: path.join(job, "model.stl"),
-                reference: path.join(job, "reference.stl"),
-                transform: args.transform ?? {},
-                clearance_mm: clearance,
-            }));
-            return JSON.parse((await this.confined("fit", request, job, [
-                request,
-                path.join(job, "model.stl"),
-                path.join(job, "reference.stl"),
-            ], milliseconds(args.timeout_ms), signal)).stdout);
+            try {
+                await fs.copyFile(model, path.join(job, "model.stl"));
+                await fs.copyFile(reference, path.join(job, "reference.stl"));
+                const request = path.join(job, "request.json");
+                await fs.writeFile(request, JSON.stringify({
+                    model: path.join(job, "model.stl"),
+                    reference: path.join(job, "reference.stl"),
+                    transform: args.transform ?? {},
+                    clearance_mm: clearance,
+                }));
+                return JSON.parse((await this.confined("fit", request, job, [
+                    request,
+                    path.join(job, "model.stl"),
+                    path.join(job, "reference.stl"),
+                ], milliseconds(args.timeout_ms), signal)).stdout);
+            }
+            finally {
+                await fs.rm(job, { recursive: true, force: true });
+            }
         });
     }
 }

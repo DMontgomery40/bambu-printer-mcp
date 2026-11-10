@@ -3,6 +3,7 @@ import test from "node:test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import sharp from "sharp";
 import { fileURLToPath } from "node:url";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -64,6 +65,41 @@ test(
     assert.deepEqual(original.size_mm, [10, 20, 30]);
     assert.equal(original.solid_count, 1);
     assert.equal(Object.keys(original.renders).length, 7);
+    const asym = await call("cad_run", {
+      script:
+        "from build123d import Box,Pos\nP={}\ndef build():\n return Box(10,20,30)+Pos(4,9,14)*Box(6,6,6)",
+      output_dir: dir,
+      name: "asymmetric",
+      timeout_ms: 180000,
+    });
+    const centres = {};
+    for (const [name, file] of Object.entries(asym.renders)) {
+      if (name === "contact") continue;
+      const { data: pix, info } = await sharp(file)
+        .removeAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      let sum = 0,
+        n = 0;
+      for (let i = 0; i < pix.length; i += info.channels)
+        if (pix[i + 2] > pix[i + 1] && pix[i + 1] > pix[i]) {
+          sum += (i / info.channels) % info.width;
+          n++;
+        }
+      assert.ok(n > 1000);
+      centres[name] = sum / n;
+    }
+    for (const [a, b] of [
+      ["front", "back"],
+      ["left", "right"],
+      ["top", "bottom"],
+    ])
+      assert.ok(
+        Math.abs(centres[a] + centres[b] - 799) < 2,
+        JSON.stringify(centres),
+      );
+    assert.ok(centres.left > centres.right + 4, JSON.stringify(centres));
+    assert.ok(centres.bottom > centres.top + 4, JSON.stringify(centres));
     const edit = await call("cad_run", {
       script_path: original.script,
       parameters: { width: 11 },
@@ -97,15 +133,58 @@ test(
       timeout_ms: 180000,
     });
     assert.equal(meshAgain.bounds_mm[0][2], -13);
-    const rawScan=path.join(dir,"metres-yup.stl");
-    const vertices=[[0,0,0],[.01,0,0],[.01,.03,0],[0,.03,0],[0,0,.02],[.01,0,.02],[.01,.03,.02],[0,.03,.02]];
-    const faces=[[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[1,2,6],[1,6,5],[2,3,7],[2,7,6],[3,0,4],[3,4,7]];
-    await fs.writeFile(rawScan,"solid scan\n"+faces.map(face=>"facet normal 0 0 0\nouter loop\n"+face.map(i=>"vertex "+vertices[i].join(" ")).join("\n")+"\nendloop\nendfacet").join("\n")+"\nendsolid scan");
-    const prepared=await call("cad_run",{script:"P={}\ndef build():\n return load_scan('scan',source_units='m',up_axis='y')",mode:"mesh",inputs:[{name:"scan",path:rawScan}],output_dir:dir,name:"prepared",timeout_ms:180000});
-    assert.equal(prepared.valid,true);
-    for(let i=0;i<3;i++)assert.ok(Math.abs(prepared.size_mm[i]-[10,20,30][i])<.001);
-    assert.equal(prepared.bounds_mm[0][2],0);
-    assert.ok(Math.abs(prepared.volume_mm3-6000)<.01);
+    const rawScan = path.join(dir, "metres-yup.stl");
+    const vertices = [
+      [0, 0, 0],
+      [0.01, 0, 0],
+      [0.01, 0.03, 0],
+      [0, 0.03, 0],
+      [0, 0, 0.02],
+      [0.01, 0, 0.02],
+      [0.01, 0.03, 0.02],
+      [0, 0.03, 0.02],
+    ];
+    const faces = [
+      [0, 2, 1],
+      [0, 3, 2],
+      [4, 5, 6],
+      [4, 6, 7],
+      [0, 1, 5],
+      [0, 5, 4],
+      [1, 2, 6],
+      [1, 6, 5],
+      [2, 3, 7],
+      [2, 7, 6],
+      [3, 0, 4],
+      [3, 4, 7],
+    ];
+    await fs.writeFile(
+      rawScan,
+      "solid scan\n" +
+        faces
+          .map(
+            (face) =>
+              "facet normal 0 0 0\nouter loop\n" +
+              face.map((i) => "vertex " + vertices[i].join(" ")).join("\n") +
+              "\nendloop\nendfacet",
+          )
+          .join("\n") +
+        "\nendsolid scan",
+    );
+    const prepared = await call("cad_run", {
+      script:
+        "P={}\ndef build():\n return load_scan('scan',source_units='m',up_axis='y')",
+      mode: "mesh",
+      inputs: [{ name: "scan", path: rawScan }],
+      output_dir: dir,
+      name: "prepared",
+      timeout_ms: 180000,
+    });
+    assert.equal(prepared.valid, true);
+    for (let i = 0; i < 3; i++)
+      assert.ok(Math.abs(prepared.size_mm[i] - [10, 20, 30][i]) < 0.001);
+    assert.equal(prepared.bounds_mm[0][2], 0);
+    assert.ok(Math.abs(prepared.volume_mm3 - 6000) < 0.01);
     const invertedSource = meshSource.replace(
       "m.apply_translation([0,0,P['lift']])",
       "m.invert()",
@@ -222,13 +301,29 @@ test(
       "a runtime hardlink must not become writable through the job",
     );
     assert.equal(await fs.readFile(hardlinkTarget, "utf8"), "unchanged");
-    assert.ok(Number.isInteger(tr.pid)&&tr.pid>0);
-    const parentRead=await c.callTool({name:"cad_run",arguments:{
-      script:`from build123d import Box\nimport psutil\nP={'pid':${tr.pid}}\ndef build():\n info=psutil.Process(P['pid']).environ()\n print('parent canary readable:', 'CAD_PARENT_CANARY' in info)\n return Box(1,2,3)`,
-      output_dir:dir,name:"parent-environment",timeout_ms:180000,
-    }},undefined,{timeout:240000});
-    assert.equal(parentRead.isError,true,"a script must not read the MCP parent's environment");
-    assert.match(parentRead.content[0].text,/AccessDenied|Permission|NoSuchProcess|permitted|denied/);
+    assert.ok(Number.isInteger(tr.pid) && tr.pid > 0);
+    const parentRead = await c.callTool(
+      {
+        name: "cad_run",
+        arguments: {
+          script: `from build123d import Box\nimport psutil\nP={'pid':${tr.pid}}\ndef build():\n info=psutil.Process(P['pid']).environ()\n print('parent canary readable:', 'CAD_PARENT_CANARY' in info)\n return Box(1,2,3)`,
+          output_dir: dir,
+          name: "parent-environment",
+          timeout_ms: 180000,
+        },
+      },
+      undefined,
+      { timeout: 240000 },
+    );
+    assert.equal(
+      parentRead.isError,
+      true,
+      "a script must not read the MCP parent's environment",
+    );
+    assert.match(
+      parentRead.content[0].text,
+      /AccessDenied|Permission|NoSuchProcess|permitted|denied/,
+    );
     const inputBefore = await fs.readFile(original.stl);
     const inputWrite = await c.callTool(
       {

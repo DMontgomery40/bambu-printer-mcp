@@ -472,13 +472,13 @@ export class CadEngine {
       let inputBytes = 0;
       const inputNames = new Set<string>();
       for (const [alias, file] of Object.entries(inputs)) {
-        const filename=path.basename(file);
-        if (inputNames.has(filename.toLowerCase())) throw new Error("CAD input files must have distinct original filenames so linked mesh/texture assets remain unambiguous.");
+        const filename = path.basename(file);
+        if (inputNames.has(filename.toLowerCase()))
+          throw new Error(
+            "CAD input files must have distinct original filenames so linked mesh/texture assets remain unambiguous.",
+          );
         inputNames.add(filename.toLowerCase());
-        const destination = path.join(
-          inputDir,
-          filename,
-        );
+        const destination = path.join(inputDir, filename);
         await fs.copyFile(file, destination);
         const bytes = (await fs.stat(destination)).size;
         inputBytes += bytes;
@@ -599,34 +599,38 @@ export class CadEngine {
       const status = await this.status();
       if (!status.ready) throw new Error(status.error);
       const job = await fs.mkdtemp(path.join(this.dataDir, "fit-"));
-      await fs.copyFile(model, path.join(job, "model.stl"));
-      await fs.copyFile(reference, path.join(job, "reference.stl"));
-      const request = path.join(job, "request.json");
-      await fs.writeFile(
-        request,
-        JSON.stringify({
-          model: path.join(job, "model.stl"),
-          reference: path.join(job, "reference.stl"),
-          transform: args.transform ?? {},
-          clearance_mm: clearance,
-        }),
-      );
-      return JSON.parse(
-        (
-          await this.confined(
-            "fit",
-            request,
-            job,
-            [
+      try {
+        await fs.copyFile(model, path.join(job, "model.stl"));
+        await fs.copyFile(reference, path.join(job, "reference.stl"));
+        const request = path.join(job, "request.json");
+        await fs.writeFile(
+          request,
+          JSON.stringify({
+            model: path.join(job, "model.stl"),
+            reference: path.join(job, "reference.stl"),
+            transform: args.transform ?? {},
+            clearance_mm: clearance,
+          }),
+        );
+        return JSON.parse(
+          (
+            await this.confined(
+              "fit",
               request,
-              path.join(job, "model.stl"),
-              path.join(job, "reference.stl"),
-            ],
-            milliseconds(args.timeout_ms),
-            signal,
-          )
-        ).stdout,
-      );
+              job,
+              [
+                request,
+                path.join(job, "model.stl"),
+                path.join(job, "reference.stl"),
+              ],
+              milliseconds(args.timeout_ms),
+              signal,
+            )
+          ).stdout,
+        );
+      } finally {
+        await fs.rm(job, { recursive: true, force: true });
+      }
     });
   }
 }
