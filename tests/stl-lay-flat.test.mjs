@@ -1,3 +1,4 @@
+import {withSlicerTemp} from './support/slicer-temp.mjs';
 import {trackedMkdtemp} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -221,6 +222,7 @@ test("Bambu Studio slices the laid-flat stove gap filler for a P1S with no warni
   skip: !existsSync(studioCli) && "Bambu Studio is not installed",
   timeout: 600_000,
 }, async (t) => {
+  return withSlicerTemp(async () => {
   const { directory, input } = await stoveGapFiller(t);
   const manipulator = new STLManipulator(directory);
   const flat = await manipulator.layFlat(input);
@@ -231,4 +233,5 @@ test("Bambu Studio slices the laid-flat stove gap filler for a P1S with no warni
   assert.equal(result.return_code, 0, result.error_string);
   assert.ok(result.sliced_plates.length > 0);
   for (const plate of result.sliced_plates) assert.equal(plate.warning_message, "", plate.warning_message);
+  });
 });

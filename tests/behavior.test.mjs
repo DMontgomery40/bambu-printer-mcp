@@ -1,3 +1,4 @@
+import {withSlicerTemp} from './support/slicer-temp.mjs';
 import {trackedMkdtempSync} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -3049,6 +3050,7 @@ test("the installed Bambu Studio's floating-cantilever warning reaches sliceSTLW
   skip: !fs.existsSync(installedStudio) && "Bambu Studio is not installed",
   timeout: 300_000,
 }, async (t) => {
+  return withSlicerTemp(async () => {
   const directory = trackedMkdtempSync(path.join(os.tmpdir(), "studio-result-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const tee = path.join(directory, "tee.stl");
@@ -3059,6 +3061,7 @@ test("the installed Bambu Studio's floating-cantilever warning reaches sliceSTLW
   assert.equal(sliced.slicer_result.return_code, 0);
   assert.deepEqual(sliced.slicer_result.sliced_plates.map(plate => plate.warning_message),
     ["It seems object tee.stl has floating cantilever. Please re-orient the object or enable support generation."]);
+  });
 });
 
 test("slice_stl writes enable_support, support_type and support_threshold_angle over the resolved process preset", async (t) => {
@@ -3236,6 +3239,7 @@ test("the installed Bambu Studio generates supports only when slice_stl's enable
   skip: !fs.existsSync(installedStudio) && "Bambu Studio is not installed",
   timeout: 600_000,
 }, async (t) => {
+  return withSlicerTemp(async () => {
   const directory = trackedMkdtempSync(path.join(os.tmpdir(), "studio-supports-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   // A T: a narrow stem under a wide, unsupported cap.
@@ -3258,6 +3262,7 @@ test("the installed Bambu Studio generates supports only when slice_stl's enable
   const off = await slice({ enable_support: "0" }, "off");
   assert.equal(off.settings.enable_support, "0");
   assert.equal(off.supportUsed, false);
+  });
 });
 
 test("relative TEMP_DIR and profile, filament and model paths reach the slicer as absolute paths", async (t) => {

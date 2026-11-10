@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.85] – 2026-11-10
+
+### Fixed
+
+- Give installed-slicer tests their own temporary directory and remove vendor scratch on success or failure. This fixes macOS `npm test` reporting a `bamboo_model` leak after passing tests (#139), while keeping the shared fixture leak guard strict. Thanks to David Montgomery for the report and reproduction.
+
+- Accept a named A1 job that remains `FAILED` after a stop only when fresh status explicitly reports `print_type: idle`, `print_error: 0` and no HMS entries. Recheck the same job before dispatch, preserving model, nozzle, material and temperature checks. Thanks to Rowan McMahon for the firmware 01.08.01.00 report, code and regressions in #133. Hardware evidence is contributor-reported MQTT status; maintainer validation uses offline tests.
+- Update basic-ftp to 6.2.6, including upstream MLSD parsing and recursive-download path traversal corrections, and the MCP TypeScript SDK to 1.32.2. Preserve the pinned bambu-node patch and supported installation layouts.
+
 ## [1.1.84] – 2026-11-10
 
 ### Fixed

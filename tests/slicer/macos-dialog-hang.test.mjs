@@ -1,3 +1,4 @@
+import {withSlicerTemp} from '../support/slicer-temp.mjs';
 // The real Bambu Studio on macOS, in a throwaway home seeded with crash history that makes AppKit raise its modal
 // "reopen windows?" alert (src/slicer/slicer-launch.ts). Skipped where Bambu Studio isn't installed.
 //
@@ -81,6 +82,7 @@ function oldLaunch(command, home, seconds) {
 }
 
 test("Bambu Studio slices through the server in a home whose crash history raises AppKit's alert", { skip: !available && "Bambu Studio is not installed (macOS only)" }, async (t) => {
+  return withSlicerTemp(async () => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-mcp-dialog-"));
   t.after(() => fs.rmSync(work, { recursive: true, force: true }));
   const primedAt = Date.now() - 1000;
@@ -102,4 +104,5 @@ test("Bambu Studio slices through the server in a home whose crash history raise
   assert.equal(fixed.result.isError, undefined, fixed.result.content?.[0]?.text);
   assert.ok(fs.existsSync(fixed.result.structuredContent.path), "the sliced file exists");
   assert.ok(fixed.seconds < 60, `sliced in ${fixed.seconds} s`);
+  });
 });

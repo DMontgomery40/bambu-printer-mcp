@@ -49,3 +49,44 @@ test('exit removes an in-flight print snapshot', t => {
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(readdirSync(root), ['source.gcode']);
 });
+
+// A real slicer creates its own scratch files in TMPDIR, outside our fixture helpers.
+for (const mode of ['success', 'failure', 'unrelated-leak']) {
+  test(`slicer scratch is isolated and cleaned: ${mode}`, t => {
+    const root = mkdtempSync(join(tmpdir(), 'slicer-scratch-regression-'));
+    t.after(() => rmSync(root, {recursive: true, force: true}));
+    const suite = join(root, 'case.test.mjs');
+    const helper = new URL('./support/slicer-temp.mjs', import.meta.url).href;
+    writeFileSync(suite, `import {test} from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdirSync, existsSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {withSlicerTemp} from ${JSON.stringify(helper)};
+test('scratch', async () => {
+  const before = Object.fromEntries(['TMPDIR','TMP','TEMP'].map(k => [k, process.env[k]]));
+  let scratch;
+  try {
+    await withSlicerTemp(async () => {
+      scratch = tmpdir();
+      assert.notEqual(scratch, before.TMPDIR);
+      mkdirSync(join(scratch, 'bamboo_model'));
+      ${mode === 'failure' ? "throw new Error('slicer failed');" : ''}
+    });
+  } catch (error) {
+    if (${JSON.stringify(mode)} !== 'failure' || error.message !== 'slicer failed') throw error;
+  }
+  assert.equal(existsSync(scratch), false);
+  for (const k of Object.keys(before)) assert.equal(process.env[k], before[k]);
+  ${mode === 'unrelated-leak' ? "mkdirSync(join(tmpdir(), 'unrelated-fixture'));" : ''}
+});`);
+    const env = {...process.env, TMPDIR: root};
+    delete env.NODE_TEST_CONTEXT;
+    const result = spawnSync(process.execPath, [guard.pathname, suite], {env, encoding: 'utf8', timeout: 30000});
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, mode === 'unrelated-leak' ? 1 : 0, result.stdout + result.stderr);
+    if (mode === 'unrelated-leak') assert.match(result.stderr, /unrelated-fixture/);
+    else assert.doesNotMatch(result.stderr, /temp-guard:.*leftover/s);
+    assert.deepEqual(readdirSync(root), ['case.test.mjs']);
+  });
+}

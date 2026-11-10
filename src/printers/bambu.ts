@@ -5,7 +5,7 @@ import {cameraNumber} from "./camera-tools.js";
 import {cameraFrameParser, cameraAuth} from "./camera-wire.js";
 import { createHash } from "node:crypto";
 import { controlReply, refusedControlMessage, type ControlReply } from "../control-reply.js";
-import { isFinishedP1SJob, isCancelledX2DJob, readFreshPrinterStatus } from "../safety/printer-state.js";
+import { isFinishedIdleJob, isCancelledX2DJob, readFreshPrinterStatus } from "../safety/printer-state.js";
 import fs from "node:fs/promises";
 import { createReadStream, readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -790,7 +790,7 @@ export class BambuImplementation {
 
   private finishedJobIdentity(status: any): string | undefined {
     const raw = status.raw;
-    return raw.gcode_state === "FINISH" || (isCancelledX2DJob(raw, String(status.model ?? "")) || isFinishedP1SJob(raw, String(status.model ?? "")))
+    return raw.gcode_state === "FINISH" || (isCancelledX2DJob(raw, String(status.model ?? "")) || isFinishedIdleJob(raw, String(status.model ?? "")))
       ? printJobIdentity(raw)
       : undefined;
   }
