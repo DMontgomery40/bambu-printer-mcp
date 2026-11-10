@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Accept a P1S-sliced job on a printer that freshly identifies itself as a P1P, following Bambu Studio's compatibility table while retaining the P1P's model, nozzle, material, thermal and readiness checks. Contributor inspection and hardware evidence is distinct from mocked MCP dispatch validation.
+
+
 ## [1.1.90] – 2026-11-12
 
 ### Added
