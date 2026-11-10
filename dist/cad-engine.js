@@ -27,7 +27,8 @@ export class CadEngine {
                 configured &&
                     marker.build123d === BUILD123D &&
                     marker.platform === this.system.platform &&
-                    marker.fingerprint === (await this.fingerprint());
+                    marker.fingerprint === (await this.fingerprint()) &&
+                    marker.dataDevice === (await fs.stat(this.dataDir)).dev;
         }
         catch {
             /* setup not verified */
@@ -127,10 +128,16 @@ export class CadEngine {
             ...sandbox.args,
             python,
             "-I",
+            "-B",
             path.join(ASSETS, "worker.py"),
             mode,
             request,
-        ], { env: this.environment(job), cwd: job, timeoutMs, signal });
+        ], {
+            env: this.environment(job),
+            cwd: job,
+            timeoutMs,
+            signal,
+        });
     }
     async setup(args, signal) {
         only(args, ["install"]);
@@ -146,6 +153,7 @@ export class CadEngine {
         return this.exclusive(async () => {
             signal?.throwIfAborted();
             const env = this.environment(this.dataDir);
+            await this.requireSupportedStorage(env, signal);
             await fs.mkdir(env.TMPDIR, { recursive: true });
             await fs.unlink(path.join(this.dataDir, "ready.json")).catch(() => { });
             const python = path.join(this.dataDir, "runtime", "bin", "python");
@@ -169,27 +177,7 @@ export class CadEngine {
                 "--no-config",
                 path.join(ASSETS, "requirements.lock"),
             ], opts);
-            let repaired = 0;
-            try {
-                await this.system.run(python, ["-I", path.join(ASSETS, "worker.py"), "imports"], { ...opts, timeoutMs: 120000 });
-            }
-            catch (error) {
-                if (signal?.aborted ||
-                    this.system.platform !== "darwin" ||
-                    !/timed out|SIGKILL|failed \(null\)|failed \(137\)/.test(String(error)))
-                    throw error;
-                repaired = await this.repairNative(signal).catch(e => {
-                    throw new Error(`CAD native import stalled; owned-runtime signature repair failed: ${e}. The runtime is not ready.`);
-                });
-                await this.system
-                    .run(python, ["-I", path.join(ASSETS, "worker.py"), "imports"], {
-                    ...opts,
-                    timeoutMs: 180000,
-                })
-                    .catch((e) => {
-                    throw new Error(`CAD native import still failed after repairing ${repaired} owned libraries: ${e}`);
-                });
-            }
+            await this.system.run(python, ["-I", "-B", path.join(ASSETS, "worker.py"), "imports"], { ...opts, timeoutMs: 120000 });
             const job = await fs.mkdtemp(path.join(this.dataDir, "verify-"));
             const request = path.join(job, "request.json");
             await fs.writeFile(request, JSON.stringify({ output: job, home: os.homedir() }), { mode: 0o600 });
@@ -206,15 +194,13 @@ export class CadEngine {
                 platform: this.system.platform,
                 verifiedAt: new Date().toISOString(),
                 fingerprint: await this.fingerprint(),
+                dataDevice: (await fs.stat(this.dataDir)).dev,
             }), { mode: 0o600 });
             return {
                 supported: true,
                 ...(await this.status()),
                 installed: true,
-                repaired_native_files: repaired,
-                message: repaired
-                    ? `CAD is ready after repairing ${repaired} native library signatures.`
-                    : "CAD is ready; confined import, build, STL and STEP round trip passed.",
+                message: "CAD is ready; confined import, build, STL and STEP round trip passed. No native files were re-signed.",
             };
         });
     }
@@ -226,44 +212,31 @@ export class CadEngine {
             .update(await fs.readFile(new URL("./cad/process.js", import.meta.url)))
             .digest("hex");
     }
-    async repairNative(signal) {
-        const owned = [];
-        const env = this.environment(this.dataDir);
-        const deadline = Date.now() + 180000;
-        const remaining = (limit) => {
-            const ms = Math.min(limit, deadline - Date.now());
-            if (ms <= 0)
-                throw new Error("CAD native signature repair exceeded its 180-second deadline; runtime is not ready.");
-            return ms;
-        };
-        const visit = async (dir) => {
-            for (const e of await fs.readdir(dir, { withFileTypes: true })) {
-                signal?.throwIfAborted();
-                const file = path.join(dir, e.name);
-                if (e.isDirectory())
-                    await visit(file);
-                else if (e.isFile() &&
-                    (/\.(?:so|dylib)$/.test(e.name) || /^python3\.12$/.test(e.name)))
-                    owned.push(file);
-            }
-        };
-        for (const dir of ["runtime", "python"])
-            if (await fs.stat(path.join(this.dataDir, dir)).then(() => true, () => false))
-                await visit(path.join(this.dataDir, dir));
-        // Both tools accept multiple paths. Batching avoids hundreds of expensive macOS launches on cold files.
-        for (let offset = 0; offset < owned.length; offset += 20) {
-            const batch = owned.slice(offset, offset + 20);
-            signal?.throwIfAborted();
-            await this.system
-                .run("/usr/bin/xattr", ["-d", "com.apple.provenance", ...batch], {
-                env,
-                timeoutMs: remaining(10000),
-                signal,
-            })
-                .catch(() => { });
-            await this.system.run("/usr/bin/codesign", ["--force", "--sign", "-", ...batch], { env, timeoutMs: remaining(30000), signal });
+    async requireSupportedStorage(env, signal) {
+        if (this.system.platform !== "darwin")
+            return;
+        const error = () => new Error("Code-CAD on macOS requires an internal disk with file ownership enabled. External and network data volumes are unsupported after measured native-import stalls. Set CAD_DATA_DIR to an internal folder and rerun cad_setup; nothing was installed by this attempt.");
+        try {
+            const opts = { env, cwd: this.dataDir, timeoutMs: 10000, signal };
+            const df = await this.system.run("/bin/df", ["-P", this.dataDir], opts);
+            const device = df.stdout
+                .trim()
+                .split(/\r?\n/)
+                .at(-1)
+                ?.trim()
+                .split(/\s+/)[0];
+            if (!device || !/^\/dev\/disk\d+(?:s\d+)*$/.test(device))
+                throw error();
+            const info = await this.system.run("/usr/sbin/diskutil", ["info", "-plist", device], opts);
+            if (!/<key>Internal<\/key>\s*<true\s*\/>/.test(info.stdout) ||
+                !/<key>GlobalPermissionsEnabled<\/key>\s*<true\s*\/>/.test(info.stdout))
+                throw error();
         }
-        return owned.length;
+        catch (e) {
+            if (signal?.aborted)
+                throw e;
+            throw error();
+        }
     }
     async inputFile(value, extension) {
         if (typeof value !== "string" ||
@@ -372,8 +345,13 @@ export class CadEngine {
             const inputDir = path.join(job, "inputs");
             await fs.mkdir(inputDir, { mode: 0o700 });
             let inputBytes = 0;
+            const inputNames = new Set();
             for (const [alias, file] of Object.entries(inputs)) {
-                const destination = path.join(inputDir, alias + path.extname(file).toLowerCase());
+                const filename = path.basename(file);
+                if (inputNames.has(filename.toLowerCase()))
+                    throw new Error("CAD input files must have distinct original filenames so linked mesh/texture assets remain unambiguous.");
+                inputNames.add(filename.toLowerCase());
+                const destination = path.join(inputDir, filename);
                 await fs.copyFile(file, destination);
                 const bytes = (await fs.stat(destination)).size;
                 inputBytes += bytes;
@@ -394,7 +372,7 @@ export class CadEngine {
                 inputs: snapshots,
             };
             await fs.writeFile(request, JSON.stringify(base), { mode: 0o600 });
-            const effective = JSON.parse((await this.system.run(status.python, ["-I", path.join(ASSETS, "worker.py"), "parameters", request], { env: this.environment(job), cwd: job, timeoutMs: 10000, signal })).stdout);
+            const effective = JSON.parse((await this.system.run(status.python, ["-I", "-B", path.join(ASSETS, "worker.py"), "parameters", request], { env: this.environment(job), cwd: job, timeoutMs: 10000, signal })).stdout);
             await fs.writeFile(parameters, JSON.stringify(effective, null, 2), {
                 mode: 0o600,
             });

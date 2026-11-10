@@ -35,6 +35,34 @@ def parameters(source, overrides):
     return tree, node, merged
 
 
+def scan_loader(inputs):
+    """Explicit coordinate preparation only; never infer units or scale to a requested fit."""
+    declared = dict(inputs)
+    def load_scan(name, *, source_units, up_axis, ground=True):
+        import numpy as np
+        import trimesh
+        if name not in declared: raise ValueError('load_scan requires a declared input name.')
+        if source_units not in ('m', 'mm'): raise ValueError('source_units must explicitly be m or mm.')
+        axes = {'x': [1,0,0], '-x': [-1,0,0], 'y': [0,1,0], '-y': [0,-1,0], 'z': [0,0,1], '-z': [0,0,-1]}
+        if up_axis not in axes: raise ValueError('up_axis must be x, -x, y, -y, z or -z: the object usage-up direction in the source frame.')
+        if not isinstance(ground, bool): raise ValueError('ground must be a boolean.')
+        m = trimesh.load(declared[name], force='mesh', process=False)
+        if not isinstance(m, trimesh.Trimesh) or not len(m.vertices) or not np.isfinite(m.vertices).all():
+            raise ValueError('Scan must contain a finite triangle mesh.')
+        factor = 1000.0 if source_units == 'm' else 1.0
+        matrix = trimesh.geometry.align_vectors(axes[up_axis], [0,0,1])
+        m.apply_scale(factor)
+        m.apply_transform(matrix)
+        lift = -float(m.bounds[0,2]) if ground else 0.0
+        m.apply_translation([0,0,lift])
+        m.merge_vertices()
+        m.units = 'mm'
+        m.metadata['cad_scan_frame'] = {'source_units':source_units,'units':'mm','source_up':up_axis,'up_axis':'z',
+          'unit_factor':factor,'rotation':matrix.tolist(),'translation_z_mm':lift,'scale_to_fit':False}
+        return m
+    return load_scan
+
+
 def limits():
     caps = [(resource.RLIMIT_FSIZE, 128 * 1024**2), (resource.RLIMIT_CPU, 900),
             (resource.RLIMIT_NOFILE, 128)]
@@ -51,6 +79,7 @@ def main():
         import build123d
         import trimesh
         import manifold3d
+        import numpy, scipy, skimage, shapely
         from PIL import Image
         print(json.dumps({'build123d': build123d.__version__}))
         return
@@ -68,7 +97,7 @@ def main():
         tree, declaration, merged = parameters(source, json.loads(Path(request['parameters']).read_text()))
         declaration.value = ast.Name(id='__cad_parameters__', ctx=ast.Load())
         ast.fix_missing_locations(tree)
-        namespace = {'__name__': 'cad_design', '__file__': request['script'], '__cad_parameters__': merged, 'INPUTS': request.get('inputs', {})}
+        namespace = {'__name__': 'cad_design', '__file__': request['script'], '__cad_parameters__': merged, 'INPUTS': request.get('inputs', {}), 'load_scan': scan_loader(request.get('inputs', {}))}
         exec(compile(tree, request['script'], 'exec'), namespace)
         shape = namespace['build']()
         out = Path(request['output']) / request['name']

@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 /** No shell, no inherited printer/provider environment, bounded output, and kill the entire dispatched group. */
 export function runCadProcess(file, args, options) {
     return new Promise((resolve, reject) => {
@@ -63,14 +64,23 @@ const sb = (s) => JSON.stringify(s);
 export async function cadSandbox(platform, r) {
     if (platform === "darwin") {
         // Runtime system files remain readable, but personal data, IPC, network and process spawning do not.
+        const variants = (p) => [p, ...(/^\/(?:Users|private|Volumes)(?:\/|$)/.test(p) ? ["/System/Volumes/Data" + p] : [])];
+        const homes = [os.homedir(), await fs.realpath(os.homedir()).catch(() => os.homedir())];
+        const denied = ["/Users", "/Volumes", "/private/var", "/private/tmp", "/tmp", ...homes].flatMap(variants);
+        const readable = [path.join(r.data, "runtime"), path.join(r.data, "python"), r.assets, r.job].flatMap(variants);
         const profile = `(version 1)(allow default)
-(deny network*)(deny appleevent-send)(deny mach-lookup)(deny signal)(deny process-fork)
+(deny process-info*)(allow process-info* (target self))
+(deny sysctl-read)
+(allow sysctl-read (sysctl-name-prefix "hw.") (sysctl-name-prefix "machdep.cpu.")
+ (sysctl-name-prefix "kern.os") (sysctl-name "kern.ostype") (sysctl-name "kern.hostname") (sysctl-name "kern.domainname")
+ (sysctl-name "kern.version") (sysctl-name "kern.maxfiles") (sysctl-name "kern.maxfilesperproc"))
+(deny file-link)(deny network*)(deny appleevent-send)(deny mach-lookup)(deny signal)(deny process-fork)
 (deny process-exec)(allow process-exec (literal ${sb(await fs.realpath(r.python).catch(() => r.python))}))
-(deny file-read* (subpath "/Users") (subpath "/Volumes") (subpath "/private/var"))
+(deny file-read* ${denied.map(p => `(subpath ${sb(p)})`).join(" ")})
 (allow file-read-metadata)(deny file-write*)
-(allow file-read* (subpath ${sb(path.join(r.data, "runtime"))}) (subpath ${sb(path.join(r.data, "python"))}) (subpath ${sb(r.assets)}) (subpath ${sb(r.job)}))
-(allow file-write* (subpath ${sb(r.job)}) (literal "/dev/null"))
-${r.readonly.map((p) => `(deny file-write* (subpath ${sb(p)}))`).join("\n")}`;
+(allow file-read* ${readable.map(p => `(subpath ${sb(p)})`).join(" ")})
+(allow file-write* ${variants(r.job).map(p => `(subpath ${sb(p)})`).join(" ")} (literal "/dev/null"))
+${r.readonly.flatMap(variants).map((p) => `(deny file-write* (subpath ${sb(p)}))`).join("\n")}`;
         return { command: "/usr/bin/sandbox-exec", args: ["-p", profile] };
     }
     if (platform === "linux") {

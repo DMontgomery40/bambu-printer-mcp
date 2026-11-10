@@ -1,6 +1,6 @@
 # Optional code-CAD engine
 
-Code-CAD makes dimensioned functional parts without starting a design app. It uses build123d 0.13.0 (OpenCascade), with pinned trimesh, Manifold3D and Pillow for mesh checks and rendering. Blender and Fusion integrations remain available and unchanged. Whether mesh cleanup in this environment can replace Blender is being tested separately; this release adds no cleanup algorithms.
+Code-CAD makes dimensioned functional parts without starting a design app. It uses build123d 0.13.0 (OpenCascade), with pinned trimesh, Manifold3D and Pillow for mesh checks and rendering. Blender and Fusion integrations remain available and unchanged. The same environment supports captured-mesh scripts. A separate prototype completed three cleanup workers in roughly 350–380 seconds with closed/manifold, byte-reproducible output scripts; its organic comparison used different rules, so this is not a universal quality/speed claim. This release supplies the libraries and coordinate preparation, not cleanup policy or algorithms.
 
 A local prototype made a holder cavity at 65.800 × 28.800 mm, performed an exact +1 mm height edit in 137 seconds, and produced a valid articulated-unicorn mesh and STEP in 657 seconds after two historical Blender attempts timed out at 901 seconds with no model. The unicorn had actual endpoint errors and joint collisions in a claimed pose; the holders met calipers but collided with the inflated raw scan. Initial holder worker passes took 238–893 seconds, including the cold native-import stall; code-CAD is not uniformly fast. The sample is small, the environments differed, and no physical print or fit was verified. These results justify an optional tool for measured parts, not a promise that every design works.
 
@@ -18,15 +18,15 @@ To remove a downloaded runtime, first stop MCP instances using it, then move its
 
 This folder contains the private Python environment, managed interpreter, package cache and setup/fit working files. Saved designs are under the `output_dir` chosen for `cad_run`, so removing the environment leaves those outputs alone. Keep input snapshots with a saved input-dependent design. Re-enable by removing `CAD_ENABLED=0`, restarting the MCP and running setup again when you want it.
 
-Allow about **1.5 GiB**, including the download cache; platform wheels and cache state affect the exact size. To keep large dependencies off a tight system disk, set `CAD_DATA_DIR` to a private folder on a large local volume **before** setup. Cache and temporary installer files stay under that data folder, not the system temporary directory. `uv` must already be on the MCP's PATH. Setup downloads a managed Python 3.12 and only binary wheels from the complete pins shipped in `src/cad/requirements.lock`; it never uses the system/site Python environment or passes printer/provider credentials to subprocesses.
+Allow about **1.5 GiB**, including the download cache; platform wheels and cache state affect the exact size. Set `CAD_DATA_DIR` to a different private folder **before** setup if needed. On macOS it must be on an internal disk with file ownership enabled; USB/external and network volumes are refused. If internal space is tight, leave this engine disabled. Cache and temporary installer files stay under that data folder, not the system temporary directory. `uv` must already be on the MCP's PATH. Setup downloads a managed Python 3.12 and only binary wheels from the complete pins shipped in `src/cad/requirements.lock`; it never uses the system/site Python environment or passes printer/provider credentials to subprocesses.
 
 ## Readiness and isolation
 
-`cad_status` returns `{configured, ready, python, build123d, platform, error?}` from local files and a verification marker; it starts no process. Readiness means the installed runtime last passed the setup checks for these bundled helpers/pins, not that arbitrary generated CAD is correct. A changed helper or lock file requires verification again.
+`cad_status` returns `{configured, ready, python, build123d, platform, error?}` from local files and a verification marker; it starts no process. Readiness means the installed runtime last passed the setup checks for these bundled helpers/pins, not that arbitrary generated CAD is correct. A changed helper or lock file, or moving the runtime to a different filesystem, requires verification again.
 
-`cad_setup {install:true}` serializes against other CAD operations, installs or synchronizes the private environment, verifies imports, then performs a confined build and STL/STEP round trip and denial probes. A stalled macOS import triggers one bounded repair: remove provenance attributes and re-sign native files created under this runtime/managed-Python tree, skipping symlinks. It never re-signs system Python or another app. If import or confinement still fails, readiness stays false and the error says why.
+`cad_setup {install:true}` serializes against other CAD operations, checks supported storage, installs or synchronizes the private environment, verifies imports, then performs a confined build and STL/STEP round trip and denial probes. Native files are never re-signed. On macOS, setup checks that the data volume is internal and has file ownership enabled before downloading anything. The observed stalls occurred on an external USB APFS volume mounted `noowners,nosuid`; a fresh internal-disk environment completed setup in 39.30 seconds (first import 17.78 seconds, confined smoke 13.77 seconds), without signature or provenance changes. This storage comparison does not prove every external drive is affected, but only the internal configuration has acceptance evidence. Import and smoke deadlines remain bounded; a failure leaves readiness false and reports its cause.
 
-- **macOS:** Seatbelt (`sandbox-exec`) denies network, Apple events, Mach service lookup, signals and process forking. Personal home/volume data are unreadable except the private environment, bundled helpers, this job and its explicit input snapshots. Only the job folder is writable; source, parameters, request and input snapshots are protected read-only.
+- **macOS:** Seatbelt (`sandbox-exec`) denies network, Apple events, Mach service lookup, other-process inspection/environment reads, signals, hard links and process forking. Personal home, volume and temporary data (including macOS Data-volume aliases) are unreadable except the private environment, bundled helpers, this job and explicit input snapshots. Public OS runtime files remain readable. Only the job folder is writable; source, parameters, request and input snapshots are protected read-only.
 - **Linux:** `bubblewrap` (`bwrap`) creates fresh user, mount, PID and network namespaces with an empty filesystem, read-only system/runtime mounts, only the job writable, and protected checkpoints/input mounts. Install bubblewrap with your distribution's package manager. If user namespaces or bubblewrap are missing/blocked, setup/run fails closed; it never retries unconfined. Network namespace isolation prevents reaching the host/network; it is not a general seccomp syscall filter.
 - Other platforms fail closed. No Windows confinement is implemented.
 
@@ -76,7 +76,7 @@ def build():
     return scan
 ```
 
-Call with `mode: "mesh"` and `inputs: [{"name": "scan", "path": "/allowed/scan.stl"}]`. A mesh-mode `build()` returns `trimesh.Trimesh`; the MCP exports STL, independently checks it and creates the same six renders. It reports **`step: null`** with `step_unavailable`, since a mesh edit has no parametric B-rep. It does not create a misleading faceted STEP. STEP-specific checks/volume are null, and `valid` refers to the mesh checks. This input/mesh path is infrastructure for experiments, not a scan-cleanup feature.
+Call with `mode: "mesh"` and `inputs: [{"name": "scan", "path": "/allowed/scan.stl"}]`. A mesh-mode `build()` returns `trimesh.Trimesh`; the MCP exports STL, independently checks it and creates the same six renders. It reports **`step: null`** with `step_unavailable`, since a mesh edit has no parametric B-rep. It does not create a misleading faceted STEP. STEP-specific checks/volume are null, and `valid` refers to the mesh checks. This input/mesh path runs cleanup scripts without embedding regularization or inference policy in the MCP.
 
 ## Scan fit
 
@@ -85,3 +85,28 @@ Call with `mode: "mesh"` and `inputs: [{"name": "scan", "path": "/allowed/scan.s
 It returns Manifold3D float32 Boolean interference volume and float64 minimum triangle-surface distance, including vertex/face and edge/edge minima, with AABB pruning. Gap is zero at contact or overlap; the `clear` verdict requires no interference and at least the requested global gap. A bottle resting on a holder floor therefore has zero global gap even if side clearance is correct. Measure a selected interface separately when that distinction matters.
 
 Both meshes must be positively wound, watertight and manifold. It refuses unsupported meshes or workloads above 250,000 triangles per mesh / ten million candidate triangle pairs rather than guessing. Single-pose results do not establish a continuous insertion path or articulation. Calipers and scans can disagree: report both measurements, never silently resize the reference to manufacture a fit.
+
+
+## Captured scan coordinates
+
+Inside build(), use `load_scan("scan", source_units="m", up_axis="y")` for a declared metre/Y-up capture. Units must explicitly be `m` or `mm`; up_axis is the object's usage-up direction in the source frame (`x`, `-x`, `y`, `-y`, `z`, `-z`). The helper returns a trimesh mesh in millimetres, Z up, with its lowest Z translated to 0 by default (`ground=False` preserves height). It preserves real size: the only scale is the declared unit conversion, followed by rigid rotation/translation; there is no guessed scale or fit-to-calipers. Inspect the size and orientation before rebuilding. Exports are millimetres, Z up, in the orientation the object is used.
+
+Snapshots preserve distinct original filenames so flat OBJ/MTL/texture references can resolve among declared files. Declare every referenced asset; undeclared absolute files and network resources remain blocked. Duplicate original filenames are refused instead of overwriting an input. For subdirectory references, construct the resolver from the declared INPUTS explicitly. Mesh visuals remain available during script work; STL output carries geometry only.
+
+## Library licences
+
+The runtime includes the following direct libraries. Transitive dependencies keep their own wheel notices; this is not a claim that every bundled component has the same licence.
+
+| Library | Pin | Project licence |
+|---|---|---|
+| build123d |0.13.0| Apache-2.0 |
+| NumPy |2.5.4| BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 (metadata expression) |
+| SciPy |1.18.1| BSD-3-Clause; bundled third-party notices also apply |
+| trimesh |5.2.0| MIT |
+| manifold3d |3.5.4| Apache-2.0 |
+| scikit-image |0.26.0| BSD-3-Clause with bundled notices |
+| Pillow |13.0.0| MIT-CMU (HPND) |
+| Shapely |2.1.2| BSD-3-Clause |
+| Rtree (proximity checks) |1.4.1| MIT |
+
+The OCP wrapper is Apache-2.0; its OpenCascade kernel is LGPL-2.1 with the OCCT exception. Shapely's GEOS is LGPL-2.1. Preserve those notices and exceptions when distributing native components. Sources: [build123d](https://pypi.org/project/build123d/0.13.0/), [NumPy](https://pypi.org/project/numpy/2.5.4/), [SciPy](https://pypi.org/project/scipy/1.18.1/), [trimesh](https://pypi.org/project/trimesh/5.2.0/), [Manifold](https://github.com/elalish/manifold/blob/master/LICENSE), [scikit-image](https://pypi.org/project/scikit-image/0.26.0/), [Pillow](https://pypi.org/project/pillow/13.0.0/), [Shapely/GEOS](https://pypi.org/project/shapely/2.1.2/), [Rtree](https://pypi.org/project/rtree/1.4.1/), [OCCT](https://dev.opencascade.org/resources/licensing). Neither pymeshlab, Open3D nor bpy is installed.

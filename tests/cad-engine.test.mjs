@@ -53,6 +53,7 @@ test("CAD confinement has no network or home mounts and refuses unsupported host
   assert.equal(mac.command, "/usr/bin/sandbox-exec");
   assert.match(mac.args[1], /deny network/);
   assert.match(mac.args[1], /deny process-fork/);
+  assert.match(mac.args[1], /deny file-link/);
   assert.match(mac.args[1], /deny mach-lookup/);
   const linux = await cadSandbox("linux", roots);
   assert.equal(linux.command, "bwrap");
@@ -252,70 +253,6 @@ test("CAD parameter edits retain the prior checkpoint and use separate build and
   assert.equal(calls.filter((c) => c.args.includes("inspect")).length, 2);
 });
 
-test("a stalled macOS import is repaired once, only for owned native regular files", async (t) => {
-  const { CadEngine } = await import("../dist/cad-engine.js");
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "cad-signatures-"));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
-  const data = path.join(root, "data");
-  let imports = 0;
-  const signed = [];
-  const e = new CadEngine({
-    dataDir: data,
-    outputRoots: [root],
-    system: {
-      platform: "darwin",
-      run: async (file, args) => {
-        if (args[0] === "venv") {
-          await fs.mkdir(path.join(data, "runtime", "bin"), {
-            recursive: true,
-          });
-          await fs.mkdir(path.join(data, "runtime", "lib"));
-          await fs.writeFile(
-            path.join(data, "runtime", "bin", "python"),
-            "stub",
-          );
-          for (let i = 0; i < 12; i++)
-            await fs.writeFile(
-              path.join(data, "runtime", "lib", `native${i}.so`),
-              "native",
-            );
-          await fs.writeFile(path.join(root, "outside.so"), "untouched");
-          await fs.symlink(
-            path.join(root, "outside.so"),
-            path.join(data, "runtime", "lib", "foreign.so"),
-          );
-        }
-        if (args.includes("imports") && ++imports === 1)
-          throw Error("CAD process timed out");
-        if (file === "/usr/bin/codesign") signed.push(args.slice(3));
-        if (args.includes("smoke"))
-          return {
-            stdout: JSON.stringify({
-              build123d: "0.13.0",
-              watertight: true,
-              manifold: true,
-              step_valid: true,
-              solid_count: 1,
-            }),
-          };
-        return { stdout: "" };
-      },
-    },
-  });
-  const result = await e.setup({ install: true });
-  assert.equal(result.repaired_native_files, 12);
-  assert.equal(imports, 2);
-  assert.equal(signed.length, 1, "sign owned native files in a bounded batch");
-  assert.equal(signed.flat().length, 12);
-  assert.ok(
-    signed
-      .flat()
-      .every((file) =>
-        file.startsWith(path.join(data, "runtime", "lib", "native")),
-      ),
-  );
-});
-
 test("deadline termination removes an actual spawned descendant PID", async (t) => {
   const { runCadProcess } = await import("../dist/cad/process.js");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "cad-child-"));
@@ -373,4 +310,41 @@ test("declared CAD input snapshots exclude files outside the allowed roots", asy
     }),
     /allowed output/,
   );
+});
+
+test("macOS setup refuses external, network and ownership-disabled storage before installing", async (t) => {
+  const { CadEngine } = await import("../dist/cad-engine.js");
+  for (const kind of ["external", "network", "noowners"]) {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "cad-volume-"));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const calls = [];
+    const engine = new CadEngine({
+      dataDir: root,
+      outputRoots: [root],
+      system: {
+        platform: "darwin",
+        run: async (file, args) => {
+          calls.push(file);
+          if (file === "/bin/df")
+            return {
+              stdout:
+                "Filesystem blocks used available capacity mounted\n" +
+                (kind === "network" ? "host:/share" : "/dev/disk9s2") +
+                " 1 1 1 1% /volume\n",
+            };
+          if (file === "/usr/sbin/diskutil")
+            return {
+              stdout: `<plist><dict><key>Internal</key><${kind === "external" ? "false" : "true"}/><key>GlobalPermissionsEnabled</key><${kind === "noowners" ? "false" : "true"}/></dict></plist>`,
+            };
+          throw Error("packages must not be installed on unsupported storage");
+        },
+      },
+    });
+    await assert.rejects(
+      engine.setup({ install: true }),
+      /internal disk.*ownership/i,
+    );
+    assert.equal(calls.includes("uv"), false);
+    assert.equal((await engine.status()).ready, false);
+  }
 });

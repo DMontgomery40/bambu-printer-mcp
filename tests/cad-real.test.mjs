@@ -33,6 +33,7 @@ test(
         BAMBU_PRINTER_HOST: "127.0.0.1",
         TEMP_DIR: dir,
         CAD_DATA_DIR: data,
+        CAD_PARENT_CANARY: "host-only-test-canary",
       },
       stderr: "pipe",
     });
@@ -96,6 +97,15 @@ test(
       timeout_ms: 180000,
     });
     assert.equal(meshAgain.bounds_mm[0][2], -13);
+    const rawScan=path.join(dir,"metres-yup.stl");
+    const vertices=[[0,0,0],[.01,0,0],[.01,.03,0],[0,.03,0],[0,0,.02],[.01,0,.02],[.01,.03,.02],[0,.03,.02]];
+    const faces=[[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],[1,2,6],[1,6,5],[2,3,7],[2,7,6],[3,0,4],[3,4,7]];
+    await fs.writeFile(rawScan,"solid scan\n"+faces.map(face=>"facet normal 0 0 0\nouter loop\n"+face.map(i=>"vertex "+vertices[i].join(" ")).join("\n")+"\nendloop\nendfacet").join("\n")+"\nendsolid scan");
+    const prepared=await call("cad_run",{script:"P={}\ndef build():\n return load_scan('scan',source_units='m',up_axis='y')",mode:"mesh",inputs:[{name:"scan",path:rawScan}],output_dir:dir,name:"prepared",timeout_ms:180000});
+    assert.equal(prepared.valid,true);
+    for(let i=0;i<3;i++)assert.ok(Math.abs(prepared.size_mm[i]-[10,20,30][i])<.001);
+    assert.equal(prepared.bounds_mm[0][2],0);
+    assert.ok(Math.abs(prepared.volume_mm3-6000)<.01);
     const invertedSource = meshSource.replace(
       "m.apply_translation([0,0,P['lift']])",
       "m.invert()",
@@ -166,7 +176,6 @@ test(
     assert.ok(job);
     const recovered = await call("cad_run", {
       script_path: path.join(dir, job, "killed.py"),
-      parameters: { delay: 0 },
       output_dir: dir,
       name: "recovered",
       timeout_ms: 180000,
@@ -190,6 +199,36 @@ test(
     );
     assert.equal(logReply.isError, true);
     assert.equal(await fs.readFile(logTarget, "utf8"), "unchanged");
+    const hardlinkTarget = path.join(data, "runtime", "cad-hardlink-probe");
+    await fs.writeFile(hardlinkTarget, "unchanged");
+    t.after(() => fs.unlink(hardlinkTarget).catch(() => {}));
+    const hardlinkScript = `from build123d import Box\nimport os\nP={}\ndef build():\n os.link(${JSON.stringify(hardlinkTarget)},'link-probe')\n open('link-probe','w').write('changed')\n return Box(1,2,3)`;
+    const linked = await c.callTool(
+      {
+        name: "cad_run",
+        arguments: {
+          script: hardlinkScript,
+          output_dir: dir,
+          name: "hardlink",
+          timeout_ms: 180000,
+        },
+      },
+      undefined,
+      { timeout: 240000 },
+    );
+    assert.equal(
+      linked.isError,
+      true,
+      "a runtime hardlink must not become writable through the job",
+    );
+    assert.equal(await fs.readFile(hardlinkTarget, "utf8"), "unchanged");
+    assert.ok(Number.isInteger(tr.pid)&&tr.pid>0);
+    const parentRead=await c.callTool({name:"cad_run",arguments:{
+      script:`from build123d import Box\nimport psutil\nP={'pid':${tr.pid}}\ndef build():\n info=psutil.Process(P['pid']).environ()\n print('parent canary readable:', 'CAD_PARENT_CANARY' in info)\n return Box(1,2,3)`,
+      output_dir:dir,name:"parent-environment",timeout_ms:180000,
+    }},undefined,{timeout:240000});
+    assert.equal(parentRead.isError,true,"a script must not read the MCP parent's environment");
+    assert.match(parentRead.content[0].text,/AccessDenied|Permission|NoSuchProcess|permitted|denied/);
     const inputBefore = await fs.readFile(original.stl);
     const inputWrite = await c.callTool(
       {
