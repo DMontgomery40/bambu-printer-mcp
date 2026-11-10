@@ -1186,6 +1186,8 @@ Slice an STL or 3MF file using an external slicer and return the path to the out
 
 `slicer_path` and `slicer_profile` fall back to the `SLICER_PATH` and `SLICER_PROFILE` environment variables when omitted. Per-call `slicer_path` overrides require `MCP_ALLOW_EXECUTABLE_ARG=1`.
 
+**A slicer that waits on a window:** on macOS each Bambu Studio, OrcaSlicer or FULU slice runs with an empty home folder of its own (`CFFIXED_USER_HOME` under `TEMP_DIR`), so macOS's "reopen windows?" question after a slicer crash can't stop it. A Bambu-compatible slicer that still uses no CPU and writes nothing for `SLICER_STALL_SECONDS` (default 20, 0 turns it off) is stopped, and the error's `structuredContent.code` is `slicer-waiting-on-dialog`. Nothing is sent to the printer. Open the slicer once, answer what it shows, quit it and slice again.
+
 You can provide either `template_3mf_path` or `template_name` when you want to slice from a saved template. `template_name` resolves through the local template registry directory configured for the server.
 
 For printing on a Bambu printer, the recommended workflow is: export a sliced 3MF from your selected Bambu-compatible slicer, then pass that output path to `print_3mf`.

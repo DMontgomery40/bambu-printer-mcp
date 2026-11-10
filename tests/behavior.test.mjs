@@ -2617,7 +2617,9 @@ function writeTemplateJsonFixture(
 
 // `result` names a real Bambu Studio result.json in tests/fixtures/studio-result
 // for the fake CLI to write to its --outputdir; a nonzero `exitCode` fails the run.
-async function createFakeBambuSlicer({ result, exitCode = 0, machine = {} } = {}) {
+// `behaviour` "stall" logs a line and then waits at 0% CPU, as Bambu Studio does behind AppKit's modal alert;
+// "busy" computes silently for 2.5 s before writing its output. Each run records its CFFIXED_USER_HOME.
+async function createFakeBambuSlicer({ result, exitCode = 0, machine = {}, behaviour } = {}) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-mcp-template-slicer-"));
   const fakeSlicerPath = path.join(tempDir, "fake-slicer.mjs");
   const argsOutPath = path.join(tempDir, "args.json");
@@ -2643,6 +2645,9 @@ import fs from "node:fs";
 import path from "node:path";
 const args = process.argv.slice(2);
 fs.writeFileSync(${JSON.stringify(argsOutPath)}, JSON.stringify(args));
+fs.writeFileSync(${JSON.stringify(path.join(tempDir, "launch.json"))}, JSON.stringify({ home: process.env.CFFIXED_USER_HOME ?? null, homeExists: !!process.env.CFFIXED_USER_HOME && fs.existsSync(process.env.CFFIXED_USER_HOME) }));
+${behaviour === "stall" ? `console.log("[trace]   Initializing StaticPrintConfigs"); setInterval(() => {}, 1 << 30); await new Promise(() => {});` : ""}
+${behaviour === "busy" ? `for (const end = Date.now() + 2500; Date.now() < end;) Math.sqrt(Math.random());` : ""}
 const outputDir = args[args.indexOf("--outputdir") + 1] || path.dirname(args[args.indexOf("--export-3mf") + 1]);
 const exportArg = args[args.indexOf("--export-3mf") + 1];
 const outputPath = path.isAbsolute(exportArg) ? exportArg : path.join(outputDir, exportArg);
@@ -2724,6 +2729,7 @@ async function sliceWithFakeBambuSlicer(t, options) {
       TEMP_DIR: path.join(fakeSlicer.tempDir, "out"),
       SLICER_TYPE: "bambustudio",
       MCP_ALLOW_EXECUTABLE_ARG: "1",
+      ...options?.env,
     },
     stderr: "pipe",
   });
@@ -2736,6 +2742,57 @@ async function sliceWithFakeBambuSlicer(t, options) {
   });
   return options?.withSlicer ? { result, fakeSlicer } : result;
 }
+
+// A slicer that waits on a dialog (Bambu Studio behind AppKit's "reopen windows?" alert: no CPU, no output) is stopped
+// after SLICER_STALL_SECONDS and reported with the stable code slicer-waiting-on-dialog, never as the slicer's verdict on
+// the model (no slicer_report, which clients treat as a refusal that holds Print).
+test("slice_stl stops a slicer that waits on a dialog and reports slicer-waiting-on-dialog", async (t) => {
+  const started = Date.now();
+  const result = await sliceWithFakeBambuSlicer(t, { behaviour: "stall", env: { SLICER_STALL_SECONDS: "1" } });
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.code, "slicer-waiting-on-dialog");
+  assert.equal(result.structuredContent.slicer_report, undefined, "a stalled slicer gave no verdict on the model");
+  assert.match(result.content[0].text, /nothing was sent to the printer/i);
+  assert.ok(Date.now() - started < 15_000, `reported in ${Date.now() - started} ms, not at a long timeout`);
+});
+
+test("slice_stl lets a slicer that computes without writing run to completion", async (t) => {
+  const result = await sliceWithFakeBambuSlicer(t, { behaviour: "busy", env: { SLICER_STALL_SECONDS: "1" } });
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+});
+
+// On macOS each Bambu-compatible slice runs with a fresh, empty CFFIXED_USER_HOME of its own under TEMP_DIR (replacing
+// one the server inherited), removed after the slice, so AppKit can't find crash history that raises its alert.
+test("slice_stl gives a Bambu-compatible slicer its own home folder on macOS", async (t) => {
+  const inherited = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-mcp-inherited-home-"));
+  t.after(() => fs.rmSync(inherited, { recursive: true, force: true }));
+  const { result, fakeSlicer } = await sliceWithFakeBambuSlicer(t, { withSlicer: true, env: { CFFIXED_USER_HOME: inherited } });
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  const launch = JSON.parse(fs.readFileSync(path.join(fakeSlicer.tempDir, "launch.json"), "utf8"));
+  if (process.platform !== "darwin") {
+    assert.equal(launch.home, inherited, "only macOS slicers get a home of their own");
+    return;
+  }
+  assert.ok(launch.homeExists, "the slicer's home existed while it ran");
+  assert.notEqual(launch.home, inherited);
+  assert.ok(launch.home.startsWith(path.join(fakeSlicer.tempDir, "out") + path.sep), launch.home);
+  assert.equal(fs.readdirSync(inherited).length, 0);
+  assert.ok(!fs.existsSync(launch.home), "the home is removed after the slice");
+});
+
+test("slicer stall settings and CPU times parse as ps writes them", async () => {
+  const { parseCpuTime, slicerStallSeconds } = await import("../dist/slicer/slicer-launch.js");
+  assert.equal(parseCpuTime("   0:03.11\n"), 3.11);
+  assert.equal(parseCpuTime("61:02.50"), 3662.5);
+  assert.equal(parseCpuTime("00:01:02"), 62);
+  assert.equal(parseCpuTime("2-01:00:00"), 2 * 86400 + 3600);
+  assert.equal(parseCpuTime(""), undefined);
+  assert.equal(slicerStallSeconds(undefined), 20);
+  assert.equal(slicerStallSeconds("0"), 0);
+  assert.equal(slicerStallSeconds("5"), 5);
+  assert.equal(slicerStallSeconds("-1"), 20);
+  assert.equal(slicerStallSeconds("soon"), 20);
+});
 
 // Slicing the same model the same way again reuses the kept slice (src/slicer/slice-cache.ts): the slicer
 // doesn't run, and the result, Studio's result.json included, is the first slice's. Anything that shapes the

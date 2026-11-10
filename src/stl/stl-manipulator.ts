@@ -19,6 +19,7 @@ import { applyProcessOverrides, type ProcessOverrides } from '../slicer/process-
 import { profileJsonFiles } from '../slicer/profile-files.js';
 import { materializeOrcaProfilesRoot, stageOrcaCliProfiles } from '../slicer/orca-profile-cache.js';
 import { sliceWithOrcaApi, validateRemoteSliceOptions } from '../slicer/remote-slicer.js';
+import { prepareSlicerLaunch, slicerStallSeconds, slicerStalled, watchForStall } from '../slicer/slicer-launch.js';
 
 /** How long a slice's folder (its sliced file and result.json) is kept: a day, then a later slice removes it. */
 const SLICE_FOLDER_LIFETIME_MS = 24 * 60 * 60 * 1000;
@@ -2067,10 +2068,17 @@ export class STLManipulator extends EventEmitter {
         if (progressCallback) progressCallback(20, `Executing slicer: ${slicerPath} ${args.join(' ')}`);
         console.error(`Executing: ${slicerPath} ${args.join(' ')}`);
 
+        // A Bambu-compatible CLI runs in a home folder of its own (macOS), and one that waits on a dialog is stopped
+        // and reported instead of waiting forever (src/slicer/slicer-launch.ts).
+        const launch = await prepareSlicerLaunch(slicerType, this.tempDir);
+        const stallSeconds = launch.watchStall ? slicerStallSeconds() : 0;
+        let stalled = false;
         // Execute the slicer
-        await new Promise<void>((resolve, reject) => {
-          const process = execFile(slicerPath, args, (error, stdout, stderr) => {
-            if (error) {
+        try { await new Promise<void>((resolve, reject) => {
+          const process = execFile(slicerPath, args, launch.env ? { env: launch.env } : {}, (error, stdout, stderr) => {
+            if (stalled) {
+              reject(slicerStalled(slicerType, stallSeconds));
+            } else if (error) {
               console.error(`Slicer Error: ${error.message}`);
               console.error(`Slicer Stderr: ${stderr}`);
               const slicerResult = cliResult ? readCliResult(cliResult) : undefined;
@@ -2104,8 +2112,13 @@ export class STLManipulator extends EventEmitter {
 
          process.on('exit', () => clearInterval(checkCancel));
          process.on('error', () => clearInterval(checkCancel)); // Ensure interval cleared on process error too
+         watchForStall(process, stallSeconds, () => {
+           stalled = true;
+           console.error(`${slicerType} used no CPU and wrote nothing for ${stallSeconds} s; stopping it as waiting on a dialog.`);
+           try { process.kill('SIGKILL'); } catch { /* its exit is reported through the callback */ }
+         });
 
-        });
+        }); } finally { await launch.cleanup(); }
       }
 
       if (!this.activeOperations.get(operationId)) {

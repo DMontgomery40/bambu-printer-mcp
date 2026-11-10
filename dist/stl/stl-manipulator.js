@@ -19,6 +19,7 @@ import { applyProcessOverrides } from '../slicer/process-overrides.js';
 import { profileJsonFiles } from '../slicer/profile-files.js';
 import { materializeOrcaProfilesRoot, stageOrcaCliProfiles } from '../slicer/orca-profile-cache.js';
 import { sliceWithOrcaApi, validateRemoteSliceOptions } from '../slicer/remote-slicer.js';
+import { prepareSlicerLaunch, slicerStallSeconds, slicerStalled, watchForStall } from '../slicer/slicer-launch.js';
 /** How long a slice's folder (its sliced file and result.json) is kept: a day, then a later slice removes it. */
 const SLICE_FOLDER_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const readFileAsync = promisify(fs.readFile);
@@ -1660,43 +1661,64 @@ export class STLManipulator extends EventEmitter {
                 if (progressCallback)
                     progressCallback(20, `Executing slicer: ${slicerPath} ${args.join(' ')}`);
                 console.error(`Executing: ${slicerPath} ${args.join(' ')}`);
+                // A Bambu-compatible CLI runs in a home folder of its own (macOS), and one that waits on a dialog is stopped
+                // and reported instead of waiting forever (src/slicer/slicer-launch.ts).
+                const launch = await prepareSlicerLaunch(slicerType, this.tempDir);
+                const stallSeconds = launch.watchStall ? slicerStallSeconds() : 0;
+                let stalled = false;
                 // Execute the slicer
-                await new Promise((resolve, reject) => {
-                    const process = execFile(slicerPath, args, (error, stdout, stderr) => {
-                        if (error) {
-                            console.error(`Slicer Error: ${error.message}`);
-                            console.error(`Slicer Stderr: ${stderr}`);
-                            const slicerResult = cliResult ? readCliResult(cliResult) : undefined;
-                            reject(new SlicerRunError(describeSlicerFailure(error, stdout, stderr, cliResult), slicerResult));
-                        }
-                        else {
-                            console.error(`Slicer Stdout: ${stdout}`);
-                            if (stderr) {
-                                console.warn(`Slicer Stderr: ${stderr}`); // Log stderr even on success
+                try {
+                    await new Promise((resolve, reject) => {
+                        const process = execFile(slicerPath, args, launch.env ? { env: launch.env } : {}, (error, stdout, stderr) => {
+                            if (stalled) {
+                                reject(slicerStalled(slicerType, stallSeconds));
                             }
-                            resolve();
-                        }
-                    });
-                    // Optional: Add listeners for stdout/stderr for real-time progress if slicer provides it
-                    // process.stdout?.on('data', (data) => { console.error(`Slicer stdout: ${data}`); });
-                    // process.stderr?.on('data', (data) => { console.error(`Slicer stderr: ${data}`); });
-                    // Check for cancellation periodically
-                    const checkCancel = setInterval(() => {
-                        if (!this.activeOperations.get(operationId)) {
-                            clearInterval(checkCancel);
+                            else if (error) {
+                                console.error(`Slicer Error: ${error.message}`);
+                                console.error(`Slicer Stderr: ${stderr}`);
+                                const slicerResult = cliResult ? readCliResult(cliResult) : undefined;
+                                reject(new SlicerRunError(describeSlicerFailure(error, stdout, stderr, cliResult), slicerResult));
+                            }
+                            else {
+                                console.error(`Slicer Stdout: ${stdout}`);
+                                if (stderr) {
+                                    console.warn(`Slicer Stderr: ${stderr}`); // Log stderr even on success
+                                }
+                                resolve();
+                            }
+                        });
+                        // Optional: Add listeners for stdout/stderr for real-time progress if slicer provides it
+                        // process.stdout?.on('data', (data) => { console.error(`Slicer stdout: ${data}`); });
+                        // process.stderr?.on('data', (data) => { console.error(`Slicer stderr: ${data}`); });
+                        // Check for cancellation periodically
+                        const checkCancel = setInterval(() => {
+                            if (!this.activeOperations.get(operationId)) {
+                                clearInterval(checkCancel);
+                                try {
+                                    process.kill(); // Attempt to kill the slicer process
+                                    reject(new Error("Slicing operation cancelled"));
+                                }
+                                catch (killError) {
+                                    console.error("Error attempting to kill slicer process:", killError);
+                                    reject(new Error("Slicing operation cancelled, but failed to kill process."));
+                                }
+                            }
+                        }, 500);
+                        process.on('exit', () => clearInterval(checkCancel));
+                        process.on('error', () => clearInterval(checkCancel)); // Ensure interval cleared on process error too
+                        watchForStall(process, stallSeconds, () => {
+                            stalled = true;
+                            console.error(`${slicerType} used no CPU and wrote nothing for ${stallSeconds} s; stopping it as waiting on a dialog.`);
                             try {
-                                process.kill(); // Attempt to kill the slicer process
-                                reject(new Error("Slicing operation cancelled"));
+                                process.kill('SIGKILL');
                             }
-                            catch (killError) {
-                                console.error("Error attempting to kill slicer process:", killError);
-                                reject(new Error("Slicing operation cancelled, but failed to kill process."));
-                            }
-                        }
-                    }, 500);
-                    process.on('exit', () => clearInterval(checkCancel));
-                    process.on('error', () => clearInterval(checkCancel)); // Ensure interval cleared on process error too
-                });
+                            catch { /* its exit is reported through the callback */ }
+                        });
+                    });
+                }
+                finally {
+                    await launch.cleanup();
+                }
             }
             if (!this.activeOperations.get(operationId)) {
                 // This check might be redundant if the promise rejected on kill, but good safety
