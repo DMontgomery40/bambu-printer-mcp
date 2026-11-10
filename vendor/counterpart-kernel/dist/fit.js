@@ -93,6 +93,13 @@ export function decideFit(spec, ctx) {
             reasoning: `${what}. Modelled ${spec.clearance} mm per side as stated (${spec.because}); print correction and design fit not applied separately.` };
     }
     // plain fits: the uncertainty must sit inside the function's band
+    // a drop-in pocket can always be cut looser: past its band it widens so the largest still goes in, and says how much
+    // more the smallest may move (worker run S2 was refused for a scan's +-0.5 and stated its own clearance)
+    if (fn === "drops-in" && u > rule.band) {
+        const extra = r3((u - rule.band) / 2), m = r3(rule.fit + corr + extra);
+        return { ...base, primitive: "drop-in pocket", modelled_per_side: m, holds: [r3(n - u), r3(n + u)],
+            reasoning: `${what}. drop-in pocket: modelled ${m} mm per side = design fit ${rule.fit} (drops-in) + print correction ${corr} (${corrFeature}) + ${extra} because the size is known only to +-${u} (the band is +-${rule.band}): the largest, ${r3(n + u)}, still drops in, and the smallest may move up to ${r3(2 * m + 2 * u)} mm.` };
+    }
     if (fn === "drops-in" || fn === "slides" || (fn === "locates" && u <= rule.band)) {
         if (u > rule.band)
             throw new KernelError(`${ctx.feature}: the size is known to +-${u} (${source}) but a "${fn}" fit only tolerates +-${rule.band}. Ask for a caliper measurement of the ${ctx.what ?? "object"}, or use a mechanism that absorbs the error (fit: "grips" or "clamps").`);

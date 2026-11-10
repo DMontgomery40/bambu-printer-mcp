@@ -188,9 +188,12 @@ export function mat(name = "PLA") {
     return { E: m?.E1 ?? 2680, S: m?.Sxy ?? 39, Sz: m?.Sz ?? 35, rho: (m?.density ?? 1.24) / 1000, once: m?.strainOnce?.[0] ?? 0.017, repeated: m?.strainRepeated?.[0] ?? 0.01, mu: m?.muSteel?.[0] ?? 0.2, raw: m };
 }
 /** One arm through the engine: fast (no hook push fed back, 2 points) for searching, full for the chosen design. */
+/** the material a flexing feature is being sized in (set by the feature from its `material` option; PLA otherwise) */
+export const ARM = {};
 export function armAnswer(a, o = {}) {
     if (!ENGINE)
         return null;
+    o = { ...o, material: o.material ?? ARM.material };
     const t0 = performance.now();
     const r = ENGINE.snapEngine({ l: a.l, b: a.b, h0: a.h0, h1: a.h1 ?? a.h0, y: Math.max(a.y, 1e-4), alpha: a.alpha ?? 30, alphaR: a.alphaR, mu: a.mu ?? 0.2, E: mat(o.material).E }, { feedback: !!o.full, points: o.full ? 8 : 2 });
     return { strain: r.strain, P: r.P, W: r.W, Wout: r.Wout ?? null, locks: r.locks, ms: performance.now() - t0 };

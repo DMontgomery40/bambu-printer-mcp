@@ -13,7 +13,7 @@ import { box, cylinder, cone, rect, circle, path, KernelError } from "./api.js";
 import { gapIs, holeIs, thicknessIs } from "./checks.js";
 import { decideFit, SOURCE_UNCERTAINTY, PRINT_CORRECTION } from "./fit.js";
 import { interfaceRecord } from "./intent.js";
-import { ENGINE, armAnswer, sized } from "./sizing.js";
+import { ENGINE, ARM, armAnswer, sized } from "./sizing.js";
 import { facts } from "./facts.js";
 import { derived } from "./family.js";
 import { text } from "./api.js";
@@ -110,7 +110,16 @@ export function designFingers(o) {
  * a part, or use it alone. The fingers' backs are a hard stop against the ring.
  */
 export function fingerBore(o) {
-    const known = ["around", "fit", "height", "wall", "at", "holdN", "name", "h"];
+    ARM.material = o.material;
+    try {
+        return fingerBoreIn(o);
+    }
+    finally {
+        ARM.material = undefined;
+    }
+}
+function fingerBoreIn(o) {
+    const known = ["around", "fit", "height", "wall", "at", "holdN", "name", "h", "material"];
     const extra = Object.keys(o).filter((k) => !known.includes(k));
     need(!extra.length, `fingerBore: unknown option${extra.length > 1 ? "s" : ""} ${extra.join(", ")}; it takes ${known.join(", ")} (the finger count and length come from the strain rule and the hold)`);
     const { u, source } = uncertaintyOf(o.fit);
@@ -264,6 +273,15 @@ export function designCradleRule(o) {
  * outer stops limit how far a lip can be pried.
  */
 export function cradle(o) {
+    ARM.material = o.material;
+    try {
+        return cradleIn(o);
+    }
+    finally {
+        ARM.material = undefined;
+    }
+}
+function cradleIn(o) {
     const { u, source } = uncertaintyOf(o.fit);
     const D = designCradle({ d: o.around, u, length: o.length });
     const name = o.name ?? "cradle";

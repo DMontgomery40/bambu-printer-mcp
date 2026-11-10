@@ -10,7 +10,7 @@
  */
 import { exactMesh } from "./runner.js";
 import { checkMesh } from "./kernel/mesh.js";
-import { ENGINE, armAnswer, sized } from "./sizing.js";
+import { ENGINE, ARM, armAnswer, sized } from "./sizing.js";
 import { box, cylinder, cone, rect, KernelError } from "./api.js";
 import { sectionFits, holeIs, thicknessIs, gapIs } from "./checks.js";
 import { decideFit } from "./fit.js";
@@ -269,6 +269,16 @@ export function openBox(o) {
     return bx;
 }
 export function lidFor(boxSolid, o = {}) {
+    // the latches are sized in the part's material (worker run A16r2: PETG's hold fell under 5 N with arms sized in PLA)
+    ARM.material = o.material;
+    try {
+        return lidForIn(boxSolid, o);
+    }
+    finally {
+        ARM.material = undefined;
+    }
+}
+function lidForIn(boxSolid, o = {}) {
     const info = BOXES.get(boxSolid);
     need(!!info, "lidFor: pass the solid returned by openBox (before cutting or adding to it)");
     const at = o.at ?? [info.at[0] + info.length + (o.gap ?? 10), info.at[1]];
@@ -356,7 +366,8 @@ function lidCore(info, o) {
                 if (l >= sn.length)
                     break;
             }
-            need(chosen !== null, `lidFor: no latch arm in the ${f(sn.length)} mm groove stays within ${100 * STRAIN_REPEATED}% strain at a ${yU} mm hook and closes by thumb (the engine's nonlinear arm); use a longer box or a thinner lip wall`);
+            const lastWhy = table[table.length - 1]?.why ?? "";
+            need(chosen !== null, `lidFor: no latch arm in the ${f(sn.length)} mm groove meets all four: strain within ${100 * STRAIN_REPEATED}% at the ${yU} mm hook, its stop, a thumb's close (25 N) and a 5 N hold (the engine's nonlinear arm${ARM.material ? `, in ${ARM.material}` : ""}); the longest arm ${lastWhy}. ${/holds under/.test(lastWhy) ? "A thicker lip wall (lipWall: 2.0) holds harder" : "A longer box or a thinner lip wall bends less"}`);
             la = chosen;
             strain = cj.a.strain;
             strainStop = cj.st.strain;
