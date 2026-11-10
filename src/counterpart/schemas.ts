@@ -28,6 +28,7 @@ export type PrinterInfo = {
   server: { name: string; version: string };
   printer: { kind: typeof PRINTER_KINDS[number]; model?: string; serial?: string; host: string; name?: string };
   capabilities: {
+    cad?: {contract: string; status: string; setup: string; run: string; checkFit: string; prompt: string};
     progress: boolean; layers: boolean;
     camera: "bambu-tcp" | "rtsp" | "http-snapshot" | "none";
     cameraStream?: boolean;
@@ -67,6 +68,7 @@ export const PRINTER_INFO_OUTPUT_SCHEMA = {
     capabilities: {
       type: "object",
       properties: {
+        cad: {type: "object", properties: {contract: {type: "string", const: "cad/1"}, status: {type: "string"}, setup: {type: "string"}, run: {type: "string"}, checkFit: {type: "string"}, prompt: {type: "string"}}, required: ["contract", "status", "setup", "run", "checkFit", "prompt"]},
         progress: { type: "boolean" },
         layers: { type: "boolean" },
         camera: { type: "string", enum: ["bambu-tcp", "rtsp", "http-snapshot", "none"] },

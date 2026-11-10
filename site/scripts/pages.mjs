@@ -98,6 +98,14 @@ export const PAGES = [
   },
   {
     group: 'Reference',
+    route: 'reference/cad',
+    title: 'Optional code-CAD',
+    description: 'Headless parametric CAD, mesh experiments, confinement, setup and removal.',
+    toolGroup: 'Code-CAD',
+    sources: [{ file: 'README.md', heading: 'Code-CAD' }, { file: 'docs/CAD.md', whole: true }],
+  },
+  {
+    group: 'Reference',
     route: 'reference/blender',
     title: 'Blender and Fusion MCP',
     description: 'Drive a standard Blender MCP server for mesh edits, or Autodesk Fusion for parametric design.',

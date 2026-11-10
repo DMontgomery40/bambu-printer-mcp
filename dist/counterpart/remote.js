@@ -18,6 +18,10 @@ export const REMOTE_SCOPES = {
     blender_mcp_status: "read",
     counterpart_printer_info: "read",
     counterpart_print_progress: "read",
+    cad_status: "read",
+    cad_setup: "read",
+    cad_run: "design",
+    cad_check_fit: "design",
     fusion_mcp_status: "read",
     blender_mcp_setup: "read", // checks only; update raises it
     fusion_mcp_setup: "read", // checks only; install raises it
@@ -73,6 +77,7 @@ const RAISED_BY = {
     fusion_mcp_status: { launch: "design" }, // starts Fusion on this computer
     blender_mcp_status: { connect: "design" }, // connects to Blender
     blender_mcp_setup: { update: "raw" }, // replaces the add-on in the person's Blender
+    cad_setup: { install: "raw" },
     fusion_mcp_setup: { install: "raw" }, // installs into the person's Fusion, a login item and this server's .env
 };
 /**
@@ -92,6 +97,8 @@ const TOP_LEVEL_CONFIG = new Set(["type"]);
 const FILE_ARGUMENTS = new Set(["filament_profile", "slicer_profile", "load_filaments", "source_f3d"]);
 const isPath = (key) => /(?:path|dir|directory|_file)$/.test(key) || FILE_ARGUMENTS.has(key);
 function kindOf(tool, key, depth) {
+    if (tool === "cad_check_fit" && depth === 0 && ["model", "reference"].includes(key))
+        return "path";
     // counterpart_print_route's own `route` is the connection the caller chooses.
     if ((CONFIG_ARGUMENTS.has(key) && !(key === "route" && tool === "counterpart_print_route")) || /config_dir$/.test(key))
         return "config";

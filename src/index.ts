@@ -57,6 +57,9 @@ import {
   type BambuNativeUpdateCallback,
 } from "./bambu-native.js";
 import { importFileViaBambuConnect } from "./bambu-connect.js";
+import { CadEngine } from "./cad-engine.js";
+import { CadRefusal } from "./cad/refusal.js";
+import { CAD_TOOLS, cadEnabled } from "./cad/contracts.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
 import { FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFAULT_ARGS, FUSION_MCP_PIN, FUSION_NEW_DESIGN_OUTPUT_SCHEMA, FUSION_STATUS_OUTPUT_SCHEMA, FusionMcpBridge, addinAddress } from "./fusion-mcp-bridge.js";
 import { BLENDER_SETUP_OUTPUT_SCHEMA, BlenderAddonSetup, FUSION_ADDIN_REPOSITORY, FUSION_SETUP_OUTPUT_SCHEMA, FusionAddinSetup, defaultSetupSystem, parseAddonHandshake, type BlenderAddonHandshake } from "./design-app-setup.js";
@@ -88,6 +91,7 @@ import { machinePauseGcode, parsePauseLayers, pausedLayers, readPlateGcode } fro
 
 dotenv.config();
 
+const CAD_ENABLED = cadEnabled();
 const DEFAULT_HOST = process.env.BAMBU_PRINTER_HOST || process.env.PRINTER_HOST || "localhost";
 const DEFAULT_BAMBU_SERIAL = process.env.BAMBU_PRINTER_SERIAL || process.env.BAMBU_SERIAL || "";
 const DEFAULT_BAMBU_TOKEN =
@@ -151,6 +155,7 @@ const SERVER_INFO = {
 };
 /** Tools that declare an outputSchema: they always return structuredContent, and errors carry none. */
 const OUTPUT_SCHEMA_TOOLS = new Set([
+  "cad_status", "cad_setup", "cad_run", "cad_check_fit",
   "counterpart_printer_info", "counterpart_print_progress", "counterpart_make_3mf",
   "counterpart_discover_printers", "counterpart_setup_fields", "counterpart_propose_filaments",
   "fusion_mcp_status", "fusion_mcp_new_design", "fusion_mcp_export",
@@ -1386,6 +1391,7 @@ class BambuPrinterMCPServer {
   private server: Server;
   private bambu: BambuImplementation;
   private bambuNetwork: BambuNetworkBridge;
+  private readonly cad = new CadEngine({outputRoots:[TEMP_DIR,...(process.env.CAD_OUTPUT_DIRS?.split(path.delimiter).filter(Boolean)??[])]});
   private readonly blender = new BlenderMcpBridge();
   private readonly fusion = new FusionMcpBridge();
   // Downloads and installer output are staged in this server's own temporary folder.
@@ -1407,7 +1413,7 @@ class BambuPrinterMCPServer {
           resources: {},
           tools: {}
         },
-        instructions: SERVER_INSTRUCTIONS
+        instructions: SERVER_INSTRUCTIONS + (CAD_ENABLED ? " For headless dimensioned designs and parameter edits, read the cad_design prompt before using cad_run." : "")
       }
     );
 
@@ -2380,7 +2386,7 @@ class BambuPrinterMCPServer {
   /** The FDM design guidance as MCP prompts: the client decides when to attach each one. */
   setupPromptHandlers() {
     this.server.setRequestHandler(ListPromptsRequestSchema, async () => ({
-      prompts: [...DESIGN_PROMPTS, FDM_SLICING_PROMPT].map(({ name, title, description }) => ({ name, title, description })),
+      prompts: [...DESIGN_PROMPTS.filter(p => CAD_ENABLED || p.name !== "cad_design"), FDM_SLICING_PROMPT].map(({ name, title, description }) => ({ name, title, description })),
     }));
     this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
       if (request.params.name === FDM_SLICING_PROMPT.name) {
@@ -2391,7 +2397,7 @@ class BambuPrinterMCPServer {
           messages: [{ role: "user" as const, content: { type: "text" as const, text: slicingGuidance(slicerType, bambuSliceCapabilities(slicerType)) } }],
         };
       }
-      const prompt = DESIGN_PROMPTS.find(item => item.name === request.params.name);
+      const prompt = DESIGN_PROMPTS.find(item => item.name === request.params.name && (CAD_ENABLED || item.name !== "cad_design"));
       if (!prompt) throw new McpError(ErrorCode.InvalidParams, `Unknown prompt: ${request.params.name}`);
       return {
         description: prompt.description,
@@ -3468,6 +3474,7 @@ class BambuPrinterMCPServer {
               required: ["stl_path"]
             }
           },
+          ...(CAD_ENABLED ? CAD_TOOLS : []),
           {
             name: "blender_mcp_status",
             description: "Inspect Blender MCP configuration or connect and discover the remote server's tools and schemas. Connecting does not edit the scene; use get_scene_info through blender_mcp_call to check the Blender addon.",
@@ -3750,6 +3757,10 @@ class BambuPrinterMCPServer {
               .catch(() => {});
           });
 
+      if (!CAD_ENABLED && name.startsWith("cad_")) {
+        const failure = await this.cad.failure(new CadRefusal("cad-disabled", "Code-CAD is disabled by CAD_ENABLED=0."), name);
+        return {isError: true, content: [{type: "text", text: failure.message}], structuredContent: failure};
+      }
       const host = String(args?.host || DEFAULT_HOST);
       const bambuSerial = String(args?.bambu_serial || DEFAULT_BAMBU_SERIAL);
       const bambuToken = String(args?.bambu_token || DEFAULT_BAMBU_TOKEN);
@@ -5095,6 +5106,27 @@ class BambuPrinterMCPServer {
             result = await makeCounterpart3mf(args ?? {});
             break;
 
+          case "cad_status":
+            if (args && Object.keys(args).length) throw new Error("cad_status takes no arguments.");
+            result = await this.cad.status(); break;
+          case "cad_setup":
+          case "cad_run":
+          case "cad_check_fit": {
+            const started = Date.now();
+            let sequence = 0;
+            const heartbeat = progressToken === undefined ? undefined : setInterval(() => {
+              progressNotifications = progressNotifications.then(() => extra.sendNotification({method: "notifications/progress", params: {
+                progressToken, progress: ++sequence, message: `${name}: working for ${Math.round((Date.now()-started)/1000)} seconds`,
+              }})).catch(() => {});
+            }, 5000);
+            try {
+              result = name === "cad_setup" ? await this.cad.setup(args ?? {}, extra.signal)
+                : name === "cad_run" ? await this.cad.run(args ?? {}, extra.signal)
+                : await this.cad.checkFit(args ?? {}, extra.signal);
+            } finally { if (heartbeat) clearInterval(heartbeat); }
+            break;
+          }
+
           case "blender_mcp_setup":
             if (args?.update !== undefined && typeof args.update !== "boolean") throw new Error("update must be a boolean.");
             result = args?.update === true ? await this.blenderSetup.update(extra.signal) : await this.blenderSetup.check();
@@ -5145,6 +5177,10 @@ class BambuPrinterMCPServer {
         return { content: [{ type: "text", text }] };
 
       } catch (error) {
+        if (name.startsWith("cad_")) {
+          const failure = await this.cad.failure(error, name);
+          return {isError: true, content: [{type: "text" as const, text: failure.message}], structuredContent: failure};
+        }
         const message = error instanceof Error ? error.message : String(error);
         // Refusals and printer rejections repeat unchanged; say what to fix instead of "try again".
         const refused = /nothing was (?:sent|uploaded)|no command was sent|does not match the job|is ambiguous|is missing or ambiguous|rejected the print command|are refused|is refused|refused because|refused until|refused before/i.test(message);

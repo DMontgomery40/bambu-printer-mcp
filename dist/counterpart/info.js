@@ -1,3 +1,4 @@
+import { CAD_CAPABILITY, cadEnabled } from "../cad/contracts.js";
 /** counterpart_printer_info for Bambu printers (PRD §8.4). Pure: no printer traffic. */
 import { RTSP_CAMERA_MODELS, TCP_CAMERA_MODELS } from "../printers/camera-models.js";
 import { normalizeModel } from "../safety/limits.js";
@@ -31,6 +32,7 @@ export function bambuPrinterInfo(options) {
             host: options.host,
         },
         capabilities: {
+            ...(cadEnabled() ? { cad: CAD_CAPABILITY } : {}),
             progress: true,
             layers: true,
             // camera_snapshot needs the model to choose its transport.

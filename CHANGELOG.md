@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.83] – 2026-11-09
+
+### Added
+
+- Report CAD installation estimates/measured bytes and coded refusals; queue runs within their own deadlines, retain protected final-result validation records, reuse content-hash input bundles, and reveal preview openings with depth/feature edges. Clarify scan-reference scope and measured-interface precedence. Validated through confined headless fixtures; no physical fit/print or app update.
+
+- Add optional confined code-CAD tools (`cad_status`, `cad_setup`, `cad_run`, `cad_check_fit`) and MCP-owned `cad_design` instructions for dimensioned parts and parameter edits. Setup installs pinned build123d/mesh libraries only on request; `CAD_ENABLED=0` leaves the family out. Explicit read-only input snapshots and a unit/up-axis/grounding helper support captured-mesh scripts in the same environment, with scikit-image and Shapely alongside the CAD and mesh libraries. macOS setup requires an internal ownership-enabled data volume; it never re-signs native files. No printer, installed app or Fusion-bridge behavior changes.
+
 ## [1.1.82] – 2026-11-08
 
 ### Added
