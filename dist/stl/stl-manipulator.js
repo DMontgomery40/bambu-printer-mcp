@@ -1670,7 +1670,7 @@ export class STLManipulator extends EventEmitter {
                 try {
                     await new Promise((resolve, reject) => {
                         const process = execFile(slicerPath, args, launch.env ? { env: launch.env } : {}, (error, stdout, stderr) => {
-                            if (stalled) {
+                            if (stalled && error) {
                                 reject(stalledSlicerError(slicerType, stallSeconds));
                             }
                             else if (error) {

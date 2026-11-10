@@ -2076,7 +2076,7 @@ export class STLManipulator extends EventEmitter {
         // Execute the slicer
         try { await new Promise<void>((resolve, reject) => {
           const process = execFile(slicerPath, args, launch.env ? { env: launch.env } : {}, (error, stdout, stderr) => {
-            if (stalled) {
+            if (stalled && error) {
               reject(stalledSlicerError(slicerType, stallSeconds));
             } else if (error) {
               console.error(`Slicer Error: ${error.message}`);
