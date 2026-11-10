@@ -1,3 +1,4 @@
+import {trackedMkdtemp} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { spawn } from "node:child_process";
@@ -14,7 +15,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 const root = fileURLToPath(new URL("../", import.meta.url));
 
 test("independent server instances cannot overwrite each other's default model output", async (t) => {
-  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-server-test-"));
+  const cwd = await trackedMkdtemp(path.join(os.tmpdir(), "bambu-server-test-"));
   const inputPath = path.join(cwd, `${path.basename(cwd)}.stl`);
   await fs.copyFile(path.join(root, "test/sample_cube.stl"), inputPath);
   t.after(() => fs.rm(cwd, { recursive: true, force: true }));
@@ -109,7 +110,7 @@ for (const [transportKind, signal] of [
     timeout: 15_000,
     skip: process.platform === "win32" && signal !== "EOF" ? "Windows process.kill does not deliver graceful POSIX signals" : false,
   }, async (t) => {
-    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-server-shutdown-"));
+    const cwd = await trackedMkdtemp(path.join(os.tmpdir(), "bambu-server-shutdown-"));
     t.after(() => fs.rm(cwd, { recursive: true, force: true }));
     const inputPath = path.join(cwd, "input.stl");
     await fs.copyFile(path.join(root, "test/sample_cube.stl"), inputPath);

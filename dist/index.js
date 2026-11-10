@@ -27,6 +27,9 @@ import { STLManipulator, SLICER_TYPES, normalizeSlicerType, SlicerRunError, } fr
 import { BambuNetworkBridge, bridgeSnapshotRoot, describeBambuNetworkPrintError } from "./bambu-network-bridge.js";
 import { assertBambuNativeAvailable, bambuNativeControlsAvailable, bambuNativeUnavailableReason, interruptNativeOperations, validateBambuNativeMetadata, buildBambuNativeFanCommand, buildBambuNativeTemperatureCommand, printWithBambuNative, sendCommandWithBambuNative, uploadWithBambuNative, } from "./bambu-native.js";
 import { importFileViaBambuConnect } from "./bambu-connect.js";
+import { CadEngine } from "./cad-engine.js";
+import { CadRefusal } from "./cad/refusal.js";
+import { CAD_TOOLS, cadEnabled } from "./cad/contracts.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
 import { FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFAULT_ARGS, FUSION_MCP_PIN, FUSION_NEW_DESIGN_OUTPUT_SCHEMA, FUSION_STATUS_OUTPUT_SCHEMA, FusionMcpBridge, addinAddress } from "./fusion-mcp-bridge.js";
 import { BLENDER_SETUP_OUTPUT_SCHEMA, BlenderAddonSetup, FUSION_ADDIN_REPOSITORY, FUSION_SETUP_OUTPUT_SCHEMA, FusionAddinSetup, defaultSetupSystem, parseAddonHandshake } from "./design-app-setup.js";
@@ -51,10 +54,11 @@ import { makeCounterpart3mf } from "./counterpart/make-3mf.js";
 import { MAKE_3MF_OUTPUT_SCHEMA, PRINT_PROGRESS_OUTPUT_SCHEMA, PRINTER_INFO_OUTPUT_SCHEMA } from "./counterpart/schemas.js";
 import { parseProcessOverrides } from "./slicer/process-overrides.js";
 import { PRINT_QUALITY_PROPERTIES, withPrintQuality } from "./slicer/print-quality.js";
-import { PrinterRefusal } from "./refusal.js";
+import { PrinterRefusal, withPrintDispatch, markPrintCommandSent, printOutcome } from "./refusal.js";
 import { uploadProgressReporter } from "./upload-progress.js";
 import { machinePauseGcode, parsePauseLayers, pausedLayers, readPlateGcode } from "./slicer/layer-pauses.js";
 dotenv.config();
+const CAD_ENABLED = cadEnabled();
 const DEFAULT_HOST = process.env.BAMBU_PRINTER_HOST || process.env.PRINTER_HOST || "localhost";
 const DEFAULT_BAMBU_SERIAL = process.env.BAMBU_PRINTER_SERIAL || process.env.BAMBU_SERIAL || "";
 const DEFAULT_BAMBU_TOKEN = process.env.BAMBU_PRINTER_ACCESS_TOKEN || process.env.BAMBU_TOKEN || "";
@@ -115,6 +119,7 @@ const SERVER_INFO = {
 };
 /** Tools that declare an outputSchema: they always return structuredContent, and errors carry none. */
 const OUTPUT_SCHEMA_TOOLS = new Set([
+    "cad_status", "cad_setup", "cad_run", "cad_check_fit",
     "counterpart_printer_info", "counterpart_print_progress", "counterpart_make_3mf",
     "counterpart_discover_printers", "counterpart_setup_fields", "counterpart_propose_filaments",
     "fusion_mcp_status", "fusion_mcp_new_design", "fusion_mcp_export",
@@ -1109,6 +1114,7 @@ if (!fs.existsSync(TEMP_DIR)) {
 }
 class BambuPrinterMCPServer {
     constructor() {
+        this.cad = new CadEngine({ outputRoots: [TEMP_DIR, ...(process.env.CAD_OUTPUT_DIRS?.split(path.delimiter).filter(Boolean) ?? [])] });
         this.blender = new BlenderMcpBridge();
         this.fusion = new FusionMcpBridge();
         // Downloads and installer output are staged in this server's own temporary folder.
@@ -1123,7 +1129,7 @@ class BambuPrinterMCPServer {
                 resources: {},
                 tools: {}
             },
-            instructions: SERVER_INSTRUCTIONS
+            instructions: SERVER_INSTRUCTIONS + (CAD_ENABLED ? " For headless dimensioned designs and parameter edits, read the cad_design prompt before using cad_run." : "")
         });
         this.bambu = new BambuImplementation(async (message) => {
             try {
@@ -1551,6 +1557,7 @@ class BambuPrinterMCPServer {
                             throw new Error("The printer's SD card or USB stick is no longer ready. Check it and start the print again.");
                         }
                         assertActive();
+                        markPrintCommandSent();
                     } });
                 assertActive();
                 this.bambu.recordCheckedJob(devIp, devId, remoteFileName, requirements, resumeFile, false);
@@ -1566,8 +1573,10 @@ class BambuPrinterMCPServer {
                     validatePrinterState(dispatchStatus, requirements);
                     this.bambu.assertPrintPreflight(dispatchStatus, preflight);
                 },
-                assertDispatchAllowed: method => { if (method === bridgeMethod || method === cloudFallbackMethod)
-                    assertActive(); },
+                assertDispatchAllowed: method => { if (method === bridgeMethod || method === cloudFallbackMethod) {
+                    assertActive();
+                    markPrintCommandSent();
+                } },
                 onDispatched: method => { if (method === bridgeMethod || method === cloudFallbackMethod)
                     retainForDispatchedUpload(); },
             };
@@ -1871,7 +1880,7 @@ class BambuPrinterMCPServer {
     /** The FDM design guidance as MCP prompts: the client decides when to attach each one. */
     setupPromptHandlers() {
         this.server.setRequestHandler(ListPromptsRequestSchema, async () => ({
-            prompts: [...DESIGN_PROMPTS, FDM_SLICING_PROMPT].map(({ name, title, description }) => ({ name, title, description })),
+            prompts: [...DESIGN_PROMPTS.filter(p => CAD_ENABLED || p.name !== "cad_design"), FDM_SLICING_PROMPT].map(({ name, title, description }) => ({ name, title, description })),
         }));
         this.server.setRequestHandler(GetPromptRequestSchema, async (request) => {
             if (request.params.name === FDM_SLICING_PROMPT.name) {
@@ -1882,7 +1891,7 @@ class BambuPrinterMCPServer {
                     messages: [{ role: "user", content: { type: "text", text: slicingGuidance(slicerType, bambuSliceCapabilities(slicerType)) } }],
                 };
             }
-            const prompt = DESIGN_PROMPTS.find(item => item.name === request.params.name);
+            const prompt = DESIGN_PROMPTS.find(item => item.name === request.params.name && (CAD_ENABLED || item.name !== "cad_design"));
             if (!prompt)
                 throw new McpError(ErrorCode.InvalidParams, `Unknown prompt: ${request.params.name}`);
             return {
@@ -2956,6 +2965,7 @@ class BambuPrinterMCPServer {
                             required: ["stl_path"]
                         }
                     },
+                    ...(CAD_ENABLED ? CAD_TOOLS : []),
                     {
                         name: "blender_mcp_status",
                         description: "Inspect Blender MCP configuration or connect and discover the remote server's tools and schemas. Connecting does not edit the scene; use get_scene_info through blender_mcp_call to check the Blender addon.",
@@ -3034,7 +3044,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "counterpart_setup_fields",
-                        description: "Counterpart contract (counterpart/1): the printers this server drives and the settings it reads for each, by .env variable name (first canonical, then aliases): label, hint, whether required, the model choices and the model each serial-number prefix names. Pass serial to get the model it names. Sends nothing to a printer and returns no configured values.",
+                        description: "Counterpart contract (counterpart/1): the printers this server drives and the settings it reads for each, by .env variable name (first canonical, then aliases): label, hint, whether required, the model choices and the model each serial-number prefix names, and whether camera_snapshot reads the printer's camera with only those settings (cameraSnapshot). Pass serial to get the model it names. Sends nothing to a printer and returns no configured values.",
                         inputSchema: {
                             type: "object",
                             properties: { serial: { type: "string", maxLength: 64, description: "A Bambu serial number: model is the one it names, when known." } },
@@ -3197,7 +3207,7 @@ class BambuPrinterMCPServer {
             };
         });
         // A designer's settings extracted for this call are removed when it settles.
-        this.server.setRequestHandler(CallToolRequestSchema, (request, extra) => withExtractedSettingsCleanup(async () => {
+        this.server.setRequestHandler(CallToolRequestSchema, (request, extra) => withPrintDispatch(() => withExtractedSettingsCleanup(async () => {
             const { name, arguments: args } = request.params;
             const sendNativeCommand = (options, execution = {}) => sendCommandWithBambuNative(options, { signal: extra.signal, ...execution });
             const progressToken = extra._meta?.progressToken;
@@ -3231,6 +3241,10 @@ class BambuPrinterMCPServer {
                         .then(() => extra.sendNotification({ method: "notifications/progress", params: { progressToken, ...params } }))
                         .catch(() => { });
                 });
+            if (!CAD_ENABLED && name.startsWith("cad_")) {
+                const failure = await this.cad.failure(new CadRefusal("cad-disabled", "Code-CAD is disabled by CAD_ENABLED=0."), name);
+                return { isError: true, content: [{ type: "text", text: failure.message }], structuredContent: failure };
+            }
             const host = String(args?.host || DEFAULT_HOST);
             const bambuSerial = String(args?.bambu_serial || DEFAULT_BAMBU_SERIAL);
             const bambuToken = String(args?.bambu_token || DEFAULT_BAMBU_TOKEN);
@@ -4366,6 +4380,32 @@ class BambuPrinterMCPServer {
                     case "counterpart_make_3mf":
                         result = await makeCounterpart3mf(args ?? {});
                         break;
+                    case "cad_status":
+                        if (args && Object.keys(args).length)
+                            throw new Error("cad_status takes no arguments.");
+                        result = await this.cad.status();
+                        break;
+                    case "cad_setup":
+                    case "cad_run":
+                    case "cad_check_fit": {
+                        const started = Date.now();
+                        let sequence = 0;
+                        const heartbeat = progressToken === undefined ? undefined : setInterval(() => {
+                            progressNotifications = progressNotifications.then(() => extra.sendNotification({ method: "notifications/progress", params: {
+                                    progressToken, progress: ++sequence, message: `${name}: working for ${Math.round((Date.now() - started) / 1000)} seconds`,
+                                } })).catch(() => { });
+                        }, 5000);
+                        try {
+                            result = name === "cad_setup" ? await this.cad.setup(args ?? {}, extra.signal)
+                                : name === "cad_run" ? await this.cad.run(args ?? {}, extra.signal)
+                                    : await this.cad.checkFit(args ?? {}, extra.signal);
+                        }
+                        finally {
+                            if (heartbeat)
+                                clearInterval(heartbeat);
+                        }
+                        break;
+                    }
                     case "blender_mcp_setup":
                         if (args?.update !== undefined && typeof args.update !== "boolean")
                             throw new Error("update must be a boolean.");
@@ -4409,6 +4449,10 @@ class BambuPrinterMCPServer {
                 return { content: [{ type: "text", text }] };
             }
             catch (error) {
+                if (name.startsWith("cad_")) {
+                    const failure = await this.cad.failure(error, name);
+                    return { isError: true, content: [{ type: "text", text: failure.message }], structuredContent: failure };
+                }
                 const message = error instanceof Error ? error.message : String(error);
                 // Refusals and printer rejections repeat unchanged; say what to fix instead of "try again".
                 const refused = /nothing was (?:sent|uploaded)|no command was sent|does not match the job|is ambiguous|is missing or ambiguous|rejected the print command|are refused|is refused|refused because|refused until|refused before/i.test(message);
@@ -4420,7 +4464,7 @@ class BambuPrinterMCPServer {
                         : `Check parameters and try again. Error: ${message}`,
                     message,
                     tool: name,
-                    ...(error instanceof PrinterRefusal ? { code: error.code } : {}),
+                    ...(error instanceof PrinterRefusal ? { code: error.code } : {}), ...(["print_3mf", "upload_gcode"].includes(name) ? { printOutcome: printOutcome(error) } : {}),
                     // The slicer's own result.json; the message starts with its error_string and warnings.
                     // A slicer failure always carries slicer_report: the plain sentence a person sees, the slicer's words for the log.
                     // The report always says failed (a result.json that says success can still leave no output file).
@@ -4438,7 +4482,7 @@ class BambuPrinterMCPServer {
                     isError: true,
                 };
             }
-        }));
+        })));
     }
     async startStdio() {
         const transport = new StdioServerTransport();

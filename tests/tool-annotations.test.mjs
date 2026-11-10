@@ -1,6 +1,7 @@
+import {trackedMkdtemp} from './support/temp.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +14,7 @@ const preload = fileURLToPath(new URL('./fixtures/inspection-no-network.mjs', im
 const HINTS = ['destructiveHint', 'idempotentHint', 'openWorldHint', 'readOnlyHint'];
 
 async function listedTools(t) {
-  const dir = await mkdtemp(join(tmpdir(), 'tool-annotations-'));
+  const dir = await trackedMkdtemp(join(tmpdir(), 'tool-annotations-'));
   const transport = new StdioClientTransport({ command: process.execPath, args: ['--import', preload, entry], cwd: dir, stderr: 'pipe',
     env: { HOME: dir, MCP_TRANSPORT: 'stdio', BAMBU_MODEL: '', BAMBU_PRINTER_MODEL: '', BAMBU_PRINTER_HOST: '127.0.0.1', PRINTER_HOST: '127.0.0.1',
       BAMBU_SERIAL: '', BAMBU_PRINTER_SERIAL: '', BAMBU_TOKEN: '', BAMBU_PRINTER_ACCESS_TOKEN: '', INSPECTION_NETWORK_LOG: join(dir, 'network.log') } });
@@ -43,7 +44,7 @@ test('every listed tool declares all four MCP annotation hints, and the table na
 test('annotations match what the tools do to the printer and files', async t => {
   const byName = Object.fromEntries((await listedTools(t)).map(tool => [tool.name, tool.annotations]));
   // The remote read scope is exactly these tools; adding one is a deliberate change here.
-  assert.deepEqual(Object.keys(byName).filter(name => byName[name].readOnlyHint).sort(), ['blender_mcp_status', 'camera_frame',
+  assert.deepEqual(Object.keys(byName).filter(name => byName[name].readOnlyHint).sort(), ['blender_mcp_status', 'cad_check_fit', 'cad_status', 'camera_frame',
     'counterpart_discover_printers', 'counterpart_print_progress', 'counterpart_printer_info', 'counterpart_propose_filaments', 'counterpart_setup_fields', 'get_printer_filaments', 'get_printer_status', 'get_stl_info',
     'inspect_print_file', 'list_3mf_plate_objects', 'list_3mf_plates', 'list_printer_files', 'list_templates', 'resolve_3mf_ams_slots']);
   // Anything that moves, heats, prints or writes is not read-only and reaches the printer.
@@ -105,7 +106,7 @@ test('every listed tool declares its remote scope, and the arguments its configu
     else if (/^(?:set_|clear_|pause_|resume_|cancel_|skip_|reread_)/.test(tool.name)) at('control');
     // A tool that writes anything is never read.
     if (!tool.annotations.readOnlyHint && declared.scope === 'read')
-      assert.ok(['camera_snapshot', 'blender_mcp_status', 'fusion_mcp_status', 'blender_mcp_setup', 'fusion_mcp_setup'].includes(tool.name), `${tool.name} changes something but is read`);
+      assert.ok(['camera_snapshot', 'blender_mcp_status', 'fusion_mcp_status', 'blender_mcp_setup', 'fusion_mcp_setup', 'cad_setup'].includes(tool.name), `${tool.name} changes something but is read`);
     byName[tool.name] = declared;
   }
   assert.deepEqual(Object.keys(REMOTE_SCOPES).sort(), tools.map(tool => tool.name).sort(), 'the scope table names exactly the listed tools');
@@ -121,6 +122,7 @@ test('every listed tool declares its remote scope, and the arguments its configu
   // Setup checks are reads; changing the person's Blender or Fusion is the highest scope.
   assert.deepEqual(byName.blender_mcp_setup.raisedBy, { update: 'raw' });
   assert.deepEqual(byName.fusion_mcp_setup.raisedBy, { install: 'raw' });
+  assert.deepEqual(byName.cad_setup.raisedBy, { install: 'raw' });
   assert.equal(byName.slice_stl.arguments.stl_path, 'path');
   assert.equal(byName.camera_snapshot.arguments.save_path, 'output');
   assert.equal(byName.counterpart_print_route.arguments?.route, undefined, 'the route tool takes route from the caller');

@@ -1,9 +1,4 @@
-/**
- * Manufacturing guidance for agents that design printable models: David Montgomery's FDM design
- * prompt pack (3 November 2026), verbatim. Served as MCP prompts and a resource; the other printer
- * MCP (bambu-printer-mcp / mcp-3D-printer-server) serves the same text. Clients choose when to
- * attach each piece.
- */
+import { CAD_DESIGN_PROMPT } from "./cad/contracts.js";
 export const FDM_CORE = `Design the finished object the user wants, with the manufacturing plan as part of the design. Preserve its function, fit, and visual identity. Use your design ability freely to make that outcome practical through geometry, orientation, materials, color placement, supports, and assembly.
 
 Use the actual printer and material context: nozzle arrangement and filament routing, build volume, nozzle and line widths, layer profile, cooling, available filaments, and relevant successful prints or calibration. Missing information is unknown, not a capability the printer automatically has. Use reasonable, labeled assumptions for reversible choices; ask only when an unknown materially changes the result.
@@ -165,6 +160,7 @@ export const FDM_CAPABILITY_URI = "guidance://fdm/capability-guidance";
 export const FDM_CAPABILITY_RESOURCE = { uri: FDM_CAPABILITY_URI, name: "FDM bridge and overhang guidance", mimeType: "text/markdown",
     description: "Planning bands and evidence for bridges and overhangs, for when one is consequential and there is no sufficiently specific measured capability available" };
 export const DESIGN_PROMPTS = [
+    CAD_DESIGN_PROMPT,
     { name: "fdm_design", title: "Design for FDM printing", text: FDM_CORE,
         description: "Persistent instructions for every design or model-editing task: plan how the object prints as part of the design, using the actual printer, filaments and slice." },
     { name: "fdm_multicolor", title: "Multicolour and support materials", text: FDM_MULTICOLOR,

@@ -1,11 +1,49 @@
 # Changelog
 
-## Unreleased
+## [1.1.85] – 2026-11-10
 
 ### Fixed
 
+- Give installed-slicer tests their own temporary directory and remove vendor scratch on success or failure. This fixes macOS `npm test` reporting a `bamboo_model` leak after passing tests (#139), while keeping the shared fixture leak guard strict. Thanks to David Montgomery for the report and reproduction.
+
 - Accept a named A1 job that remains `FAILED` after a stop only when fresh status explicitly reports `print_type: idle`, `print_error: 0` and no HMS entries. Recheck the same job before dispatch, preserving model, nozzle, material and temperature checks. Thanks to Rowan McMahon for the firmware 01.08.01.00 report, code and regressions in #133. Hardware evidence is contributor-reported MQTT status; maintainer validation uses offline tests.
 - Update basic-ftp to 6.2.6, including upstream MLSD parsing and recursive-download path traversal corrections, and the MCP TypeScript SDK to 1.32.2. Preserve the pinned bambu-node patch and supported installation layouts.
+
+## [1.1.84] – 2026-11-10
+
+### Fixed
+
+- Bambu Studio no longer hangs forever on a Mac where it once crashed. OrcaSlicer and FULU's OrcaSlicer-bambulab launch the same way and get the same change. The CLI opens a hidden window to draw plate thumbnails, which starts AppKit. When the person's crash history (`~/Library/Application Support/CrashReporter/BambuStudio_<hardware UUID>.plist`) dates a crash inside the app's last window restoration, AppKit raises its modal "reopen windows?" alert. The slicer then waits at 0% CPU, and every slice, estimate and auto-slice waited with it; stopping it never answered the alert. On macOS each slice now runs with a fresh, empty `CFFIXED_USER_HOME` of its own under `TEMP_DIR`, removed afterwards, so AppKit finds no crash history. The CLI reads its profiles from its own bundle or from the files this server passes, and sets no data folder without `--datadir` (Bambu Studio 02.08.02.61 `src/BambuStudio.cpp`), so slices are unchanged. With Bambu Studio 02.08.02.61 on macOS 27.2, `plate_1.gcode` was byte-identical between current main launched in a fresh private home and this build, for the same model (57m 47s, 40.78 g) and with a person's own process preset. Real-home launches were not compared (they can raise the alert). That the private home changes nothing else rests on the source above and on what was observed: AppKit created only `Library/Application Support/CrashReporter` in it, while preferences (cfprefsd ignores `CFFIXED_USER_HOME`), `HOME`, `TMPDIR` and the saved window state stay the person's own. A home seeded with that crash history hung current main at 0% CPU in `NSAlert runModal` and sliced on this build in 2 s. The installed OrcaSlicer 2.4.0-dev crashed on every slice before and after (before AppKit starts), so OrcaSlicer's results were not compared. Linux and Windows launches are unchanged.
+
+### Added
+
+- On macOS, a Bambu-compatible slicer that uses no CPU and writes nothing for `SLICER_STALL_SECONDS` (default 20; 0 turns it off) is stopped and reported with the stable `structuredContent.code` `slicer-waiting-on-dialog`. The message says to open the slicer once, answer what it shows and slice again; nothing is sent to the printer. It carries no `slicer_report`, because it is no verdict on the model. Previously such a slice waited until the client gave up.
+
+## [1.1.83] – 2026-11-09
+
+### Added
+
+- Report CAD installation estimates/measured bytes and coded refusals; queue runs within their own deadlines, retain protected final-result validation records, reuse content-hash input bundles, and reveal preview openings with depth/feature edges. Clarify scan-reference scope and measured-interface precedence. Validated through confined headless fixtures; no physical fit/print or app update.
+
+- Add optional confined code-CAD tools (`cad_status`, `cad_setup`, `cad_run`, `cad_check_fit`) and MCP-owned `cad_design` instructions for dimensioned parts and parameter edits. Setup installs pinned build123d/mesh libraries only on request; `CAD_ENABLED=0` leaves the family out. Explicit read-only input snapshots and a unit/up-axis/grounding helper support captured-mesh scripts in the same environment, with scikit-image and Shapely alongside the CAD and mesh libraries. macOS setup requires an internal ownership-enabled data volume; it never re-signs native files. No printer, installed app or Fusion-bridge behavior changes.
+
+## [1.1.82] – 2026-11-08
+
+### Added
+
+- `counterpart_setup_fields` says for each printer kind whether `camera_snapshot` reads its camera with only the settings the fields write (`cameraSnapshot`). It is `true` for Bambu: every offered model has a camera transport, chosen by the model field; RTSP models (X1, P2S, H2, X2D) still need ffmpeg, as `camera_snapshot` always has. A client such as Counterpart can then ask for a camera picture in its setup check only where the MCP says it can, instead of deciding by the printer type's name. Every kind declares it; a client reads it missing as an older server. Checked with the setup-fields tests; no printer contacted.
+
+## [1.1.81] – 2026-11-08
+
+- Report `printOutcome` in `print_3mf` and `upload_gcode` errors (`counterpart/1`): `not-sent` before any print command, `unknown` after a possible dispatch, or `rejected` when the printer refuses it. Fresh MQTT report timeouts no longer make clients guess whether printing started. Request-local tracking covers direct MQTT, FULU and native routes without matching error wording; Connect imports send no print command. Verified with mocked transports; no physical print started.
+
+## [1.1.80] – 2026-11-08
+
+### Fixed
+
+- Track checked print snapshots from allocation so server shutdown also removes in-flight copies whose operation has not returned. Verified with an exiting child process and mocked native shutdown; no printer contacted.
+
+- Remove test fixture directories at file teardown even after failures or early returns, and run the full Node test suite in a private temporary directory that fails on leftovers. Regression checks cover clean, leaking and failing suites; printer transports are mocked and no printer is contacted.
 
 ## [1.1.79] – 2026-11-08
 

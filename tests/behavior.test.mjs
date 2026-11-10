@@ -1,3 +1,5 @@
+import {withSlicerTemp} from './support/slicer-temp.mjs';
+import {trackedMkdtempSync} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -287,7 +289,7 @@ test("X2D native control accepts Studio device commands but rejects unrelated de
 });
 
 test("X2D public task and AMS tools dispatch through the native helper, including AMS-HT id 128", { skip: !isBambuNativePlatform() }, async (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-native-control-"));
+  const tempDir = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-native-control-"));
   const helperPath = path.join(tempDir, "fake-native-helper.mjs");
   fs.writeFileSync(
     helperPath,
@@ -395,7 +397,7 @@ test("X2D public task and AMS tools dispatch through the native helper, includin
 });
 
 test("native upload forwards helper progress before returning the final result", { skip: !isBambuNativePlatform() }, async (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-native-progress-"));
+  const tempDir = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-native-progress-"));
   const helperPath = path.join(tempDir, "fake-native-helper.mjs");
   fs.writeFileSync(
     helperPath,
@@ -1439,7 +1441,7 @@ const FAKE_FULU_ENV = ["FAKE_FULU_WITH_RECORD_RESULT", "FAKE_FULU_START_PRINT_RE
 const fakeFuluEnvSnapshots = new WeakSet();
 
 async function fakeFuluBridge(t, env = {}, { wrapped = false } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-fulu-"));
+  const dir = trackedMkdtempSync(path.join(os.tmpdir(), "fake-fulu-"));
   const logPath = path.join(dir, "host.jsonl");
   let command = `${shellQuoteArg(process.execPath)} ${shellQuoteArg(FAKE_FULU_HOST)}`;
   if (wrapped) {
@@ -1494,10 +1496,10 @@ child.on("exit", code => process.exit(code ?? 1));
 }
 
 test("the FULU host runs in its Docker image, mounting this server's own config folder, where print snapshots go", async t => {
-  const tools = fs.mkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
+  const tools = trackedMkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
   t.after(() => fs.rmSync(tools, { recursive: true, force: true }));
   const { docker, colima } = fakeContainerTools(tools);
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "fulu-container-"));
+  const work = trackedMkdtempSync(path.join(os.tmpdir(), "fulu-container-"));
   t.after(() => fs.rmSync(work, { recursive: true, force: true }));
   // The VM shares neither /tmp nor /var/folders, so the server's TMPDIR is never mounted.
   const tmp = path.join(work, "tmp"), config = path.join(work, "home", ".config", "mcp-3d-printer-server", "bambu-network");
@@ -1546,7 +1548,7 @@ test("the FULU host runs in its Docker image, mounting this server's own config 
 });
 
 test("the FULU container mounts a symlinked config folder at the path the host is given, uses the Colima profile's socket, and clears stale snapshots", async t => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "fulu-container-paths-"));
+  const work = trackedMkdtempSync(path.join(os.tmpdir(), "fulu-container-paths-"));
   t.after(() => fs.rmSync(work, { recursive: true, force: true }));
   const real = path.join(work, "real-config"), linked = path.join(work, "linked-config");
   fs.mkdirSync(real);
@@ -1574,7 +1576,7 @@ test("the FULU container mounts a symlinked config folder at the path the host i
 });
 
 test("concurrent calls on a cold Docker-backed bridge start one container", async t => {
-  const tools = fs.mkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
+  const tools = trackedMkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
   t.after(() => fs.rmSync(tools, { recursive: true, force: true }));
   const { docker } = fakeContainerTools(tools);
   fs.writeFileSync(path.join(tools, "up"), "");
@@ -1590,7 +1592,7 @@ test("concurrent calls on a cold Docker-backed bridge start one container", asyn
 });
 
 test("stop returns even when a descendant of the bridge's shell keeps its pipes open", async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fulu-stop-"));
+  const dir = trackedMkdtempSync(path.join(os.tmpdir(), "fulu-stop-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   // A descendant of the shell (as a docker client can be) keeps the bridge's stdout and stderr open after the host
   // has gone, so the shell's "close" never comes. Before, stop waited for it for ever.
@@ -1608,11 +1610,11 @@ test("stop returns even when a descendant of the bridge's shell keeps its pipes 
 });
 
 test("a relative config folder reaches the containerized host as the absolute path that was mounted", async t => {
-  const tools = fs.mkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
+  const tools = trackedMkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
   t.after(() => fs.rmSync(tools, { recursive: true, force: true }));
   const { docker } = fakeContainerTools(tools);
   fs.writeFileSync(path.join(tools, "up"), "");
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "fulu-relative-"));
+  const work = trackedMkdtempSync(path.join(os.tmpdir(), "fulu-relative-"));
   const previous = process.cwd();
   process.chdir(work);
   t.after(() => { process.chdir(previous); fs.rmSync(work, { recursive: true, force: true }); });
@@ -1632,7 +1634,7 @@ test("a relative config folder reaches the containerized host as the absolute pa
 });
 
 test("the FULU container says plainly when Docker isn't running and no Colima profile is set", async t => {
-  const tools = fs.mkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
+  const tools = trackedMkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
   t.after(() => fs.rmSync(tools, { recursive: true, force: true }));
   const { docker } = fakeContainerTools(tools);
   const { bridge } = await fakeFuluBridge(t, { BAMBU_NETWORK_BRIDGE_COMMAND: undefined, BAMBU_NETWORK_BRIDGE_IMAGE: "bpm-fulu-e2e:runtime",
@@ -2072,7 +2074,7 @@ test("concurrent LAN prints to different printers run one session at a time on a
 });
 
 test("a LAN printer the plug-in cannot verify stops before any print or disconnect", async (t) => {
-  const emptyCertDir = fs.mkdtempSync(path.join(os.tmpdir(), "fulu-no-printer-cert-"));
+  const emptyCertDir = trackedMkdtempSync(path.join(os.tmpdir(), "fulu-no-printer-cert-"));
   t.after(() => fs.rmSync(emptyCertDir, { recursive: true, force: true }));
   const { bridge, methods } = await fakeFuluBridge(t, { BAMBU_NETWORK_CERT_DIR: emptyCertDir });
   await assert.rejects(
@@ -2110,7 +2112,7 @@ test("a host without the LAN-session calls still serves cloud and probes, and re
 // real LAN session. It never prints.
 const realFulu = process.env.FULU_HOST_DIR && process.env.FULU_PLUGIN_DIR && process.platform === "linux" && process.arch === "x64";
 test("real FULU host: agent setup and LAN session through the documented cat wrapper", { skip: !realFulu && "set FULU_HOST_DIR and FULU_PLUGIN_DIR on x86-64 Linux" }, async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "real-fulu-"));
+  const dir = trackedMkdtempSync(path.join(os.tmpdir(), "real-fulu-"));
   const wrapper = path.join(dir, "fulu-host-wrapper.sh");
   fs.writeFileSync(wrapper, `#!/bin/sh\n${shellQuoteArg(path.join(process.env.FULU_HOST_DIR, "pjarczak_bambu_linux_host"))} "$@" | cat\n`, { mode: 0o755 });
   const { bridge } = await fakeFuluBridge(t, {
@@ -2132,7 +2134,7 @@ test("sliceSTL allows slicer executables resolved from PATH", async (t) => {
     return;
   }
 
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "path-slicer-"));
+  const tempRoot = trackedMkdtempSync(path.join(os.tmpdir(), "path-slicer-"));
   const binDir = path.join(tempRoot, "bin");
   const commandName = `fake-prusaslicer-${process.pid}-${Date.now()}`;
   const commandPath = path.join(binDir, commandName);
@@ -2170,7 +2172,7 @@ test("sliceSTL allows slicer executables resolved from PATH", async (t) => {
 });
 
 test("sliceSTL names a slicer crash signal or exit code and keeps the end of its output", { skip: process.platform === "win32" }, async (t) => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "crashing-slicer-"));
+  const tempRoot = trackedMkdtempSync(path.join(os.tmpdir(), "crashing-slicer-"));
   t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
   const slicer = (name, body) => {
     const file = path.join(tempRoot, name);
@@ -2295,7 +2297,7 @@ test("camera frame parser splits frames across arbitrary chunk boundaries and re
 // Issue reported by the maintainer on a P1S: the first frame after connecting is the
 // printer's buffered frame and can show a finished part that was removed long ago.
 test("camera_snapshot over TCP skips the printer's buffered first frame and refuses when no live frame follows", { skip: process.platform === "win32" }, async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "camera-tls-"));
+  const dir = trackedMkdtempSync(path.join(os.tmpdir(), "camera-tls-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const created = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=printer", "-days", "1",
     "-keyout", path.join(dir, "key.pem"), "-out", path.join(dir, "cert.pem")], { encoding: "utf8" });
@@ -2617,8 +2619,10 @@ function writeTemplateJsonFixture(
 
 // `result` names a real Bambu Studio result.json in tests/fixtures/studio-result
 // for the fake CLI to write to its --outputdir; a nonzero `exitCode` fails the run.
-async function createFakeBambuSlicer({ result, exitCode = 0, machine = {} } = {}) {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-mcp-template-slicer-"));
+// `behaviour` "stall" logs a line and then waits at 0% CPU, as Bambu Studio does behind AppKit's modal alert;
+// "busy" computes silently for 2.5 s before writing its output. Each run records its CFFIXED_USER_HOME.
+async function createFakeBambuSlicer({ result, exitCode = 0, machine = {}, behaviour } = {}) {
+  const tempDir = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-mcp-template-slicer-"));
   const fakeSlicerPath = path.join(tempDir, "fake-slicer.mjs");
   const argsOutPath = path.join(tempDir, "args.json");
   // The fake executable has no app bundle. Give profile preparation a complete,
@@ -2643,6 +2647,9 @@ import fs from "node:fs";
 import path from "node:path";
 const args = process.argv.slice(2);
 fs.writeFileSync(${JSON.stringify(argsOutPath)}, JSON.stringify(args));
+fs.writeFileSync(${JSON.stringify(path.join(tempDir, "launch.json"))}, JSON.stringify({ home: process.env.CFFIXED_USER_HOME ?? null, homeExists: !!process.env.CFFIXED_USER_HOME && fs.existsSync(process.env.CFFIXED_USER_HOME) }));
+${behaviour === "stall" ? `console.log("[trace]   Initializing StaticPrintConfigs"); setInterval(() => {}, 1 << 30); await new Promise(() => {});` : ""}
+${behaviour === "busy" ? `for (const end = Date.now() + 2500; Date.now() < end;) Math.sqrt(Math.random());` : ""}
 const outputDir = args[args.indexOf("--outputdir") + 1] || path.dirname(args[args.indexOf("--export-3mf") + 1]);
 const exportArg = args[args.indexOf("--export-3mf") + 1];
 const outputPath = path.isAbsolute(exportArg) ? exportArg : path.join(outputDir, exportArg);
@@ -2724,6 +2731,7 @@ async function sliceWithFakeBambuSlicer(t, options) {
       TEMP_DIR: path.join(fakeSlicer.tempDir, "out"),
       SLICER_TYPE: "bambustudio",
       MCP_ALLOW_EXECUTABLE_ARG: "1",
+      ...options?.env,
     },
     stderr: "pipe",
   });
@@ -2736,6 +2744,74 @@ async function sliceWithFakeBambuSlicer(t, options) {
   });
   return options?.withSlicer ? { result, fakeSlicer } : result;
 }
+
+// A slicer that waits on a dialog (Bambu Studio behind AppKit's "reopen windows?" alert: no CPU, no output) is stopped
+// after SLICER_STALL_SECONDS and reported with the stable code slicer-waiting-on-dialog, never as the slicer's verdict on
+// the model (no slicer_report, which clients treat as a refusal that holds Print).
+const macOnly = process.platform !== "darwin" && "the stall check runs on macOS only";
+test("slice_stl stops a slicer that waits on a dialog and reports slicer-waiting-on-dialog", { skip: macOnly }, async (t) => {
+  const started = Date.now();
+  const result = await sliceWithFakeBambuSlicer(t, { behaviour: "stall", env: { SLICER_STALL_SECONDS: "1" } });
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.code, "slicer-waiting-on-dialog");
+  assert.equal(result.structuredContent.slicer_report, undefined, "a stalled slicer gave no verdict on the model");
+  assert.match(result.content[0].text, /nothing was sent to the printer/i);
+  assert.ok(Date.now() - started < 15_000, `reported in ${Date.now() - started} ms, not at a long timeout`);
+});
+
+test("slice_stl lets a slicer that computes without writing run to completion", { skip: macOnly }, async (t) => {
+  const result = await sliceWithFakeBambuSlicer(t, { behaviour: "busy", env: { SLICER_STALL_SECONDS: "1" } });
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+});
+
+// On macOS each Bambu-compatible slice runs with a fresh, empty CFFIXED_USER_HOME of its own under TEMP_DIR (replacing
+// one the server inherited), removed after the slice, so AppKit can't find crash history that raises its alert.
+test("slice_stl gives a Bambu-compatible slicer its own home folder on macOS", async (t) => {
+  const inherited = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-mcp-inherited-home-"));
+  t.after(() => fs.rmSync(inherited, { recursive: true, force: true }));
+  const { result, fakeSlicer } = await sliceWithFakeBambuSlicer(t, { withSlicer: true, env: { CFFIXED_USER_HOME: inherited } });
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  const launch = JSON.parse(fs.readFileSync(path.join(fakeSlicer.tempDir, "launch.json"), "utf8"));
+  if (process.platform !== "darwin") {
+    assert.equal(launch.home, inherited, "only macOS slicers get a home of their own");
+    return;
+  }
+  assert.ok(launch.homeExists, "the slicer's home existed while it ran");
+  assert.notEqual(launch.home, inherited);
+  assert.ok(launch.home.startsWith(path.join(fakeSlicer.tempDir, "out") + path.sep), launch.home);
+  assert.equal(fs.readdirSync(inherited).length, 0);
+  assert.ok(!fs.existsSync(launch.home), "the home is removed after the slice");
+});
+
+// watchForStall itself, on every platform with ps or /proc: an idle child is reported, a computing one and one that
+// exits are not.
+test("watchForStall reports an idle child, not a computing or finished one", { skip: process.platform === "win32" && "no CPU time to read on Windows" }, async () => {
+  const { watchForStall } = await import("../dist/slicer/slicer-launch.js");
+  const run = (script, ms) => new Promise(resolve => {
+    const child = spawn(process.execPath, ["-e", script], { stdio: ["ignore", "pipe", "pipe"] });
+    let stalled = false;
+    watchForStall(child, 1, () => { stalled = true; child.kill("SIGKILL"); });
+    const timer = setTimeout(() => child.kill("SIGKILL"), ms);
+    child.on("exit", () => { clearTimeout(timer); resolve(stalled); });
+  });
+  assert.equal(await run('console.log("started"); setInterval(() => {}, 1 << 30)', 10_000), true, "idle after starting");
+  assert.equal(await run('for (const end = Date.now() + 2500; Date.now() < end;) Math.sqrt(Math.random())', 10_000), false, "computing");
+  assert.equal(await run('console.log("done")', 10_000), false, "finished");
+});
+
+test("slicer stall settings and CPU times parse as ps writes them", async () => {
+  const { parseCpuTime, slicerStallSeconds } = await import("../dist/slicer/slicer-launch.js");
+  assert.equal(parseCpuTime("   0:03.11\n"), 3.11);
+  assert.equal(parseCpuTime("61:02.50"), 3662.5);
+  assert.equal(parseCpuTime("00:01:02"), 62);
+  assert.equal(parseCpuTime("2-01:00:00"), 2 * 86400 + 3600);
+  assert.equal(parseCpuTime(""), undefined);
+  assert.equal(slicerStallSeconds(undefined), 20);
+  assert.equal(slicerStallSeconds("0"), 0);
+  assert.equal(slicerStallSeconds("5"), 5);
+  assert.equal(slicerStallSeconds("-1"), 20);
+  assert.equal(slicerStallSeconds("soon"), 20);
+});
 
 // Slicing the same model the same way again reuses the kept slice (src/slicer/slice-cache.ts): the slicer
 // doesn't run, and the result, Studio's result.json included, is the first slice's. Anything that shapes the
@@ -2974,7 +3050,8 @@ test("the installed Bambu Studio's floating-cantilever warning reaches sliceSTLW
   skip: !fs.existsSync(installedStudio) && "Bambu Studio is not installed",
   timeout: 300_000,
 }, async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "studio-result-"));
+  return withSlicerTemp(async () => {
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), "studio-result-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const tee = path.join(directory, "tee.stl");
   fs.writeFileSync(tee, boxesStl([[[-2, 0, 0], [2, 40, 26]], [[-30, 0, 26], [30, 40, 30]]]));
@@ -2984,6 +3061,7 @@ test("the installed Bambu Studio's floating-cantilever warning reaches sliceSTLW
   assert.equal(sliced.slicer_result.return_code, 0);
   assert.deepEqual(sliced.slicer_result.sliced_plates.map(plate => plate.warning_message),
     ["It seems object tee.stl has floating cantilever. Please re-orient the object or enable support generation."]);
+  });
 });
 
 test("slice_stl writes enable_support, support_type and support_threshold_angle over the resolved process preset", async (t) => {
@@ -3161,7 +3239,8 @@ test("the installed Bambu Studio generates supports only when slice_stl's enable
   skip: !fs.existsSync(installedStudio) && "Bambu Studio is not installed",
   timeout: 600_000,
 }, async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "studio-supports-"));
+  return withSlicerTemp(async () => {
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), "studio-supports-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   // A T: a narrow stem under a wide, unsupported cap.
   const tee = boxesStl([[[-2, 0, 0], [2, 40, 26]], [[-30, 0, 26], [30, 40, 30]]]);
@@ -3183,6 +3262,7 @@ test("the installed Bambu Studio generates supports only when slice_stl's enable
   const off = await slice({ enable_support: "0" }, "off");
   assert.equal(off.settings.enable_support, "0");
   assert.equal(off.supportUsed, false);
+  });
 });
 
 test("relative TEMP_DIR and profile, filament and model paths reach the slicer as absolute paths", async (t) => {
@@ -3535,7 +3615,7 @@ test("non-slicer tools ignore invalid slicer configuration", async (t) => {
 });
 
 test("per-call executable selectors are rejected before any process can start", async (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-executable-selector-gate-"));
+  const tempDir = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-executable-selector-gate-"));
   const executable = path.join(tempDir, "unexpected-executable");
   const markerPath = path.join(tempDir, "executed");
   fs.writeFileSync(
@@ -3622,7 +3702,7 @@ test("per-call executable selectors are rejected before any process can start", 
 });
 
 test("legacy bridge opt-in does not authorize slicer or ffmpeg executables", async (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-legacy-bridge-gate-"));
+  const tempDir = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-legacy-bridge-gate-"));
   const executable = path.join(tempDir, "unexpected-executable");
   const markerPath = path.join(tempDir, "executed");
   const bridgeExecutable = path.join(tempDir, "trusted-legacy-bridge");
@@ -3749,7 +3829,7 @@ test("empty slicer_path preserves env fallback without executable opt-in", async
 });
 
 test("camera_snapshot uses trusted FFMPEG_PATH without opening per-call selectors", async (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "trusted-ffmpeg-path-"));
+  const tempDir = trackedMkdtempSync(path.join(os.tmpdir(), "trusted-ffmpeg-path-"));
   const fakeFfmpeg = path.join(tempDir, "fake-ffmpeg.mjs");
   const argsPath = path.join(tempDir, "ffmpeg-args.json");
   fs.writeFileSync(
@@ -4091,7 +4171,7 @@ test("H2D Pro slicing selects its exact installed preset and refuses an H2D subs
 
 test("two projects' settings extract to distinct files, so concurrent slices can't swap processes", async (t) => {
   const { extractBambuTemplateSettings } = await import("../dist/3mf_parser.js");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "template-extract-"));
+  const dir = trackedMkdtempSync(path.join(os.tmpdir(), "template-extract-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const write = async (name, layer) => {
     const zip = new JSZip();
@@ -4108,7 +4188,7 @@ test("two projects' settings extract to distinct files, so concurrent slices can
 
 test("every extraction has its own path, even of the same project, and an operation removes what it extracted", async (t) => {
   const { extractBambuTemplateSettings, withExtractedSettingsCleanup } = await import("../dist/3mf_parser.js");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "template-extract-"));
+  const dir = trackedMkdtempSync(path.join(os.tmpdir(), "template-extract-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const zip = new JSZip();
   zip.file("Metadata/project_settings.config", JSON.stringify({ layer_height: "0.16" }));

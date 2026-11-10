@@ -1097,7 +1097,7 @@ If the project does not match those assumptions, the tool fails fast with a stru
   - `activeFilament`: the loaded spool's `material` and `#RRGGBB` `color`. `slot` is the index `ams_slots` uses: `amsId × 4 + tray` for an AMS, the unit id (128 and up) for an AMS-HT, and `"ext"` for the external spool, or `"254"` (left) / `"255"` (right) on dual-nozzle H2D, H2C and X2D. On H2 and X2D it comes from the active extruder's report.
   - `problems`: a non-zero `print_error` as 8 hex digits, such as `07008011`, and each HMS entry as `AAAA_BBBB_CCCC_DDDD`, such as `0300_1800_0001_0003`. Severity follows Bambu's HMS level: fatal is `fatal`, serious `error`, common `warning` and info `info`. Each HMS problem links to Bambu's page for that code. Messages come from the English HMS tables bundled with the pinned Bambu Studio release; `scripts/generate-hms-messages.mjs` turns them into `src/safety/hms-messages.ts` and the stage words into `src/printers/bambu-stages.ts`. A model without its own table, such as the P1S, gets the text the other tables share. A code none of them has falls back to the user's own Bambu Studio download: `hms_en_<serial prefix>.json`, then `hms_en.json`, in the `hms` folder next to `BambuStudio.conf` (see `BAMBU_STUDIO_CONFIG`). Those files are read only, and Bambu's text is passed through unchanged. Codes that Bambu lists for a printer without text are reported as `info`.
 - **`counterpart_discover_printers`** listens for Bambu printers' own SSDP announcements on UDP 2021 for `duration_ms` (default 4000, 500–15000) and sends one M-SEARCH: `{contract, network, printers: [{kind: "bambu", source: "ssdp", name, host, serial, model?, firmware?}]}`. `model` is the `bambu_model` value the announced DevModel or the serial prefix names (none for the X1, which `bambu_model` doesn't take). An announcement counts only from a private IPv4 address that names itself as its `Location`. `network` is `unavailable` when another app (Bambu Studio) holds the port. It never connects to or authenticates with a printer.
-- **`counterpart_setup_fields`** says what this server needs to drive a printer, so a client can offer setup without printer tables of its own: `{contract, server, kinds: [{kind: "bambu", label, env, fields}], model?}`. Each field names its form role (`host`, `serial`, `model`, `secret`), the `.env` variable to write (`PRINTER_HOST`, `BAMBU_SERIAL`, `BAMBU_MODEL`, `BAMBU_TOKEN`) and its older `aliases`, which this server reads first (a client writing the variable removes them), a label and hint, and whether it is required. The model field lists the `bambu_model` choices with Bambu's names and `fromSerial`, the model each three-character serial prefix names. Pass `serial` to get that model as `model`. `slicer` reports the slicer this server would run (type, path, whether it is there, and the Bambu profiles folder) with the `SLICER_TYPE`, `SLICER_PATH` (`input: "path"`) and `BAMBU_PROFILES_ROOT` fields, each required only when what it defaults to is missing. It sends nothing to a printer and returns no secret.
+- **`counterpart_setup_fields`** says what this server needs to drive a printer, so a client can offer setup without printer tables of its own: `{contract, server, kinds: [{kind: "bambu", label, env, cameraSnapshot, fields}], model?}`. `cameraSnapshot: true` says `camera_snapshot` reads the printer's camera with only the settings the fields write, so a client's setup check can ask for a picture as well as the status (RTSP models still need ffmpeg, as `camera_snapshot` always does); every kind declares it. Each field names its form role (`host`, `serial`, `model`, `secret`), the `.env` variable to write (`PRINTER_HOST`, `BAMBU_SERIAL`, `BAMBU_MODEL`, `BAMBU_TOKEN`) and its older `aliases`, which this server reads first (a client writing the variable removes them), a label and hint, and whether it is required. The model field lists the `bambu_model` choices with Bambu's names and `fromSerial`, the model each three-character serial prefix names. Pass `serial` to get that model as `model`. `slicer` reports the slicer this server would run (type, path, whether it is there, and the Bambu profiles folder) with the `SLICER_TYPE`, `SLICER_PATH` (`input: "path"`) and `BAMBU_PROFILES_ROOT` fields, each required only when what it defaults to is missing. It sends nothing to a printer and returns no secret.
 - **`counterpart_propose_filaments`** proposes which loaded AMS spool prints each of a model's colours, before slicing. Pass `filaments` (`index`, `name`, `colour` `#RRGGBB`, `material`), the `painted` slots no part names, `sliced: true` for an already-sliced file and, at print time, the person's `chosen` spools. It reads the live AMS once and returns:
   - `trays`: the spools to choose from, each with `label` (`A2`, as Bambu Studio labels trays), `name` (Bambu Studio's colour name and the product, "Sunflower Yellow PLA Basic", from the configured slicer's `filaments_color_codes.json`), `colour`, `material`, `filamentId`, `feed`, `sliceable` and, when one resolves, `profile` (the filament profile path `slice_stl` takes in `load_filaments`). An unsliced model lists only spools with a filament profile.
   - `proposal`: per filament, the nearest spool in OKLab colour with the asked-for material preferred, and a `verdict`: `same-colour` (within 0.08), `closest` (that colour isn't loaded; `note` says so, "White isn't loaded. Closest loaded: A2 Sunflower Yellow PLA Basic."), `no-colour` or `none`. A sliced file's material is a hard rule. One print feeds from one `feed`.
@@ -1186,6 +1186,8 @@ Slice an STL or 3MF file using an external slicer and return the path to the out
 
 `slicer_path` and `slicer_profile` fall back to the `SLICER_PATH` and `SLICER_PROFILE` environment variables when omitted. Per-call `slicer_path` overrides require `MCP_ALLOW_EXECUTABLE_ARG=1`.
 
+**A slicer that waits on a window:** on macOS each Bambu Studio, OrcaSlicer or FULU slice runs with an empty home folder of its own (`CFFIXED_USER_HOME` under `TEMP_DIR`), so macOS's "reopen windows?" question after a slicer crash can't stop it. On macOS, a Bambu-compatible slicer that still uses no CPU and writes nothing for `SLICER_STALL_SECONDS` (default 20, 0 turns it off) is stopped, and the error's `structuredContent.code` is `slicer-waiting-on-dialog`. Nothing is sent to the printer. Open the slicer once, answer what it shows, quit it and slice again.
+
 You can provide either `template_3mf_path` or `template_name` when you want to slice from a saved template. `template_name` resolves through the local template registry directory configured for the server.
 
 For printing on a Bambu printer, the recommended workflow is: export a sliced 3MF from your selected Bambu-compatible slicer, then pass that output path to `print_3mf`.
@@ -1248,6 +1250,45 @@ When `print_3mf` detects an unsliced 3MF and auto-slices it, these defaults are 
 - `skip_modified_gcodes: true` -- strips custom gcodes from other users' profiles
 
 These defaults reduce stale-profile problems; inspect downloaded models and their slice preview before printing. When calling `slice_stl` directly, you have full control over every flag.
+
+</details>
+
+<details>
+<summary><strong>Optional code-CAD engine</strong></summary>
+
+### Code-CAD
+
+This MCP includes an optional headless design engine built on **build123d**, with trimesh and Manifold for mesh checks. It supports dimensioned parts and script-based captured-mesh work, saving editable Python, named dimensions, STL, and STEP for solid designs without starting Blender or Fusion. Nothing is downloaded until you explicitly call `cad_setup` with `install: true`. Allow about **1.5 GiB** for its isolated Python, packages and download cache; the exact size varies by platform. It needs `uv`, plus macOS Seatbelt or Linux `bubblewrap`; it refuses to run without confinement.
+
+Why include it: a local comparison made a bottle-holder cavity at 65.800 × 28.800 mm, changed its height by exactly 1 mm with one parameter edit in 137 seconds, and exported an articulated unicorn in 657 seconds where two recorded Blender attempts reached 901 seconds without a model. Initial holder worker passes took 238–893 seconds; this is not a speed guarantee. The unicorn still had dimension and pose errors. These few runs do not establish general superiority, reliable articulation or physical print fit. Both holders collided with an oversized raw scan; numerical checks exposed that rather than silently resizing it.
+
+**Don't want it?** Set `CAD_ENABLED=0` in the MCP's environment and restart the MCP. Its CAD tools, prompt and advertised capability disappear; printer tools and the existing Blender/Fusion bridges stay available. To remove a downloaded environment, stop the MCP and move its CAD data folder to Trash (default locations and `CAD_DATA_DIR` are in [the CAD guide](docs/CAD.md)). Your saved model outputs are separate. Leaving it disabled installs nothing and starts no Python.
+
+#### cad_status
+
+Read the pinned version, Python path, platform and last verified readiness. No installation or Python process is started.
+
+#### cad_setup
+
+Check only by default. `{"install":true}` installs a pinned isolated environment in the MCP's data directory and proves a confined small build plus STL/STEP round trip. On macOS it requires an internal disk with file ownership enabled. USB/network data volumes are refused before installation because the experiment found native-import stalls there; nothing is re-signed.
+
+#### cad_run
+
+Read the `cad_design` prompt first. Supply `script` or a saved `script_path`, `output_dir`, and `name`. Scripts declare literal `P = {...}` parameters and a `build()` function returning a build123d shape. One later call with `script_path` and `parameters` changes a dimension and rebuilds. Each run creates a new subfolder and preserves its source/parameter checkpoint, even on failure. The result contains STL/STEP paths, measured geometry, validity checks, six views and a contact sheet.
+
+Explicit `inputs: [{"name": "scan", "path": "/allowed/scan.stl"}]` snapshots the files a script may read as `INPUTS["scan"]`. For a mesh-only edit, use `mode: "mesh"` and return `trimesh.Trimesh`: it exports and validates STL plus renders, with `step: null` and a clear reason. For captured meshes, the injected `load_scan` helper takes explicit source units and an up-axis, converts coordinates to millimetres/Z-up, and grounds the mesh without fitting its size. Cleanup choices and labels belong to the caller’s rules; the MCP supplies execution, mesh libraries, checks and renders.
+
+`cad_status` and `cad_setup` expose `storage.expected_download_bytes`, `expected_installed_bytes` and cached measured `installed_bytes`; the first two are fresh-install budget estimates, not remaining transfer sizes. Setup failures carry `structuredContent.code`, `message`, `suggestion` and `retryable`, so clients do not parse wording.
+
+Runs wait for the environment's execution slot up to their own total timeout and return `queue_wait_ms`. Mark the selected result with `final: true`: each run's script-protected `cad-result.json` keeps the flag, full validation and artifact paths for recovery after restart. Check `status`, `valid` and the checks as well as `final`.
+
+Unchanged declared inputs reuse immutable content-hash bundles, with `snapshot_bytes_added` and `snapshot_bytes_reused` in the result. Keep the referenced `.cad-inputs` bundles with saved designs. Previews now use depth cues and feature edges to reveal windows and recesses without a heavy renderer.
+
+#### cad_check_fit
+
+Check a model and reference STL with an explicit rigid transform. Returns interference volume and minimum surface gap, without quietly scaling a scan. Open/nonmanifold meshes are refused. A gap of zero includes intentional floor contact, so choose clearance checks to match the interface you actually want to measure.
+
+See [CAD setup, confinement, script contract and removal](docs/CAD.md) for configuration, examples and limits.
 
 </details>
 
@@ -1550,3 +1591,7 @@ Thank you to **[FULU Foundation](https://www.fulu.org/), [Louis Rossmann](https:
 Some printer command surfaces and workflow priorities were informed by [Bambuddy](https://github.com/maziggy/bambuddy), an AGPL-3.0 Bambu Lab printer management project. This project does not vendor Bambuddy code.
 
 </details>
+
+### Print dispatch truth (`counterpart/1`)
+
+An error from `print_3mf` or `upload_gcode` carries `structuredContent.printOutcome`: `not-sent` means no print command was handed to a transport (including fresh-report timeouts, preparation failures and upload failures); `unknown` means a command may have reached the printer; `rejected` means the printer refused the command. A file upload alone is not a print command. Clients use this field, never error wording or firmware codes, to distinguish “Not started” from a print that needs checking. Missing or unrecognized values cannot prove nothing was sent. Other structured error fields remain compatible.

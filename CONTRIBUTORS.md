@@ -62,3 +62,5 @@ Thanks to the [MQTT.js contributors](https://github.com/mqttjs/MQTT.js/releases/
 Thanks to the [OrcaSlicer contributors](https://github.com/OrcaSlicer/OrcaSlicer/releases/tag/v2.5.0) for the published 2.5.0 source and macOS build used to reproduce and validate shared nozzle-flow metadata. This credits upstream software and contracts; it does not claim hardware verification or authorship of this repository’s fix.
 
 Thanks to the [basic-ftp maintainers](https://github.com/patrickjuchli/basic-ftp/releases/tag/v6.2.6) and [MCP TypeScript SDK contributors](https://github.com/modelcontextprotocol/typescript-sdk) for compatible patch updates, including the upstream recursive-download path traversal correction.
+
+- **David Montgomery** — reports and reproduces the macOS installed-slicer `bamboo_model` test scratch leak (#139); the regression is verified with the real isolated Bambu Studio CLI and mocked scratch cleanup.
