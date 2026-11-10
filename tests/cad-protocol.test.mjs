@@ -106,3 +106,62 @@ test("CAD_ENABLED=0 leaves out every CAD tool, prompt and capability", async (t)
     true,
   );
 });
+
+test("CAD structured refusals pass the advertised output schema without wording matching", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "cad-codes-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const data = join(dir, "data");
+  const tr = new StdioClientTransport({
+    command: process.execPath,
+    args: [entry],
+    cwd: dir,
+    env: {
+      PATH: "/usr/bin:/bin",
+      HOME: dir,
+      MCP_TRANSPORT: "stdio",
+      BAMBU_MODEL: "",
+      PRINTER_TYPE: "octoprint",
+      PRINTER_HOST: "127.0.0.1",
+      PRINTER_PORT: "1",
+      TEMP_DIR: dir,
+      CAD_DATA_DIR: data,
+    },
+    stderr: "pipe",
+  });
+  tr.stderr?.on("data", () => {});
+  const c = new Client({ name: "cad-codes", version: "1" });
+  t.after(() => c.close());
+  await c.connect(tr);
+  await c.listTools();
+  const result = await c.callTool({
+    name: "cad_setup",
+    arguments: { install: true },
+  });
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.code, "cad-uv-missing");
+  assert.equal(result.structuredContent.status, "error");
+  assert.ok(result.structuredContent.message);
+  assert.ok(result.structuredContent.storage.expected_download_bytes > 0);
+  const { writeFile, readdir } = await import("node:fs/promises");
+  await writeFile(
+    join(data, "operation.lock"),
+    JSON.stringify({ pid: process.pid, operation: "setup" }),
+  );
+  const busy = await c.callTool({
+    name: "cad_setup",
+    arguments: { install: true },
+  });
+  assert.equal(busy.structuredContent.code, "cad-setup-busy");
+  const expired = await c.callTool({
+    name: "cad_run",
+    arguments: {
+      script: "P={}\ndef build():return None",
+      output_dir: dir,
+      name: "queued",
+      timeout_ms: 100,
+    },
+  });
+  assert.equal(expired.isError, true);
+  assert.equal(expired.structuredContent.code, "cad-queue-timeout");
+  assert.deepEqual(await readdir(join(data, "queue")), []);
+});

@@ -2,10 +2,17 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
+import { performance } from "node:perf_hooks";
+import { CadRefusal, cadFailure } from "./cad/refusal.js";
+import { withCadLock } from "./cad/serial.js";
+import { measureEnvironment, snapshotInputs, storageInfo, } from "./cad/storage.js";
 import { cadSandbox, defaultCadSystem } from "./cad/process.js";
 const ASSETS = fileURLToPath(new URL("../src/cad/", import.meta.url));
 const BUILD123D = "0.13.0";
+const PACKAGE_NAME = createRequire(import.meta.url)("../package.json")
+    .name;
 export class CadEngine {
     constructor(options) {
         this.options = options;
@@ -15,14 +22,16 @@ export class CadEngine {
             path.join(process.platform === "darwin"
                 ? path.join(os.homedir(), "Library", "Application Support")
                 : (process.env.XDG_DATA_HOME ??
-                    path.join(os.homedir(), ".local", "share")), "bambu-printer-mcp", "cad"));
+                    path.join(os.homedir(), ".local", "share")), PACKAGE_NAME, "cad"));
     }
     async status() {
         const python = path.join(this.dataDir, "runtime", "bin", "python");
         const configured = await fs.stat(python).then((s) => s.isFile(), () => false);
         let ready = false;
+        let sizeMarker;
         try {
             const marker = JSON.parse(await fs.readFile(path.join(this.dataDir, "ready.json"), "utf8"));
+            sizeMarker = marker.storage;
             ready =
                 configured &&
                     marker.build123d === BUILD123D &&
@@ -39,12 +48,18 @@ export class CadEngine {
             python: configured ? python : null,
             build123d: BUILD123D,
             platform: this.system.platform,
+            storage: storageInfo(sizeMarker, configured ||
+                (await Promise.all(["runtime", "python", "cache"].map((name) => fs.stat(path.join(this.dataDir, name)).then(() => true, () => false)))).some(Boolean)),
             ...(!ready
                 ? {
                     error: "Run cad_setup with install: true to install and verify the confined CAD runtime.",
                 }
                 : {}),
         };
+    }
+    async failure(error, tool) {
+        const storage = await this.status().then((status) => status.storage, () => storageInfo(undefined, true));
+        return { ...cadFailure(error, tool), storage };
     }
     async allowedDirectory(value) {
         if (typeof value !== "string" || !value)
@@ -79,42 +94,10 @@ export class CadEngine {
             UV_NO_CONFIG: "1",
         };
     }
-    async exclusive(work) {
-        await fs.mkdir(this.dataDir, { recursive: true, mode: 0o700 });
-        const lock = path.join(this.dataDir, "operation.lock");
-        const acquire = () => fs.open(lock, "wx", 0o600);
-        let handle;
-        try {
-            handle = await acquire();
-        }
-        catch (error) {
-            if (error.code !== "EEXIST")
-                throw error;
-            try {
-                const previous = JSON.parse(await fs.readFile(lock, "utf8"));
-                if (!Number.isInteger(previous.pid) || previous.pid < 1)
-                    throw new Error("invalid lock");
-                process.kill(previous.pid, 0);
-            }
-            catch (e) {
-                if (e.code === "ESRCH") {
-                    await fs.unlink(lock);
-                    handle = await acquire();
-                }
-            }
-            if (!handle)
-                throw new Error("A CAD operation is already running. Wait for it to finish; no work was replayed.");
-        }
-        await handle.writeFile(JSON.stringify({ pid: process.pid }));
-        try {
-            return await work();
-        }
-        finally {
-            await handle.close();
-            await fs.unlink(lock).catch(() => { });
-        }
+    async exclusive(work, operation = "fit", signal, deadline) {
+        return withCadLock(this.dataDir, { operation, signal, deadline }, work);
     }
-    async confined(mode, request, job, readonly, timeoutMs, signal) {
+    async confined(mode, request, job, readonly, timeoutMs, signal, inputDirectories = []) {
         const python = path.join(this.dataDir, "runtime", "bin", "python");
         const sandbox = await cadSandbox(this.system.platform, {
             data: this.dataDir,
@@ -122,6 +105,7 @@ export class CadEngine {
             assets: ASSETS,
             python,
             readonly,
+            inputs: inputDirectories,
         });
         await fs.mkdir(path.join(job, "tmp"), { recursive: true, mode: 0o700 });
         return this.system.run(sandbox.command, [
@@ -149,7 +133,7 @@ export class CadEngine {
                 ...(await this.status()),
             };
         if (!["darwin", "linux"].includes(this.system.platform))
-            throw new Error(`CAD confinement is unavailable on ${this.system.platform}.`);
+            throw new CadRefusal("cad-confinement-unavailable", `CAD confinement is unavailable on ${this.system.platform}.`);
         return this.exclusive(async () => {
             signal?.throwIfAborted();
             const env = this.environment(this.dataDir);
@@ -158,43 +142,54 @@ export class CadEngine {
             await fs.unlink(path.join(this.dataDir, "ready.json")).catch(() => { });
             const python = path.join(this.dataDir, "runtime", "bin", "python");
             const opts = { env, cwd: this.dataDir, signal, timeoutMs: 600000 };
-            if (!(await fs.stat(python).then((s) => s.isFile(), () => false)))
+            try {
+                if (!(await fs.stat(python).then((s) => s.isFile(), () => false)))
+                    await this.system.run("uv", [
+                        "venv",
+                        "--managed-python",
+                        "--python",
+                        "3.12",
+                        "--no-config",
+                        path.join(this.dataDir, "runtime"),
+                    ], opts);
                 await this.system.run("uv", [
-                    "venv",
-                    "--managed-python",
+                    "pip",
+                    "sync",
                     "--python",
-                    "3.12",
+                    python,
+                    "--only-binary",
+                    ":all:",
                     "--no-config",
-                    path.join(this.dataDir, "runtime"),
+                    path.join(ASSETS, "requirements.lock"),
                 ], opts);
-            await this.system.run("uv", [
-                "pip",
-                "sync",
-                "--python",
-                python,
-                "--only-binary",
-                ":all:",
-                "--no-config",
-                path.join(ASSETS, "requirements.lock"),
-            ], opts);
+            }
+            catch (e) {
+                if (e.code === "ENOENT")
+                    throw new CadRefusal("cad-uv-missing", "uv is not available on the MCP's PATH. Install uv, then run cad_setup again; no model was run.");
+                throw e;
+            }
             await this.system.run(python, ["-I", "-B", path.join(ASSETS, "worker.py"), "imports"], { ...opts, timeoutMs: 120000 });
             const job = await fs.mkdtemp(path.join(this.dataDir, "verify-"));
             const request = path.join(job, "request.json");
             await fs.writeFile(request, JSON.stringify({ output: job, home: os.homedir() }), { mode: 0o600 });
-            const result = JSON.parse((await this.confined("smoke", request, job, [request], 180000, signal))
-                .stdout);
+            const result = JSON.parse((await this.confined("smoke", request, job, [request], 180000, signal)).stdout);
             if (result.build123d !== BUILD123D ||
                 !result.watertight ||
                 !result.manifold ||
                 !result.step_valid ||
                 result.solid_count !== 1)
                 throw new Error("CAD setup's confined STL/STEP round trip failed.");
+            const storage = {
+                installed_bytes: await measureEnvironment(this.dataDir),
+                measured_at: new Date().toISOString(),
+            };
             await fs.writeFile(path.join(this.dataDir, "ready.json"), JSON.stringify({
                 build123d: BUILD123D,
                 platform: this.system.platform,
                 verifiedAt: new Date().toISOString(),
                 fingerprint: await this.fingerprint(),
                 dataDevice: (await fs.stat(this.dataDir)).dev,
+                storage,
             }), { mode: 0o600 });
             return {
                 supported: true,
@@ -202,20 +197,37 @@ export class CadEngine {
                 installed: true,
                 message: "CAD is ready; confined import, build, STL and STEP round trip passed. No native files were re-signed.",
             };
-        });
+        }, "setup", signal);
     }
     async fingerprint() {
-        return createHash("sha256")
-            .update(await fs.readFile(path.join(ASSETS, "requirements.lock")))
-            .update(await fs.readFile(path.join(ASSETS, "worker.py")))
-            .update(await fs.readFile(path.join(ASSETS, "geometry.py")))
-            .update(await fs.readFile(new URL("./cad/process.js", import.meta.url)))
-            .digest("hex");
+        const hash = createHash("sha256");
+        for (const file of [
+            "requirements.lock",
+            "worker.py",
+            "geometry.py",
+            "process.ts",
+            "storage.ts",
+            "serial.ts",
+            "refusal.ts",
+            "contracts.ts",
+        ])
+            hash.update(await fs.readFile(path.join(ASSETS, file)));
+        hash.update(await fs.readFile(new URL("../src/cad-engine.ts", import.meta.url)));
+        for (const file of [
+            "process.js",
+            "storage.js",
+            "serial.js",
+            "refusal.js",
+            "contracts.js",
+        ])
+            hash.update(await fs.readFile(new URL(`./cad/${file}`, import.meta.url)));
+        hash.update(await fs.readFile(new URL("./cad-engine.js", import.meta.url)));
+        return hash.digest("hex");
     }
     async requireSupportedStorage(env, signal) {
         if (this.system.platform !== "darwin")
             return;
-        const error = () => new Error("Code-CAD on macOS requires an internal disk with file ownership enabled. External and network data volumes are unsupported after measured native-import stalls. Set CAD_DATA_DIR to an internal folder and rerun cad_setup; nothing was installed by this attempt.");
+        const error = () => new CadRefusal("cad-data-volume-refused", "Code-CAD on macOS requires an internal disk with file ownership enabled. External and network data volumes are unsupported after measured native-import stalls. Set CAD_DATA_DIR to an internal folder and rerun cad_setup; nothing was installed by this attempt.");
         try {
             const opts = { env, cwd: this.dataDir, timeoutMs: 10000, signal };
             const df = await this.system.run("/bin/df", ["-P", this.dataDir], opts);
@@ -250,6 +262,7 @@ export class CadEngine {
         return file;
     }
     async run(args, signal) {
+        const started = performance.now();
         only(args, [
             "script",
             "script_path",
@@ -259,10 +272,21 @@ export class CadEngine {
             "timeout_ms",
             "inputs",
             "mode",
+            "final",
         ]);
         const root = await this.allowedDirectory(args.output_dir);
         const name = plainName(args.name);
-        const timeout = milliseconds(args.timeout_ms);
+        const timeout = milliseconds(args.timeout_ms), deadline = started + timeout;
+        if (args.final !== undefined && typeof args.final !== "boolean")
+            throw new Error("final must be a boolean.");
+        if (root.split(path.sep).includes(".cad-inputs"))
+            throw new Error("output_dir cannot be inside the reserved CAD input cache.");
+        const remaining = () => {
+            const value = Math.floor(deadline - performance.now());
+            if (value <= 0)
+                throw new Error("CAD run timed out.");
+            return value;
+        };
         if ((args.script === undefined) === (args.script_path === undefined))
             throw new Error("Supply exactly one of script or script_path.");
         const source = args.script === undefined
@@ -321,19 +345,20 @@ export class CadEngine {
                 inputs[alias] = await this.inputFile(value, ext);
             }
         }
-        return this.exclusive(async () => {
+        return this.exclusive(async (queueWaitMs) => {
             const status = await this.status();
             if (!status.ready)
-                throw new Error(status.error);
+                throw new CadRefusal("cad-not-ready", status.error);
             const job = await fs.mkdtemp(path.join(root, `cad-${name}-`));
             await fs.chmod(job, 0o700);
             const script = path.join(job, `${name}.py`), parameters = path.join(job, `${name}.parameters.json`), request = path.join(job, ".cad-request.json");
+            const resultManifest = path.join(job, "cad-result.json");
+            const lineage = createHash("sha256").update(source).digest("hex");
             await fs.writeFile(script, source, { mode: 0o600 });
             let previous = {};
             if (args.script_path !== undefined) {
-                const previousPath = String(args.script_path).replace(/\.py$/i, ".parameters.json");
                 try {
-                    previous = JSON.parse(await fs.readFile(await this.inputFile(previousPath, ".json"), "utf8"));
+                    previous = JSON.parse(await fs.readFile(await this.inputFile(String(args.script_path).replace(/\.py$/i, ".parameters.json"), ".json"), "utf8"));
                 }
                 catch (e) {
                     if (e.code !== "ENOENT")
@@ -341,60 +366,79 @@ export class CadEngine {
                 }
             }
             await fs.writeFile(parameters, JSON.stringify({ ...previous, ...overrides }), { mode: 0o600 });
-            const snapshots = {};
-            const inputDir = path.join(job, "inputs");
-            await fs.mkdir(inputDir, { mode: 0o700 });
-            let inputBytes = 0;
-            const inputNames = new Set();
-            for (const [alias, file] of Object.entries(inputs)) {
-                const filename = path.basename(file);
-                if (inputNames.has(filename.toLowerCase()))
-                    throw new Error("CAD input files must have distinct original filenames so linked mesh/texture assets remain unambiguous.");
-                inputNames.add(filename.toLowerCase());
-                const destination = path.join(inputDir, filename);
-                await fs.copyFile(file, destination);
-                const bytes = (await fs.stat(destination)).size;
-                inputBytes += bytes;
-                if (bytes > 64 * 1024 * 1024 || inputBytes > 256 * 1024 * 1024)
-                    throw new Error("CAD inputs exceed their 64 MiB/file or 256 MiB total limit.");
-                snapshots[alias] = destination;
-            }
-            const manifest = path.join(job, `${name}.inputs.json`);
-            await fs.writeFile(manifest, JSON.stringify(snapshots, null, 2), {
-                mode: 0o600,
+            await atomicJson(resultManifest, {
+                status: "pending",
+                final: args.final === true,
+                lineage_id: lineage,
             });
-            const base = {
-                output: job,
-                name,
-                script,
-                parameters,
-                mode,
-                inputs: snapshots,
-            };
-            await fs.writeFile(request, JSON.stringify(base), { mode: 0o600 });
-            const effective = JSON.parse((await this.system.run(status.python, ["-I", "-B", path.join(ASSETS, "worker.py"), "parameters", request], { env: this.environment(job), cwd: job, timeoutMs: 10000, signal })).stdout);
-            await fs.writeFile(parameters, JSON.stringify(effective, null, 2), {
-                mode: 0o600,
-            });
-            const t = Date.now(), protectedFiles = [script, parameters, request, manifest, inputDir];
             try {
-                const built = await this.confined("build", request, job, protectedFiles, timeout, signal);
+                remaining();
+                signal?.throwIfAborted();
+                const snapshot = await snapshotInputs(root, inputs, signal, {
+                    directory: path.join(this.dataDir, "input-index"),
+                    authorize: (directory) => this.allowedDirectory(directory),
+                });
+                const snapshots = snapshot.inputs, manifest = path.join(job, `${name}.inputs.json`);
+                await fs.writeFile(manifest, JSON.stringify(snapshots, null, 2), {
+                    mode: 0o600,
+                });
+                const base = {
+                    output: job,
+                    name,
+                    script,
+                    parameters,
+                    mode,
+                    inputs: snapshots,
+                };
+                await fs.writeFile(request, JSON.stringify(base), { mode: 0o600 });
+                const protectedFiles = [
+                    script,
+                    parameters,
+                    request,
+                    manifest,
+                    resultManifest,
+                    ...(snapshot.directory ? [snapshot.directory] : []),
+                ];
+                const readableInputs = snapshot.directory ? [snapshot.directory] : [];
+                const effective = JSON.parse((await this.system.run(status.python, [
+                    "-I",
+                    "-B",
+                    path.join(ASSETS, "worker.py"),
+                    "parameters",
+                    request,
+                ], {
+                    env: this.environment(job),
+                    cwd: job,
+                    timeoutMs: Math.min(10000, remaining()),
+                    signal,
+                })).stdout);
+                await fs.writeFile(parameters, JSON.stringify(effective, null, 2), {
+                    mode: 0o600,
+                });
+                const t = performance.now();
+                const built = await this.confined("build", request, job, protectedFiles, remaining(), signal, readableInputs);
                 await fs.writeFile(path.join(job, "build.log"), (built.stdout + "\n" + (built.stderr ?? "")).slice(-200000), { mode: 0o600, flag: "wx" });
                 for (const ext of mode === "solid" ? ["stl", "step"] : ["stl"]) {
                     const st = await fs.lstat(path.join(job, `${name}.${ext}`));
                     if (!st.isFile() || st.size === 0 || st.size > 64 * 1024 * 1024)
                         throw new Error(`CAD ${ext} export is missing, unsafe or too large.`);
                 }
-                const remaining = timeout - (Date.now() - t);
-                if (remaining <= 0)
-                    throw new Error("CAD run timed out before validation.");
-                const checked = JSON.parse((await this.confined("inspect", request, job, protectedFiles, remaining, signal)).stdout);
-                return {
+                const checked = JSON.parse((await this.confined("inspect", request, job, protectedFiles, remaining(), signal, readableInputs)).stdout);
+                const result = {
                     ...checked,
+                    status: "completed",
+                    final: args.final === true,
+                    completed_at: new Date().toISOString(),
+                    lineage_id: lineage,
+                    result_manifest: resultManifest,
                     script,
                     parameters,
                     inputs: snapshots,
                     input_manifest: manifest,
+                    input_hashes: snapshot.hashes,
+                    snapshot_bytes_added: snapshot.added,
+                    snapshot_bytes_reused: snapshot.reused,
+                    queue_wait_ms: queueWaitMs,
                     stl: path.join(job, `${name}.stl`),
                     step: mode === "solid" ? path.join(job, `${name}.step`) : null,
                     ...(mode === "mesh"
@@ -402,13 +446,27 @@ export class CadEngine {
                             step_unavailable: "Mesh mode has no parametric B-rep; STEP export is unavailable.",
                         }
                         : {}),
-                    seconds: (Date.now() - t) / 1000,
+                    seconds: (performance.now() - t) / 1000,
                 };
+                await atomicJson(resultManifest, result);
+                return result;
             }
             catch (e) {
-                throw new Error(`${e instanceof Error ? e.message : String(e)} Checkpoint retained: ${script} and ${parameters}.`);
+                await atomicJson(resultManifest, {
+                    status: "failed",
+                    final: false,
+                    final_requested: args.final === true,
+                    lineage_id: lineage,
+                    message: e instanceof Error ? e.message : String(e),
+                    script,
+                    parameters,
+                }).catch(() => { });
+                const message = `${e instanceof Error ? e.message : String(e)} Checkpoint retained: ${script} and ${parameters}.`;
+                if (e instanceof CadRefusal)
+                    throw new CadRefusal(e.code, message);
+                throw new Error(message);
             }
-        });
+        }, "run", signal, deadline);
     }
     async checkFit(args, signal) {
         only(args, [
@@ -428,7 +486,7 @@ export class CadEngine {
         return this.exclusive(async () => {
             const status = await this.status();
             if (!status.ready)
-                throw new Error(status.error);
+                throw new CadRefusal("cad-not-ready", status.error);
             const job = await fs.mkdtemp(path.join(this.dataDir, "fit-"));
             try {
                 await fs.copyFile(model, path.join(job, "model.stl"));
@@ -449,7 +507,7 @@ export class CadEngine {
             finally {
                 await fs.rm(job, { recursive: true, force: true });
             }
-        });
+        }, "fit", signal);
     }
 }
 function only(args, keys) {
@@ -472,4 +530,17 @@ function milliseconds(value) {
         value > 900000)
         throw new Error("timeout_ms must be an integer from 100 to 900000.");
     return value;
+}
+async function atomicJson(file, value) {
+    const temporary = path.join(path.dirname(file), `.cad-result-${randomUUID()}.tmp`);
+    try {
+        await fs.writeFile(temporary, JSON.stringify(value, null, 2), {
+            flag: "wx",
+            mode: 0o600,
+        });
+        await fs.rename(temporary, file);
+    }
+    finally {
+        await fs.unlink(temporary).catch(() => { });
+    }
 }

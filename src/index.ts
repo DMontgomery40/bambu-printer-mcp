@@ -58,6 +58,7 @@ import {
 } from "./bambu-native.js";
 import { importFileViaBambuConnect } from "./bambu-connect.js";
 import { CadEngine } from "./cad-engine.js";
+import { CadRefusal } from "./cad/refusal.js";
 import { CAD_TOOLS, cadEnabled } from "./cad/contracts.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
 import { FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFAULT_ARGS, FUSION_MCP_PIN, FUSION_NEW_DESIGN_OUTPUT_SCHEMA, FUSION_STATUS_OUTPUT_SCHEMA, FusionMcpBridge, addinAddress } from "./fusion-mcp-bridge.js";
@@ -3755,7 +3756,10 @@ class BambuPrinterMCPServer {
               .catch(() => {});
           });
 
-      if (!CAD_ENABLED && name.startsWith("cad_")) return {isError:true, content:[{type:"text",text:"Code-CAD is disabled by CAD_ENABLED=0."}]};
+      if (!CAD_ENABLED && name.startsWith("cad_")) {
+        const failure = await this.cad.failure(new CadRefusal("cad-disabled", "Code-CAD is disabled by CAD_ENABLED=0."), name);
+        return {isError: true, content: [{type: "text", text: failure.message}], structuredContent: failure};
+      }
       const host = String(args?.host || DEFAULT_HOST);
       const bambuSerial = String(args?.bambu_serial || DEFAULT_BAMBU_SERIAL);
       const bambuToken = String(args?.bambu_token || DEFAULT_BAMBU_TOKEN);
@@ -5172,6 +5176,10 @@ class BambuPrinterMCPServer {
         return { content: [{ type: "text", text }] };
 
       } catch (error) {
+        if (name.startsWith("cad_")) {
+          const failure = await this.cad.failure(error, name);
+          return {isError: true, content: [{type: "text" as const, text: failure.message}], structuredContent: failure};
+        }
         const message = error instanceof Error ? error.message : String(error);
         // Refusals and printer rejections repeat unchanged; say what to fix instead of "try again".
         const refused = /nothing was (?:sent|uploaded)|no command was sent|does not match the job|is ambiguous|is missing or ambiguous|rejected the print command|are refused|is refused|refused because|refused until|refused before/i.test(message);

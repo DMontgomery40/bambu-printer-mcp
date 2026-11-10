@@ -1,3 +1,4 @@
+import { type CadStorage } from "./cad/storage.js";
 import { type CadSystem } from "./cad/process.js";
 export type CadArguments = Record<string, unknown>;
 export interface CadOptions {
@@ -11,6 +12,7 @@ export interface CadStatus {
     python: string | null;
     build123d: string;
     platform: string;
+    storage: CadStorage;
     error?: string;
 }
 export declare class CadEngine {
@@ -19,6 +21,15 @@ export declare class CadEngine {
     readonly dataDir: string;
     constructor(options: CadOptions);
     status(): Promise<CadStatus>;
+    failure(error: unknown, tool: string): Promise<{
+        storage: CadStorage;
+        status: "error";
+        code: "cad-uv-missing" | "cad-data-volume-refused" | "cad-setup-busy" | "cad-operation-busy" | "cad-queue-timeout" | "cad-not-ready" | "cad-confinement-unavailable" | "cad-disabled" | "cad-failed";
+        message: string;
+        tool: string;
+        retryable: boolean;
+        suggestion: string;
+    }>;
     private allowedDirectory;
     private environment;
     private exclusive;

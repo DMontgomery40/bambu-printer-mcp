@@ -22,6 +22,7 @@ export declare const CAD_TOOLS: ({
             parameters?: undefined;
             output_dir?: undefined;
             name?: undefined;
+            final?: undefined;
             timeout_ms?: undefined;
             model?: undefined;
             reference?: undefined;
@@ -33,8 +34,58 @@ export declare const CAD_TOOLS: ({
     };
     outputSchema: {
         type: "object";
-        properties: Record<string, unknown>;
-        required: string[];
+        anyOf: ({
+            type: string;
+            properties: {
+                status: {
+                    type: string;
+                    const: string;
+                };
+                code: {
+                    type: string;
+                    enum: ("cad-uv-missing" | "cad-data-volume-refused" | "cad-setup-busy" | "cad-operation-busy" | "cad-queue-timeout" | "cad-not-ready" | "cad-confinement-unavailable" | "cad-disabled" | "cad-failed")[];
+                };
+                message: {
+                    type: string;
+                };
+                tool: {
+                    type: string;
+                };
+                retryable: {
+                    type: string;
+                };
+                suggestion: {
+                    type: string;
+                };
+                storage: {
+                    type: string;
+                    properties: {
+                        expected_download_bytes: {
+                            type: string;
+                        };
+                        expected_installed_bytes: {
+                            type: string;
+                        };
+                        installed_bytes: {
+                            type: string[];
+                        };
+                        measurement: {
+                            type: string;
+                            const: string;
+                        };
+                        measured_at: {
+                            type: string;
+                        };
+                    };
+                    required: string[];
+                };
+            };
+            required: string[];
+        } | {
+            type: string;
+            properties: Record<string, unknown>;
+            required: string[];
+        })[];
     };
 } | {
     name: string;
@@ -54,6 +105,7 @@ export declare const CAD_TOOLS: ({
             parameters?: undefined;
             output_dir?: undefined;
             name?: undefined;
+            final?: undefined;
             timeout_ms?: undefined;
             model?: undefined;
             reference?: undefined;
@@ -65,8 +117,58 @@ export declare const CAD_TOOLS: ({
     };
     outputSchema: {
         type: "object";
-        properties: Record<string, unknown>;
-        required: string[];
+        anyOf: ({
+            type: string;
+            properties: {
+                status: {
+                    type: string;
+                    const: string;
+                };
+                code: {
+                    type: string;
+                    enum: ("cad-uv-missing" | "cad-data-volume-refused" | "cad-setup-busy" | "cad-operation-busy" | "cad-queue-timeout" | "cad-not-ready" | "cad-confinement-unavailable" | "cad-disabled" | "cad-failed")[];
+                };
+                message: {
+                    type: string;
+                };
+                tool: {
+                    type: string;
+                };
+                retryable: {
+                    type: string;
+                };
+                suggestion: {
+                    type: string;
+                };
+                storage: {
+                    type: string;
+                    properties: {
+                        expected_download_bytes: {
+                            type: string;
+                        };
+                        expected_installed_bytes: {
+                            type: string;
+                        };
+                        installed_bytes: {
+                            type: string[];
+                        };
+                        measurement: {
+                            type: string;
+                            const: string;
+                        };
+                        measured_at: {
+                            type: string;
+                        };
+                    };
+                    required: string[];
+                };
+            };
+            required: string[];
+        } | {
+            type: string;
+            properties: Record<string, unknown>;
+            required: string[];
+        })[];
     };
 } | {
     name: string;
@@ -121,6 +223,11 @@ export declare const CAD_TOOLS: ({
                 maxLength: number;
                 description: string;
             };
+            final: {
+                type: string;
+                default: boolean;
+                description: string;
+            };
             timeout_ms: {
                 type: string;
                 minimum: number;
@@ -138,8 +245,58 @@ export declare const CAD_TOOLS: ({
     };
     outputSchema: {
         type: "object";
-        properties: Record<string, unknown>;
-        required: string[];
+        anyOf: ({
+            type: string;
+            properties: {
+                status: {
+                    type: string;
+                    const: string;
+                };
+                code: {
+                    type: string;
+                    enum: ("cad-uv-missing" | "cad-data-volume-refused" | "cad-setup-busy" | "cad-operation-busy" | "cad-queue-timeout" | "cad-not-ready" | "cad-confinement-unavailable" | "cad-disabled" | "cad-failed")[];
+                };
+                message: {
+                    type: string;
+                };
+                tool: {
+                    type: string;
+                };
+                retryable: {
+                    type: string;
+                };
+                suggestion: {
+                    type: string;
+                };
+                storage: {
+                    type: string;
+                    properties: {
+                        expected_download_bytes: {
+                            type: string;
+                        };
+                        expected_installed_bytes: {
+                            type: string;
+                        };
+                        installed_bytes: {
+                            type: string[];
+                        };
+                        measurement: {
+                            type: string;
+                            const: string;
+                        };
+                        measured_at: {
+                            type: string;
+                        };
+                    };
+                    required: string[];
+                };
+            };
+            required: string[];
+        } | {
+            type: string;
+            properties: Record<string, unknown>;
+            required: string[];
+        })[];
     };
 } | {
     name: string;
@@ -198,14 +355,65 @@ export declare const CAD_TOOLS: ({
             parameters?: undefined;
             output_dir?: undefined;
             name?: undefined;
+            final?: undefined;
         };
         required: string[];
         additionalProperties: boolean;
     };
     outputSchema: {
         type: "object";
-        properties: Record<string, unknown>;
-        required: string[];
+        anyOf: ({
+            type: string;
+            properties: {
+                status: {
+                    type: string;
+                    const: string;
+                };
+                code: {
+                    type: string;
+                    enum: ("cad-uv-missing" | "cad-data-volume-refused" | "cad-setup-busy" | "cad-operation-busy" | "cad-queue-timeout" | "cad-not-ready" | "cad-confinement-unavailable" | "cad-disabled" | "cad-failed")[];
+                };
+                message: {
+                    type: string;
+                };
+                tool: {
+                    type: string;
+                };
+                retryable: {
+                    type: string;
+                };
+                suggestion: {
+                    type: string;
+                };
+                storage: {
+                    type: string;
+                    properties: {
+                        expected_download_bytes: {
+                            type: string;
+                        };
+                        expected_installed_bytes: {
+                            type: string;
+                        };
+                        installed_bytes: {
+                            type: string[];
+                        };
+                        measurement: {
+                            type: string;
+                            const: string;
+                        };
+                        measured_at: {
+                            type: string;
+                        };
+                    };
+                    required: string[];
+                };
+            };
+            required: string[];
+        } | {
+            type: string;
+            properties: Record<string, unknown>;
+            required: string[];
+        })[];
     };
 })[];
 export declare const CAD_DESIGN_PROMPT: {

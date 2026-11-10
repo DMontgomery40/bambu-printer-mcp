@@ -23,6 +23,7 @@ export interface CadSandboxRoots {
     assets: string;
     python: string;
     readonly: string[];
+    inputs?: string[];
 }
 /** Linux uses an empty mount tree and fresh user/PID/network namespaces. A missing/blocked bwrap is fatal. */
 export declare function cadSandbox(platform: NodeJS.Platform, r: CadSandboxRoots): Promise<{
