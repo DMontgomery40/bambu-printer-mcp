@@ -1,3 +1,4 @@
+import {trackedMkdtempSync} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import net from "node:net";
@@ -58,7 +59,7 @@ async function closedPort() {
 }
 
 async function start(t, mode = "normal", overrides = {}) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-fusion-test-"));
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-fusion-test-"));
   const logPath = path.join(directory, "peer.jsonl");
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -377,7 +378,7 @@ test("launch starts Fusion when it is not running and waits for the add-in", asy
 });
 
 test("callers sharing a slow start each keep their own deadline", { timeout: 60_000 }, async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-fusion-shared-"));
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-fusion-shared-"));
   const saved = Object.fromEntries(["FUSION_MCP_COMMAND", "FUSION_MCP_ARGS", "FUSION_MCP_TIMEOUT_MS", "FUSION_MCP_PORT"].map((key) => [key, process.env[key]]));
   Object.assign(process.env, { FUSION_MCP_COMMAND: process.execPath, FUSION_MCP_ARGS: JSON.stringify([fixture, "slow-start", path.join(directory, "peer.jsonl")]), FUSION_MCP_TIMEOUT_MS: "30000", FUSION_MCP_PORT: String(await closedPort()) });
   const bridge = new FusionMcpBridge();

@@ -1,3 +1,4 @@
+import {trackedMkdtemp} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
@@ -20,7 +21,7 @@ for (const [name, rotation] of [
   ["tilted", [0.4, 0.7, 0.2]],
 ]) {
   test(`lay_flat rests the ${name} plate on its largest face at Z=0`, async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "stl-lay-flat-"));
+    const directory = await trackedMkdtemp(path.join(os.tmpdir(), "stl-lay-flat-"));
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
     const geometry = new THREE.BoxGeometry(30, 20, 2);
     geometry.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(new THREE.Euler(...rotation)));
@@ -55,7 +56,7 @@ for (const [name, rotation] of [
 // order its faces appear in, instead of flipping onto the block.
 for (const order of ["plate first", "block first"]) {
   test(`lay_flat keeps a seated plate with a raised block upright (${order})`, async (t) => {
-    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "stl-lay-flat-"));
+    const directory = await trackedMkdtemp(path.join(os.tmpdir(), "stl-lay-flat-"));
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
     const plate = new THREE.BoxGeometry(30, 20, 2).translate(0, 0, 1);
     const block = new THREE.BoxGeometry(10, 5, 1).translate(0, 0, 2.5);
@@ -105,7 +106,7 @@ function bedContact(positions, tolerance) {
 }
 
 async function layFlatShape(t, name, geometry) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "stl-lay-flat-"));
+  const directory = await trackedMkdtemp(path.join(os.tmpdir(), "stl-lay-flat-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const input = path.join(directory, `${name}.stl`);
   await fs.writeFile(input, new STLExporter().parse(new THREE.Mesh(geometry)));
@@ -122,7 +123,7 @@ function extrude(points, depth) {
 
 // David's stove gap filler, as Scan to Make handed it to the printer server.
 async function stoveGapFiller(t) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "stl-lay-flat-"));
+  const directory = await trackedMkdtemp(path.join(os.tmpdir(), "stl-lay-flat-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const input = path.join(directory, "clean.stl");
   await fs.writeFile(input, zlib.gunzipSync(await fs.readFile(new URL("./fixtures/stove-gap-filler.stl.gz", import.meta.url))));
@@ -198,7 +199,7 @@ for (const { name, geometry, minimumContact, wrongContact } of [
 test("lay_flat leaves a model unchanged and says so when no face can rest on the bed", async (t) => {
   // Two interpenetrating tetrahedra: every face has the other's tip beyond
   // its plane, and each axis-aligned lowest plane holds only two corners.
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "stl-lay-flat-"));
+  const directory = await trackedMkdtemp(path.join(os.tmpdir(), "stl-lay-flat-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const tetrahedron = new THREE.TetrahedronGeometry(10);
   const geometry = mergeGeometries([tetrahedron, tetrahedron.clone().rotateZ(Math.PI / 2)]);

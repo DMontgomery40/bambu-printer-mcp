@@ -1,3 +1,4 @@
+import {trackedMkdtempSync} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -21,7 +22,7 @@ const HELPER_SOURCE = fs.readFileSync(path.join(ROOT, "native/bambu-native-print
 const canCompile = process.platform === "linux" && spawnSync(process.env.CXX || "c++", ["--version"]).status === 0;
 
 function tempDir(t, prefix) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), prefix));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   return directory;
 }

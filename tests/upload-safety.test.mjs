@@ -1,3 +1,4 @@
+import {trackedMkdtemp} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -15,7 +16,7 @@ const code = (commands = "M104 S220\nM140 S60\nG1 X10 Y10 Z1\n", model = "p1s") 
   `; printer_model = ${model}\n; nozzle_diameter = 0.4\n; filament_type = PLA\n; filament_colour = #FFFFFF\n${commands}`;
 
 async function directory(t) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-upload-safety-"));
+  const dir = await trackedMkdtemp(path.join(os.tmpdir(), "bambu-upload-safety-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   return dir;
 }

@@ -1,3 +1,4 @@
+import {trackedMkdtempSync} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -10,6 +11,7 @@ import { AjvJsonSchemaValidator } from "@modelcontextprotocol/sdk/validation/ajv
 import { colourDistance, matchColours, proposeFilaments, loadColourNames, bambuTrayLabel, spoolName, PROPOSE_FILAMENTS_OUTPUT_SCHEMA } from "../dist/counterpart/filaments.js";
 import { parseBambuAdvert, modelFromSerial, modelFromDevModel, DISCOVER_OUTPUT_SCHEMA } from "../dist/counterpart/discovery.js";
 import { bambuSetupFields, SETUP_FIELDS_OUTPUT_SCHEMA, slicerSetup } from "../dist/counterpart/setup.js";
+import { RTSP_CAMERA_MODELS, TCP_CAMERA_MODELS } from "../dist/printers/camera-models.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const validator = new AjvJsonSchemaValidator();
@@ -96,7 +98,7 @@ test("the person's choices are checked against what's loaded now, and painted sl
 });
 
 test("spool words: Bambu Studio's colour names, tray labels as Studio prints them", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "colour-names-"));
+  const dir = trackedMkdtempSync(path.join(os.tmpdir(), "colour-names-"));
   try {
     fs.writeFileSync(path.join(dir, "filaments_color_codes.json"), JSON.stringify({ data: [
       { fila_id: "GFA00", fila_color: ["#FEC600FF"], fila_color_name: { en: "Sunflower Yellow" } },
@@ -137,6 +139,7 @@ test("setup fields: the .env names this server reads, its model choices, and the
   assert.equal(result.model, "p1s");
   const [kind] = result.kinds;
   assert.equal(kind.kind, "bambu");
+  assert.equal(kind.cameraSnapshot, true, "a setup check can ask camera_snapshot for a picture");
   assert.deepEqual(kind.fields.map(field => [field.name, field.env, field.required]),
     [["host", "PRINTER_HOST", true], ["serial", "BAMBU_SERIAL", true], ["model", "BAMBU_MODEL", true], ["secret", "BAMBU_TOKEN", true]]);
   const model = kind.fields.find(field => field.name === "model");
@@ -147,7 +150,7 @@ test("setup fields: the .env names this server reads, its model choices, and the
 });
 
 test("with no printer configured, the server lists the three tools and answers setup and discovery without a prompt", async t => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "counterpart-setup-"));
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), "counterpart-setup-"));
   const transport = new StdioClientTransport({ command: process.execPath, args: [path.join(root, "dist/index.js")], cwd: directory,
     env: { PATH: process.env.PATH ?? "", HOME: directory, MCP_TRANSPORT: "stdio", SLICER_TYPE: "bambustudio", SLICER_PATH: path.join(directory, "no-such", "bambu-studio"), BAMBU_PROFILES_ROOT: "", BAMBU_MODEL: "", PRINTER_HOST: "", BAMBU_SERIAL: "", BAMBU_TOKEN: "" }, stderr: "pipe" });
   transport.stderr?.on("data", () => {});
@@ -164,6 +167,12 @@ test("with no printer configured, the server lists the three tools and answers s
   assert.equal(setup.isError, undefined);
   assert.equal(setup.structuredContent.model, "p1s");
   assert.equal(setup.structuredContent.server.name, "bambu-printer-mcp");
+  // cameraSnapshot: true holds for every model this server offers: each has a camera_snapshot transport.
+  const [bambuKind] = setup.structuredContent.kinds;
+  assert.equal(bambuKind.cameraSnapshot, true);
+  const offered = bambuKind.fields.find(field => field.name === "model").choices.map(choice => choice.value);
+  assert.ok(offered.length > 0);
+  assert.deepEqual(offered.filter(model => !TCP_CAMERA_MODELS.has(model) && !RTSP_CAMERA_MODELS.has(model)), [], "every offered model has a camera transport");
   // No Bambu Studio where this server would run it (the Linux desktop case, Nov 5): the client asks for it.
   validate(SETUP_FIELDS_OUTPUT_SCHEMA, setup.structuredContent);
   const slicer = setup.structuredContent.slicer;

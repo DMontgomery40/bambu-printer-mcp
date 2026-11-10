@@ -1,3 +1,4 @@
+import {trackedMkdtempSync} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -208,7 +209,7 @@ function boxStl(min, max) {
 }
 
 function parts(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "counterpart-3mf-"));
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), "counterpart-3mf-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const base = path.join(directory, "base.stl"), top = path.join(directory, "top.stl"), side = path.join(directory, "side.stl");
   fs.writeFileSync(base, boxStl([-10, -10, 5], [10, 10, 15]));
@@ -279,7 +280,7 @@ test("counterpart_make_3mf refuses overwrites, missing directories, bad parts an
 });
 
 async function server(t, env = {}, files = {}) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "counterpart-mcp-"));
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), "counterpart-mcp-"));
   for (const [name, { text, mode }] of Object.entries(files)) fs.writeFileSync(path.join(directory, name), text, { mode });
   const transport = new StdioClientTransport({
     command: process.execPath,
@@ -453,7 +454,7 @@ test("V2 reports take the active extruder's packed temperature and loaded filame
 
 test("an HMS or print_error code missing from the bundled tables uses the user's own Bambu Studio download, by serial prefix", (t) => {
   // Bambu Studio keeps its downloaded tables in an hms folder next to BambuStudio.conf. Fixture text, not Bambu's.
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "studio-hms-"));
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), "studio-hms-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   fs.mkdirSync(path.join(directory, "hms"));
   const table = (hms, errors) => JSON.stringify({ data: { device_hms: { en: hms, ver: 1 }, device_error: { en: errors, ver: 1 } }, result: 0, ver: 1 });

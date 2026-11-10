@@ -1,6 +1,7 @@
+import {trackedMkdtemp} from './support/temp.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,7 +14,7 @@ const preload = fileURLToPath(new URL('./fixtures/inspection-no-network.mjs', im
 const HINTS = ['destructiveHint', 'idempotentHint', 'openWorldHint', 'readOnlyHint'];
 
 async function listedTools(t) {
-  const dir = await mkdtemp(join(tmpdir(), 'tool-annotations-'));
+  const dir = await trackedMkdtemp(join(tmpdir(), 'tool-annotations-'));
   const transport = new StdioClientTransport({ command: process.execPath, args: ['--import', preload, entry], cwd: dir, stderr: 'pipe',
     env: { HOME: dir, MCP_TRANSPORT: 'stdio', BAMBU_MODEL: '', BAMBU_PRINTER_MODEL: '', BAMBU_PRINTER_HOST: '127.0.0.1', PRINTER_HOST: '127.0.0.1',
       BAMBU_SERIAL: '', BAMBU_PRINTER_SERIAL: '', BAMBU_TOKEN: '', BAMBU_PRINTER_ACCESS_TOKEN: '', INSPECTION_NETWORK_LOG: join(dir, 'network.log') } });
