@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `cad_run` and `cad_check_fit` take `engine: "counterpart"`, a second code-CAD engine chosen per call; build123d stays the default. It is the Counterpart kernel and its physics engine, vendored as a built bundle with no dependencies (`vendor/counterpart-kernel`, 1.2 MB, 64 files), so it needs no `cad_setup` and no Python. Scripts are JavaScript modules (`export const P`, `export function build(P)`); a saved `.mjs` checkpoint keeps its engine on `script_path` edits. Each run is one Node process under Node's permission model (the script may import only the kernel, read only its declared inputs and write only its job folder) inside the same bubblewrap or Seatbelt confinement as Python. Results keep the build123d shape (paths, bounds, volume, watertight/manifold/winding checks, six renders and a contact sheet from a separate trusted inspection) with `step: null` and a reason, plus a 3MF, and per part the requirements the kernel's features state, how they sized their members, and the physics proof of each. `cad_check_fit` on this engine reports the kernel's exact mesh-boolean interference volume and BVH surface distance. `cad_status` reports the engine's readiness (Node 22 or newer). The CAD sandbox binds only the runtime folders that exist, so this engine runs without a Python runtime. Validated with a stdio test that builds, proves, edits, refuses a script reading `/etc/passwd` and checks two fits on Linux under bubblewrap; macOS Seatbelt was not run.
+
 ## [1.1.84] – 2026-11-10
 
 ### Fixed

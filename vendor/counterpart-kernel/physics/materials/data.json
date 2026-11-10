@@ -1,0 +1,1038 @@
+{
+ "PLA": {
+  "E_xy_MPa": {
+   "value": 2680,
+   "source": "S1",
+   "where": "p.2 Mechanical Properties: Young's Modulus (X-Y), ISO 527, 2680 +/- 130 MPa; Bambu PLA Basic, 100% infill, annealed 55 C 8 h; nozzle not stated",
+   "others": [
+    {
+     "value": 3250,
+     "source": "S4",
+     "where": "p.2 XY (Flat) Tensile modulus ASTM D3039 1 mm/min 3250 +/- 119 MPa; UltiMaker PLA, 0.4 mm core, 0.15 mm layers, 100% infill, mostly 45 deg infill"
+    },
+    {
+     "value": 3292,
+     "source": "S4",
+     "where": "p.2 YZ (Side, on edge, mostly walls) 3292 +/- 101 MPa; in-layer load"
+    }
+   ]
+  },
+  "E_z_MPa": {
+   "value": 2160,
+   "source": "S1",
+   "where": "p.2 Young's Modulus (Z), ISO 527, 2160 +/- 90 MPa",
+   "others": [
+    {
+     "value": 3071,
+     "source": "S4",
+     "where": "p.2 Z (Up) Tensile modulus 3071 +/- 181 MPa"
+    }
+   ]
+  },
+  "UTS_xy_MPa": {
+   "value": 39,
+   "source": "S1",
+   "where": "p.2 Tensile Strength (X-Y), ISO 527, 39 +/- 2 MPa",
+   "others": [
+    {
+     "value": 45.5,
+     "source": "S4",
+     "where": "p.2 XY (Flat) tensile stress at break 45.5 +/- 1.1 MPa (stress at yield 52.5 +/- 0.9 MPa)"
+    },
+    {
+     "value": 56.0,
+     "source": "S4",
+     "where": "p.2 YZ (Side) stress at break 56.0 +/- 1.5 MPa (yield 59.0 +/- 0.7)"
+    }
+   ]
+  },
+  "UTS_z_MPa": {
+   "value": 35,
+   "source": "S1",
+   "where": "p.2 Tensile Strength (Z), ISO 527, 35 +/- 3 MPa",
+   "others": [
+    {
+     "value": 33.1,
+     "source": "S4",
+     "where": "p.2 Z (Up) stress at break 33.1 +/- 2.8 MPa, 'No yield'"
+    }
+   ]
+  },
+  "Z_over_XY_strength_ratio": {
+   "value": 0.9,
+   "source": "S1",
+   "where": "derived: 35/39 (Bambu, annealed specimens)",
+   "derived": true,
+   "others": [
+    {
+     "value": 0.73,
+     "source": "S4",
+     "where": "derived: 33.1/45.5 break/break (0.63 vs XY yield 52.5)",
+     "derived": true
+    }
+   ]
+  },
+  "yield_strain_xy": {
+   "value": 0.034,
+   "source": "S4",
+   "where": "p.2 XY (Flat) Elongation at yield 3.4 +/- 0.0 %; Z: 'No yield'"
+  },
+  "strain_at_break_xy": {
+   "value": 0.122,
+   "source": "S1",
+   "where": "p.2 Breaking Elongation Rate (X-Y) 12.2 +/- 0.4 %",
+   "others": [
+    {
+     "value": 0.078,
+     "source": "S4",
+     "where": "p.2 XY elongation at break 7.8 +/- 1.2 %"
+    }
+   ]
+  },
+  "strain_at_break_z": {
+   "value": 0.075,
+   "source": "S1",
+   "where": "p.2 Breaking Elongation Rate (Z) 7.5 +/- 0.3 %",
+   "others": [
+    {
+     "value": 0.02,
+     "source": "S4",
+     "where": "p.2 Z (Up) elongation at break 2.0 +/- 0.2 %"
+    }
+   ]
+  },
+  "density_g_cm3": {
+   "value": 1.24,
+   "source": "S1",
+   "where": "p.2 Density ISO 1183 1.24 g/cm3 (filament material)",
+   "others": [
+    {
+     "value": 1.24,
+     "source": "S4",
+     "where": "p.3 Specific gravity ASTM D1505 1.24"
+    }
+   ]
+  },
+  "Tg_C": {
+   "value": 60,
+   "source": "S1",
+   "where": "p.2 Glass Transition Temperature DSC 10 C/min 60 C",
+   "others": [
+    {
+     "value": 59.1,
+     "source": "S4",
+     "where": "p.3 Glass transition ISO 11357 59.1 C"
+    }
+   ]
+  },
+  "HDT_C": {
+   "value": 57,
+   "source": "S1",
+   "where": "p.2 HDT ISO 75 0.45 MPa 57 C (1.8 MPa: 54 C)",
+   "others": [
+    {
+     "value": 58.8,
+     "source": "S4",
+     "where": "p.3 HDT at 0.455 MPa ISO 75-2/B 58.8 +/- 0.4 C (printed)"
+    }
+   ]
+  },
+  "permissible_strain_snapfit_one_time": {
+   "value": null,
+   "source": "S4+S5",
+   "where": "derived, in-layer only: 0.7 x yield strain 3.4% (S4 XY) using S5 p.11 rule 'amorphous ones up to about 70% of the yield strain'. Not a published PLA value. Across layers (no yield, S4 Z break 2.0%): S5 p.11 no-yield rule (stated for glass-fibre grades) 'about half the elongation at break' gives 0.010",
+   "derived": true,
+   "derived_candidate": 0.024,
+   "derived_candidate_z": 0.01,
+   "note": "No published allowable strain exists for printed PLA; derived_candidate is the Bayer amorphous rule (0.7 x yield strain) applied to a data-sheet yield strain; unvalidated"
+  },
+  "permissible_strain_snapfit_repeated": {
+   "value": null,
+   "source": "S4+S5",
+   "where": "derived: 0.6 x 0.024 per S5 p.12 Table 2 caption 'for frequent separation and rejoining, use about 60% of these values'; across layers 0.6 x 0.010 = 0.006",
+   "derived": true,
+   "derived_candidate": 0.0144,
+   "derived_candidate_z": 0.006,
+   "note": "No published allowable strain exists for printed PLA; derived_candidate is the Bayer amorphous rule (0.7 x yield strain) applied to a data-sheet yield strain; unvalidated"
+  },
+  "fatigue": {
+   "value": {
+    "R": 0.2,
+    "freq_Hz": 7,
+    "temperature": "room",
+    "UTS_basis_MPa": 54,
+    "sigma_max_MPa_vs_cycles": {
+     "32.4": [
+      2040,
+      1331,
+      972
+     ],
+     "24.3": [
+      6880,
+      5900,
+      5380
+     ],
+     "16.2": [
+      43600,
+      48893,
+      37970
+     ],
+     "10.8": [
+      525170
+     ]
+    },
+    "endurance_1e6": "not found (no run-out reported; no fitted Basquin coefficients published)"
+   },
+   "source": "S12",
+   "where": "Table 3 (PLA); Stratasys PLA, Anycubic Kobra, 0.4 mm nozzle, 0.25 mm layers, 100% infill, +45/-45 raster, XY; stress levels 60/45/30/20% UTS"
+  },
+  "friction_vs_steel_or_aluminium": {
+   "value": {
+    "static_dry": {
+     "30N": 0.3,
+     "50N": 0.22,
+     "70N": 0.2
+    },
+    "kinetic_dry": {
+     "30N": 0.23,
+     "50N": 0.18,
+     "70N": 0.14
+    },
+    "static_oil": {
+     "30N": 0.2,
+     "50N": 0.18,
+     "70N": 0.16
+    },
+    "kinetic_oil": {
+     "30N": 0.17,
+     "50N": 0.16,
+     "70N": 0.14
+    }
+   },
+   "source": "S13",
+   "where": "Figs. 9-10 bar labels; printed PLA cylinder 10 mm dia, contact face ground to Ra 0.123 um, against steel; oil SAE15W40. Steel only; aluminium not found"
+  },
+  "friction_self_static": {
+   "value": null,
+   "source": "",
+   "where": "not found: no published PLA-on-PLA measurement located in this session"
+  },
+  "creep": {
+   "value": {
+    "stress_MPa": 15,
+    "temperature_C": 25,
+    "rupture_time_h_range": [
+     1.188,
+     2.24
+    ],
+    "law": "none fitted (no Findley/Burgers parameters)"
+   },
+   "source": "S14",
+   "where": "p.6-7: 'constant stress of 15 MPa' at 'room temperature, i.e., 25 C'; Table 3 rupture times 1.188-2.240 h over 30 runs (layer 0.1-0.3 mm, infill 10-100%, linear/hexagonal/diamond); ASTM D2990 specimens. Reported 'creep rate (1/s)' values 0.064-0.113 are not plausible as strain rates; treat with caution"
+  },
+  "stress_relaxation": {
+   "value": {
+    "duration_s": 500,
+    "strain_levels": "27%, 36%, 45% of the strain at maximum stress",
+    "temperature": "room (value not stated)",
+    "stress_decay_pct": {
+     "0deg": 13,
+     "45deg": 11,
+     "90deg": 13
+    },
+    "range_pct": [
+     11,
+     14
+    ],
+    "findley_creep_modulus": {
+     "form": "E(t) = E0 + C t^n (t in s; E0 not reported in the text read)",
+     "C_n": {
+      "0deg": [
+       -51.4605,
+       0.3283
+      ],
+      "45deg": [
+       -60.0284,
+       0.265
+      ],
+      "90deg": [
+       -70.6612,
+       0.2636
+      ],
+      "Th": [
+       -59.1985,
+       0.3462
+      ],
+      "Tc": [
+       -57.707,
+       0.3604
+      ]
+     }
+    }
+   },
+   "source": "S16",
+   "where": "s2.1 'measured over a time dt=500 s'; s3.1 'about 13%, 11% and 13%' (0/45/90 deg); s3.2 'decreased in the range of 11-14%'; Table 8 Findley C, n; SUNLU PLA+, 0.4 mm nozzle, 0.1 mm layers, single contour; 8 h heat or -15 C conditioning gave decay '>45%' greater than untreated"
+  }
+ },
+ "PETG": {
+  "E_xy_MPa": {
+   "value": 1460,
+   "source": "S2",
+   "where": "p.2 Young's Modulus (X-Y), ISO 527, 1460 +/- 190 MPa; Bambu PETG Basic, 100% infill, annealed 65 C 8 h",
+   "others": [
+    {
+     "value": 1500,
+     "source": "S3",
+     "where": "p.2 Horizontal: Tensile Modulus 1.5 +/- 0.1 GPa, ISO 527-1; MK3, 0.20 mm layers, 2 perimeters, 100% rectilinear"
+    },
+    {
+     "value": 1600,
+     "source": "S3",
+     "where": "p.2 'Vertical xz' column 1.6 +/- 0.1 GPa: xz (ISO/ASTM 52921 notation) = specimen on edge, load along layers, so in-layer (our reading)"
+    },
+    {
+     "value": 1810,
+     "source": "S15",
+     "where": "p.2 Young's Modulus (X-Y) 1810 +/- 190 MPa; Bambu PETG HF, 100% infill, 200 mm/s, bed 70 C, annealed/dried 75 C 8 h"
+    }
+   ]
+  },
+  "E_z_MPa": {
+   "value": 1120,
+   "source": "S2",
+   "where": "p.2 Young's Modulus (Z), ISO 527, 1120 +/- 130 MPa",
+   "others": [
+    {
+     "value": 1540,
+     "source": "S15",
+     "where": "Young's Modulus (Z) 1540 +/- 130 MPa (PETG HF)"
+    }
+   ]
+  },
+  "UTS_xy_MPa": {
+   "value": 48,
+   "source": "S2",
+   "where": "p.2 Tensile Strength (X-Y) 48 +/- 5 MPa",
+   "others": [
+    {
+     "value": 47,
+     "source": "S3",
+     "where": "p.2 Horizontal Tensile Yield Strength 47 +/- 2 MPa"
+    },
+    {
+     "value": 50,
+     "source": "S3",
+     "where": "p.2 'Vertical xz' (on edge, in-layer load) Tensile Yield Strength 50 +/- 1 MPa"
+    },
+    {
+     "value": 34,
+     "source": "S15",
+     "where": "Tensile Strength (X-Y) 34 +/- 4 MPa (PETG HF)"
+    }
+   ]
+  },
+  "UTS_z_MPa": {
+   "value": 39,
+   "source": "S2",
+   "where": "p.2 Tensile Strength (Z) 39 +/- 3 MPa",
+   "others": [
+    {
+     "value": 23,
+     "source": "S15",
+     "where": "Tensile Strength (Z) 23 +/- 4 MPa (PETG HF)"
+    },
+    {
+     "value": 18,
+     "source": "S3",
+     "where": "p.2 'Interlayer Adhesion [MPa] 18 +/- 4, Prusa Polymers' (in-house method, not ISO 527)"
+    }
+   ]
+  },
+  "Z_over_XY_strength_ratio": {
+   "value": 0.81,
+   "source": "S2",
+   "where": "derived: 39/48 (Bambu, annealed)",
+   "derived": true,
+   "others": [
+    {
+     "value": 0.68,
+     "source": "S15",
+     "where": "derived: 23/34 (PETG HF)",
+     "derived": true
+    },
+    {
+     "value": 0.38,
+     "source": "S3",
+     "where": "derived: interlayer adhesion 18 / horizontal yield 47 (different test methods)",
+     "derived": true
+    }
+   ]
+  },
+  "yield_strain_xy": {
+   "value": 0.051,
+   "source": "S3",
+   "where": "p.2 Elongation at Yield Point 5.1 +/- 0.1 % (horizontal and xz)"
+  },
+  "strain_at_break_xy": {
+   "value": 0.112,
+   "source": "S2",
+   "where": "p.2 Breaking Elongation Rate (X-Y) 11.2 +/- 0.8 %",
+   "others": [
+    {
+     "value": 0.086,
+     "source": "S15",
+     "where": "8.6 +/- 1.2 % (PETG HF)"
+    }
+   ]
+  },
+  "strain_at_break_z": {
+   "value": 0.057,
+   "source": "S2",
+   "where": "p.2 Breaking Elongation Rate (Z) 5.7 +/- 0.6 %",
+   "others": [
+    {
+     "value": 0.051,
+     "source": "S15",
+     "where": "5.1 +/- 0.8 % (PETG HF)"
+    }
+   ]
+  },
+  "density_g_cm3": {
+   "value": 1.25,
+   "source": "S2",
+   "where": "p.2 Density ISO 1183 1.25 g/cm3",
+   "others": [
+    {
+     "value": 1.27,
+     "source": "S3",
+     "where": "p.2 Density 1.27 g/cm3 ISO 1183"
+    },
+    {
+     "value": 1.28,
+     "source": "S15",
+     "where": "1.28 g/cm3 (PETG HF)"
+    }
+   ]
+  },
+  "Tg_C": {
+   "value": 68,
+   "source": "S2",
+   "where": "p.2 Glass Transition Temperature DSC 68 C",
+   "others": [
+    {
+     "value": 66,
+     "source": "S15",
+     "where": "DSC 66 C (PETG HF)"
+    }
+   ]
+  },
+  "HDT_C": {
+   "value": 69,
+   "source": "S2",
+   "where": "p.2 HDT ISO 75 0.45 MPa 69 C (1.8 MPa: 65 C)",
+   "others": [
+    {
+     "value": 68,
+     "source": "S3",
+     "where": "p.2 HDT 0.45 MPa 68 C and 1.80 MPa 68 C"
+    }
+   ]
+  },
+  "permissible_strain_snapfit_one_time": {
+   "value": null,
+   "source": "S3+S5",
+   "where": "derived, in-layer: 0.7 x yield strain 5.1% (S3) per S5 p.11 amorphous rule. Not a published PETG value. No Z yield strain is published; Z break 5.7% (S2) x 0.5 (S5 no-yield rule) = 0.028 is an upper bound, unverified",
+   "derived": true,
+   "derived_candidate": 0.036,
+   "derived_candidate_z": 0.028,
+   "note": "No published allowable strain exists for printed PETG; derived_candidate is the Bayer amorphous rule (0.7 x yield strain) applied to a data-sheet yield strain; unvalidated"
+  },
+  "permissible_strain_snapfit_repeated": {
+   "value": null,
+   "source": "S3+S5",
+   "where": "derived: 0.6 x 0.036 (S5 p.12)",
+   "derived": true,
+   "derived_candidate": 0.0216,
+   "derived_candidate_z": 0.017,
+   "note": "No published allowable strain exists for printed PETG; derived_candidate is the Bayer amorphous rule (0.7 x yield strain) applied to a data-sheet yield strain; unvalidated"
+  },
+  "fatigue": {
+   "value": {
+    "R": 0.2,
+    "freq_Hz": 7,
+    "temperature": "room",
+    "UTS_basis_MPa": 34,
+    "sigma_max_MPa_vs_cycles": {
+     "20.4": [
+      12132,
+      12496,
+      15483
+     ],
+     "15.3": [
+      17040,
+      41250,
+      35140
+     ],
+     "10.2": [
+      79271,
+      124889,
+      193323
+     ]
+    },
+    "endurance_1e6": "not found"
+   },
+   "source": "S12",
+   "where": "Table 2 (PETG); Stratasys PETG, same print and test conditions as PLA; stress levels 60/45/30% UTS",
+   "others": []
+  },
+  "friction_vs_steel_or_aluminium": {
+   "value": {
+    "static_dry": {
+     "30N": 0.27,
+     "50N": 0.24,
+     "70N": 0.29
+    },
+    "kinetic_dry": {
+     "30N": 0.2,
+     "50N": 0.18,
+     "70N": 0.26
+    },
+    "static_oil": {
+     "30N": 0.17,
+     "50N": 0.16,
+     "70N": 0.13
+    },
+    "kinetic_oil": {
+     "30N": 0.13,
+     "50N": 0.14,
+     "70N": 0.11
+    }
+   },
+   "source": "S13",
+   "where": "Figs. 9-10 bar labels; printed PETG cylinder, ground Ra 0.123 um, against steel"
+  },
+  "friction_self_static": {
+   "value": null,
+   "source": "",
+   "where": "not found"
+  },
+  "creep": {
+   "value": null,
+   "source": "",
+   "where": "not found: PETG creep papers located (Polymers 17(15):2075, 2025; UTS repository) but downloads were blocked in this session"
+  }
+ },
+ "TPU": {
+  "E_xy_MPa": {
+   "value": 9.8,
+   "source": "S6",
+   "where": "p.2 Young's Modulus (X-Y) ISO 527, GB/T 1040 9.8 +/- 0.7 MPa; Bambu TPU 95A HF, 100% infill, nozzle 230 C, annealed/dried 70 C 12 h; strain range of the modulus not stated",
+   "others": [
+    {
+     "value": 9.2,
+     "source": "S7",
+     "where": "p.2 Young's Modulus (X-Y) 9.2 +/- 0.4 MPa (Bambu TPU 95A, V3.0)"
+    },
+    {
+     "value": 67,
+     "source": "S8",
+     "where": "p.2 Tensile (Young's) modulus ASTM D3039 1 mm/min, XY (flat) 67 +/- 6 MPa; YZ (side) 67 +/- 2 MPa"
+    }
+   ]
+  },
+  "E_z_MPa": {
+   "value": 7.4,
+   "source": "S6",
+   "where": "p.2 Young's Modulus (Z) 7.4 +/- 0.6 MPa",
+   "others": [
+    {
+     "value": 7.8,
+     "source": "S7",
+     "where": "p.2 Young's Modulus (Z) 7.8 +/- 0.5 MPa"
+    },
+    {
+     "value": 56,
+     "source": "S8",
+     "where": "p.2 Z (Up) 56 +/- 3 MPa"
+    }
+   ]
+  },
+  "modulus_100pct_xy_MPa": {
+   "value": 13.24,
+   "source": "S9",
+   "where": "p.3 '100% modulus (X-Y) ISO 37, GB/T 528 13.24 +/- 0.29 MPa' (stress at 100% strain, not a Young's modulus); 0.4 mm nozzle, 100% infill"
+  },
+  "UTS_xy_MPa": {
+   "value": 27.3,
+   "source": "S6",
+   "where": "p.2 Tensile Strength (X-Y) 27.3 +/- 0.8 MPa",
+   "others": [
+    {
+     "value": 29.6,
+     "source": "S7",
+     "where": "p.2 Tensile Strength (X-Y) 29.6 +/- 0.6 MPa"
+    },
+    {
+     "value": 23.7,
+     "source": "S8",
+     "where": "p.2 tensile stress at break XY 23.7 +/- 2.1 MPa (YZ 37.9 +/- 1.6), no yield"
+    },
+    {
+     "value": 23.11,
+     "source": "S9",
+     "where": "p.3 Tensile strength (X-Y) ISO 37 23.11 +/- 0.63 MPa"
+    }
+   ]
+  },
+  "UTS_z_MPa": {
+   "value": 22.3,
+   "source": "S6",
+   "where": "p.2 Tensile Strength (Z) 22.3 +/- 0.6 MPa",
+   "others": [
+    {
+     "value": 23.2,
+     "source": "S7",
+     "where": "p.2 Tensile Strength (Z) 23.2 +/- 0.5 MPa"
+    },
+    {
+     "value": 6.4,
+     "source": "S8",
+     "where": "p.2 tensile stress at break Z (Up) 6.4 +/- 0.5 MPa"
+    }
+   ]
+  },
+  "Z_over_XY_strength_ratio": {
+   "value": 0.82,
+   "source": "S6",
+   "where": "derived: 22.3/27.3",
+   "derived": true,
+   "others": [
+    {
+     "value": 0.78,
+     "source": "S7",
+     "where": "derived: 23.2/29.6",
+     "derived": true
+    },
+    {
+     "value": 0.27,
+     "source": "S8",
+     "where": "derived: 6.4/23.7",
+     "derived": true
+    }
+   ]
+  },
+  "strain_at_break_xy": {
+   "value": 6.5,
+   "source": "S6",
+   "where": "p.2 Breaking Elongation Rate (X-Y) '> 650%' (lower bound)",
+   "lower_bound": true,
+   "others": [
+    {
+     "value": 7.0,
+     "source": "S7",
+     "where": "'> 700%' lower bound"
+    },
+    {
+     "value": 5.6,
+     "source": "S8",
+     "where": "'>560%' lower bound"
+    },
+    {
+     "value": 4.623,
+     "source": "S9",
+     "where": "p.3 Elongation at break (X-Y) ISO 37 462.3 +/- 21.1 %"
+    }
+   ]
+  },
+  "strain_at_break_z": {
+   "value": 4.8,
+   "source": "S6",
+   "where": "p.2 Breaking Elongation Rate (Z) '> 480%' (lower bound)",
+   "lower_bound": true,
+   "others": [
+    {
+     "value": 5.0,
+     "source": "S7",
+     "where": "'> 500%' lower bound"
+    },
+    {
+     "value": 0.823,
+     "source": "S8",
+     "where": "p.2 Z elongation at break 82.3 +/- 18.4 %"
+    }
+   ]
+  },
+  "density_g_cm3": {
+   "value": 1.22,
+   "source": "S6",
+   "where": "p.2 Density ISO 1183 1.22 g/cm3",
+   "others": [
+    {
+     "value": 1.2,
+     "source": "S7",
+     "where": "p.2 1.20 g/cm3"
+    },
+    {
+     "value": 1.16,
+     "source": "S9",
+     "where": "p.2 1.16 g/cm3 at 23 C"
+    }
+   ]
+  },
+  "hardness": {
+   "value": "95A",
+   "source": "S9",
+   "where": "p.3 Shore hardness ISO 7619-1 95A",
+   "others": [
+    {
+     "value": "96 Shore A / 48 Shore D",
+     "source": "S8",
+     "where": "p.2 Hardness ISO 7619-1"
+    }
+   ]
+  },
+  "Tg_C": {
+   "value": null,
+   "source": "S6",
+   "where": "p.2 Glass Transition Temperature 'N / A'; HDT 'N / A'"
+  }
+ },
+ "generic_plastics": {
+  "poisson_plastics_generic": {
+   "value": 0.35,
+   "source": "S5",
+   "where": "p.18: 'Poisson's ratio (for plastics approx. 0.35)'; generic, not measured for PLA/PETG/TPU"
+  },
+  "shear_modulus_rule": {
+   "value": "G = Es / (2 (1 + nu))",
+   "source": "S5",
+   "where": "p.19: 'The shear modulus G can be determined fairly accurately from the secant modulus'"
+  },
+  "permissible_shear_strain_rule": {
+   "value": "gamma_pm ~ (1 + nu) eps_pm ~ 1.35 eps_pm",
+   "source": "S5",
+   "where": "p.18 torsion snap joints"
+  },
+  "friction_plastics_on_steel_table": {
+   "value": {
+    "PTFE": "0.12-0.22",
+    "PE rigid": "0.20-0.25 (x2.0)",
+    "PP": "0.25-0.30 (x1.5)",
+    "POM": "0.20-0.35 (x1.5)",
+    "PA": "0.30-0.40 (x1.5)",
+    "PBT": "0.35-0.40",
+    "PS": "0.40-0.50 (x1.2)",
+    "SAN": "0.45-0.55",
+    "PC": "0.45-0.55 (x1.2)",
+    "PMMA": "0.50-0.60 (x1.2)",
+    "ABS": "0.50-0.65 (x1.2)",
+    "PE flexible": "0.55-0.60 (x1.2)",
+    "PVC": "0.55-0.60 (x1.0)"
+   },
+   "source": "S5",
+   "where": "p.15 Table 3 'Guide data from literature for the coefficients of friction of plastics on steel'; factor in parentheses = multiplier for same-plastic pairs. PLA/PETG/TPU not listed"
+  },
+  "published_allowable_strain_printed_PLA_PETG": {
+   "value": null,
+   "source": "",
+   "where": "not found: no manufacturer or paper publishes a snap-fit allowable strain for printed PLA/PETG/TPU; the permissible_strain_* entries under PLA/PETG are derived (S5 rules applied to TDS yield strains)"
+  }
+ },
+ "formulas": {
+  "snapfit_cantilever_constant_rect": {
+   "value": "y = 0.67 * eps * l^2 / h",
+   "source": "S5",
+   "where": "p.9 Table 1, design 1 (cross section constant), shape A rectangle"
+  },
+  "snapfit_cantilever_taper_h_to_half": {
+   "value": "y = 1.09 * eps * l^2 / h",
+   "source": "S5",
+   "where": "p.9 Table 1, design 2 (thickness decreases to one-half), shape A; also used in p.16 example"
+  },
+  "snapfit_cantilever_taper_b_to_quarter": {
+   "value": "y = 0.86 * eps * l^2 / h",
+   "source": "S5",
+   "where": "p.9 Table 1, design 3 (width decreases to one-quarter), shape A"
+  },
+  "snapfit_deflection_force_rect": {
+   "value": "P = (b h^2 / 6) * Es * eps / l",
+   "source": "S5",
+   "where": "p.9 Table 1, deflection force row, shape A (designs 1,2,3)"
+  },
+  "snapfit_mating_force": {
+   "value": "W = P * (mu + tan(alpha)) / (1 - mu * tan(alpha))",
+   "source": "S5",
+   "where": "p.14 Mating Force; separation force uses return angle alpha'"
+  },
+  "secant_modulus": {
+   "value": "Es = sigma_1 / eps_1",
+   "source": "S5",
+   "where": "p.12 Fig. 14 'Determination of the secant modulus'"
+  },
+  "permissible_strain_rule": {
+   "value": "single brief snap: partially crystalline almost to yield point; amorphous up to about 70% of yield strain; no yield point (glass-fibre): about half the elongation at break; frequent separation: about 60% of single-assembly value",
+   "source": "S5",
+   "where": "p.11 Permissible undercut; p.12 Table 2 caption"
+  },
+  "permissible_strain_table_23C": {
+   "value": {
+    "Apec High Heat PC": 0.04,
+    "Bayblend PC/ABS": 0.025,
+    "Makroblend PC blends": 0.035,
+    "Makrolon PC": 0.04,
+    "Makrolon PC 10% GF": 0.022,
+    "Makrolon PC 20% GF": 0.02
+   },
+   "source": "S5",
+   "where": "p.12 Table 2 'Permissible short term strain limits at 23 C'; PLA/PETG/TPU not listed"
+  },
+  "snapfit_worked_example_p16": {
+   "value": {
+    "material": "Makrolon PC",
+    "l_mm": 19,
+    "b_mm": 9.5,
+    "y_mm": 2.4,
+    "alpha_deg": 30,
+    "eps_pm": 0.04,
+    "eps_used": 0.02,
+    "h_mm": 3.28,
+    "Es_MPa_at_2pct": 1815,
+    "mu": 0.6,
+    "factor": 1.8,
+    "P_N": 32.5,
+    "W_N": 58.5
+   },
+   "source": "S5",
+   "where": "p.16: 'Permissible strain from Table 2: eps_pm = 4%; Strain required here eps = 1/2 eps_pm = 2%'; 'h = 1.09 x 0.02 x 19^2 / 2.4 = 3.28 mm'; 'From Fig. 16 at eps = 2.0% Es = 1,815 N/mm2 (264,000 psi)'; 'P = 32.5 N (7.3 lb)'; 'Friction coefficient from Table 3 (PC against PC) mu = 0.50 x 1.2 = 0.6'; 'From Fig. 18: = 1.8 For mu = 0.6 and a = 30'; 'W = 32.5 N x 1.8 = 58.5 N (13.2 lb)'"
+  },
+  "elastica_vertical_tip_load": {
+   "value": {
+    "columns": [
+     "tip_slope_deg",
+     "A=FL^2/EI",
+     "A_ref1_FrischFay",
+     "theta_rad_root_to_tip_chord",
+     "x_tip/L",
+     "y_tip/L(=delta_v/L)",
+     "delta_h/L=1-x_tip/L (derived)"
+    ],
+    "rows": [
+     [
+      10,
+      0.353,
+      null,
+      0.116,
+      0.992,
+      0.115,
+      0.008
+     ],
+     [
+      20,
+      0.731,
+      0.73,
+      0.232,
+      0.968,
+      0.228,
+      0.032
+     ],
+     [
+      30,
+      1.163,
+      null,
+      0.349,
+      0.928,
+      0.338,
+      0.072
+     ],
+     [
+      40,
+      1.692,
+      1.69,
+      0.469,
+      0.873,
+      0.442,
+      0.127
+     ],
+     [
+      50,
+      2.392,
+      null,
+      0.592,
+      0.802,
+      0.54,
+      0.198
+     ],
+     [
+      60,
+      3.405,
+      3.405,
+      0.722,
+      0.716,
+      0.63,
+      0.284
+     ],
+     [
+      70,
+      5.081,
+      null,
+      0.861,
+      0.611,
+      0.712,
+      0.389
+     ],
+     [
+      80,
+      8.678,
+      8.678,
+      1.024,
+      0.481,
+      0.79,
+      0.519
+     ]
+    ]
+   },
+   "source": "S10",
+   "where": "Table 1 'VERTICAL TIP LOAD' (slope in radians 0.1745..1.3963, A this paper, A ref. 1, theta) and Table 2 'VERTICAL TIP LOAD' (XL, YL); 80 deg A printed by OCR as 'a.67a', ref.1 column and Fig. 8 label read 8.678"
+  },
+  "prbm_cantilever_end_force": {
+   "value": {
+    "gamma": 0.85,
+    "K_Theta": 2.65,
+    "k_spring": "k = gamma*K_Theta*EI/L ~= 2.25 EI/L"
+   },
+   "source": "S11",
+   "where": "slide 12 'Pseudo rigid-body model, Howell and Midha, 1995': text layer 'gamma = 0.85' and 'k_psi = 2.25 EI/L'; slide 13 (transverse plus axial force, n = axial/transverse ratio) piecewise fits contain the terms '2.65 ... 0.05 n' for K and '0.85 ... 0.02 n' for gamma (signs and n-ranges not legible in the text layer)"
+  }
+ },
+ "sources": {
+  "S1": {
+   "title": "Bambu Filament Technical Data Sheet V2.0 - PLA Basic",
+   "org": "Bambu Lab",
+   "year": "not printed (V2.0)",
+   "url": "https://cdn.shopify.com/s/files/1/0380/5149/files/Bambu_PLA_Basic_Technical_Data_Sheet.pdf",
+   "accessed": "2026-11-10"
+  },
+  "S2": {
+   "title": "Bambu Filament Technical Data Sheet V2.0 - PETG Basic",
+   "org": "Bambu Lab",
+   "year": "not printed (V2.0)",
+   "url": "https://www.additive-x.com/shop/mpattachments/file/viewonline/id/580/product_id/2330",
+   "note": "first read from Additive-X mirror; Bambu's own CDN copy (url_primary) opened later in the session and its mechanical rows are identical",
+   "accessed": "2026-11-10",
+   "url_primary": "https://cdn.shopify.com/s/files/1/0380/5149/files/Bambu_PETG_Basic_Technical_Data_Sheet.pdf"
+  },
+  "S3": {
+   "title": "Technical datasheet - Prusament PETG by Prusa Polymers, version 1.1",
+   "org": "Prusa Polymers a.s.",
+   "year": "2022 (last update 16-02-2022)",
+   "url": "https://www.3dprintergear.com.au/assets/files/technical-data-sheet%20(1).pdf",
+   "note": "reseller mirror (3D Printer Gear AU)",
+   "accessed": "2026-11-10"
+  },
+  "S4": {
+   "title": "Ultimaker PLA Technical data sheet (document prints 'Version v2.00, Date April 20, 2022')",
+   "org": "Ultimaker (UltiMaker)",
+   "year": "2022",
+   "url": "https://um-support-files.ultimaker.com/materials/2.85mm/tds/PLA/Ultimaker-PLA-TDS-v5.00.pdf",
+   "note": "URL filename says v5.00, document text says v2.00",
+   "accessed": "2026-11-10"
+  },
+  "S5": {
+   "title": "Snap-Fit Joints for Plastics - A Design Guide",
+   "org": "Bayer MaterialScience LLC (Polymers Division), Pittsburgh",
+   "year": "not printed in this copy",
+   "url": "https://fab.cba.mit.edu/classes/S62.12/people/vernelle.noel/Plastic_Snap_fit_design.pdf",
+   "note": "mirror; byte-identical text to https://cdn.sparkfun.com/assets/home_page_posts/1/4/1/0/Plastic_Snap_fit_design.pdf; PDF metadata CreationDate 2005-11-08, Title 'Snap-Fit Book_Final 11-05.pdf'",
+   "accessed": "2026-11-10"
+  },
+  "S6": {
+   "title": "Bambu Filament Technical Data Sheet V1.0 - TPU 95A HF",
+   "org": "Bambu Lab",
+   "year": "not printed (V1.0)",
+   "url": "https://www.additive-x.com/shop/mpattachments/file/viewonline/id/823/product_id/2584",
+   "note": "reseller mirror (Additive-X)",
+   "accessed": "2026-11-10"
+  },
+  "S7": {
+   "title": "Bambu Filament Technical Data Sheet V3.0 - TPU 95A",
+   "org": "Bambu Lab",
+   "year": "not printed (V3.0)",
+   "url": "https://cdn.shopify.com/s/files/1/0645/5876/0155/files/Bambu_TPU_95A_Technical_Data_Sheet.pdf",
+   "accessed": "2026-11-10"
+  },
+  "S8": {
+   "title": "UltiMaker TPU 95A Technical data sheet (footer 'Specifications subject to change. 09/2025'; URL V2.01-250915)",
+   "org": "UltiMaker",
+   "year": "2025",
+   "url": "https://um-support-files.ultimaker.com/materials/2.85mm/tds/TPU-95A/TDS-TPU95A-V2.01-250915.pdf",
+   "note": "PDF text layer is font-scrambled; values read from the page rendered at 80 dpi and cross-checked against the scrambled text's digit substitution",
+   "accessed": "2026-11-10"
+  },
+  "S9": {
+   "title": "PolyFlex TPU95-HF Technical Data Sheet V5.1",
+   "org": "Polymaker",
+   "year": "not printed",
+   "url": "https://polymaker.com/wp-content/tech-docs/PolyFlex_TPU95_HF_TDS_V5.1.pdf",
+   "accessed": "2026-11-10"
+  },
+  "S10": {
+   "title": "Large Deflections of a Cantilever Beam Under Arbitrarily Directed Tip Load (NASA Technical Memorandum 86442)",
+   "org": "Harvey G. McComb, Jr., NASA Langley Research Center",
+   "year": "1985",
+   "url": "https://ntrs.nasa.gov/api/citations/19850022051/downloads/19850022051.pdf",
+   "note": "scanned; OCR text; Table 1 compares with Frisch-Fay 'Flexible Bars' (ref. 1)",
+   "accessed": "2026-11-10"
+  },
+  "S11": {
+   "title": "Elastostatic approximation of the locus of the loaded tip of a cantilever beam (ME 254 lecture slides)",
+   "org": "G. K. Ananthasuresh, Indian Institute of Science",
+   "year": "not printed",
+   "url": "https://mecheng.iisc.ac.in/suresh/me254/Lectures/PRB.pdf",
+   "note": "slides cite Howell and Midha, 1995",
+   "accessed": "2026-11-10"
+  },
+  "S12": {
+   "title": "Mechanical Properties of Additively Manufactured Polymeric Materials - PLA and PETG - For Biomechanical Applications",
+   "org": "R. F. Martins, R. Branco, M. Martins, W. Macek, Z. Marciniak, R. Silva, D. Trindade, C. Moura, M. Franco, C. Malca; Polymers 16(13):1868, doi:10.3390/polym16131868",
+   "year": "2024",
+   "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC11243948/",
+   "note": "read through the WebFetch tool (HTML page, tables relayed by the fetch model); MDPI PDF download was blocked",
+   "accessed": "2026-11-10"
+  },
+  "S13": {
+   "title": "Static and Kinetic Friction of 3D Printed Polymers and Composites",
+   "org": "N. Stoimenov, M. Kandeva, M. Zagorski, P. Panev; Tribology in Industry 46(1):97-106, doi:10.24874/ti.1546.08.23.10",
+   "year": "2024",
+   "url": "https://tribology.rs/journals/2024/2024-1/9-1546.pdf",
+   "note": "COF values are bar labels in Figs. 9-10, read from the page rendered at 80 dpi",
+   "accessed": "2026-11-10"
+  },
+  "S14": {
+   "title": "Multi-Response Optimization of Tensile Creep Behavior of PLA 3D Printed Parts Using Categorical Response Surface Methodology",
+   "org": "M. Waseem et al.; Polymers 12:2962",
+   "year": "2020",
+   "url": "https://publications.aston.ac.uk/id/eprint/43316/1/polymers_12_02962_v2.pdf",
+   "accessed": "2026-11-10"
+  },
+  "S15": {
+   "title": "Bambu Filament Technical Data Sheet V1.0 - PETG HF",
+   "org": "Bambu Lab",
+   "year": "not printed (V1.0)",
+   "url": "https://cdn.shopify.com/s/files/1/0584/7236/6216/files/Bambu_PETG_HF_Technical_Data_Sheet.pdf",
+   "accessed": "2026-11-10"
+  },
+  "S16": {
+   "title": "Stress Relaxation Behavior of Additively Manufactured Polylactic Acid (PLA)",
+   "org": "A. Bertocco, M. Bruno, E. Armentani, L. Esposito, M. Perrella; Materials 15(10):3509, doi:10.3390/ma15103509",
+   "year": "2022",
+   "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC9147248/",
+   "note": "read through the WebFetch tool (HTML)",
+   "accessed": "2026-11-10"
+  }
+ },
+ "_meta": {
+  "accessed": "2026-11-10",
+  "scope": "FDM/FFF printed parts; values are brand- and process-specific; see SOURCES.md notes",
+  "derived_flag": "derived=true means computed from sourced numbers with a sourced rule; not a published measurement"
+ }
+}

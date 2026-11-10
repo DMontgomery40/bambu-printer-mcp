@@ -201,7 +201,14 @@ ${r.readonly
       r.assets,
       ...(r.inputs ?? []),
     ])
-      args.push("--ro-bind", dir, dir);
+      // the Python runtime is absent when only the counterpart engine is used: bind what exists
+      if (
+        await fs.stat(dir).then(
+          () => true,
+          () => false,
+        )
+      )
+        args.push("--ro-bind", dir, dir);
     args.push("--bind", r.job, r.job);
     for (const file of r.readonly.filter(
       (file) => !(r.inputs ?? []).includes(file),

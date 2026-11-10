@@ -93,6 +93,14 @@ Inside build(), use `load_scan("scan", source_units="m", up_axis="y")` for a dec
 
 Snapshots preserve distinct original filenames so flat OBJ/MTL/texture references can resolve among declared files. Declare every referenced asset; undeclared absolute files and network resources remain blocked. Duplicate original filenames are refused instead of overwriting an input. For subdirectory references, construct the resolver from the declared INPUTS explicitly. Mesh visuals remain available during script work; STL output carries geometry only.
 
+## The counterpart engine
+
+`engine: "counterpart"` on `cad_run` or `cad_check_fit` uses the Counterpart kernel bundled in `vendor/counterpart-kernel` instead of build123d. It needs no setup, no Python and no download: Node.js 22 or newer runs it. Its script contract is a JavaScript module with a literal `export const P = {...}` and `export function build(P)`, importing only `counterpart-kernel`; the kernel's API page is `vendor/counterpart-kernel/API.md`. Overrides in `parameters` are validated by the kernel against `P`, and `<name>.parameters.json` holds the values it built with. A saved `<name>.mjs` passed as `script_path` stays on this engine.
+
+Each build is one Node process under Node's permission model (reads: the kernel, the script, the parameters and the declared inputs; writes: the job's `out/` folder; no child processes), with module hooks that let the script import only the kernel, inside the same bubblewrap or Seatbelt profile as the Python engine. Inputs are read by name with `loadMesh(name)`. A separate run of the kernel with no user code inspects the STL and renders the six views and contact sheet. The result has `step: null` (the kernel has no B-rep; it writes STL and a 3MF with one object per body) and adds `threemf`, `requirements_pass` and `parts`: per part the failing and passing requirements, `sized` (members a feature sized with the physics engine while it built) and `physics` (each stated requirement proved: pass, fail, uncertain or unsupported, with the number and a fix). Proofs run at the engine's fast setting and can take 2 to 40 seconds for wall-mounted parts.
+
+`cad_check_fit` with this engine computes the interference volume with the kernel's exact mesh boolean and the minimum gap by BVH distance from every vertex and edge midpoint of each mesh to the other; the same refusals apply (open or non-manifold meshes, more than 250,000 triangles).
+
 ## Library licences
 
 The runtime includes the following direct libraries. Transitive dependencies keep their own wheel notices; this is not a claim that every bundled component has the same licence.

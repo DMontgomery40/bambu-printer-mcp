@@ -14,6 +14,13 @@ import {
   type CadStorage,
 } from "./cad/storage.js";
 import { cadSandbox, defaultCadSystem, type CadSystem } from "./cad/process.js";
+import {
+  counterpartBuild,
+  counterpartFit,
+  counterpartInspect,
+  counterpartStatus,
+  type CounterpartStatus,
+} from "./cad/counterpart.js";
 
 const ASSETS = fileURLToPath(new URL("../src/cad/", import.meta.url));
 const BUILD123D = "0.13.0";
@@ -33,6 +40,19 @@ export interface CadStatus {
   platform: string;
   storage: CadStorage;
   error?: string;
+  /** the second engine, chosen per cad_run/cad_check_fit call with engine: "counterpart" */
+  counterpart?: CounterpartStatus;
+}
+type Engine = "build123d" | "counterpart";
+function engineOf(args: CadArguments): Engine {
+  const e =
+    args.engine ??
+    (typeof args.script_path === "string" && /\.mjs$/i.test(args.script_path)
+      ? "counterpart"
+      : "build123d");
+  if (e !== "build123d" && e !== "counterpart")
+    throw new Error("engine must be build123d or counterpart.");
+  return e;
 }
 export class CadEngine {
   private readonly system: CadSystem;
@@ -76,6 +96,7 @@ export class CadEngine {
       /* setup not verified */
     }
     return {
+      counterpart: await counterpartStatus(),
       configured,
       ready,
       python: configured ? python : null,
@@ -416,7 +437,10 @@ export class CadEngine {
       "inputs",
       "mode",
       "final",
+      "engine",
     ]);
+    const engine = engineOf(args);
+    const ext = engine === "counterpart" ? ".mjs" : ".py";
     const root = await this.allowedDirectory(args.output_dir);
     const name = plainName(args.name);
     const timeout = milliseconds(args.timeout_ms),
@@ -437,7 +461,7 @@ export class CadEngine {
     const source =
       args.script === undefined
         ? await fs.readFile(
-            await this.inputFile(args.script_path, ".py"),
+            await this.inputFile(args.script_path, ext),
             "utf8",
           )
         : args.script;
@@ -447,7 +471,7 @@ export class CadEngine {
       Buffer.byteLength(source) > 256 * 1024
     )
       throw new Error(
-        "script must be nonempty Python text no larger than 256 KiB.",
+        `script must be nonempty ${engine === "counterpart" ? "JavaScript module" : "Python"} text no larger than 256 KiB.`,
       );
     const overrides = args.parameters ?? {};
     if (!overrides || typeof overrides !== "object" || Array.isArray(overrides))
@@ -455,6 +479,10 @@ export class CadEngine {
     const mode = args.mode ?? "solid";
     if (mode !== "solid" && mode !== "mesh")
       throw new Error("mode must be solid or mesh.");
+    if (engine === "counterpart" && mode !== "solid")
+      throw new Error(
+        "The counterpart engine builds solids only; load a scan inside build() with loadMesh(name) and cut it with scanPocket.",
+      );
     let requestedInputs: unknown;
     if (args.inputs !== undefined) {
       if (!Array.isArray(args.inputs) || args.inputs.length > 16)
@@ -480,7 +508,7 @@ export class CadEngine {
       requestedInputs = named;
     }
     if (requestedInputs === undefined && typeof args.script_path === "string") {
-      const file = args.script_path.replace(/\.py$/i, ".inputs.json");
+      const file = args.script_path.replace(/\.(py|mjs)$/i, ".inputs.json");
       try {
         requestedInputs = JSON.parse(
           await fs.readFile(await this.inputFile(file, ".json"), "utf8"),
@@ -513,10 +541,13 @@ export class CadEngine {
     return this.exclusive(
       async (queueWaitMs) => {
         const status = await this.status();
-        if (!status.ready) throw new CadRefusal("cad-not-ready", status.error!);
+        if (engine === "build123d" && !status.ready)
+          throw new CadRefusal("cad-not-ready", status.error!);
+        if (engine === "counterpart" && !status.counterpart?.ready)
+          throw new CadRefusal("cad-not-ready", status.counterpart?.error ?? "The counterpart engine is unavailable.");
         const job = await fs.mkdtemp(path.join(root, `cad-${name}-`));
         await fs.chmod(job, 0o700);
-        const script = path.join(job, `${name}.py`),
+        const script = path.join(job, `${name}${ext}`),
           parameters = path.join(job, `${name}.parameters.json`),
           request = path.join(job, ".cad-request.json");
         const resultManifest = path.join(job, "cad-result.json");
@@ -529,7 +560,7 @@ export class CadEngine {
               await fs.readFile(
                 await this.inputFile(
                   String(args.script_path).replace(
-                    /\.py$/i,
+                    /\.(py|mjs)$/i,
                     ".parameters.json",
                   ),
                   ".json",
@@ -581,6 +612,67 @@ export class CadEngine {
             ...(snapshot.directory ? [snapshot.directory] : []),
           ];
           const readableInputs = snapshot.directory ? [snapshot.directory] : [];
+          if (engine === "counterpart") {
+            await fs.mkdir(this.dataDir, { recursive: true });
+            const t = performance.now();
+            const receipt = await counterpartBuild(this.system, {
+              data: this.dataDir,
+              job,
+              name,
+              script,
+              parameters,
+              inputs: snapshots,
+              readonly: protectedFiles,
+              inputDirs: readableInputs,
+              timeoutMs: remaining(),
+              signal,
+            });
+            const out = path.join(job, "out");
+            await fs.copyFile(path.join(out, `${name}.stl`), path.join(job, `${name}.stl`));
+            await fs.copyFile(path.join(out, `${name}.3mf`), path.join(job, `${name}.3mf`));
+            // the kernel validated the overrides against P and wrote the effective values it built with
+            await fs.copyFile(path.join(out, `${name}.params.json`), parameters);
+            const checked = await counterpartInspect(this.system, {
+              data: this.dataDir,
+              job,
+              name,
+              stl: path.join(job, `${name}.stl`),
+              readonly: protectedFiles,
+              timeoutMs: remaining(),
+              signal,
+            });
+            type KPart = { name: string; failing?: unknown[]; passing?: unknown[]; physics?: unknown; sized?: unknown; fits?: unknown };
+            const parts = (receipt.parts as KPart[]) ?? [];
+            const result = {
+              ...checked,
+              engine: "counterpart",
+              status: "completed",
+              final: args.final === true,
+              completed_at: new Date().toISOString(),
+              lineage_id: lineage,
+              result_manifest: resultManifest,
+              script,
+              parameters,
+              inputs: snapshots,
+              input_manifest: manifest,
+              input_hashes: snapshot.hashes,
+              snapshot_bytes_added: snapshot.added,
+              snapshot_bytes_reused: snapshot.reused,
+              queue_wait_ms: queueWaitMs,
+              stl: path.join(job, `${name}.stl`),
+              step: null,
+              step_unavailable:
+                "The counterpart engine exports STL and 3MF (one object per body); it has no STEP B-rep.",
+              threemf: path.join(job, `${name}.3mf`),
+              // what the parts must do, as the kernel's features stated it, measured and proved in this run
+              requirements_pass: receipt.all_requirements_pass === true,
+              parts: parts.map((p) => ({ name: p.name, failing: p.failing, passing: p.passing, physics: p.physics, sized: p.sized, fits: p.fits })),
+              kernel_receipt: path.join(out, `${name}.result.json`),
+              seconds: (performance.now() - t) / 1000,
+            };
+            await atomicJson(resultManifest, result);
+            return result;
+          }
           const effective = JSON.parse(
             (
               await this.system.run(
@@ -696,7 +788,11 @@ export class CadEngine {
       "transform",
       "clearance_mm",
       "timeout_ms",
+      "engine",
     ]);
+    const engine = args.engine ?? "build123d";
+    if (engine !== "build123d" && engine !== "counterpart")
+      throw new Error("engine must be build123d or counterpart.");
     const model = await this.inputFile(args.model, ".stl"),
       reference = await this.inputFile(args.reference, ".stl");
     const clearance = args.clearance_mm ?? 0;
@@ -710,7 +806,11 @@ export class CadEngine {
     return this.exclusive(
       async () => {
         const status = await this.status();
-        if (!status.ready) throw new CadRefusal("cad-not-ready", status.error!);
+        if (engine === "build123d" && !status.ready)
+          throw new CadRefusal("cad-not-ready", status.error!);
+        if (engine === "counterpart" && !status.counterpart?.ready)
+          throw new CadRefusal("cad-not-ready", status.counterpart?.error ?? "The counterpart engine is unavailable.");
+        await fs.mkdir(this.dataDir, { recursive: true });
         const job = await fs.mkdtemp(path.join(this.dataDir, "fit-"));
         try {
           await fs.copyFile(model, path.join(job, "model.stl"));
@@ -725,6 +825,15 @@ export class CadEngine {
               clearance_mm: clearance,
             }),
           );
+          if (engine === "counterpart")
+            return await counterpartFit(this.system, {
+              data: this.dataDir,
+              job,
+              request,
+              readonly: [request, path.join(job, "model.stl"), path.join(job, "reference.stl")],
+              timeoutMs: milliseconds(args.timeout_ms),
+              signal,
+            });
           return JSON.parse(
             (
               await this.confined(

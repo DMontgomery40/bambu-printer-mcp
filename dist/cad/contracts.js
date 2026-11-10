@@ -29,6 +29,11 @@ const storage = {
 };
 const status = {
     storage,
+    counterpart: {
+        type: "object",
+        properties: { ready: { type: "boolean" }, version: { type: ["string", "null"] }, node: { type: "string" }, error: { type: "string" } },
+        required: ["ready", "node"],
+    },
     configured: { type: "boolean" },
     ready: { type: "boolean" },
     python: { type: ["string", "null"] },
@@ -115,6 +120,12 @@ export const CAD_TOOLS = [
                     },
                     description: "Explicit named files [{name, path}]. Content-addressed immutable input bundles are reused; snapshot_bytes_added/reused report storage. Only the selected declared bundle is exposed to build() as INPUTS[name]; nested path is declared for remote path policy.",
                 },
+                engine: {
+                    type: "string",
+                    enum: ["build123d", "counterpart"],
+                    default: "build123d",
+                    description: "build123d (default; Python, needs cad_setup) or counterpart (the bundled Counterpart kernel: a JavaScript module, no setup; every run also proves what its features state). A saved .mjs script_path selects counterpart.",
+                },
                 mode: {
                     type: "string",
                     enum: ["solid", "mesh"],
@@ -191,6 +202,11 @@ export const CAD_TOOLS = [
             },
             renders: { type: "object", additionalProperties: { type: "string" } },
             seconds: { type: "number" },
+            engine: { type: "string", enum: ["build123d", "counterpart"] },
+            threemf: { type: "string" },
+            requirements_pass: { type: "boolean" },
+            parts: { type: "array", items: { type: "object" } },
+            kernel_receipt: { type: "string" },
         }, [
             "valid",
             "status",
@@ -244,6 +260,12 @@ export const CAD_TOOLS = [
                     },
                     additionalProperties: false,
                 },
+                engine: {
+                    type: "string",
+                    enum: ["build123d", "counterpart"],
+                    default: "build123d",
+                    description: "build123d (Manifold3D, needs cad_setup) or counterpart (the bundled kernel's exact mesh boolean and BVH distance; no setup).",
+                },
                 clearance_mm: {
                     type: "number",
                     minimum: 0,
@@ -284,5 +306,6 @@ Captured mesh preparation: load_scan(name, source_units="m" or "mm", up_axis="x"
 Fit reference workflow: return load_scan("scan", source_units="m", up_axis="y") from build() in mode: "mesh" to export an unchanged, prepared reference STL for cad_check_fit. Declare every linked OBJ/MTL/texture asset. If you crop, simplify, fill, or otherwise alter this reference, report exactly what you excluded/changed and that the fit check proves only that reduced reference in the stated pose. A fit check against a scan is information; it must never resize or override an interface specified by measured dimensions. Keep those measured interfaces and report the discrepancy.
 Result selection and edits: set final: true only on the result you select. cad-result.json in each immediate run folder is protected from script writes and retains final, completed_at, lineage_id (source hash), full checks and artifact paths; clients can discover the latest completed final record after restart without rebuilding. Final is a selection marker, not a replacement for valid/checks. Queued calls may expire with cad-queue-timeout before dispatch; do not automatically replay. Unchanged declared files reuse a read-only content-addressed bundle under output_dir/.cad-inputs, preserving filenames and restricting reads to that bundle. Keep this shared cache with the saved runs.
 Mesh cleanup workflow: return a trimesh.Trimesh in mode: "mesh". Load the prepared mesh, fit needed geometry with NumPy/SciPy, rebuild regular sections/features with build123d or manifold3d CrossSection/extrusion/revolve, and combine meshes with manifold3d booleans. scikit-image supplies marching cubes for voxel/SDF work; Shapely supplies planar operations; Pillow supplies image/texture reads. Keep numeric choices in P and regenerate from declared inputs. Validate closure, winding, manifold status, dimensions and all six views using cad_run. What to regularise, infer, preserve or label comes from the caller's cleanup rules, not this engine prompt.
+Second engine: engine: "counterpart" runs the bundled Counterpart kernel (vendor/counterpart-kernel, its API page is API.md there) with no setup and no Python. The script is a JavaScript module: export const P = {...} (literal named values) and export function build(P) returning part(name, solid), an array of parts or { name: solid }; import only from "counterpart-kernel". Use its part-family features first (holder, rack, bracket, clip, cradle, fingerBore, sprungHolder, hook, openBox/lidFor, plate, adapter, knob): they take the object's measured size and how it was measured, a fit by function (drops-in, slides, locates, grips, clamps; never a bare clearance), a mount, and they size their own load-carrying and flexing members with the physics engine while they build. Do not set member thicknesses unless the person asked for them. Scans are declared inputs read with loadMesh(name); scanSizes reads sizes with their +- and scanPocket cuts the pocket the object passes through on its way in (make it the last operation). The result has the same paths, bounds, volume, checks and six renders, step: null (STL and 3MF only), and per part: failing and passing requirements, sized (what each feature chose, the candidates, what the whole-part proof found) and physics (each requirement pass, fail, uncertain or unsupported with its number and a fix). A physics fail is a design problem: change the request's inputs (load, size, safety, mount), not the requirement. script_path edits of a saved .mjs stay on this engine. cad_check_fit with engine: "counterpart" uses the kernel's exact mesh boolean and BVH distance.
 The result includes paths, millimetre bounds/size, mesh and STEP volumes, solid count, watertight/manifold/winding/STEP checks, six orthographic renders (front, back, left, right, top, bottom) and contact sheet. Inspect all six; revise visible defects. A valid mesh or nominal parameter does not prove the requested dimension: measure the actual exported interfaces. Use cad_check_fit on a model and reference STL with an explicit rigid transform; report raw-scan interference and minimum gap. Calipers are authoritative but disagreement with a scan is unresolved measurement evidence, not permission to silently rescale it. Check assembly/insertion paths and actual articulated poses, not sums of local joint limits or reference points alone. Printing, clearance under load, supports and motion need separate evidence. Apply fdm_design and fdm_slicing too; never invoke a printer as part of constructing CAD.`,
 };

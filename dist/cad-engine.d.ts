@@ -1,5 +1,6 @@
 import { type CadStorage } from "./cad/storage.js";
 import { type CadSystem } from "./cad/process.js";
+import { type CounterpartStatus } from "./cad/counterpart.js";
 export type CadArguments = Record<string, unknown>;
 export interface CadOptions {
     dataDir?: string;
@@ -14,6 +15,8 @@ export interface CadStatus {
     platform: string;
     storage: CadStorage;
     error?: string;
+    /** the second engine, chosen per cad_run/cad_check_fit call with engine: "counterpart" */
+    counterpart?: CounterpartStatus;
 }
 export declare class CadEngine {
     private readonly options;

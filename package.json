@@ -25,6 +25,7 @@
   },
   "files": [
     "dist",
+    "vendor/counterpart-kernel",
     "src",
     "patches",
     "scripts/install-patches.mjs",

@@ -16,6 +16,7 @@ export declare const CAD_TOOLS: ({
         properties: {
             install?: undefined;
             inputs?: undefined;
+            engine?: undefined;
             mode?: undefined;
             script?: undefined;
             script_path?: undefined;
@@ -99,6 +100,7 @@ export declare const CAD_TOOLS: ({
                 description: string;
             };
             inputs?: undefined;
+            engine?: undefined;
             mode?: undefined;
             script?: undefined;
             script_path?: undefined;
@@ -192,6 +194,12 @@ export declare const CAD_TOOLS: ({
                     required: string[];
                     additionalProperties: boolean;
                 };
+                description: string;
+            };
+            engine: {
+                type: string;
+                enum: string[];
+                default: string;
                 description: string;
             };
             mode: {
@@ -334,6 +342,12 @@ export declare const CAD_TOOLS: ({
                     };
                 };
                 additionalProperties: boolean;
+            };
+            engine: {
+                type: string;
+                enum: string[];
+                default: string;
+                description: string;
             };
             clearance_mm: {
                 type: string;
