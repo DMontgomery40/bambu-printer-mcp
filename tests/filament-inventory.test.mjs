@@ -1,3 +1,4 @@
+import {trackedMkdtemp} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -14,7 +15,7 @@ const ONE_TRAY = { connected: true, model: "P2S", status: "IDLE",
   ams: { tray_now: "255", ams: [{ id: "0", tray: [{ id: "0", state: 11, tray_info_idx: "GFL99", tray_type: "PLA", tray_color: "FFFFFFFF", remain: -1 }] }] } };
 
 async function inventoryFixture(t, { binary, profiles, slicerType = "bambustudio", override = false, missing = false, invalidDirectory = false, status = ONE_TRAY, colourCodes, tool = "get_printer_filaments", args = {} }) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-filament-inventory-"));
+  const root = await trackedMkdtemp(path.join(os.tmpdir(), "bambu-filament-inventory-"));
   const client = new Client({ name: "filament-inventory-test", version: "1" });
   t.after(async () => {
     await client.close();

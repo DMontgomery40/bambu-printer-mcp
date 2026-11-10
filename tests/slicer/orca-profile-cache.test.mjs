@@ -1,3 +1,4 @@
+import {trackedMkdtemp} from '../support/temp.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
@@ -8,7 +9,7 @@ import { resolveBblMachineProfile, flattenForCli } from '../../dist/slicer/profi
 const cacheModule = await import('../../dist/slicer/orca-profile-cache.js').catch(() => ({}));
 const fixture = new URL('../fixtures/orca-cache/', import.meta.url);
 async function setup(t) {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'orca-cache-test-'));
+  const root = await trackedMkdtemp(path.join(os.tmpdir(), 'orca-cache-test-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const profiles = path.join(root, 'profiles');
   await fs.mkdir(path.join(profiles, 'BBL'), { recursive: true });

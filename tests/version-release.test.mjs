@@ -1,3 +1,4 @@
+import {trackedMkdtempSync} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -8,7 +9,7 @@ import test from "node:test";
 const npmCli = process.env.npm_execpath || fs.realpathSync(path.join(path.dirname(process.execPath), process.platform === "win32" ? "node_modules/npm/bin/npm-cli.js" : "npm"));
 
 function releaseFixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-release-notes-"));
+  const root = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-release-notes-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   fs.mkdirSync(path.join(root, "scripts"));
   fs.copyFileSync(new URL("../scripts/sync-manifest-version.mjs", import.meta.url), path.join(root, "scripts/sync-manifest-version.mjs"));
