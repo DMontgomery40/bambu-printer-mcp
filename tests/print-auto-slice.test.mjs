@@ -16,7 +16,7 @@ process.env.BAMBU_DISPATCH_CHECK_MS = "0";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const failure = "Required Bambu machine profile is missing nozzle_volume_type; select a matching machine and filament profile.";
 
-async function start(t, { sliceSucceeds = false, realSlice = false, slicerType = 'bambustudio', elicitDelayMs = 0, elicitation = true, confirmation = true, afterPublish, pushAfterPublish = false, env = {} } = {}) {
+async function start(t, { sliceSucceeds = false, sliceStalls = false, realSlice = false, slicerType = 'bambustudio', elicitDelayMs = 0, elicitation = true, confirmation = true, afterPublish, pushAfterPublish = false, env = {} } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-auto-slice-"));
   const log = path.join(directory, "calls.jsonl");
   const elicitLog = path.join(directory, "elicitations.jsonl");
@@ -47,6 +47,7 @@ import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { STLManipulator } from ${JSON.stringify(pathToFileURL(path.join(root, "dist/stl/stl-manipulator.js")).href)};
 import { BambuImplementation } from ${JSON.stringify(pathToFileURL(path.join(root, "dist/printers/bambu.js")).href)};
+import { SlicerStalled } from ${JSON.stringify(pathToFileURL(path.join(root, "dist/refusal.js")).href)};
 import { Server } from ${JSON.stringify(pathToFileURL(path.join(root, "node_modules/@modelcontextprotocol/sdk/dist/esm/server/index.js")).href)};
 const log = (event) => fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(event) + '\\n');
 const elicitInput = Server.prototype.elicitInput;
@@ -56,7 +57,7 @@ Server.prototype.elicitInput = function (params, options) {
 };
 ${realSlice ? '' : `STLManipulator.prototype.sliceSTL = async function (file, _type, _path, _profile, _progress, _preset, options) {
   log({ action: 'slice', file, ...(options?.nozzleType ? { nozzleType: options.nozzleType } : {}), ...(options?.pauseAtLayers ? { pauseAtLayers: options.pauseAtLayers, slicePlate: options.slicePlate } : {}) });
-  ${sliceSucceeds ? `return ${JSON.stringify(slicedOutput)};` : `throw new Error(${JSON.stringify(failure)});`}
+  ${sliceSucceeds ? `return ${JSON.stringify(slicedOutput)};` : sliceStalls ? `throw new SlicerStalled('Bambu Studio stopped slicing; nothing was sent to the printer.');` : `throw new Error(${JSON.stringify(failure)});`}
 };`}
 BambuImplementation.prototype.ftpUpload = async function (_host, _token, file, remote) { log({ action: 'upload', file, remote, sha256: createHash('sha256').update(fs.readFileSync(file)).digest('hex') }); };
 let published = false;
@@ -137,6 +138,23 @@ for (const checksumOnly of [false, true]) {
     assert.deepEqual(server.events(), [{ action: "slice", file: project }], "a failed slice must never upload or contact the printer");
   });
 }
+
+// A slicer that waits on a dialog during print_3mf's auto-slice stopped before anything reached the printer, so the
+// error must say structuredContent.printOutcome "not-sent" (bambu-printer-mcp #129): Counterpart reads that field,
+// never the slicer-waiting-on-dialog code (#137). Skipped until printOutcome is on main; whichever of #129 and #137
+// merges second makes it run, and it must pass then.
+const { printOutcome: printOutcomeOnMain } = await import(pathToFileURL(path.join(root, "dist/refusal.js")).href);
+test("print_3mf reports a slicer that waits on a dialog as not sent", {
+  skip: typeof printOutcomeOnMain !== "function" && "structuredContent.printOutcome is not on main yet (bambu-printer-mcp #129)",
+}, async (t) => {
+  const server = await start(t, { sliceStalls: true });
+  const project = await server.makeProject("unsliced.3mf");
+  const result = await server.print(project);
+  assert.equal(result.isError, true);
+  assert.equal(result.structuredContent.code, "slicer-waiting-on-dialog");
+  assert.equal(result.structuredContent.printOutcome, "not-sent", JSON.stringify(result.structuredContent));
+  assert.deepEqual(server.events(), [{ action: "slice", file: project }], "nothing reached the printer");
+});
 
 test("print_3mf uploads only the generated file after successful auto-slicing", async (t) => {
   const server = await start(t, { sliceSucceeds: true });
