@@ -28,6 +28,12 @@ export type SetupKind = {
   kind: typeof PRINTER_KINDS[number]; label: string;
   /** Values this server needs for the kind whatever the person enters (MCP_TRANSPORT, PRINTER_TYPE). */
   env: Record<string, string>;
+  /**
+   * Whether camera_snapshot reads this kind's camera with only the settings these fields write, so a client's setup
+   * check can ask for a picture as well as the status. What else the computer needs (ffmpeg for RTSP models) is
+   * reported in camera_snapshot's own error. Every kind declares it; a client reads it missing as an older server.
+   */
+  cameraSnapshot: boolean;
   fields: SetupField[];
 };
 /** The slicer this server runs, as it resolves it now, and the settings that choose it (for every printer). */
@@ -86,6 +92,8 @@ export function bambuSetupFields(options: { server: { name: string; version: str
     server: options.server,
     kinds: [{
       kind: "bambu", label: "Bambu Lab", env: { MCP_TRANSPORT: "stdio" },
+      // Every offered model has a built-in camera; the model field chooses its transport (camera-models.ts).
+      cameraSnapshot: true,
       fields: [
         { name: "host", env: "PRINTER_HOST", aliases: ["BAMBU_PRINTER_HOST"], label: "Address", hint: "The printer's IP address: on the printer, Settings → WLAN", required: true },
         { name: "serial", env: "BAMBU_SERIAL", aliases: ["BAMBU_PRINTER_SERIAL"], label: "Serial number", hint: "On the printer: Settings → Device", required: true, transform: "uppercase" },
@@ -115,8 +123,10 @@ export const SETUP_FIELDS_OUTPUT_SCHEMA = {
     server: { type: "object", properties: { name: { type: "string" }, version: { type: "string" } }, required: ["name", "version"] },
     kinds: { type: "array", items: { type: "object", properties: {
       kind: { type: "string", enum: [...PRINTER_KINDS] }, label: { type: "string" },
-      env: { type: "object", additionalProperties: { type: "string" } }, fields: { type: "array", items: field },
-    }, required: ["kind", "label", "env", "fields"] } },
+      env: { type: "object", additionalProperties: { type: "string" } },
+      cameraSnapshot: { type: "boolean", description: "Whether camera_snapshot reads this kind's camera with only the settings these fields write, so a setup check can ask for a picture too." },
+      fields: { type: "array", items: field },
+    }, required: ["kind", "label", "env", "cameraSnapshot", "fields"] } },
     model: { type: "string" },
     slicer: { type: "object", properties: {
       type: { type: "string" }, path: { type: "string" }, found: { type: "boolean" }, profilesRoot: { type: "string" }, profilesFound: { type: "boolean" },

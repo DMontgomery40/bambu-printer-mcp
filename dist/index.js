@@ -3037,7 +3037,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "counterpart_setup_fields",
-                        description: "Counterpart contract (counterpart/1): the printers this server drives and the settings it reads for each, by .env variable name (first canonical, then aliases): label, hint, whether required, the model choices and the model each serial-number prefix names. Pass serial to get the model it names. Sends nothing to a printer and returns no configured values.",
+                        description: "Counterpart contract (counterpart/1): the printers this server drives and the settings it reads for each, by .env variable name (first canonical, then aliases): label, hint, whether required, the model choices and the model each serial-number prefix names, and whether camera_snapshot reads the printer's camera with only those settings (cameraSnapshot). Pass serial to get the model it names. Sends nothing to a printer and returns no configured values.",
                         inputSchema: {
                             type: "object",
                             properties: { serial: { type: "string", maxLength: 64, description: "A Bambu serial number: model is the one it names, when known." } },
