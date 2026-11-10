@@ -335,8 +335,10 @@ export function rack(o) {
         const zcg = (kgAll * (floor + objH / 2) + partKg * H / 2) / (kgAll + partKg);
         const half = Math.max(od2 / 2, zcg * Math.tan((tilt * Math.PI) / 180));
         const flange = Math.ceil(Math.max(0, half - od2 / 2) * 100 + 1) / 100; // rounded up: never short of the angle
+        // the base is cut by the pockets too (added after them, it refilled their bottoms under a floor thinner than 3 mm:
+        // worker run A10r)
         if (flange > 0)
-            body = body.add(rect({ size: [width + 2 * flange, od2 + 2 * flange], center: [0, ccy], r: Math.min(flange, 3) }).extrude({ z: [0, Math.min(3, H)], ...(bc > 0 ? { bottom: { chamfer: bc } } : {}) }));
+            body = body.add(rect({ size: [width + 2 * flange, od2 + 2 * flange], center: [0, ccy], r: Math.min(flange, 3) }).extrude({ z: [0, Math.min(3, H)], ...(bc > 0 ? { bottom: { chamfer: bc } } : {}) })).cut(...cups);
         const tipAt = (Math.atan((od2 / 2 + flange) / zcg) * 180) / Math.PI;
         body = body.require(derived(`stands on the desk: tips over at ${tipAt.toFixed(1)} deg with all ${n * nRows} pockets full (${mass.kg} kg each, ${objH} mm tall${mass.assumed ? ", mass assumed" : ""})`, tipAt >= tilt - 1e-6, `${tipAt.toFixed(1)} deg (base ${f3(od2 + 2 * flange)} mm deep, centre of mass ${zcg.toFixed(1)} mm up)`, `>= ${tilt} deg`, "widen the base"));
     }

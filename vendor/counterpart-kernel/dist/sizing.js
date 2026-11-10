@@ -35,7 +35,7 @@ async function load() {
                 answer = undefined;
             }
         }
-        return { solveFrame: fr.solveFrame, rectElem: fr.rectElem, snapEngine: sn.snapEngine, splitClamp: ri.splitClamp, material: ma.material, answer };
+        return { solveFrame: fr.solveFrame, rectElem: fr.rectElem, snapEngine: sn.snapEngine, splitClamp: ri.splitClamp, ribClamp: ri.ribClamp, material: ma.material, answer };
     }
     catch {
         return null;

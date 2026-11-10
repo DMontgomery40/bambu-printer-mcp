@@ -126,7 +126,8 @@ export function sprungHolder(o) {
  */
 export function hook(o) {
     const kg = o.load, F = kg * 9.81, W = o.width ?? 15, reach = o.reach, lip = o.lip ?? Math.max(8, reach * 0.3), screw = o.screw ?? 4, head = o.head ?? 8;
-    const H = o.height ?? Math.max(40, 3 * head + 10), SF = o.safety ?? 3, M = mat(o.material);
+    // both screws above the lip, so a straight driver reaches them (worker run N4: at 40 mm the lower one sat behind it)
+    const H = o.height ?? Math.max(40, Math.ceil(lip + 12 + 3 * head + 6)), SF = o.safety ?? 3, M = mat(o.material);
     need(reach >= 10, "hook: reach (how far the hook stands off the wall) must be at least 10 mm");
     const hole = screwHole(screw, "clearance", "horizontal"), headD = f3(head + 2 * PRINT_CORRECTION.holeHorizontal), csk = (headD - hole.d) / 2;
     const tMin = Math.max(2.5, Math.ceil((csk + 1.2) * 2) / 2);
@@ -158,6 +159,7 @@ export function hook(o) {
     }
     const t = pick?.t ?? (o.t ?? tMin + 9);
     need(ys[1] - head / 2 > t + 2, `hook: a ${H} mm plate is too short for two ${head} mm screws above a ${t} mm arm; make it taller (height)`);
+    need(ys[1] - head / 2 > t + lip + 0.5, `hook: the lower screw (at ${f3(ys[1])} mm) sits behind the ${lip} mm lip, where a straight screwdriver cannot reach it; make the plate at least ${f3(t + lip + 1 + 2.5 * head + 5)} mm tall (height) or the lip lower`);
     const r = f3(0.8 * t);
     const prof = rect({ x: [0, t], y: [0, H] }).add(rect({ x: [0, reach], y: [0, t] }), rect({ x: [reach - t, reach], y: [0, t + lip] }), polygon([[t - 0.01, t + r], [t + r, t - 0.01], [t - 0.01, t - 0.01]]), polygon([[reach - t + 0.01, t + r], [reach - t - r, t - 0.01], [reach - t + 0.01, t - 0.01]]));
     let s = prof.extrude({ z: [0, W] });
@@ -173,7 +175,9 @@ export function hook(o) {
             chosen: `${t} mm`, predicted: { massG: (H + reach + lip) * t * W * M.rho, sf: pick?.sf, defl: pick?.defl }, table: table.slice(-4), evaluated: table.length, ms: performance.now() - t0, need: needSF, kUsed: k, sagMax: Math.max(1, reach / 50), kdUsed: kd, atMinimum: t === tMin, correction: SIZING.k["hook"] }));
     return s.require(...reqs, facts({ from: "hook", down: [0, -1, 0],
         supports: [...ys.map((y, i) => ({ id: `screw.${i + 1}`, kind: "screw", at: [0, y, W / 2], axis: [1, 0, 0], d: screw, head, countersunk: true })), { id: "wall", kind: "wall", point: [0, 0, 0], normal: [1, 0, 0] }],
-        loads: [{ id: "hung", kind: "weight", kg, dir: [0, -1, 0], at: { box: [[reach - t - 4, reach - t], [t - 0.6, t + 0.6], [0, W]] }, why: `${kg} kg hung in the J` }],
+        // on the arm's flat top, clear of the lip's fillet (a patch inside the fillet found surface only at some grid
+        // alignments: worker run N4's plate passed at 99 and 120 mm long and found no surface at 103)
+        loads: [{ id: "hung", kind: "weight", kg, dir: [0, -1, 0], at: { box: [[Math.max(t + r + 1, reach - t - r - 7), reach - t - r - 0.5], [t - 0.6, t + 0.6], [0, W]] }, why: `${kg} kg hung in the J` }],
         requirements: [{ id: "strength", holds: { safetyFactor: SF } }, { id: "stiffness", deflection: { max: f3(Math.max(1, reach / 50)) } }] }));
 }
 // ------------------------------------------------------------------------------------------------
@@ -235,7 +239,9 @@ export function knob(o) {
         const rc = tipR + rr;
         ribs.push(cylinder({ d: 2 * rr, x: rc * Math.cos(a), y: rc * Math.sin(a), z: [0, depth] }));
     }
-    s = s.add(...ribs).cut(cone({ d1: bore + 1.2, d2: 2 * tipR - 0.01, x: 0, y: 0, z: [-0.01, 1.0] }));
+    // the lead-in at the bed side at 45 degrees (it was 49: an overhang; worker run N6)
+    const run = (bore + 1.2) / 2 - (tipR - 0.005);
+    s = s.add(...ribs).cut(cone({ d1: bore + 1.2, d2: 2 * tipR - 0.01, x: 0, y: 0, z: [-0.01, run] }));
     if (o.shaft?.flat) {
         // the D: a flat at (d/2 - flat) from the axis, its ribs still bearing on the round part
         const fx = d / 2 - o.shaft.flat;

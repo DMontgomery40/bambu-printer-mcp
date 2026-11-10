@@ -271,14 +271,25 @@ export function scanPocket(body, scan, o) {
     const along = o.along ?? "-z";
     const name = o.name ?? "scan pocket";
     const sizes = scanSizes(scan);
+    const mb0 = scan.bounds();
     // the function's own fit (as if measured exactly), then the scan's uncertainty on top: a pocket shaped from the
     // scan can always be cut looser, so a +-0.5 scan widens it (and says how much it may rattle) instead of refusing
     const fit = o.fit ?? { function: "drops-in", measured: "scan" };
     const m = fit.measured ?? "scan", uScan = typeof m === "number" ? Math.abs(m) : SOURCE_UNCERTAINTY[m];
-    const base = decideFit({ ...fit, measured: "designed" }, { id: `${name}`, feature: name, what: "the scanned object", size: sizes.round.d, shape: "flat", inferred: "drops-in", question: "how should the scanned object sit in its pocket?" });
+    // the size the receipt names: the widest section in the pocket's span (a round fit over the span was pulled small by
+    // a rounded base: worker run S1's bottle read 25.2 mm against 28.7)
+    let widest = 0;
+    if (along === "-z")
+        for (let k = 1; k <= 8; k++) {
+            const sec = sectionAt(scan, mb0.min[2] + (k / 8) * Math.min(o.depth, mb0.max[2] - mb0.min[2] - 0.5));
+            if (sec)
+                widest = Math.max(widest, sec.width.value, sec.depth.value);
+        }
+    const named = widest > 0 ? f3(widest) : sizes.round.d;
+    const base = decideFit({ ...fit, measured: "designed" }, { id: `${name}`, feature: name, what: "the scanned object", size: named, shape: "flat", inferred: "drops-in", question: "how should the scanned object sit in its pocket?" });
     const c = f3(base.modelled_per_side + uScan / 2);
     const rec = { ...base, object: { ...base.object, uncertainty: uScan, source: typeof m === "number" ? `+-${m}` : m }, modelled_per_side: c,
-        reasoning: `${base.reasoning}; plus half the scan's +-${uScan} per side (${f3(uScan / 2)}), so the largest the object can be still drops in: modelled ${c} per side, and the smallest may move up to ${f3(2 * c)} mm` };
+        reasoning: `${base.reasoning.replace("(designed, +-0)", `(read from the scan, +-${uScan})`)}; plus half the scan's +-${uScan} per side (${f3(uScan / 2)}), so the largest the object can be still drops in: modelled ${c} per side, and the smallest may move up to ${f3(2 * c)} mm` };
     // place the scan: its leading end's centre at `at`
     const F = frameFor(along), mb = mapMesh(scan, F.to).bounds();
     const lead = F.from([(mb.min[0] + mb.max[0]) / 2, (mb.min[1] + mb.max[1]) / 2, mb.min[2]]);

@@ -404,7 +404,17 @@ function lidCore(info, o) {
  * A split clamp ring around a tube of diameter `bore` (axis Z), wall `wall`, `height` tall, slit `gap`
  * wide on +x with two ears and a bolt hole across them; optional arm towards -x.
  */
-export function clampRing(o) {
+export function clampRing(o0) {
+    // the wall from the engine's split ring when not stated: the stiffest wall whose bending strain, closed onto the
+    // smallest size under the pinch, stays a band (25%) inside the repeated-use allowance (worker run A5r2 searched
+    // walls by hand and landed on 1.00%)
+    let wallReport = null;
+    const o = { ...o0, wall: o0.wall ?? 0 };
+    if (o0.wall === undefined) {
+        const sz = clampWall(o0);
+        o.wall = sz.wall;
+        wallReport = sz.report;
+    }
     let bore, rec = null;
     if (o.around !== undefined) {
         if (o.bore !== undefined)
@@ -461,6 +471,8 @@ export function clampRing(o) {
     if (rec && split) {
         // what it must do: the screw's pinch grips the tube over the whole size range; the ring's strain stays in bounds
         const pinch = 50;
+        if (wallReport)
+            reqs.push(sized(wallReport));
         reqs.push(facts({ from: "clampRing", supports: [{ id: "tube", kind: "pole", at: [0, 0, 0], axis: [0, 0, 1], d: o.around, span: [0, o.height] }],
             flexures: { clamp: { kind: "ribClamp", bore, wall: o.wall, height: o.height, gap, ear: el, ribs: rec.ribs ? { count: rec.ribs.count, height: rec.ribs.height, r: Math.max(0.6, rec.ribs.height) } : undefined, pinch, why: `a ${pinch} N pinch across the ears (an M3 screw done up by hand: assumed)` } },
             requirements: [
@@ -495,4 +507,39 @@ export function fitCoupon(o) {
     // person's answer ("too tight" ... "fell out") calibrates the print correction for this printer
     const rec = decideFit({ function: "drops-in", measured: "calipers", clearance: c, because: `fit coupon (${o.marks} notch${o.marks > 1 ? "es" : ""})` }, { id: `coupon.${o.marks}`, feature: `fit ring, ${o.marks} notch${o.marks > 1 ? "es" : ""}`, what: "the object's section", size: Math.min(w, d), shape: "flat", question: "" });
     return ring.require(interfaceRecord(rec), sectionFits({ what: `coupon ${c} per side`, z: h / 2 - 1, around: [x, y], size: [w + 2 * c, d + 2 * c] }));
+}
+/** clampRing's wall by the engine's split-ring model (src/intent.ts clampRing). */
+function clampWall(o) {
+    if (!ENGINE?.ribClamp || o.around === undefined)
+        return { wall: 4, report: null };
+    const rec = decideFit(o.fit, { id: "clamp.bore", feature: "clampRing bore", what: "the tube", size: o.around, shape: "round", axis: "vertical", inferred: "clamps", question: "", splitGap: o.gap ?? 2 });
+    const bore = o.around + 2 * rec.modelled_per_side, gap = rec.split?.gap ?? o.gap ?? 2, smallest = rec.holds[0];
+    const M = ENGINE.material("PLA"), allow = M?.strainRepeated?.[0] ?? 0.01, t0 = performance.now();
+    const table = [];
+    let best = null, least = null;
+    const ear = Math.max(3 * (o.bolt ?? 3.2), 8); // the ears clampRing builds
+    for (const w of [5, 4.5, 4, 3.6, 3.2, 2.8, 2.4, 2.0]) {
+        let r;
+        try {
+            r = ENGINE.ribClamp({ bore, wall: w, height: o.height, gap, ear, ribs: rec.ribs ? { count: rec.ribs.count, height: rec.ribs.height, r: Math.max(0.6, rec.ribs.height) } : undefined, pinch: 50, pole: smallest, E: M?.E1 ?? 2680, mu: M?.muSteel?.[0] ?? 0.2, crushStrength: M?.Sxy ?? 39 });
+        }
+        catch {
+            continue;
+        }
+        const ok = r.ringStrain * 1.25 <= allow && !r.bottomedOut && r.gripAxial >= 15;
+        table.push({ label: `wall ${w}: strain ${(100 * r.ringStrain).toFixed(2)}%, grip ${r.gripAxial.toFixed(0)} N${r.bottomedOut ? ", bottoms out" : ""}`, massG: 0, strain: r.ringStrain, ok, why: ok ? undefined : r.bottomedOut ? "the split closes fully first" : r.gripAxial < 15 ? "grips under 15 N" : `strain ${(100 * r.ringStrain).toFixed(2)}%` });
+        if (ok) {
+            best = { w, strain: r.ringStrain, grip: r.gripAxial };
+            break;
+        }
+        if (!r.bottomedOut && r.gripAxial >= 15 && (!least || r.ringStrain < least.strain))
+            least = { w, strain: r.ringStrain, grip: r.gripAxial };
+    }
+    // none clears the band: the lowest strain that still grips, said plainly (a +-1 size closed by a pinch split costs
+    // about 1% of ring strain whatever the wall: the engine's split ring)
+    const pickd = best ?? least;
+    const w = pickd?.w ?? 3.2;
+    return { wall: w, report: { feature: "clampRing", requirement: `ring strain closed on the smallest size (${smallest}) under a 50 N pinch, a 25% band inside ${(100 * allow).toFixed(1)}%; grips at least 15 N`,
+            model: "the engine's split ring with crush ribs (ribClamp)", chosen: `wall ${w}`, predicted: { massG: 0, strain: pickd?.strain }, table, evaluated: table.length, ms: performance.now() - t0,
+            notes: best ? undefined : [`no wall from 5 to 2 mm keeps the ring a band inside the allowance at the smallest size: the lowest strain that still grips is used (${pickd ? (100 * pickd.strain).toFixed(2) + "%" : "none grips"}); a caliper measurement narrows the split and the strain`] } };
 }
