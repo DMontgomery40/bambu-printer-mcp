@@ -1,3 +1,4 @@
+import {trackedMkdtempSync} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
@@ -287,7 +288,7 @@ test("X2D native control accepts Studio device commands but rejects unrelated de
 });
 
 test("X2D public task and AMS tools dispatch through the native helper, including AMS-HT id 128", { skip: !isBambuNativePlatform() }, async (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-native-control-"));
+  const tempDir = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-native-control-"));
   const helperPath = path.join(tempDir, "fake-native-helper.mjs");
   fs.writeFileSync(
     helperPath,
@@ -395,7 +396,7 @@ test("X2D public task and AMS tools dispatch through the native helper, includin
 });
 
 test("native upload forwards helper progress before returning the final result", { skip: !isBambuNativePlatform() }, async (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-native-progress-"));
+  const tempDir = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-native-progress-"));
   const helperPath = path.join(tempDir, "fake-native-helper.mjs");
   fs.writeFileSync(
     helperPath,
@@ -1439,7 +1440,7 @@ const FAKE_FULU_ENV = ["FAKE_FULU_WITH_RECORD_RESULT", "FAKE_FULU_START_PRINT_RE
 const fakeFuluEnvSnapshots = new WeakSet();
 
 async function fakeFuluBridge(t, env = {}, { wrapped = false } = {}) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fake-fulu-"));
+  const dir = trackedMkdtempSync(path.join(os.tmpdir(), "fake-fulu-"));
   const logPath = path.join(dir, "host.jsonl");
   let command = `${shellQuoteArg(process.execPath)} ${shellQuoteArg(FAKE_FULU_HOST)}`;
   if (wrapped) {
@@ -1494,10 +1495,10 @@ child.on("exit", code => process.exit(code ?? 1));
 }
 
 test("the FULU host runs in its Docker image, mounting this server's own config folder, where print snapshots go", async t => {
-  const tools = fs.mkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
+  const tools = trackedMkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
   t.after(() => fs.rmSync(tools, { recursive: true, force: true }));
   const { docker, colima } = fakeContainerTools(tools);
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "fulu-container-"));
+  const work = trackedMkdtempSync(path.join(os.tmpdir(), "fulu-container-"));
   t.after(() => fs.rmSync(work, { recursive: true, force: true }));
   // The VM shares neither /tmp nor /var/folders, so the server's TMPDIR is never mounted.
   const tmp = path.join(work, "tmp"), config = path.join(work, "home", ".config", "mcp-3d-printer-server", "bambu-network");
@@ -1546,7 +1547,7 @@ test("the FULU host runs in its Docker image, mounting this server's own config 
 });
 
 test("the FULU container mounts a symlinked config folder at the path the host is given, uses the Colima profile's socket, and clears stale snapshots", async t => {
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "fulu-container-paths-"));
+  const work = trackedMkdtempSync(path.join(os.tmpdir(), "fulu-container-paths-"));
   t.after(() => fs.rmSync(work, { recursive: true, force: true }));
   const real = path.join(work, "real-config"), linked = path.join(work, "linked-config");
   fs.mkdirSync(real);
@@ -1574,7 +1575,7 @@ test("the FULU container mounts a symlinked config folder at the path the host i
 });
 
 test("concurrent calls on a cold Docker-backed bridge start one container", async t => {
-  const tools = fs.mkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
+  const tools = trackedMkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
   t.after(() => fs.rmSync(tools, { recursive: true, force: true }));
   const { docker } = fakeContainerTools(tools);
   fs.writeFileSync(path.join(tools, "up"), "");
@@ -1590,7 +1591,7 @@ test("concurrent calls on a cold Docker-backed bridge start one container", asyn
 });
 
 test("stop returns even when a descendant of the bridge's shell keeps its pipes open", async t => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fulu-stop-"));
+  const dir = trackedMkdtempSync(path.join(os.tmpdir(), "fulu-stop-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   // A descendant of the shell (as a docker client can be) keeps the bridge's stdout and stderr open after the host
   // has gone, so the shell's "close" never comes. Before, stop waited for it for ever.
@@ -1608,11 +1609,11 @@ test("stop returns even when a descendant of the bridge's shell keeps its pipes 
 });
 
 test("a relative config folder reaches the containerized host as the absolute path that was mounted", async t => {
-  const tools = fs.mkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
+  const tools = trackedMkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
   t.after(() => fs.rmSync(tools, { recursive: true, force: true }));
   const { docker } = fakeContainerTools(tools);
   fs.writeFileSync(path.join(tools, "up"), "");
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), "fulu-relative-"));
+  const work = trackedMkdtempSync(path.join(os.tmpdir(), "fulu-relative-"));
   const previous = process.cwd();
   process.chdir(work);
   t.after(() => { process.chdir(previous); fs.rmSync(work, { recursive: true, force: true }); });
@@ -1632,7 +1633,7 @@ test("a relative config folder reaches the containerized host as the absolute pa
 });
 
 test("the FULU container says plainly when Docker isn't running and no Colima profile is set", async t => {
-  const tools = fs.mkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
+  const tools = trackedMkdtempSync(path.join(os.tmpdir(), "fake-docker-"));
   t.after(() => fs.rmSync(tools, { recursive: true, force: true }));
   const { docker } = fakeContainerTools(tools);
   const { bridge } = await fakeFuluBridge(t, { BAMBU_NETWORK_BRIDGE_COMMAND: undefined, BAMBU_NETWORK_BRIDGE_IMAGE: "bpm-fulu-e2e:runtime",
@@ -2072,7 +2073,7 @@ test("concurrent LAN prints to different printers run one session at a time on a
 });
 
 test("a LAN printer the plug-in cannot verify stops before any print or disconnect", async (t) => {
-  const emptyCertDir = fs.mkdtempSync(path.join(os.tmpdir(), "fulu-no-printer-cert-"));
+  const emptyCertDir = trackedMkdtempSync(path.join(os.tmpdir(), "fulu-no-printer-cert-"));
   t.after(() => fs.rmSync(emptyCertDir, { recursive: true, force: true }));
   const { bridge, methods } = await fakeFuluBridge(t, { BAMBU_NETWORK_CERT_DIR: emptyCertDir });
   await assert.rejects(
@@ -2110,7 +2111,7 @@ test("a host without the LAN-session calls still serves cloud and probes, and re
 // real LAN session. It never prints.
 const realFulu = process.env.FULU_HOST_DIR && process.env.FULU_PLUGIN_DIR && process.platform === "linux" && process.arch === "x64";
 test("real FULU host: agent setup and LAN session through the documented cat wrapper", { skip: !realFulu && "set FULU_HOST_DIR and FULU_PLUGIN_DIR on x86-64 Linux" }, async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "real-fulu-"));
+  const dir = trackedMkdtempSync(path.join(os.tmpdir(), "real-fulu-"));
   const wrapper = path.join(dir, "fulu-host-wrapper.sh");
   fs.writeFileSync(wrapper, `#!/bin/sh\n${shellQuoteArg(path.join(process.env.FULU_HOST_DIR, "pjarczak_bambu_linux_host"))} "$@" | cat\n`, { mode: 0o755 });
   const { bridge } = await fakeFuluBridge(t, {
@@ -2132,7 +2133,7 @@ test("sliceSTL allows slicer executables resolved from PATH", async (t) => {
     return;
   }
 
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "path-slicer-"));
+  const tempRoot = trackedMkdtempSync(path.join(os.tmpdir(), "path-slicer-"));
   const binDir = path.join(tempRoot, "bin");
   const commandName = `fake-prusaslicer-${process.pid}-${Date.now()}`;
   const commandPath = path.join(binDir, commandName);
@@ -2170,7 +2171,7 @@ test("sliceSTL allows slicer executables resolved from PATH", async (t) => {
 });
 
 test("sliceSTL names a slicer crash signal or exit code and keeps the end of its output", { skip: process.platform === "win32" }, async (t) => {
-  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "crashing-slicer-"));
+  const tempRoot = trackedMkdtempSync(path.join(os.tmpdir(), "crashing-slicer-"));
   t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
   const slicer = (name, body) => {
     const file = path.join(tempRoot, name);
@@ -2295,7 +2296,7 @@ test("camera frame parser splits frames across arbitrary chunk boundaries and re
 // Issue reported by the maintainer on a P1S: the first frame after connecting is the
 // printer's buffered frame and can show a finished part that was removed long ago.
 test("camera_snapshot over TCP skips the printer's buffered first frame and refuses when no live frame follows", { skip: process.platform === "win32" }, async (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "camera-tls-"));
+  const dir = trackedMkdtempSync(path.join(os.tmpdir(), "camera-tls-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const created = spawnSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-subj", "/CN=printer", "-days", "1",
     "-keyout", path.join(dir, "key.pem"), "-out", path.join(dir, "cert.pem")], { encoding: "utf8" });
@@ -2620,7 +2621,7 @@ function writeTemplateJsonFixture(
 // `behaviour` "stall" logs a line and then waits at 0% CPU, as Bambu Studio does behind AppKit's modal alert;
 // "busy" computes silently for 2.5 s before writing its output. Each run records its CFFIXED_USER_HOME.
 async function createFakeBambuSlicer({ result, exitCode = 0, machine = {}, behaviour } = {}) {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-mcp-template-slicer-"));
+  const tempDir = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-mcp-template-slicer-"));
   const fakeSlicerPath = path.join(tempDir, "fake-slicer.mjs");
   const argsOutPath = path.join(tempDir, "args.json");
   // The fake executable has no app bundle. Give profile preparation a complete,
@@ -3048,7 +3049,7 @@ test("the installed Bambu Studio's floating-cantilever warning reaches sliceSTLW
   skip: !fs.existsSync(installedStudio) && "Bambu Studio is not installed",
   timeout: 300_000,
 }, async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "studio-result-"));
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), "studio-result-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const tee = path.join(directory, "tee.stl");
   fs.writeFileSync(tee, boxesStl([[[-2, 0, 0], [2, 40, 26]], [[-30, 0, 26], [30, 40, 30]]]));
@@ -3235,7 +3236,7 @@ test("the installed Bambu Studio generates supports only when slice_stl's enable
   skip: !fs.existsSync(installedStudio) && "Bambu Studio is not installed",
   timeout: 600_000,
 }, async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "studio-supports-"));
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), "studio-supports-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   // A T: a narrow stem under a wide, unsupported cap.
   const tee = boxesStl([[[-2, 0, 0], [2, 40, 26]], [[-30, 0, 26], [30, 40, 30]]]);
@@ -3609,7 +3610,7 @@ test("non-slicer tools ignore invalid slicer configuration", async (t) => {
 });
 
 test("per-call executable selectors are rejected before any process can start", async (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-executable-selector-gate-"));
+  const tempDir = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-executable-selector-gate-"));
   const executable = path.join(tempDir, "unexpected-executable");
   const markerPath = path.join(tempDir, "executed");
   fs.writeFileSync(
@@ -3696,7 +3697,7 @@ test("per-call executable selectors are rejected before any process can start", 
 });
 
 test("legacy bridge opt-in does not authorize slicer or ffmpeg executables", async (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-legacy-bridge-gate-"));
+  const tempDir = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-legacy-bridge-gate-"));
   const executable = path.join(tempDir, "unexpected-executable");
   const markerPath = path.join(tempDir, "executed");
   const bridgeExecutable = path.join(tempDir, "trusted-legacy-bridge");
@@ -3823,7 +3824,7 @@ test("empty slicer_path preserves env fallback without executable opt-in", async
 });
 
 test("camera_snapshot uses trusted FFMPEG_PATH without opening per-call selectors", async (t) => {
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "trusted-ffmpeg-path-"));
+  const tempDir = trackedMkdtempSync(path.join(os.tmpdir(), "trusted-ffmpeg-path-"));
   const fakeFfmpeg = path.join(tempDir, "fake-ffmpeg.mjs");
   const argsPath = path.join(tempDir, "ffmpeg-args.json");
   fs.writeFileSync(
@@ -4165,7 +4166,7 @@ test("H2D Pro slicing selects its exact installed preset and refuses an H2D subs
 
 test("two projects' settings extract to distinct files, so concurrent slices can't swap processes", async (t) => {
   const { extractBambuTemplateSettings } = await import("../dist/3mf_parser.js");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "template-extract-"));
+  const dir = trackedMkdtempSync(path.join(os.tmpdir(), "template-extract-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const write = async (name, layer) => {
     const zip = new JSZip();
@@ -4182,7 +4183,7 @@ test("two projects' settings extract to distinct files, so concurrent slices can
 
 test("every extraction has its own path, even of the same project, and an operation removes what it extracted", async (t) => {
   const { extractBambuTemplateSettings, withExtractedSettingsCleanup } = await import("../dist/3mf_parser.js");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "template-extract-"));
+  const dir = trackedMkdtempSync(path.join(os.tmpdir(), "template-extract-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const zip = new JSZip();
   zip.file("Metadata/project_settings.config", JSON.stringify({ layer_height: "0.16" }));

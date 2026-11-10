@@ -1,3 +1,4 @@
+import {trackedMkdtemp} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -18,7 +19,7 @@ const hazardousCommands = [
 ];
 
 async function helper(t, { attempts = 1, ignoreTerm = false, noRequest = false, legacy = false, crash = false, printResult = 0 } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-native-dispatch-"));
+  const directory = await trackedMkdtemp(path.join(os.tmpdir(), "bambu-native-dispatch-"));
   const events = path.join(directory, "events.jsonl");
   const executable = path.join(directory, "helper.mjs");
   await fs.writeFile(events, "");
@@ -165,7 +166,7 @@ for (const operation of ["print", "command"]) for (const emergency of [false, tr
 });
 
 test("compiled native operation requires renewed parent approval after certificate setup and retry", async t => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-native-cpp-dispatch-"));
+  const directory = await trackedMkdtemp(path.join(os.tmpdir(), "bambu-native-cpp-dispatch-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const driver = path.join(directory, "driver.cpp");
   const executable = path.join(directory, "helper");
@@ -287,7 +288,7 @@ test('explicit native print rejection remains a failure', async t => {
 });
 
 test("compiled native command exits cleanly even when plug-in teardown would crash at process exit", { skip: process.platform === "win32" }, async t => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-native-exit-"));
+  const directory = await trackedMkdtemp(path.join(os.tmpdir(), "bambu-native-exit-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const driver = path.join(directory, "driver.cpp");
   const executable = path.join(directory, "helper");

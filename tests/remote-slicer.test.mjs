@@ -1,3 +1,4 @@
+import {trackedMkdtemp} from './support/temp.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -14,7 +15,7 @@ async function artifact({ model = 'p1s', nozzle = '0.4', plate = 1, command = 'G
 }
 
 async function fixture(t, handler) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'bambu-remote-test-'));
+  const dir = await trackedMkdtemp(path.join(os.tmpdir(), 'bambu-remote-test-'));
   const profiles = path.join(dir, 'profiles');
   const write = async (kind, profile) => {
     const folder = path.join(profiles, 'BBL', kind);

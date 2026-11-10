@@ -1,3 +1,4 @@
+import {trackedMkdtempSync} from './support/temp.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -88,7 +89,7 @@ test('camera_snapshot reuses an active stream and never opens its snapshot trans
 });
 
 test('TLS source reuses the existing framed decoder and one authenticated connection',async t=>{
-  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'camera-stream-tls-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const dir=trackedMkdtempSync(path.join(os.tmpdir(),'camera-stream-tls-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
   const cert=spawnSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-subj','/CN=printer','-days','1','-keyout',path.join(dir,'key'),'-out',path.join(dir,'cert')]);
   if(cert.status!==0)return t.skip('openssl unavailable');
   const jpeg=await picture(40),header=Buffer.alloc(16);header.writeUInt32LE(jpeg.length);
@@ -102,7 +103,7 @@ test('TLS source reuses the existing framed decoder and one authenticated connec
 });
 
 test('RTSP source keeps one process for several frames, and stop kills that process',async t=>{
-  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'camera-stream-rtsp-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const dir=trackedMkdtempSync(path.join(os.tmpdir(),'camera-stream-rtsp-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
   const jpeg=await picture(80),script=path.join(dir,'ffmpeg'),pidfile=path.join(dir,'pid');
   fs.writeFileSync(script,`#!${process.execPath}\nrequire('fs').writeFileSync(${JSON.stringify(pidfile)},String(process.pid));const b=Buffer.from(${JSON.stringify(jpeg.toString('base64'))},'base64');setInterval(()=>process.stdout.write(b),20);\n`,{mode:0o755});
   const frames=[],source=openRtspCameraSource('dummy','private-token',1,{onFrame:b=>frames.push(b),onError:e=>assert.fail(e.message),onEnd(){}},script);t.after(()=>source.close());
@@ -117,7 +118,7 @@ test('MJPEG parser bounds an unterminated image and splits arbitrary chunks',asy
 });
 
 test('public stream tools validate limits, report stopped, and advertise capability without camera traffic',async t=>{
-  const fixtureDir=fs.mkdtempSync(path.join(os.tmpdir(),'camera-wire-budget-'));
+  const fixtureDir=trackedMkdtempSync(path.join(os.tmpdir(),'camera-wire-budget-'));
   t.after(()=>fs.rmSync(fixtureDir,{recursive:true,force:true}));
   const base64=(await picture(90)).toString('base64');
   const preload=path.join(fixtureDir,'fixture.mjs');

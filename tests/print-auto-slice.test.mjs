@@ -1,3 +1,4 @@
+import {trackedMkdtempSync} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -17,7 +18,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const failure = "Required Bambu machine profile is missing nozzle_volume_type; select a matching machine and filament profile.";
 
 async function start(t, { sliceSucceeds = false, sliceStalls = false, realSlice = false, slicerType = 'bambustudio', elicitDelayMs = 0, elicitation = true, confirmation = true, afterPublish, pushAfterPublish = false, env = {} } = {}) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-auto-slice-"));
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-auto-slice-"));
   const log = path.join(directory, "calls.jsonl");
   const elicitLog = path.join(directory, "elicitations.jsonl");
   const profile = path.join(directory, "process.json");

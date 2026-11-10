@@ -36,6 +36,7 @@ export const PRINTER_INFO_OUTPUT_SCHEMA = {
         capabilities: {
             type: "object",
             properties: {
+                cad: { type: "object", properties: { contract: { type: "string", const: "cad/1" }, status: { type: "string" }, setup: { type: "string" }, run: { type: "string" }, checkFit: { type: "string" }, prompt: { type: "string" } }, required: ["contract", "status", "setup", "run", "checkFit", "prompt"] },
                 progress: { type: "boolean" },
                 layers: { type: "boolean" },
                 camera: { type: "string", enum: ["bambu-tcp", "rtsp", "http-snapshot", "none"] },

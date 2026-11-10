@@ -10,6 +10,32 @@
 
 - On macOS, a Bambu-compatible slicer that uses no CPU and writes nothing for `SLICER_STALL_SECONDS` (default 20; 0 turns it off) is stopped and reported with the stable `structuredContent.code` `slicer-waiting-on-dialog`. The message says to open the slicer once, answer what it shows and slice again; nothing is sent to the printer. It carries no `slicer_report`, because it is no verdict on the model. Previously such a slice waited until the client gave up.
 
+## [1.1.83] – 2026-11-09
+
+### Added
+
+- Report CAD installation estimates/measured bytes and coded refusals; queue runs within their own deadlines, retain protected final-result validation records, reuse content-hash input bundles, and reveal preview openings with depth/feature edges. Clarify scan-reference scope and measured-interface precedence. Validated through confined headless fixtures; no physical fit/print or app update.
+
+- Add optional confined code-CAD tools (`cad_status`, `cad_setup`, `cad_run`, `cad_check_fit`) and MCP-owned `cad_design` instructions for dimensioned parts and parameter edits. Setup installs pinned build123d/mesh libraries only on request; `CAD_ENABLED=0` leaves the family out. Explicit read-only input snapshots and a unit/up-axis/grounding helper support captured-mesh scripts in the same environment, with scikit-image and Shapely alongside the CAD and mesh libraries. macOS setup requires an internal ownership-enabled data volume; it never re-signs native files. No printer, installed app or Fusion-bridge behavior changes.
+
+## [1.1.82] – 2026-11-08
+
+### Added
+
+- `counterpart_setup_fields` says for each printer kind whether `camera_snapshot` reads its camera with only the settings the fields write (`cameraSnapshot`). It is `true` for Bambu: every offered model has a camera transport, chosen by the model field; RTSP models (X1, P2S, H2, X2D) still need ffmpeg, as `camera_snapshot` always has. A client such as Counterpart can then ask for a camera picture in its setup check only where the MCP says it can, instead of deciding by the printer type's name. Every kind declares it; a client reads it missing as an older server. Checked with the setup-fields tests; no printer contacted.
+
+## [1.1.81] – 2026-11-08
+
+- Report `printOutcome` in `print_3mf` and `upload_gcode` errors (`counterpart/1`): `not-sent` before any print command, `unknown` after a possible dispatch, or `rejected` when the printer refuses it. Fresh MQTT report timeouts no longer make clients guess whether printing started. Request-local tracking covers direct MQTT, FULU and native routes without matching error wording; Connect imports send no print command. Verified with mocked transports; no physical print started.
+
+## [1.1.80] – 2026-11-08
+
+### Fixed
+
+- Track checked print snapshots from allocation so server shutdown also removes in-flight copies whose operation has not returned. Verified with an exiting child process and mocked native shutdown; no printer contacted.
+
+- Remove test fixture directories at file teardown even after failures or early returns, and run the full Node test suite in a private temporary directory that fails on leftovers. Regression checks cover clean, leaking and failing suites; printer transports are mocked and no printer is contacted.
+
 ## [1.1.79] – 2026-11-08
 
 ### Fixed
