@@ -1,3 +1,4 @@
+import {trackedMkdtempSync} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -41,7 +42,7 @@ async function validate(input, output, expected = "valid") {
 }
 
 test("Blender validates a large binary STL within a 64 MiB Node heap", async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-blender-memory-"));
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-blender-memory-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const input = path.join(directory, "large.stl");
   // 6.75 million coordinates: boxing them exceeds this heap; typed arrays fit.
@@ -52,7 +53,7 @@ test("Blender validates a large binary STL within a 64 MiB Node heap", async (t)
 });
 
 test("Blender rejects non-finite coordinates at the end of a binary STL", async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-blender-finite-"));
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-blender-finite-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   for (const value of [NaN, Infinity, -Infinity]) {
     const input = path.join(directory, `${String(value)}.stl`);

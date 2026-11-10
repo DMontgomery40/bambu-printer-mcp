@@ -1,3 +1,4 @@
+import {trackedMkdtemp} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import fs from "node:fs/promises";
@@ -10,7 +11,7 @@ import { BambuImplementation } from "../dist/printers/bambu.js";
 process.env.BAMBU_DISPATCH_CHECK_MS = "0";
 
 async function capture(t, model, serial, { sparse = false, useAMS = true, suffix = ".gcode.3mf", filamentIds, amsSlots = [1], trays } = {}) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-route-"));
+  const dir = await trackedMkdtemp(path.join(os.tmpdir(), "bambu-route-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, `cube${suffix}`);
   const zip = new JSZip();

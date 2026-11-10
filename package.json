@@ -13,7 +13,7 @@
     "start:stdio": "MCP_TRANSPORT=stdio node dist/index.js",
     "start:http": "MCP_TRANSPORT=streamable-http node dist/index.js",
     "build": "tsc",
-    "test": "npm run build && node --test --import ./tests/support/isolate-studio-config.mjs tests/*.test.mjs tests/**/*.test.mjs",
+    "test": "npm run build && node scripts/test-with-temp-guard.mjs --import ./tests/support/isolate-studio-config.mjs tests/*.test.mjs tests/**/*.test.mjs",
     "package:mcpb": "npm run build && node scripts/package-mcpb.mjs",
     "version": "node scripts/sync-manifest-version.mjs",
     "postinstall": "node scripts/install-patches.mjs",

@@ -1,3 +1,4 @@
+import {trackedMkdtempSync} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -75,7 +76,7 @@ function assertIdempotent(packageRoot, cwd) {
 }
 
 test("published tarball patches the resolved dependency in local, global, and npm-exec installs", { timeout: 240_000 }, async (t) => {
-  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "bambu-npm-install-"));
+  const fixture = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-npm-install-"));
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
   const packed = JSON.parse(npm(["pack", "--ignore-scripts", "--json", "--pack-destination", fixture], ROOT));
   for (const file of packed[0].files) {
