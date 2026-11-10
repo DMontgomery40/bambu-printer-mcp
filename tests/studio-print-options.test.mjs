@@ -1,3 +1,4 @@
+import {trackedMkdtempSync} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -11,7 +12,7 @@ const SECRET = "12345678";
 
 /** A BambuStudio.conf as Studio writes it: JSON, then an MD5 checksum line. It also holds access codes. */
 function studioConf(t, sections) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "studio-conf-"));
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), "studio-conf-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const file = path.join(directory, "BambuStudio.conf");
   fs.writeFileSync(file, `${JSON.stringify({ ...sections, access_code: { "01P00TEST": SECRET } }, null, 4)}\n# MD5 checksum 0123456789ABCDEF0123456789ABCDEF\n`);
@@ -85,7 +86,7 @@ test("other printers resolve from Studio's printer definitions", () => {
 });
 
 test("an unreadable BambuStudio.conf is ignored without echoing any of its text", (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "studio-conf-bad-"));
+  const directory = trackedMkdtempSync(path.join(os.tmpdir(), "studio-conf-bad-"));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const file = path.join(directory, "BambuStudio.conf");
   fs.writeFileSync(file, `{"C12": {"bed_leveling": "off"}, "access_code": {"01P00TEST": "${SECRET}"`);

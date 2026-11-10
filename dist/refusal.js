@@ -1,7 +1,8 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 /**
- * A printer refusal with a stable code, returned as structuredContent.code on the tool's error, so clients
- * such as Counterpart act on the code instead of matching the message (whose words, HMS numbers and
- * firmware details change with the printer). Neither one starts a print.
+ * A printer refusal with a stable diagnostic code, retained for existing clients.
+ * Counterpart uses structuredContent.printOutcome for dispatch truth, never
+ * these firmware-specific codes or the message.
  *
  * - printer-command-rejected: the printer refused the print command itself (for Bambu, HMS 0500-0500-0001-0007,
  *   MQTT command verification); the file was uploaded and the command sent, but nothing is printing.
@@ -15,4 +16,19 @@ export class PrinterRefusal extends Error {
         this.code = code;
         this.name = "PrinterRefusal";
     }
+}
+const printDispatch = new AsyncLocalStorage();
+export function withPrintDispatch(run) {
+    return printDispatch.run({ attempted: false }, run);
+}
+/** Call immediately before handing a print command to a transport. An acknowledgement may then be lost. */
+export function markPrintCommandSent() {
+    const dispatch = printDispatch.getStore();
+    if (dispatch)
+        dispatch.attempted = true;
+}
+export function printOutcome(error) {
+    if (error instanceof PrinterRefusal && error.code === "printer-command-rejected")
+        return "rejected";
+    return printDispatch.getStore()?.attempted === false ? "not-sent" : "unknown";
 }
