@@ -70,3 +70,85 @@ export const MATERIALS = { PLA: make("PLA"), PETG: make("PETG"), TPU: make("TPU"
 export function material(name) { const m = MATERIALS[name]; if (!m)
     throw new Error(`unknown material ${name}; use PLA, PETG or TPU`); return m; }
 export const RAW = data;
+/** The kernel's ladder strains (KEY.md, coupons A and B) */
+export const LADDER_STRAINS = [0.008, 0.010, 0.012, 0.015, 0.018, 0.022, 0.027, 0.033];
+/** J: held tip travel for each arm (mm): tapered arm l 30, h 2.0 -> 1.0, travel = 1.09 eps l^2 / h0 (Bayer Table 1), strains 0.5..1.7% */
+export const J_STRAINS = [0.005, 0.008, 0.011, 0.014, 0.017];
+export const J_TRAVEL = J_STRAINS.map((e) => (1.09 * e * 30 * 30) / 2.0);
+/** K: the stand's inclines (deg) */
+export const K_ANGLES = [8, 11, 14, 17, 20, 24, 28, 33];
+/** L: arm and load: l 150 mm, b 8, h 2.4 (12 layers of 0.2), cup 25 x 25 x 16 mm inside to the brim (10.0 g of water) */
+export const L_ARM = { l: 150, b: 8, h: 2.4, waterG: 10.0 };
+/** Apply observations to a material: returns the material with the observed values and one line per replacement. */
+export function applyObserved(m, obs = []) {
+    const out = { ...m, cite: { ...m.cite } };
+    const used = [];
+    for (const o of obs) {
+        if (o.material !== m.name)
+            continue;
+        const tag = `coupon ${o.coupon}${o.printed ? `, printed ${o.printed}` : ""}${o.printer ? ` on ${o.printer}` : ""}`;
+        if (o.coupon === "A" || o.coupon === "B") {
+            const st = o.strains ?? LADDER_STRAINS;
+            const safe = (k) => (k === undefined ? undefined : k === "none" ? st[st.length - 1] : k >= 2 ? st[k - 2] : 0);
+            const brk = (k) => (k === undefined || k === "none" ? undefined : st[k - 1]);
+            if (o.coupon === "A") {
+                const s1 = safe(o.once), s10 = safe(o.ten);
+                if (s1 !== undefined) {
+                    out.strainOnce = [s1, s1];
+                    used.push(`single-use strain allowance in the layers ${(100 * s1).toFixed(1)}% (observed, ${tag}: arms up to ${(100 * s1).toFixed(1)}% survived${brk(o.once) ? `, ${(100 * brk(o.once)).toFixed(1)}% did not` : ", every arm survived (a lower bound)"}), replacing the derived ${(100 * m.strainOnce[0]).toFixed(1)}-${(100 * m.strainOnce[1]).toFixed(1)}%`);
+                }
+                if (s10 !== undefined) {
+                    out.strainRepeated = [s10, s10];
+                    used.push(`repeated-use strain allowance ${(100 * s10).toFixed(1)}% (observed after ten bends, ${tag}), replacing the derived ${(100 * m.strainRepeated[0]).toFixed(1)}-${(100 * m.strainRepeated[1]).toFixed(1)}%`);
+                }
+            }
+            else {
+                const s1 = safe(o.once);
+                if (s1 !== undefined) {
+                    const Sz = m.E3 * s1; // linear to break across the layers (UltiMaker PLA: "No yield" across, S4)
+                    out.SzLow = Math.min(out.SzLow, Sz);
+                    out.Sz = Math.min(out.Sz, Math.max(Sz, 1));
+                    out.strainZ = s1;
+                    used.push(`across-layer strain limit ${(100 * s1).toFixed(1)}% (observed, ${tag}); across-layer strength taken as E_z x that = ${Sz.toFixed(0)} MPa (lower bound; linear to break across layers, S4), replacing ${m.Sz} MPa (${m.cite.UTS_z}) where lower`);
+                    out.cite.UTS_z = `${tag}`;
+                }
+            }
+        }
+        else if (o.coupon === "J") {
+            const y = J_TRAVEL[o.arm - 1];
+            if (!y)
+                continue;
+            const set = 0.5 * o.setTicks, r = Math.min(1, set / y), dr = 0.25 / y;
+            out.relaxLoss = [Math.max(0, r - dr), Math.min(1, r + dr)];
+            out.relaxSeconds = o.heldSeconds;
+            out.relaxCite = `observed, ${tag}`;
+            used.push(`stress relaxation ${(100 * r).toFixed(0)}% (+-${(100 * dr).toFixed(0)}) after ${(o.heldSeconds / 86400).toFixed(1)} days held at ${(100 * J_STRAINS[o.arm - 1]).toFixed(1)}% strain (observed, ${tag}: set ${set.toFixed(1)} mm of ${y.toFixed(1)} mm held, read on release; set / held = relaxed fraction for a standard linear solid), replacing ${m.relaxLoss ? `${(100 * m.relaxLoss[0]).toFixed(0)}-${(100 * m.relaxLoss[1]).toFixed(0)}% within ${m.relaxSeconds} s (S16)` : "no data"}`);
+        }
+        else if (o.coupon === "K") {
+            const a = K_ANGLES[o.stays - 1] ?? 0, b2 = K_ANGLES[o.slides - 1] ?? 90;
+            const lo = Math.tan((a * Math.PI) / 180), hi = Math.tan((b2 * Math.PI) / 180);
+            if (o.pair === "object-part") {
+                out.muObject = [lo, hi];
+                used.push(`friction of the object on the printed part ${lo.toFixed(2)}-${hi.toFixed(2)} (observed, ${tag}: stays at ${a} deg, slides at ${b2} deg)`);
+            }
+            else {
+                out.muSteel = [lo, lo];
+                out.muNote = `observed ${o.pair} static ${lo.toFixed(2)}-${hi.toFixed(2)} (${tag}; the lower end is used)`;
+                used.push(`static friction ${o.pair} ${lo.toFixed(2)}-${hi.toFixed(2)} (observed, ${tag}), replacing ${m.muSteel[0]}-${m.muSteel[1]} against steel (S13)`);
+            }
+        }
+        else if (o.coupon === "L") {
+            const d = 0.5 * (o.fullTicks - o.emptyTicks);
+            if (!(d > 0))
+                continue;
+            const F = (L_ARM.waterG / 1000) * 9.81, I = (L_ARM.b * L_ARM.h ** 3) / 12;
+            const E = (F * L_ARM.l ** 3) / (3 * I * d);
+            // reading +-0.25 mm on d, water to the brim +-3%, the arm's 12 layers +-0.05 mm (x3 in h^3)
+            const rel = Math.hypot(0.25 / d, 0.03, (3 * 0.05) / L_ARM.h);
+            out.E1 = E;
+            out.cite.E_xy = tag;
+            used.push(`in-layer modulus ${E.toFixed(0)} MPa +-${(100 * rel).toFixed(0)}% (observed, ${tag}: ${d.toFixed(1)} mm under 10 g of water at 150 mm), replacing ${m.E1} MPa (${m.cite.E_xy}; sources span ${m.E1}-3292)`);
+        }
+    }
+    return { material: out, used };
+}

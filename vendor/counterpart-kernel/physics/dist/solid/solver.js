@@ -167,7 +167,7 @@ function estimateLmax(L) {
     return lam * 1.1;
 }
 /** Chebyshev smoothing of A x = b on [lmax/ratio, lmax] for Binv A, `deg` steps, starting from x. */
-function chebyshev(L, b, x, deg = 3, ratio = 20) {
+function chebyshev(L, b, x, deg = CHEB_DEG, ratio = 20) {
     const n = L.ndof, lmax = L.lmax, lmin = lmax / ratio;
     const theta = (lmax + lmin) / 2, delta = (lmax - lmin) / 2;
     const sc = L.scratch ?? (L.scratch = [new Float64Array(n), new Float64Array(n), new Float64Array(n), new Float64Array(n)]);
@@ -520,6 +520,8 @@ function vcycle(H, l, b) {
 }
 /** Coarsest level without a factorisation: block-Jacobi CG to a loose tolerance (an accurate coarse solve
  * matters on thin walls, where the coarse grids are poor; smoothing alone tripled the outer iterations). */
+const CHEB_DEG = Number(process.env.PHYSICS_CHEB ?? 3);
+const COARSE_IT = Number(process.env.PHYSICS_COARSE_IT ?? 40), COARSE_TOL = Number(process.env.PHYSICS_COARSE_TOL ?? 1e-2);
 function coarseCG(L, b) {
     const n = L.ndof, x = new Float64Array(n), r = b.slice(), z = new Float64Array(n), p = new Float64Array(n), Ap = new Float64Array(n);
     for (let i = 0; i < n; i++)
@@ -533,7 +535,7 @@ function coarseCG(L, b) {
         bn += r[i] * r[i];
     }
     bn = Math.sqrt(bn) || 1;
-    for (let it = 0; it < 300; it++) {
+    for (let it = 0; it < COARSE_IT; it++) {
         matvec(L, p, Ap);
         let pAp = 0;
         for (let i = 0; i < n; i++)
@@ -547,7 +549,7 @@ function coarseCG(L, b) {
             r[i] -= a * Ap[i];
             rn += r[i] * r[i];
         }
-        if (Math.sqrt(rn) / bn < 1e-3)
+        if (Math.sqrt(rn) / bn < COARSE_TOL)
             break;
         applyBinv(L, r, z);
         let rzn = 0;

@@ -82,7 +82,7 @@ export async function counterpartBuild(
     reads: [o.parameters],
     args: ["--params", o.parameters],
     memMB: 3072,
-    threads: 2,
+    threads: 0, // the physics engine's thread pool can deadlock (Counterpart kernel lab, round 3): one thread until it is fixed
   });
   await fs.mkdir(path.join(o.job, "tmp"), { recursive: true, mode: 0o700 });
   let r: { stdout: string; stderr?: string };

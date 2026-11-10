@@ -58,7 +58,7 @@ export function facts(f) {
 export function isFacts(r) { return !!r.facts; }
 /** Merge every fact requirement of a part; ids are made unique by suffixing. */
 export function mergeFacts(list) {
-    const out = { supports: [], loads: [], flexures: {}, requirements: [] };
+    const out = { supports: [], loads: [], flexures: {}, requirements: [], parameters: [] };
     const used = new Set();
     const uniq = (id) => { let k = id, n = 2; while (used.has(k))
         k = `${id}.${n++}`; used.add(k); return k; };
@@ -80,6 +80,9 @@ export function mergeFacts(list) {
                     r2[k] = { ...r2[k], flexure: ren.get(r2[k].flexure) ?? r2[k].flexure };
             out.requirements.push(r2);
         }
+        for (const q of f.parameters ?? [])
+            if (!out.parameters.some((x) => x.id && x.id === q.id))
+                out.parameters.push(q);
         if (f.object && !out.object)
             out.object = f.object;
         if (f.down)

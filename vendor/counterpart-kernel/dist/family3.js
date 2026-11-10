@@ -106,14 +106,15 @@ export function sprungHolder(o) {
         object: { size: f3((dMin + dMax) / 2), uncertainty: f3((dMax - dMin) / 2), source: Array.isArray(o.around) ? "a stated range" : String(o.fit?.measured ?? "calipers") }, holds: [f3(dMin), f3(dMax)], modelled_per_side: f3(c), function: "snaps",
         primitive: "drop-in pocket", reasoning: `sprung arms for ${f3(dMin)}-${f3(dMax)} mm: channel ${f3(2 * halfCh)} clears the largest by ${f3(c)} per side, lips ${mouth} apart hold the smallest by ${f3(ret)} per side, arms sized by the engine` }), facts({ from: "sprungHolder", down: [0, 1, 0], supports,
         object: { name: "object", kg: 0.02, cylinder: { d: dMin, at: [0, dMin / 2, 0], axis: "z", span: [0, b] }, size: { nominal: f3((dMin + dMax) / 2), uncertainty: f3((dMax - dMin) / 2), source: "range" } },
-        loads: [{ id: "pull", kind: "pull", N: 10, dir: [0, 1, 0], at: { box: [[-halfCh, halfCh], [-0.6, 0.6], [0, b]] }, why: "a hand tugging the object, 10 N" }],
+        loads: [],
         flexures: { [name]: { kind: "snap", ...armFact, why: "sprung arm that lets the largest in and keeps the smallest" } },
         requirements: [
             { id: `${name}.strain`, strain: { flexure: name, use: "repeated" }, why: "the largest pushed in and pulled out, many times" },
             { id: `${name}.stop`, stop: { flexure: name }, why: "an arm pried onto its stop is not over-bent" },
             { id: `${name}.push`, insertion: { flexure: name, max: pushMax }, why: "pushed in by hand" },
             { id: `${name}.retain`, retention: { flexure: name, min: holdMin }, why: "does not fall out" },
-            { id: "strength", holds: { safetyFactor: 3 }, why: "the base and arm roots carry a 10 N tug" },
+            // no whole-part strength check: a 10 N tug on the solid base came out at SF ~2500, and the engine voxelises
+            // from the thinnest wall (the 1.2 mm arms), so it cost a worker run 10 minutes per engine run (A3r)
         ] }));
 }
 // ------------------------------------------------------------------------------------------------
@@ -130,7 +131,7 @@ export function hook(o) {
     const hole = screwHole(screw, "clearance", "horizontal"), headD = f3(head + 2 * PRINT_CORRECTION.holeHorizontal), csk = (headD - hole.d) / 2;
     const tMin = Math.max(2.5, Math.ceil((csk + 1.2) * 2) / 2);
     // the plate (leg) from y = 0 to H, the arm at the bottom from the plate out to reach, the J's lip rising at the end
-    const k = SIZING.k["hook"] ?? 0.65, kd = SIZING.kd["hook"] ?? 1, needSF = SF * 1.15, t0 = performance.now();
+    const k = SIZING.k["hook"] ?? 0.65, kd = SIZING.kd["hook"] ?? 1, needSF = SF * 1.25, t0 = performance.now();
     const table = [];
     let pick = null;
     const ys = [H - head / 2 - 3, H - head / 2 - 3 - 2 * head];

@@ -11,7 +11,7 @@ import { pathToFileURL } from "node:url";
 import { Mesh } from "./kernel/mesh.js";
 import { BVH } from "./kernel/bvh.js";
 const ROOT = resolve(new URL("..", import.meta.url).pathname);
-const PHYS = join(ROOT, "physics", "dist");
+const PHYS = process.env.COUNTERPART_PHYSICS ?? join(ROOT, "physics", "dist");
 let physCache = null;
 async function physics() {
     if (physCache)

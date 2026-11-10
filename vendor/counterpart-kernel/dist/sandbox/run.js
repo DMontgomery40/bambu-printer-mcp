@@ -3,7 +3,8 @@
  *  - under Node's permission model: it may read only the kernel, the physics engine and the script, write
  *    only its output folder, and start no processes. Worker threads must be allowed because Node runs the
  *    module hooks on one; the script cannot reach worker_threads (the hooks refuse it), and the physics solve
- *    runs on PHYSICS_THREADS workers here (default 2; --threads n), which its module hooks now admit;
+ *    can run on worker threads here (--threads n), which its module hooks now admit; default 0 (the engine's pool
+ *    can deadlock: see src/sizing.ts);
  *  - with module hooks that let the script import nothing but "counterpart-kernel" and keep the network
  *    modules out of reach of everything in the sandbox; network globals and process back doors removed;
  *  - with an empty environment, a heap cap, a resident-memory watchdog and a wall-clock limit.
@@ -36,7 +37,7 @@ export function sandboxCommand(script, o) {
         `--max-old-space-size=${Math.max(256, memMB - 512)}`, "--import", pathToFileURL(join(dist, "sandbox", "preload.js")).href,
         join(dist, "cli.js"), "run", scriptAbs, "--out", out, ...(o.name ? ["--name", o.name] : []), ...(o.args ?? []),
     ];
-    const env = { CP_SANDBOX_ROOTS: roots.join("|"), CP_SANDBOX_KERNEL: pathToFileURL(dist).href + "/", CP_SANDBOX_SCRIPT: pathToFileURL(scriptAbs).href, PHYSICS_THREADS: String(o.threads ?? 2), CP_INPUTS: JSON.stringify(inputs) };
+    const env = { CP_SANDBOX_ROOTS: roots.join("|"), CP_SANDBOX_KERNEL: pathToFileURL(dist).href + "/", CP_SANDBOX_SCRIPT: pathToFileURL(scriptAbs).href, PHYSICS_THREADS: String(o.threads ?? 0), COUNTERPART_PHYSICS_THREADS: String(o.threads ?? 0), CP_INPUTS: JSON.stringify(inputs) };
     return { argv, env, reads, out };
 }
 export function runSandboxed(script, o) {

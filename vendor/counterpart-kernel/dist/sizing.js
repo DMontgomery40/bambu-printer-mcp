@@ -16,6 +16,11 @@ import { pathToFileURL } from "node:url";
 const ROOT = resolve(new URL("..", import.meta.url).pathname);
 const PHYS = process.env.COUNTERPART_PHYSICS ?? join(ROOT, "physics", "dist");
 async function load() {
+    // The engine's thread pool can wait forever: its workers keep the 12 most recently used stencils, and a solve that
+    // registers more (contact passes rebuilding coarse levels) can evict one still in use; a worker then waits for a
+    // message it already consumed (physics/src/solid/worker.ts; seen 2026-11-10 on two worker runs, all threads parked
+    // on futexes). Until the physics lab fixes it, proofs run on the main thread unless COUNTERPART_PHYSICS_THREADS asks.
+    process.env.PHYSICS_THREADS = process.env.COUNTERPART_PHYSICS_THREADS ?? "0";
     if (!existsSync(join(PHYS, "beam", "frame2d.js")))
         return null;
     const u = (p) => pathToFileURL(join(PHYS, p)).href;
@@ -43,6 +48,9 @@ export const ENGINE = await load();
  * rebuilds the script once after a disagreement. Empty on a first build.
  */
 export const SIZING = { k: {}, kd: {}, log: [] };
+/** A fix the engine asks for by a parameter's id ("holder.wall": 3.1): features read their members through ov(). */
+export const OVERRIDES = {};
+export const ov = (id, v) => (OVERRIDES[id] !== undefined ? OVERRIDES[id] : v);
 const WARM = new Map();
 export function solveFrame2D(spec) {
     if (!ENGINE)

@@ -85,6 +85,11 @@ export function partRecord(name, mesh, f, interfaces, opts = {}) {
         down: f.down ?? [0, 0, -1],
         supports: f.supports ?? [], object, loads: (f.loads ?? []).map(widenLoad), flexures: f.flexures ?? {}, requirements: f.requirements ?? [],
         interfaces, fidelity: opts.fidelity ?? "fast",
+        // the script's named parameters, then the members the features chose (docs/part-record.md, parameters[])
+        parameters: [
+            ...Object.entries(opts.params ?? {}).filter(([, v]) => typeof v === "number" || typeof v === "string" || typeof v === "boolean").map(([k, v]) => ({ name: k, value: v, ...(opts.spec?.[k]?.unit ? { unit: opts.spec[k].unit } : {}), feature: "script" })),
+            ...(f.parameters ?? []),
+        ],
     };
 }
 OBJECT_MESHER.fn = objectMesh;

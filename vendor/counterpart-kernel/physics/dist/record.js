@@ -15,11 +15,11 @@
  * the print direction turns with it, so layers stay where they were printed.
  */
 import { check } from "./check.js";
-import { material as getMaterial } from "./materials.js";
+import { material as getMaterial, applyObserved } from "./materials.js";
 import { snapEngine } from "./beam/snap.js";
 import { meshDistance } from "./geom/meshdist.js";
 import { thinWall } from "./solid/analyze.js";
-const KEYS = ["holds", "deflection", "staysIn", "liftsOut", "retains", "strain", "stop", "insertion", "retention", "grips", "relaxed", "escape"];
+const KEYS = ["holds", "deflection", "screws", "staysIn", "liftsOut", "retains", "strain", "stop", "insertion", "retention", "grips", "relaxed", "escape"];
 const keyOf = (r) => KEYS.find((k) => k in r);
 /** A signed axis permutation taking `down` to -z (only axis-aligned `down` is accepted). */
 function useFrame(down) {
@@ -85,7 +85,7 @@ export function answer(rec, opts = {}) {
     const reqName = (r) => { const k = keyOf(r); return k ? `${k}${r[k]?.flexure ? ` ${r[k].flexure}` : ""}` : Object.keys(r).filter((x) => !["id", "why", "from"].includes(x)).join(","); };
     const put = (r, a, ms, extraWhy = "", error) => out.set(r.id, { id: r.id, requirement: a.requirement ?? reqName(r), verdict: a.verdict, value: a.value ?? "-", limit: a.limit ?? "-", where: a.where, why: `${a.why ?? ""}${extraWhy}`, fix: a.fix, fidelity, ms: Math.round(a.ms ?? ms), from: r.from, ...(error !== undefined ? { error } : {}) });
     const unsupported = (r, why) => put(r, { verdict: "unsupported", why }, 0);
-    const done = () => ({ schema: "counterpart/part-answer@1", name: rec.name, answers: rec.requirements.map((r) => out.get(r.id) ?? { id: r.id, requirement: reqName(r), verdict: "unsupported", value: "-", limit: "-", why: "no answer", fidelity, ms: 0 }), notes, ms: Math.round(performance.now() - t0), engine: "counterpart-physics round 2" });
+    const done = () => ({ schema: "counterpart/part-answer@1", name: rec.name, answers: rec.requirements.map((r) => out.get(r.id) ?? { id: r.id, requirement: reqName(r), verdict: "unsupported", value: "-", limit: "-", why: "no answer", fidelity, ms: 0 }), notes: [...new Set(notes)], ms: Math.round(performance.now() - t0), engine: "counterpart-physics round 2" });
     const matName = ["PLA", "PETG", "TPU"].find((n) => n === rec.material.name.toUpperCase());
     if (!matName) {
         for (const r of rec.requirements)
@@ -93,6 +93,8 @@ export function answer(rec, opts = {}) {
         return done();
     }
     const m = getMaterial(matName);
+    if (rec.observed?.length)
+        notes.push(...applyObserved(m, rec.observed).used.map((u) => `observed: ${u}`));
     if (!rec.material.stated)
         notes.push(`material ${matName} was assumed by the kernel, not stated by the person; a result that would change with PETG says so`);
     const R = useFrame(rec.down ?? [0, 0, -1]);
@@ -155,12 +157,13 @@ export function answer(rec, opts = {}) {
             notes.push(`load ${l.id} (${l.kind}) acts on the object, not on a region of the part: used by the insertion and retention checks only`);
     const object = rec.object?.mesh ? { mesh: rMesh(R, rec.object.mesh), kg: rec.object.kg } : undefined;
     const part = { mesh, distance: md.distance, bounds };
-    const base = { name: rec.name, part, material: matName, printUp };
+    const printCandidates = rec.print?.candidates?.map((c) => rv(R, c));
+    const base = { name: rec.name, part, material: matName, printUp, observed: rec.observed, printCandidates };
     // whole-part requirements: one solve per distinct load set
-    const solid = rec.requirements.filter((r) => "holds" in r || "deflection" in r);
+    const solid = rec.requirements.filter((r) => "holds" in r || "deflection" in r || "screws" in r);
     const groups = new Map();
     for (const r of solid) {
-        const ids = (r.holds ?? r.deflection).loads;
+        const ids = (r.holds ?? r.deflection ?? r.screws).loads;
         const k = ids ? [...ids].sort().join(",") : "*";
         (groups.get(k) ?? groups.set(k, []).get(k)).push(r);
     }
@@ -173,14 +176,14 @@ export function answer(rec, opts = {}) {
             continue;
         }
         try {
-            const res = check({ ...base, supports, loads, requirements: reqs.map((r) => ("holds" in r ? { holds: { safetyFactor: r.holds.safetyFactor } } : { deflection: { max: r.deflection.max } })), resolution: h, map: true });
+            const res = check({ ...base, supports, loads, requirements: reqs.map((r) => ("holds" in r ? { holds: { safetyFactor: r.holds.safetyFactor } } : "screws" in r ? { screws: { safetyFactor: r.screws.safetyFactor } } : { deflection: { max: r.deflection.max } })), resolution: h, map: true });
             const ms = performance.now() - ts;
             notes.push(...res.notes.map((n) => (k === "*" ? n : `[loads ${k}] ${n}`)));
             const held = res.answers.find((a) => a.requirement === "the part is held");
-            const hs = res.answers.filter((a) => /^holds/.test(a.requirement)), ds = res.answers.filter((a) => /^deflects/.test(a.requirement));
-            let hi = 0, di = 0;
+            const hs = res.answers.filter((a) => /^holds/.test(a.requirement)), ds = res.answers.filter((a) => /^deflects/.test(a.requirement)), ss = res.answers.filter((a) => /^every screw/.test(a.requirement));
+            let hi = 0, di = 0, si = 0;
             for (const r of reqs) {
-                const a = held ?? ("holds" in r ? hs[hi++] : ds[di++]);
+                const a = held ?? ("holds" in r ? hs[hi++] : "screws" in r ? ss[si++] : ds[di++]);
                 if (a)
                     put(r, a, ms, "", a.error);
                 else

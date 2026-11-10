@@ -15,3 +15,4 @@ export { ladderXY, ladderZ, testPin, ribBore, holeGauge, keyPin, slitGauge, keyS
 export { scanEnvelope, scanPocket, scanSizes, loadMesh, MeshSolid } from "./scanfit.js";
 export { sprungHolder, hook, adapter, knob } from "./family3.js";
 export { readSTL, writeSTL } from "./kernel/io.js";
+export { jComb, jKeys, kStand, kPlates, kSlider, lArm, idBumps, J_STRAINS, K_ANGLES } from "./coupons3.js";

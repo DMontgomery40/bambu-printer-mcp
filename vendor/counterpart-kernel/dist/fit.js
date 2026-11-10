@@ -102,13 +102,16 @@ export function decideFit(spec, ctx) {
             reasoning: `${what}. ${prim}: modelled ${m} mm per side = design fit ${rule.fit} (${fn}) + print correction ${corr} (${corrFeature}); tolerates sizes ${r3(n - rule.band)} to ${r3(n + rule.band)}.` };
     }
     if (fn === "clamps" && ctx.shape === "round") {
-        const g = ctx.splitGap ?? 2, closes = r3(g / Math.PI);
+        // the bore clears the largest size (round 2 cleared the nominal, so a +-1 handle at its largest did not pass: worker
+        // run A5), and the split widens until it closes the bore onto the smallest; refused only past a quarter of the ring
         const m = r3(rule.fit + corr);
-        const bore = r3(n + 2 * m);
-        if (2 * u > closes)
-            throw new KernelError(`${ctx.feature}: the size is known to +-${u} (${source}); a ${g} mm split only closes the bore by ${closes} mm. Ask for a caliper measurement, widen the split, or use fit: "grips" (ribs and a pinch).`);
+        const bore = r3(n + u + 2 * m);
+        const closeNeeded = bore - (n - u);
+        const g = Math.max(ctx.splitGap ?? 2, Math.ceil(Math.PI * closeNeeded * 2) / 2), closes = r3(g / Math.PI);
+        if (g > 0.25 * Math.PI * n)
+            throw new KernelError(`${ctx.feature}: the ${n} mm size is known to +-${u} (${source}); a split that closes the bore from the largest to the smallest would be ${g} mm, over a quarter of the ring. Ask for a caliper measurement, or use fingerBore for a light hold.`);
         return { ...base, primitive: "split-pinch clamp", modelled_per_side: m, split: { gap: g, closes_diameter_by: closes }, holds: [r3(bore - closes), r3(bore - 0.05)],
-            reasoning: `${what}. Split-pinch clamp: bore ${bore} (design fit ${rule.fit} to slide on before tightening + print correction ${corr} per side); the ${g} mm split closes it by up to ${closes}, so it clamps ${r3(bore - closes)} to ${r3(bore - 0.05)} mm.` };
+            reasoning: `${what}. Split-pinch clamp: bore ${bore} (the largest size, ${r3(n + u)}, + design fit ${rule.fit} to slide on before tightening + print correction ${corr} per side); the ${g} mm split closes it by up to ${closes}, so it clamps ${r3(bore - closes)} to ${r3(bore - 0.05)} mm.` };
     }
     // grips (or locates with an uncertain size). Rules from docs/research/compliant-mechanisms.md (rule 4, section 4):
     // a long hold comes from a screw, not from elastic preload in PLA/PETG (creep), and crushed ribs take a set,

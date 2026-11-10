@@ -65,8 +65,11 @@ function surfaceNodes(t) {
             cnt[t.edofs[24 * k + 3 * a] / 3]++;
     return cnt.map((c) => (c < 8 ? 1 : 0));
 }
+const SEAT_BAND = Number(process.env.PHYSICS_SEAT ?? 0.75);
+const EXT_EDGE = !process.env.PHYSICS_EXT_NOEDGE;
+const EXT_NB_MIN = Number(process.env.PHYSICS_EXT_NB ?? 0.25), EXT_PHI = process.env.PHYSICS_EXT_GEO ? false : true, EXT_CLAMP = Number(process.env.PHYSICS_EXT_CLAMP ?? 1);
 const LOADZONE_K = Number(process.env.PHYSICS_LZK ?? 2.5), LOADZONE_CAP = Number(process.env.PHYSICS_LZCAP ?? 7);
-const REHOLD = Number(process.env.PHYSICS_REHOLD ?? 2e-3);
+const REHOLD = Number(process.env.PHYSICS_REHOLD ?? 0); // a released node that has gone into the wall at all is held again (2e-3 of the largest displacement let the wall push move inward: screw tension 2% low)
 const RELEASE = Number(process.env.PHYSICS_RELEASE ?? 0);
 const dbg = (m) => { if (process.env.PHYSICS_DEBUG)
     console.log(m); };
@@ -140,7 +143,7 @@ function attachCutCells(t, cutSub, C, h, Ke) {
     t.cutCentroid = cen;
 }
 /** Where a screw head bears: the countersink cone (if the part has one there) or the flat face around the hole. */
-function screwSeat(dist, s, ax, h) {
+export function screwSeat(dist, s, ax, h) {
     const headR = (s.head ?? 2 * s.d) / 2;
     if (!dist)
         return null;
@@ -160,7 +163,8 @@ function screwSeat(dist, s, ax, h) {
         al += 0.02;
     const top = al;
     const k = headR - s.d / 2;
-    const countersunk = k > 0.05 && dist(...P(top - 0.4 * k, headR - 0.3 * k)) > 0;
+    // a countersink leaves void inside the cone, between the hole and the cone's surface, halfway down it
+    const countersunk = k > 0.05 && dist(...P(top - 0.5 * k, s.d / 2 + 0.5 * k - 0.3 * Math.min(k, 1))) > 0;
     return { top, k: countersunk ? k : 0, headR, countersunk };
 }
 function solveAt(c, h, hint, seeding = false, seed) {
@@ -229,7 +233,7 @@ function solveAt(c, h, hint, seeding = false, seed) {
                     const al0 = seat.top - seat.k;
                     if (al < al0 - 0.5 * h || al > seat.top + 0.5 * h || rad > seat.headR + 0.5 * h)
                         continue;
-                    if (Math.abs(rad - s.d / 2 - (al - al0)) / Math.SQRT2 <= 0.75 * h)
+                    if (Math.abs(rad - s.d / 2 - (al - al0)) / Math.SQRT2 <= SEAT_BAND * h)
                         head.push(n);
                 }
                 else if (seat) {
@@ -257,14 +261,17 @@ function solveAt(c, h, hint, seeding = false, seed) {
             }
             if (!head.length)
                 return fail(`support ${s.name ?? s.kind}: no part material found where the head would bear (check its position against the part)`);
+            const slotDof = s.slot ? s.slot.map(Math.abs).indexOf(Math.max(...s.slot.map(Math.abs))) : -1;
+            const bilateral = !!s.bilateral; // a test switch: the head holds the seat along the axis both ways
             for (const n of head) {
                 for (let j = 0; j < 3; j++)
-                    if (j !== axisDof)
+                    if ((j !== axisDof || bilateral) && j !== slotDof)
                         fixed[3 * n + j] = 1;
                 supportNodes[n] = 1;
             }
             supportSets.push({ name: `${s.name ?? "screw"}`, nodes: head, axis: ax });
-            walls.push({ name: `${s.name ?? "screw"} head`, nodes: head, normal: [-ax[0], -ax[1], -ax[2]], screw: true });
+            if (!bilateral)
+                walls.push({ name: `${s.name ?? "screw"} head`, nodes: head, normal: [-ax[0], -ax[1], -ax[2]], screw: true });
             continue;
         }
         else {
@@ -383,9 +390,9 @@ function solveAt(c, h, hint, seeding = false, seed) {
                 wallActive[wi][i] = best < Infinity ? act : 1;
             });
         });
-    let penetration = 0;
+    let penetration = 0, unsettled = 0;
     let lastFx = fixed;
-    if (seed && seed.u.length)
+    if (seed && seed.u.length && !process.env.PHYSICS_NOSEEDU)
         for (let n = 0; n < t.nNodes; n++) {
             const v = interpolateSolved(seed, pos[n]);
             if (v) {
@@ -398,7 +405,8 @@ function solveAt(c, h, hint, seeding = false, seed) {
     let Hh = null, hFx = null, firstIts = 0;
     const fine = buildFineOperator(t, Ke, { parallel: c.parallel });
     const tight = c.tol ?? 1e-5, loose = Math.max(tight, Number(process.env.PHYSICS_LOOSE ?? 1e-2));
-    const maxPass = walls.length ? 40 : 1;
+    // at the working voxel, after a coarser seed, a few passes settle the set; the last pass is the tight solve
+    const maxPass = walls.length ? (hint && !seeding ? Number(process.env.PHYSICS_FINE_PASSES ?? 3) : 40) : 1;
     for (wallIt = 0; wallIt < maxPass; wallIt++) {
         const fx = fixed.slice();
         walls.forEach((w, wi) => {
@@ -415,7 +423,7 @@ function solveAt(c, h, hint, seeding = false, seed) {
                 if (fx[d])
                     held++;
             }
-        if (!Hh || t.elems.length < 20000 || diff > Math.max(0.03 * held, 20)) {
+        if (!Hh || t.elems.length < 20000 || diff > Math.max(0.03 * held, Number(process.env.PHYSICS_REUSE ?? 20))) {
             const th = performance.now();
             Hh = buildHierarchy(t, Ke, fx, { multigrid: c.multigrid, fine });
             hFx = fx;
@@ -426,7 +434,11 @@ function solveAt(c, h, hint, seeding = false, seed) {
         for (let d = 0; d < nd; d++)
             if (fx[d])
                 b[d] = 0;
-        const s = pcg(Hh, b, { tol: walls.length && !settled ? loose : tight, x0: u, opFixed: hFx === fx ? undefined : fx });
+        // started from a coarser solve's contact set: one loose pass to move the contact zone's edge to this voxel,
+        // then the tight pass (on the bottle holder, 2 passes against a fully settled set: deflection, peak and
+        // screw loads within 0.5%; 1 pass: screw tension 2-4% and wall push 7% low)
+        const finalFromHint = false;
+        const s = pcg(Hh, b, { tol: walls.length && !settled && !finalFromHint ? loose : tight, x0: u, opFixed: hFx === fx ? undefined : fx });
         if (wallIt === 0)
             firstIts = s.iterations;
         if (hFx !== fx && s.iterations > Math.max(30, 2.5 * firstIts))
@@ -481,7 +493,11 @@ function solveAt(c, h, hint, seeding = false, seed) {
             });
         });
         dbg(`    contact changes ${changed}, active ${active}, ${walls.map((w, wi) => `${w.name}:${wallActive[wi].reduce((a, b) => a + b, 0)}/${w.nodes.length}`).join(' ')}`);
-        if (!changed) {
+        if (finalFromHint && changed <= Math.max(10, 0.3 * active)) {
+            unsettled = changed;
+            break;
+        }
+        if (!changed || wallIt >= maxPass - 2) {
             if (seeding)
                 break;
             settled = true;
@@ -508,13 +524,23 @@ function solveAt(c, h, hint, seeding = false, seed) {
             reactions.push({ name: s.name, force: r });
     }
     walls.forEach((w) => {
-        if (w.screw)
-            return;
         const r = [0, 0, 0];
+        let zc = 0, fz = 0, zmin = Infinity, zmax = -Infinity, xc = 0;
         for (const n of w.nodes)
-            if (lastFx[3 * n] || lastFx[3 * n + 1] || lastFx[3 * n + 2])
+            if (lastFx[3 * n] || lastFx[3 * n + 1] || lastFx[3 * n + 2]) {
                 for (let j = 0; j < 3; j++)
                     r[j] += Ku[3 * n + j] - f[3 * n + j];
+                const fn = Math.abs(Ku[3 * n + 1] - f[3 * n + 1]);
+                zc += fn * pos[n][2];
+                xc += fn * Math.abs(pos[n][0]);
+                fz += fn;
+                zmin = Math.min(zmin, pos[n][2]);
+                zmax = Math.max(zmax, pos[n][2]);
+            }
+        if (process.env.PHYSICS_DEBUG_CONTACT)
+            console.log(`contact ${w.name} h=${h}: force ${r.map((v) => v.toFixed(2))}, centroid z ${(zc / fz).toFixed(2)}, |x| ${(xc / fz).toFixed(2)}, z ${zmin.toFixed(1)}..${zmax.toFixed(1)}`);
+        if (w.screw)
+            return;
         reactions.push({ name: w.name, force: r });
     });
     const contactSet = new Map();
@@ -523,7 +549,7 @@ function solveAt(c, h, hint, seeding = false, seed) {
     for (let n = 0; n < t.nNodes; n++)
         if (lastFx[3 * n] || lastFx[3 * n + 1] || lastFx[3 * n + 2])
             heldFinal[n] = 1;
-    return { heldFinal, contactSet, t, u, fixed, iterations: it, ms: performance.now() - t0, C, loadSets, supportNodes, reactions, wall: walls.length ? { iterations: wallIt + 1, activeNodes: active, penetration } : undefined, ok, message };
+    return { heldFinal, contactSet, t, u, fixed, iterations: it, ms: performance.now() - t0, C, loadSets, supportNodes, reactions, wall: walls.length ? { iterations: wallIt + 1, activeNodes: active, penetration, unsettled } : undefined, ok, message };
 }
 /** Uniform traction over the true surface patch of a plane region: samples on the plane, kept where the part's
  * surface is (distance ~ 0, outward normal along the plane's), each spread to its cell's 8 nodes trilinearly. */
@@ -740,7 +766,46 @@ function evaluate(c, s) {
     const cellAt = new Int32Array(t.grid.nx * t.grid.ny * t.grid.nz).fill(-1);
     for (let k = 0; k < nE; k++)
         cellAt[t.elems[k]] = k;
+    const inCell = (k) => {
+        // a cut cell's own field at the surface point nearest its material centroid (trilinear + bubbles)
+        const ci = t.cut ? t.cut[k] : -1;
+        if (ci < 0 || !dist)
+            return null;
+        const p = at(k), phi = dist(p[0], p[1], p[2]), dd = 1e-3;
+        const g = [dist(p[0] + dd, p[1], p[2]) - dist(p[0] - dd, p[1], p[2]), dist(p[0], p[1] + dd, p[2]) - dist(p[0], p[1] - dd, p[2]), dist(p[0], p[1], p[2] + dd) - dist(p[0], p[1], p[2] - dd)];
+        const gn = Math.hypot(...g);
+        if (gn < 1e-12)
+            return null;
+        const ps = [p[0] - (g[0] / gn) * phi, p[1] - (g[1] / gn) * phi, p[2] - (g[2] / gn) * phi];
+        const e = t.elems[k], o0 = [origin[0] + (e % nx) * h, origin[1] + (Math.floor(e / nx) % ny) * h, origin[2] + Math.floor(e / (nx * ny)) * h];
+        const xi = [0, 1, 2].map((a) => Math.max(-1, Math.min(1, (2 * (ps[a] - o0[a])) / h - 1)));
+        const ue2 = new Float64Array(24), al2 = new Float64Array(9), ep = new Float64Array(6), sg = new Float64Array(6);
+        for (let a = 0; a < 24; a++)
+            ue2[a] = u[t.edofs[24 * k + a]];
+        const X = t.cutX, o = 216 * ci;
+        for (let m = 0; m < 9; m++) {
+            let v = 0;
+            for (let a = 0; a < 24; a++)
+                v += X[o + 24 * m + a] * ue2[a];
+            al2[m] = -v;
+        }
+        cellStrain(xi[0], xi[1], xi[2], ue2, al2, t.cutGbar.subarray(54 * ci, 54 * ci + 54), ep);
+        for (let i = 0; i < 6; i++)
+            ep[i] /= h;
+        for (let i = 0; i < 6; i++) {
+            let v = 0;
+            for (let j = 0; j < 6; j++)
+                v += C[i * 6 + j] * ep[j];
+            sg[i] = v;
+        }
+        return judge(sg, ps);
+    };
     const extrapolate = (k) => {
+        if (process.env.PHYSICS_INCELL) {
+            const r0 = inCell(k);
+            if (r0)
+                return r0;
+        }
         if (!dist)
             return null;
         const p = at(k), phi = dist(p[0], p[1], p[2]), dd = h / 2;
@@ -755,12 +820,28 @@ function evaluate(c, s) {
         if (qi.some((v, a) => v < 0 || v >= [nx, ny, t.grid.nz][a]))
             return null;
         const k2 = cellAt[qi[0] + nx * (qi[1] + ny * qi[2])];
-        if (k2 < 0 || k2 === k || t.scale[k2] < 0.99)
+        // the neighbour may be a cut cell too (its material centroid is its sample point): in a wall two cells thick
+        // that spans the wall, and bending stress is linear across it
+        if (k2 < 0 || k2 === k || t.scale[k2] < EXT_NB_MIN)
             return null;
-        const p2 = at(k2), phi2 = dist(p2[0], p2[1], p2[2]);
-        if (phi - phi2 < 0.3 * h)
+        // step between the two sample points: the difference of their distance values (exact distances along a
+        // normal). Measured against the oracle: this over-predicts the L-bracket's fillet peak by 9-15% (its distance
+        // is only a bound there) and is within 0.3-10% on the filleted root; the geometric step along the normal was
+        // within 3% on the L-bracket but 18% low on the filleted root. The conservative one is kept.
+        const p2 = at(k2), gu = [g[0] / gn, g[1] / gn, g[2] / gn];
+        const dn = gu[0] * (p[0] - p2[0]) + gu[1] * (p[1] - p2[1]) + gu[2] * (p[2] - p2[2]);
+        if (dn < 0.3 * h)
             return null;
-        const se = new Float64Array(6), r = Math.min(1.5, -phi / (phi - phi2));
+        const phi2 = dist(p2[0], p2[1], p2[2]);
+        // not across an outside edge: there the distance fans out around the edge and a straight extrapolation
+        // along it overshoots more the finer the voxel (bottle holder rim corner: 6.83, 6.16, 5.61 at 1.2, 0.8, 0.6)
+        if (EXT_EDGE) {
+            const g2 = [dist(p2[0] + dd, p2[1], p2[2]) - dist(p2[0] - dd, p2[1], p2[2]), dist(p2[0], p2[1] + dd, p2[2]) - dist(p2[0], p2[1] - dd, p2[2]), dist(p2[0], p2[1], p2[2] + dd) - dist(p2[0], p2[1], p2[2] - dd)];
+            const g2n = Math.hypot(...g2) || 1;
+            if ((g[0] * g2[0] + g[1] * g2[1] + g[2] * g2[2]) / (gn * g2n) < 0.3)
+                return null;
+        }
+        const se = new Float64Array(6), r = EXT_PHI ? Math.min(EXT_CLAMP, Math.max(0, -phi) / Math.max(phi - phi2, 0.3 * h)) : Math.min(EXT_CLAMP, Math.max(0, -phi) / dn);
         for (let i = 0; i < 6; i++) {
             const s1 = sigAll[6 * k + i], s2 = sigAll[6 * k2 + i];
             se[i] = s1 + (s1 - s2) * r;
@@ -813,7 +894,7 @@ function evaluate(c, s) {
         return { name: L.name, along: v[0] * L.dir[0] + v[1] * L.dir[1] + v[2] * L.dir[2], vector: v };
     });
     const massG = totV * c.material.density * 1e-3;
-    const candidates = Array.from(fiAll.keys()).filter((k) => fiAll[k] > 0 && !nearSupport[k] && !nearLoad[k]).sort((a, b) => fiAll[b] - fiAll[a]).slice(0, 60).map((k) => ({ sf: 1 / fiAll[k], where: at(k), mode: "within layers", stress: 0, strength: 0, component: "" }));
+    const candidates = Array.from(fiAll.keys()).filter((k) => fiAll[k] > 0 && !nearSupport[k] && !nearLoad[k]).sort((a, b) => fiAll[b] - fiAll[a]).slice(0, 400).map((k) => ({ sf: 1 / fiAll[k], where: at(k), mode: "within layers", stress: 0, strength: 0, component: "" }));
     const centres = new Float32Array(3 * nE);
     for (let k = 0; k < nE; k++) {
         centres[3 * k] = P[3 * k];
@@ -968,6 +1049,9 @@ export function analyzeSolid(c) {
             const outside = [ev.best, ...ev.candidates].filter((q) => !z.zoomed.some((b) => [0, 1, 2].every((a) => q.where[a] >= b[0][a] && q.where[a] <= b[1][a])));
             const o = outside.reduce((a, b) => (!a || b.sf < a.sf ? b : a), null);
             ev.best = o && o.sf < z.best.sf ? o : z.best;
+            // the zoom's own error estimate speaks for the reported peak only if the zoom found it
+            if (ev.best !== z.best)
+                zoomSfRel = undefined;
         }
     }
     const res = {
@@ -986,9 +1070,28 @@ export function analyzeSolid(c) {
             const d1 = ev.loadDeflection[gi]?.along ?? ev.maxU, d2 = e2.loadDeflection[gi]?.along ?? e2.maxU;
             const ratio = hc / c.h, rich = c.cut !== false && c.geometry.distance ? ratio ** 2 - 1 : ratio ** 2 - 1; // second-order Richardson for the deflection
             // safety factor: from the zoom at twice its voxel when a zoom ran, else from the coarse global solve
-            const sfRel = zoomSfRel ?? Math.abs((weakestGlobal ?? ev.best).sf - e2.best.sf) / (weakestGlobal ?? ev.best).sf;
+            // peak: the zoom's estimate when the zoom found the reported peak; else the coarse solve's, which means
+            // something only when its voxel still has two cells across the thinnest wall at the peak (else none,
+            // and the strength answer uses the benchmark's 15% band)
+            const tAt = c.geometry.distance ? (() => { let m = 0; const p = ev.best.where; for (let dx = -1; dx <= 1; dx++)
+                for (let dy = -1; dy <= 1; dy++)
+                    for (let dz = -1; dz <= 1; dz++)
+                        m = Math.max(m, -c.geometry.distance(p[0] + 0.5 * c.h * dx, p[1] + 0.5 * c.h * dy, p[2] + 0.5 * c.h * dz)); return 2 * m; })() : Infinity;
+            const sfRel = zoomSfRel ?? (tAt >= 2 * hc ? Math.abs((weakestGlobal ?? ev.best).sf - e2.best.sf) / (weakestGlobal ?? ev.best).sf : undefined);
             res.errorEstimate = { deflectionRel: Math.abs(d1 - d2) / Math.max(1e-30, Math.abs(d1)) / rich, sfRel, coarseH: hc };
         }
+    }
+    // sharp inside corners among the most stressed cells, always reported: their stress has no finite value, so a
+    // safety factor that does not include them is only as good as their fillets
+    if (c.geometry.distance && s.ok) {
+        const ts = performance.now();
+        res.sharpCorners = sharpCornersOf(c, ev);
+        dbg(`sharp corners ${(performance.now() - ts).toFixed(0)} ms`);
+    }
+    if (c.fixFor !== undefined && s.ok) {
+        const tf = performance.now();
+        res.fixes = designFixes(c, s, ev, c.fixFor, res);
+        dbg(`fixes ${(performance.now() - tf).toFixed(0)} ms`);
     }
     res.ms = performance.now() - t0;
     res.h = c.h;
@@ -1023,7 +1126,7 @@ function interpolateSolved(s, p) {
     return wsum > 1e-9 ? [out[0] / wsum, out[1] / wsum, out[2] / wsum] : null;
 }
 /** Radius of curvature of the part's surface near p (from the distance function's Laplacian); Infinity if flat. */
-function surfaceRadius(dist, p, H) {
+export function surfaceRadius(dist, p, H) {
     const e = 0.25 * H, f0 = dist(p[0], p[1], p[2]);
     const g = [dist(p[0] + e, p[1], p[2]) - dist(p[0] - e, p[1], p[2]), dist(p[0], p[1] + e, p[2]) - dist(p[0], p[1] - e, p[2]), dist(p[0], p[1], p[2] + e) - dist(p[0], p[1], p[2] - e)];
     const gn = Math.hypot(...g) || 1;
@@ -1037,6 +1140,50 @@ function surfaceRadius(dist, p, H) {
         lap += (dist(...d1) + dist(...d2) - 2 * fq) / (e * e);
     }
     return Math.abs(lap) < 1e-6 ? Infinity : 1 / Math.abs(lap);
+}
+/** Trilinear interpolation of the global displacement (missing nodes skipped). */
+function globalField(s) {
+    const g = s.t.grid, H = g.h, NX = g.nx + 1, NY = g.ny + 1;
+    return (p) => {
+        const fx = (p[0] - g.origin[0]) / H, fy = (p[1] - g.origin[1]) / H, fz = (p[2] - g.origin[2]) / H;
+        const ix = Math.min(g.nx - 1, Math.max(0, Math.floor(fx))), iy = Math.min(g.ny - 1, Math.max(0, Math.floor(fy))), iz = Math.min(g.nz - 1, Math.max(0, Math.floor(fz)));
+        const tx = fx - ix, ty = fy - iy, tz = fz - iz;
+        const out = [0, 0, 0];
+        let wsum = 0;
+        for (let a = 0; a < 8; a++) {
+            const i = ix + (a & 1), j = iy + ((a >> 1) & 1), k = iz + ((a >> 2) & 1);
+            const id = s.t.nodeOf[i + NX * (j + NY * k)];
+            if (id < 0)
+                continue;
+            const w = ((a & 1) ? tx : 1 - tx) * (((a >> 1) & 1) ? ty : 1 - ty) * (((a >> 2) & 1) ? tz : 1 - tz);
+            if (w <= 0)
+                continue;
+            wsum += w;
+            for (let j2 = 0; j2 < 3; j2++)
+                out[j2] += w * s.u[3 * id + j2];
+        }
+        return wsum > 1e-9 ? [out[0] / wsum, out[1] / wsum, out[2] / wsum] : null;
+    };
+}
+/** The sub-model of a box: the global displacements imposed on its cut faces (and at held supports inside it),
+ * loads inside it re-applied, optionally a changed geometry (a fillet, a thicker wall) for a sensitivity. */
+function boxCase(c, s, blo, bhi, hz, subLoads, distOverride) {
+    const H = s.t.grid.h, pb = c.geometry.bounds, dist = distOverride ?? c.geometry.distance;
+    const gl = globalField(s);
+    const sub = { ...c, geometry: { distance: (x, y, z) => Math.max(dist(x, y, z), blo[0] - x, x - bhi[0], blo[1] - y, y - bhi[1], blo[2] - z, z - bhi[2]), bounds: { min: blo, max: bhi } },
+        h: hz, supports: [{ kind: "prescribed", name: "zoom boundary", where: { box: [[blo[0], bhi[0]], [blo[1], bhi[1]], [blo[2], bhi[2]]] }, u: (p) => gl(p) ?? [0, 0, 0] }],
+        loads: subLoads, errorEstimate: false, zoom: 0, nested: false };
+    const held = [];
+    for (let n = 0; n < s.t.nNodes; n++)
+        if (s.fixed[3 * n] || s.fixed[3 * n + 1] || s.fixed[3 * n + 2] || (s.heldFinal && s.heldFinal[n])) {
+            const q = nodePosition(s.t, n);
+            if (q[0] >= blo[0] - H && q[0] <= bhi[0] + H && q[1] >= blo[1] - H && q[1] <= bhi[1] + H && q[2] >= blo[2] - H && q[2] <= bhi[2] + H)
+                held.push(q);
+        }
+    const nearHeld = (p) => held.some((q) => Math.abs(q[0] - p[0]) <= 0.51 * H && Math.abs(q[1] - p[1]) <= 0.51 * H && Math.abs(q[2] - p[2]) <= 0.51 * H);
+    const onCut = (p) => [0, 1, 2].some((a) => (Math.abs(p[a] - blo[a]) < 0.5 * hz && blo[a] > pb.min[a] + 1e-9) || (Math.abs(p[a] - bhi[a]) < 0.5 * hz && bhi[a] < pb.max[a] - 1e-9)) || nearHeld(p);
+    sub.supports[0].filter = onCut;
+    return sub;
 }
 function zoomRefine(c, s, candidates, factor) {
     const zoomed = [];
@@ -1109,24 +1256,14 @@ function zoomRefine(c, s, candidates, factor) {
             if (m > 0)
                 tLoc = 2 * m;
         }
-        hz = Math.max(H / factor, Math.min(H / 1.5, R / 10, tLoc / 4));
+        // (a thin-wall trigger, a quarter of the wall, was tried: on the bottle holder it moved the reported peak 22%
+        // away from the global cut-cell value at 1.2 mm, while the global values at 1.2 and 0.6 mm agree within 3%)
+        const thinZoom = !!process.env.PHYSICS_THINZOOM;
+        hz = Math.max(H / factor, Math.min(H / 1.5, R / 10, thinZoom ? tLoc / 4 : Infinity));
+        // only where the surface curves tighter than about seven voxels (a fillet, a hole)
         if (hz >= H / 1.5 - 1e-12)
             continue;
-        const sub = { ...c, geometry: { distance: (x, y, z) => Math.max(dist(x, y, z), blo[0] - x, x - bhi[0], blo[1] - y, y - bhi[1], blo[2] - z, z - bhi[2]), bounds: { min: blo, max: bhi } },
-            h: hz, supports: [{ kind: "prescribed", name: "zoom boundary", where: { box: [[blo[0], bhi[0]], [blo[1], bhi[1]], [blo[2], bhi[2]]] }, u: (p) => gl(p) ?? [0, 0, 0] }],
-            loads: subLoads, errorEstimate: false, zoom: 0, nested: false };
-        // only nodes on the box's cut faces are prescribed: wrap the region test
-        // held nodes of the global model inside the box (supports, held wall contact) stay held at their global displacement
-        const held = [];
-        for (let n = 0; n < s.t.nNodes; n++)
-            if (s.fixed[3 * n] || s.fixed[3 * n + 1] || s.fixed[3 * n + 2] || (s.heldFinal && s.heldFinal[n])) {
-                const q = nodePosition(s.t, n);
-                if (q[0] >= blo[0] - H && q[0] <= bhi[0] + H && q[1] >= blo[1] - H && q[1] <= bhi[1] + H && q[2] >= blo[2] - H && q[2] <= bhi[2] + H)
-                    held.push(q);
-            }
-        const nearHeld = (p) => held.some((q) => Math.abs(q[0] - p[0]) <= 0.51 * H && Math.abs(q[1] - p[1]) <= 0.51 * H && Math.abs(q[2] - p[2]) <= 0.51 * H);
-        const onCut = (p) => [0, 1, 2].some((a) => (Math.abs(p[a] - blo[a]) < 0.5 * hz && blo[a] > pb.min[a] + 1e-9) || (Math.abs(p[a] - bhi[a]) < 0.5 * hz && bhi[a] < pb.max[a] - 1e-9)) || nearHeld(p);
-        sub.supports[0].filter = onCut;
+        const sub = boxCase(c, s, blo, bhi, hz, subLoads);
         const zs = solveAt(sub, hz);
         if (!zs.u.length)
             continue;
@@ -1164,4 +1301,232 @@ export function energyMapPly(map) {
         lines.push(`${map.centres[3 * k].toFixed(2)} ${map.centres[3 * k + 1].toFixed(2)} ${map.centres[3 * k + 2].toFixed(2)} ${r} ${g} ${b} ${map.sed[k].toExponential(3)}`);
     }
     return lines.join("\n") + "\n";
+}
+/** Unit gradient of the distance at p. */
+function grad(dist, p, e = 1e-3) {
+    const g = [dist(p[0] + e, p[1], p[2]) - dist(p[0] - e, p[1], p[2]), dist(p[0], p[1] + e, p[2]) - dist(p[0], p[1] - e, p[2]), dist(p[0], p[1], p[2] + e) - dist(p[0], p[1], p[2] - e)];
+    const n = Math.hypot(...g) || 1;
+    return [g[0] / n, g[1] / n, g[2] / n];
+}
+const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+/**
+ * A concave (inside) edge near p: the two faces' outward normals, the edge line, and the fillet that would
+ * round it with radius r, as a distance function to add (union) to the part. Found from the distance field:
+ * in the void next to an inside edge the gradient takes two directions, one per face.
+ */
+export function insideEdge(dist, p, h) {
+    const pts = [];
+    const R = Math.max(0.6 * h, 0.8);
+    // deterministic: the 26 grid directions at two radii
+    for (const rr of [1.5 * R, R, 0.5 * R])
+        for (let a = -1; a <= 1; a++)
+            for (let b = -1; b <= 1; b++)
+                for (let c2 = -1; c2 <= 1; c2++) {
+                    if (!a && !b && !c2)
+                        continue;
+                    const l = Math.hypot(a, b, c2), q = [p[0] + (rr * a) / l, p[1] + (rr * b) / l, p[2] + (rr * c2) / l];
+                    // near an inside edge the void sees the two faces (two gradient directions); the material sees the edge
+                    const d = dist(q[0], q[1], q[2]);
+                    if (d > 0.05 * rr)
+                        pts.push(q);
+                }
+    if (pts.length < 4)
+        return null;
+    const gs = pts.map((q) => grad(dist, q));
+    // group the gradients by face (within about 25 degrees), keep one sample point per face
+    const faces = [];
+    gs.forEach((g, i) => { if (!faces.some((f) => dot3(f.n, g) > 0.9))
+        faces.push({ n: g, q: pts[i] }); });
+    let bestE = null;
+    for (let i = 0; i < faces.length; i++)
+        for (let j = i + 1; j < faces.length; j++) {
+            const n1 = faces[i].n, n2 = faces[j].n;
+            if (dot3(n1, n2) > 0.5)
+                continue;
+            const t = cross3(n1, n2), tl = Math.hypot(...t);
+            if (tl < 1e-6)
+                continue;
+            const tu = [t[0] / tl, t[1] / tl, t[2] / tl];
+            const fp = (f) => { const d = dist(f.q[0], f.q[1], f.q[2]); return [f.q[0] - d * f.n[0], f.q[1] - d * f.n[1], f.q[2] - d * f.n[2]]; };
+            const f1 = fp(faces[i]), f2 = fp(faces[j]);
+            const A = [n1, n2, tu], b = [dot3(n1, f1), dot3(n2, f2), dot3(tu, p)];
+            const det = dot3(A[0], cross3(A[1], A[2]));
+            if (Math.abs(det) < 1e-9)
+                continue;
+            const e = [0, 1, 2].map((ii) => { const M = A.map((r) => r.slice()); for (let k = 0; k < 3; k++)
+                M[k][ii] = b[k]; return dot3(M[0], cross3(M[1], M[2])) / det; });
+            const bis = [n1[0] + n2[0], n1[1] + n2[1], n1[2] + n2[2]], bl = Math.hypot(...bis);
+            const probe = [e[0] + (0.3 * R * bis[0]) / bl, e[1] + (0.3 * R * bis[1]) / bl, e[2] + (0.3 * R * bis[2]) / bl];
+            if (!(dist(probe[0], probe[1], probe[2]) > 0))
+                continue;
+            // inside (concave) edge: a point outside one face's plane but inside the other's is material
+            const dm = [n1[0] - n2[0], n1[1] - n2[1], n1[2] - n2[2]], dml = Math.hypot(...dm);
+            const q1 = [e[0] + (0.3 * R * dm[0]) / dml, e[1] + (0.3 * R * dm[1]) / dml, e[2] + (0.3 * R * dm[2]) / dml], q2 = [e[0] - (0.3 * R * dm[0]) / dml, e[1] - (0.3 * R * dm[1]) / dml, e[2] - (0.3 * R * dm[2]) / dml];
+            if (!(dist(q1[0], q1[1], q1[2]) < 0 && dist(q2[0], q2[1], q2[2]) < 0))
+                continue;
+            const w = [p[0] - e[0], p[1] - e[1], p[2] - e[2]], al = dot3(w, tu), dd = Math.hypot(w[0] - al * tu[0], w[1] - al * tu[1], w[2] - al * tu[2]);
+            if (!bestE || dd < bestE.d)
+                bestE = { n1, n2, tu, e, bis, bl, d: dd };
+        }
+    if (!bestE || bestE.d > 2 * R)
+        return null;
+    const { n1, n2, tu, e, bis, bl } = bestE;
+    // how far the edge runs: march along it while the corner persists (void on the bisector, material on both sides)
+    const isEdge = (s0) => {
+        const c0 = [e[0] + s0 * tu[0], e[1] + s0 * tu[1], e[2] + s0 * tu[2]], k = 0.3;
+        const v = [c0[0] + (k * bis[0]) / bl, c0[1] + (k * bis[1]) / bl, c0[2] + (k * bis[2]) / bl];
+        const a = [c0[0] - k * n1[0] + k * n2[0] * 0.01, c0[1] - k * n1[1], c0[2] - k * n1[2]], b2 = [c0[0] - k * n2[0], c0[1] - k * n2[1], c0[2] - k * n2[2]];
+        return dist(v[0], v[1], v[2]) > 0.05 && dist(a[0] + k * n2[0], a[1] + k * n2[1], a[2] + k * n2[2]) < 0 && dist(b2[0] + k * n1[0], b2[1] + k * n1[1], b2[2] + k * n1[2]) < 0;
+    };
+    let a0 = 0, a1 = 0;
+    while (a1 < 100 && isEdge(a1 + 0.2))
+        a1 += 0.2;
+    while (a0 > -100 && isEdge(a0 - 0.2))
+        a0 -= 0.2;
+    const fillet = (r) => {
+        const alpha = r / (1 + dot3(n1, n2)), a = [e[0] + alpha * bis[0], e[1] + alpha * bis[1], e[2] + alpha * bis[2]], ub = [bis[0] / bl, bis[1] / bl, bis[2] / bl];
+        return (x, y, z) => {
+            const v = [x - e[0], y - e[1], z - e[2]], w = [x - a[0], y - a[1], z - a[2]];
+            const al = dot3(w, tu), rad = Math.hypot(w[0] - al * tu[0], w[1] - al * tu[1], w[2] - al * tu[2]);
+            // inside the wedge between the two faces (on the void side), outside the rounding cylinder, edge side of the axis
+            const along = dot3(v, tu);
+            return Math.max(-dot3(v, n1), -dot3(v, n2), r - rad, dot3(w, ub), along - a1, a0 - along);
+        };
+    };
+    return { n1, n2, t: tu, e, length: a1 - a0, angle: (Math.acos(Math.max(-1, Math.min(1, -dot3(n1, n2)))) * 180) / Math.PI, fillet };
+}
+/** Sharp inside edges among the 400 most stressed cells (outside the support and load zones), one per 5 mm. */
+function sharpCornersOf(c, ev) {
+    const dist = c.geometry.distance, out = [];
+    for (const q of ev.candidates) {
+        if (out.some((v) => Math.hypot(v.where[0] - q.where[0], v.where[1] - q.where[1], v.where[2] - q.where[2]) < 5))
+            continue;
+        const e = insideEdge(dist, q.where, c.h);
+        if (e)
+            out.push({ where: e.e, sf: q.sf, angle: e.angle, along: e.t });
+        if (out.length >= 4)
+            break;
+    }
+    return out;
+}
+/** Peak safety factor in a box around p, re-solved at a finer voxel with a changed geometry. */
+function boxPeak(c, s, p, half, hz, dist) {
+    const pb = c.geometry.bounds;
+    const blo = [Math.max(p[0] - half, pb.min[0]), Math.max(p[1] - half, pb.min[1]), Math.max(p[2] - half, pb.min[2])], bhi = [Math.min(p[0] + half, pb.max[0]), Math.min(p[1] + half, pb.max[1]), Math.min(p[2] + half, pb.max[2])];
+    const sub = boxCase(c, s, blo, bhi, hz, [], dist);
+    const zs = solveAt(sub, hz);
+    if (!zs.u.length)
+        return null;
+    const ev = evaluate({ ...sub, loadZone: false }, zs);
+    return Number.isFinite(ev.best.sf) ? ev.best : null;
+}
+/**
+ * Turn the weakest points into changes: sharp inside corners get the fillet radius that brings them to the
+ * target (each radius re-solved in a box around the corner, with the global solution on the box's faces);
+ * a smooth peak gets the wall thickening that does (bending stress ~ 1/t^2, then re-solved to confirm); the
+ * print direction that puts layers along the load; and the material that carries almost nothing.
+ */
+function designFixes(c, s, ev, target, res) {
+    const fixes = [];
+    const dist = c.geometry.distance;
+    if (!dist)
+        return fixes;
+    const H = s.t.grid.h;
+    // sharp inside corners among the most stressed cells (outside support and load zones)
+    const seen = [];
+    const sharp = [];
+    if (process.env.PHYSICS_DEBUG_SHARP)
+        for (const q of ev.candidates)
+            if (Math.abs(Math.abs(q.where[0]) - 10) < 2.5 && Math.abs(q.where[2] - 18) < 2.5)
+                dbg(`slot-corner candidate ${q.where.map((v) => v.toFixed(2))} sf ${q.sf.toFixed(2)} R ${surfaceRadius(dist, q.where, H).toFixed(2)} edge ${!!insideEdge(dist, q.where, H)}`);
+    for (const q of ev.candidates) {
+        if (seen.some((v) => Math.hypot(v[0] - q.where[0], v[1] - q.where[1], v[2] - q.where[2]) < 5))
+            continue;
+        const edge = insideEdge(dist, q.where, H);
+        if (!edge)
+            continue;
+        seen.push(q.where);
+        sharp.push({ where: q.where, sf: q.sf, edge });
+        if (sharp.length >= 3)
+            break;
+    }
+    for (const k of sharp.slice(0, 1).filter((q) => q.sf < 1.5 * target)) {
+        const tLoc = (() => { let m = 0; for (const d of [0.5, 1, 1.5, 2, 3])
+            for (const n of [k.edge.n1, k.edge.n2]) {
+                const v = -dist(k.where[0] - d * n[0], k.where[1] - d * n[1], k.where[2] - d * n[2]);
+                if (v > m)
+                    m = v;
+            } return 2 * m || 2; })();
+        const hz = Math.max(H / 4, Math.min(H / 2, 0.3)), half = Math.max(8 * H, 12);
+        const table = [];
+        const sharpPeak = boxPeak(c, s, k.edge.e, half, hz, dist);
+        let need;
+        for (const r of [0.5, 1, 2, 3]) {
+            const fd = k.edge.fillet(r);
+            const pk = boxPeak(c, s, k.edge.e, half, hz, (x, y, z) => Math.min(dist(x, y, z), fd(x, y, z)));
+            if (!pk)
+                continue;
+            table.push([r, pk.sf]);
+            if (pk.sf >= target && need === undefined)
+                need = r;
+        }
+        const at = `(${k.edge.e.map((v) => v.toFixed(1)).join(", ")})`;
+        const tab = table.map(([r, sf]) => `r ${r} mm: SF ${sf.toFixed(2)}`).join(", ");
+        fixes.push({ kind: "fillet", where: k.edge.e, value: need, table,
+            text: need !== undefined ? `round the inside edge at ${at} (a ${k.edge.angle.toFixed(0)} degree corner running along (${k.edge.t.map((v) => v.toFixed(2)).join(", ")})) with a fillet of at least ${need} mm: it is sharp now (SF ${sharpPeak ? sharpPeak.sf.toFixed(2) : "?"} at ${hz.toFixed(2)} mm voxels, and lower the finer the model, because a sharp inside corner has no finite stress); re-solved in a box around it: ${tab}`
+                : `round the inside edge at ${at} (sharp now; SF ${sharpPeak ? sharpPeak.sf.toFixed(2) : "?"} and falling as the model refines): fillets up to ${table.length ? table[table.length - 1][0] : "?"} mm give ${tab}; the target ${target} also needs a thicker section there` });
+    }
+    // the weakest smooth point: thicken the wall there
+    const w = res.weakest;
+    if (Number.isFinite(w.sf) && w.sf < target * 1.15 && !sharp.some((k) => Math.hypot(k.where[0] - w.where[0], k.where[1] - w.where[1], k.where[2] - w.where[2]) < 5)) {
+        const nrm = grad(dist, w.where);
+        let t = 0;
+        for (let d = 0.2; d <= 12; d += 0.2) {
+            const q = [w.where[0] - d * nrm[0], w.where[1] - d * nrm[1], w.where[2] - d * nrm[2]];
+            if (dist(q[0], q[1], q[2]) > 0) {
+                t = d;
+                break;
+            }
+        }
+        if (t > 0) {
+            const k = Math.sqrt((target * 1.15) / w.sf); // bending stress ~ 1/t^2, with the 15% peak band
+            const dt = Math.max(0.2, Math.round((k - 1) * t * 10) / 10);
+            // confirm by solving the whole part again with the wall grown (half each side) within a few thicknesses
+            // of the peak (a box with the old displacements on its faces would over-load a stiffer wall); if the
+            // first step falls short, a second step by the measured sensitivity (secant)
+            const Rb = Math.max(4 * t, 8);
+            const grownBy = (dd) => (x, y, z) => { const r = Math.hypot(x - w.where[0], y - w.where[1], z - w.where[2]); const f = r < Rb ? 0.5 * (1 + Math.cos((Math.PI * r) / Rb)) : 0; return dist(x, y, z) - 0.5 * dd * f; };
+            const solveWith = (dd) => { const r2 = analyzeSolid({ ...c, geometry: { distance: grownBy(dd), bounds: c.geometry.bounds }, fixFor: undefined, confirmFixes: false, errorEstimate: false }); return r2.ok ? r2.weakest.sf : undefined; };
+            const table = [[0, w.sf]];
+            let need = dt;
+            if (c.confirmFixes) {
+                const s1 = solveWith(dt);
+                if (s1 !== undefined) {
+                    table.push([dt, s1]);
+                    // a local bump is only a sensitivity: beyond a fraction of the wall it makes its own stress raisers
+                    // (measured on the bottle holder: +0.6 mm gave SF 2.27 -> 2.63, +2 mm gave 1.75), so a larger change
+                    // is stated as the wall parameter to change and left to the kernel to rebuild and re-check
+                    if (s1 < target * 1.15 && s1 > w.sf * 1.01)
+                        need = Math.round((dt * (target * 1.15 - w.sf)) / (s1 - w.sf) * 10) / 10;
+                }
+            }
+            fixes.push({ kind: "thicken", where: w.where, value: need, table: table.length > 1 ? table : undefined,
+                text: table.length > 1 && need > t
+                    ? `the wall at (${w.where.map((v) => v.toFixed(1)).join(", ")}) does not respond to local thickening (the whole part re-solved with ${table[1][0]} mm more over ${Rb.toFixed(0)} mm around the peak: SF ${table[0][1].toFixed(2)} -> ${table[1][1].toFixed(2)}): the load spreads through the wall, so thicken the whole wall (the feature's wall parameter: about ${(t * Math.sqrt((target * 1.15) / w.sf)).toFixed(1)} mm by the thickness-squared rule) and re-check, or add a rib across it`
+                    : `thicken the ${t.toFixed(1)} mm wall at (${w.where.map((v) => v.toFixed(1)).join(", ")}) to about ${(t + need).toFixed(1)} mm${table.length > 1 ? ` (the whole part re-solved with ${table[1][0]} mm more over ${Rb.toFixed(0)} mm around the peak: SF ${table[0][1].toFixed(2)} -> ${table[1][1].toFixed(2)}; ${need !== table[1][0] ? `${need} mm by that sensitivity; rebuild with the wall parameter and re-check` : "enough"})` : " (bending stress falls with thickness squared; not re-solved)"}` });
+        }
+    }
+    // print direction: the same stresses judged with layers the other ways
+    const ori = res.orientations ?? [];
+    const cur = ori.find((o) => { const d = c.printDir ?? [0, 0, 1]; return o.up.every((v, i) => Math.abs(v - Math.abs(d[i])) < 1e-9); });
+    const cands = c.printCandidates?.map((q) => q.map((v) => Math.abs(v)));
+    const allowed = ori.filter((o) => !cands || cands.some((q) => q.every((v, i) => Math.abs(v - o.up[i]) < 1e-6)));
+    const best = allowed.reduce((a, b) => (b.sf > a.sf ? b : a), allowed[0]);
+    if (best && cur && best.sf > cur.sf * 1.1)
+        fixes.push({ kind: "print", value: best.sf, text: `print it with ${["x", "y", "z"][best.up.indexOf(1)]} up: the peak then lies ${best.mode}, SF ${best.sf.toFixed(2)} instead of ${cur.sf.toFixed(2)} (stiffness change ignored; ${cands ? "a support-free direction the kernel stated" : "the kernel stated no support-free directions: check it prints without supports"})` });
+    // lighter: material that carries almost nothing
+    if (res.idle.fraction > 0.05)
+        fixes.push({ kind: "lighter", value: res.idle.massG, text: `${res.idle.massG.toFixed(1)} g of ${res.massG.toFixed(1)} g (${(100 * res.idle.fraction).toFixed(0)}%) carries under 1% of the median strain energy; largest such regions: ${res.idle.regions.slice(0, 2).map((g) => `x ${g.min[0].toFixed(0)}..${g.max[0].toFixed(0)}, y ${g.min[1].toFixed(0)}..${g.max[1].toFixed(0)}, z ${g.min[2].toFixed(0)}..${g.max[2].toFixed(0)}`).join("; ")}: thin or pocket them` });
+    return fixes;
 }

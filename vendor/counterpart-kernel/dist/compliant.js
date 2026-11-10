@@ -55,7 +55,7 @@ export function designFingers(o) {
             if (h < 2 * LINE - 1e-9)
                 continue;
             const yMax = o.u + iMin, yMin = iMin;
-            const tipR = (o.d - o.u) / 2 - iMin, beamR = (o.d + o.u) / 2 + 0.3;
+            const tipR = (o.d - o.u) / 2 - iMin, beamR0 = (o.d + o.u) / 2 + 0.3;
             // shortest finger within strain at the largest size: the engine's nonlinear beam when built (Bayer's linear rule otherwise)
             let lMin = beamLength(yMax, h, e * 0.9, false);
             if (useEngine) {
@@ -67,9 +67,13 @@ export function designFingers(o) {
                     lMin *= 1.06;
                 }
             }
+            // a small bore has too little circumference for three fingers that long: move the fingers out onto a larger circle
+            // and let each finger's tooth reach in to the bore (a pinwheel; worker run A6 hand-built one for a 6 mm pen)
+            const rMidMin = (3 * (lMin + Math.max(2.4, 1.5 * h) + 0.8)) / (2 * Math.PI);
+            const beamR = Math.max(beamR0, rMidMin - h / 2);
             const stop = f3(yMax + 0.25), slotR = beamR + h, outerR = slotR + stop + wallO, rMid = beamR + h / 2;
             const rootDeg = (Math.max(2.4, 1.5 * h) / rMid) * 180 / Math.PI, gapDeg = (0.8 / rMid) * 180 / Math.PI;
-            const count = Math.min(12, Math.floor(360 / ((lMin / rMid) * 180 / Math.PI + rootDeg + gapDeg)));
+            const count = Math.min(12, Math.floor(360 / ((lMin / rMid) * 180 / Math.PI + rootDeg + gapDeg) + 1e-9));
             if (count < 3)
                 continue;
             const spanDeg = 360 / count - rootDeg - gapDeg, l = (spanDeg * Math.PI / 180) * rMid;

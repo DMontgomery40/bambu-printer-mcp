@@ -223,7 +223,7 @@ export async function runScript(scriptPath, opts = {}) {
             const f = results[i].facts;
             if (!f)
                 continue;
-            results[i].record = partRecord(parts[i].name, results[i].mesh, f, results[i].interfaces ?? [], { material: parts[i].options.material, fidelity: opts.prove || "fast", features: [...new Set((f.requirements ?? []).map((r) => r.from).filter(Boolean))] });
+            results[i].record = partRecord(parts[i].name, results[i].mesh, f, results[i].interfaces ?? [], { material: parts[i].options.material, fidelity: opts.prove || "fast", features: [...new Set((f.requirements ?? []).map((r) => r.from).filter(Boolean))], params, spec: mod.SPEC });
             if (opts.prove)
                 results[i].physics = await prove(results[i].record, { fidelity: opts.prove });
         }
@@ -274,11 +274,12 @@ export async function runScript(scriptPath, opts = {}) {
             }
             if (again) {
                 const passes = (rr) => rr.every((r) => !r.physics || r.physics.answers.filter((a) => /^strength|^stiffness/.test(a.id)).every((a) => a.verdict === "pass"));
-                const mass = (rr) => rr.reduce((m, r) => m + (r.printability?.mass_g ?? 0), 0);
+                // material is the solid's volume (printed mass with infill ranks thin parts inconsistently)
+                const mass = (rr) => rr.reduce((m, r) => m + Math.abs(r.check.volume), 0);
                 const minSF = (rr) => Math.min(...rr.map((r) => { const a = r.physics?.answers.find((x) => /^strength/.test(x.id)); return a ? sfOf(a) : Infinity; }));
                 const stiffOK = (rr) => rr.every((r) => !r.physics || r.physics.answers.filter((a) => /^stiffness/.test(a.id)).every((a) => a.verdict === "pass"));
                 // the rebuild is kept when it passes with no more material, or when neither passes and it is the stronger
-                const keepNew = passes(again.parts) ? (!passes(results) || mass(again.parts) <= mass(results) + 0.05)
+                const keepNew = passes(again.parts) ? (!passes(results) || mass(again.parts) <= mass(results) * 0.995)
                     : !passes(results) && stiffOK(again.parts) >= stiffOK(results) && minSF(again.parts) > minSF(results);
                 for (const d of redo) {
                     const r2 = again.parts.flatMap((r) => r.sizing ?? []).find((x) => x.feature === d.rep.feature);

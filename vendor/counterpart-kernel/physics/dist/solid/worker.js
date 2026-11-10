@@ -13,14 +13,17 @@ for (;;) {
         if (m) {
             const d = m.message;
             sts.set(d.id, { nbr: new Int32Array(d.nbr), val: d.f32 ? new Float32Array(d.val) : new Float64Array(d.val), X: new Float64Array(d.X), Y: new Float64Array(d.Y), F: new Uint8Array(d.F), nNode: d.nNode });
-            // keep the few most recent stencils (a solve, its coarse check, a zoom)
-            if (sts.size > 6)
+            // keep the most recently used stencils (evicting by use, not by arrival: a contact pass that rebuilds its
+            // coarse levels registers new stencils while the fine one is still in use)
+            if (sts.size > 12)
                 sts.delete(sts.keys().next().value);
         }
         else
             Atomics.wait(ctrl, 3, 0, 1);
     }
     const t = sts.get(id);
+    sts.delete(id);
+    sts.set(id, t); // most recently used last
     const r0 = Math.floor((t.nNode * index) / count), r1 = Math.floor((t.nNode * (index + 1)) / count);
     const { nbr, val, X: xm, Y: y, F: fx } = t;
     for (let A = r0; A < r1; A++) {
