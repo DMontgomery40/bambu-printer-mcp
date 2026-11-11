@@ -68,6 +68,7 @@ export declare class FlightRecords {
     private readonly maxCaptureMs;
     private readonly cache;
     private readonly pending;
+    private readonly recentReports;
     private warned;
     private readonly ownerToken;
     constructor(options?: {
