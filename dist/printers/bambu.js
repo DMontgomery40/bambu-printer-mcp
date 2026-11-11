@@ -1,3 +1,4 @@
+import { snapshotFrame } from "../counterpart/fresh-frame.js";
 import { FlightRecords, flightKey } from "../counterpart/flight-record.js";
 import { geometryFromGcode, geometryFromFile } from "../counterpart/print-geometry.js";
 import { PrinterRefusal, markPrintCommandSent } from "../refusal.js";
@@ -2014,7 +2015,7 @@ export class BambuImplementation {
         const timeoutMs = options.timeoutMs ?? 8000;
         const stream = this.cameraStreams.get(JSON.stringify([host, _serial]));
         if (stream && !stream.stopped) {
-            const frame = await stream.frame({ waitMs: Math.min(timeoutMs, 10000), changedOnly: false });
+            const frame = await snapshotFrame(stream, timeoutMs, options.capturedAfter);
             if (frame.status !== "frame" || !frame.base64)
                 throw new Error("The active camera stream has not produced a live frame");
             const jpeg = Buffer.from(frame.base64, "base64");

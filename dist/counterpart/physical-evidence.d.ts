@@ -14,6 +14,7 @@ export interface EvidenceFrame {
     sha256?: string;
     base64?: string;
 }
+export declare function frameMatchesReport(frame: EvidenceFrame): boolean;
 export interface HeightMeasurement {
     frameId: string;
     visible: boolean;

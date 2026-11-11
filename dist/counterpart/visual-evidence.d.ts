@@ -1,4 +1,3 @@
-/** Visual observations come from the client's worker; this module runs no image model or printer I/O. */
 import type { EvidenceFrame, PhysicalEvidence } from "./physical-evidence.js";
 import type { PrintGeometry } from "./print-geometry.js";
 export declare const VISIBILITIES: readonly ["clear", "dark", "occluded", "out_of_view", "unknown"];

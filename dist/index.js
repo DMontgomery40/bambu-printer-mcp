@@ -4396,7 +4396,7 @@ class BambuPrinterMCPServer {
                     case "counterpart_print_progress": {
                         const report = await this.bambu.readProgressReport(host, bambuSerial, bambuToken);
                         if (report)
-                            void this.bambu.flightRecords.sample(flightKey(host, bambuSerial), () => this.bambu.cameraSnapshot(host, bambuSerial, bambuToken, { bambuModel: this.displayModel(args, bambuSerial), timeoutMs: 8000 })).catch(() => undefined);
+                            void this.bambu.flightRecords.sample(flightKey(host, bambuSerial), after => this.bambu.cameraSnapshot(host, bambuSerial, bambuToken, { bambuModel: this.displayModel(args, bambuSerial), timeoutMs: 8000, capturedAfter: after })).catch(() => undefined);
                         result = report
                             ? bambuProgress(report.raw, { receivedAt: report.receivedAt, serial: bambuSerial, model: this.displayModel(args, bambuSerial) })
                             : offlineProgress(Date.now());

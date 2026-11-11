@@ -130,7 +130,7 @@ export declare class FlightRecords {
     private visuals;
     private trimFrames;
     /** Called only after existing reports/reads, never on a timer; a sample cannot block the print. */
-    sample(key: string, capture: () => Promise<{
+    sample(key: string, capture: (capturedAfter: string) => Promise<{
         base64?: string;
         capturedAt?: string;
     }>): Promise<void>;

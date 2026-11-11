@@ -1,3 +1,10 @@
+export function frameMatchesReport(frame) {
+    const captured = Date.parse(frame.capturedAt), report = Date.parse(frame.reportAt);
+    return (Number.isFinite(captured) &&
+        Number.isFinite(report) &&
+        captured >= report &&
+        captured - report <= 15000);
+}
 export function assessPhysical(frames, measurements = []) {
     const limitations = [
         "Firmware completion is separate from physical success.",
@@ -26,8 +33,7 @@ export function assessPhysical(frames, measurements = []) {
             !Number.isFinite(measurement.uncertaintyMm) ||
             measurement.uncertaintyMm < 0 ||
             measurement.uncertaintyMm > Math.max(2, frame.expectedHeightMm * 0.05) ||
-            Math.abs(Date.parse(frame.capturedAt) - Date.parse(frame.reportAt)) >
-                15000)
+            !frameMatchesReport(frame))
             return unknown("A frame is unmatched, occluded/out of view, uncalibrated, too uncertain or too far from its report time.");
         seen.add(frame.id);
         usable.push({ frame, measurement });

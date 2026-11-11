@@ -281,6 +281,7 @@ export declare class BambuImplementation {
     };
     cameraSnapshot(host: string, _serial: string, token: string, options?: {
         savePath?: string;
+        capturedAfter?: string;
         timeoutMs?: number;
         bambuModel?: string;
         /**

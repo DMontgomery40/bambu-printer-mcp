@@ -1,3 +1,5 @@
+/** Visual observations come from the client's worker; this module runs no image model or printer I/O. */
+import { frameMatchesReport } from "./physical-evidence.js";
 export const VISIBILITIES = [
     "clear",
     "dark",
@@ -62,10 +64,7 @@ export function assessVisual(frames, observations, expected) {
         !footprint.every(Number.isFinite) ||
         footprint[2] <= footprint[0] ||
         footprint[3] <= footprint[1] ||
-        !Number.isFinite(Date.parse(frame.capturedAt)) ||
-        !Number.isFinite(Date.parse(frame.reportAt)) ||
-        Math.abs(Date.parse(frame.capturedAt) - Date.parse(frame.reportAt)) >
-            15000 ||
+        !frameMatchesReport(frame) ||
         !observation.attempted)
         return unknown("Saved frame, expected deposition footprint or attempted-layer evidence is unavailable.");
     if (observation.visibility !== "clear" ||
@@ -98,6 +97,7 @@ export function assessVisual(frames, observations, expected) {
 }
 export function assessmentRequest(frames, observations, expected) {
     const pending = frames.filter((f) => f.status === "captured" &&
+        frameMatchesReport(f) &&
         f.role !== "baseline" &&
         !observations.some((o) => o.frameId === f.id));
     const frame = pending.find((f) => f.role === "first_layer") ?? pending.at(-1);

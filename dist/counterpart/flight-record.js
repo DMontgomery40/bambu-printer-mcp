@@ -339,13 +339,17 @@ export class FlightRecords {
             f.sha256 === value.imageSha256);
         if (!frame)
             throw Error("Visual observation frame/hash is unavailable or mismatched.");
-        const image = this.frameFile(record, frame.id), stat = fs.lstatSync(image);
-        if (!stat.isFile() || stat.size > 512 * 1024)
-            throw Error("Saved visual frame is unavailable or too large.");
-        const bytes = fs.readFileSync(image);
-        if (bytes.length > 512 * 1024 ||
-            createHash("sha256").update(bytes).digest("hex") !== frame.sha256)
-            throw Error("Saved visual frame hash changed.");
+        try {
+            const image = this.frameFile(record, frame.id), stat = fs.lstatSync(image);
+            if (!stat.isFile() || stat.size > 512 * 1024)
+                throw Error("invalid");
+            const bytes = fs.readFileSync(image);
+            if (createHash("sha256").update(bytes).digest("hex") !== frame.sha256)
+                throw Error("changed");
+        }
+        catch {
+            throw Error("Saved visual frame is unavailable or its hash changed.");
+        }
         if (value.referenceFrameId &&
             !record.frames.some((f) => f.id === value.referenceFrameId &&
                 f.role === "baseline" &&
@@ -514,7 +518,7 @@ export class FlightRecords {
             try {
                 let timer;
                 const result = await Promise.race([
-                    capture(),
+                    capture(frame.reportAt),
                     new Promise((_, reject) => {
                         timer = setTimeout(() => reject(Error("camera-deadline")), this.maxCaptureMs);
                     }),
@@ -523,7 +527,8 @@ export class FlightRecords {
                     ? this.now()
                     : Date.parse(result.capturedAt);
                 if (!Number.isFinite(capturedAt) ||
-                    Math.abs(capturedAt - Date.parse(frame.reportAt)) > 15000 ||
+                    capturedAt < Date.parse(frame.reportAt) ||
+                    capturedAt - Date.parse(frame.reportAt) > 15000 ||
                     capturedAt > this.now() + 1000)
                     throw Error("stale-frame");
                 frame.capturedAt = new Date(capturedAt).toISOString();
