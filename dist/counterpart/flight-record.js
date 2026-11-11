@@ -124,11 +124,20 @@ export function flightSnapshot(raw) {
         ]);
     return snapshot;
 }
+const activeExecution = (raw) => ["PREPARE", "PREPARING", "SLICING", "RUNNING", "PRINTING", "PAUSE", "PAUSED"].includes(String(raw?.gcode_state).toUpperCase());
+const executionIds = (raw) => Object.fromEntries(["task_id", "subtask_id"].flatMap(key => {
+    const value = raw?.[key];
+    if ((typeof value !== "string" && typeof value !== "number") || !String(value).length || String(value).length > 128 || ["0", "-1"].includes(String(value)))
+        return [];
+    return [[key, hash(String(value))]];
+}));
+const changedExecution = (record, raw) => Object.entries(executionIds(raw)).some(([key, value]) => record.execution?.[key] !== undefined && record.execution[key] !== value);
 export class FlightRecords {
     constructor(options = {}) {
         this.cache = new Map();
         this.pending = new Map();
         this.recentReports = new Map();
+        this.superseded = new Set();
         this.warned = false;
         this.ownerToken = randomUUID();
         this.dir =
@@ -210,8 +219,14 @@ export class FlightRecords {
         const record = this.get(key);
         if (!record || !Number.isFinite(at) || at < Date.parse(record.dispatchedAt))
             return;
+        const previousAt = record.reports[record.reports.length - 1]?.at;
+        if (previousAt && at < Date.parse(previousAt))
+            return;
         const names = [raw.subtask_name, raw.gcode_file].filter((n) => typeof n === "string" && !!n);
-        const matches = names.some((n) => hash(stem(n)) === record.dispatch.jobHash);
+        const named = names.some((n) => hash(stem(n)) === record.dispatch.jobHash);
+        if (named && (changedExecution(record, raw) || (record.endedAt && activeExecution(raw))))
+            this.invalidateExecution(record);
+        const matches = named && !this.isSuperseded(record);
         this.recentReports.set(record.printerKey, { id: record.id, at, matches });
         while (this.recentReports.size > this.maxJobs) {
             const first = this.recentReports.keys().next().value;
@@ -223,13 +238,17 @@ export class FlightRecords {
             return;
         if (record.endedAt)
             return;
-        const previousAt = record.reports[record.reports.length - 1]?.at;
-        if (previousAt && at < Date.parse(previousAt))
-            return;
+        const ids = activeExecution(raw) ? executionIds(raw) : {};
+        const identityChanged = Object.keys(ids).some(key => record.execution?.[key] === undefined);
+        if (identityChanged)
+            record.execution = { ...record.execution, ...ids };
         const snapshot = flightSnapshot(raw);
         const changes = Object.fromEntries(Object.entries(snapshot).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(record.latest[k])));
-        if (!Object.keys(changes).length)
+        if (!Object.keys(changes).length) {
+            if (identityChanged)
+                this.save(record);
             return;
+        }
         const state = String(snapshot.gcode_state);
         if (["PREPARE", "SLICING", "RUNNING", "PAUSE"].includes(state)) {
             record.seenActive = true;
@@ -253,7 +272,10 @@ export class FlightRecords {
     physicalForReport(key, raw) {
         const record = this.get(key);
         const names = [raw?.subtask_name, raw?.gcode_file].filter((name) => typeof name === "string" && !!name);
-        if (!record || !names.some((name) => hash(stem(name)) === record.dispatch.jobHash)) {
+        const named = record && names.some((name) => hash(stem(name)) === record.dispatch.jobHash);
+        if (record && named && (changedExecution(record, raw) || (record.endedAt && activeExecution(raw))))
+            this.invalidateExecution(record);
+        if (!record || !named || this.isSuperseded(record)) {
             return {
                 status: "unknown",
                 evidence: [],
@@ -281,6 +303,7 @@ export class FlightRecords {
             };
         const result = structuredClone(record);
         delete result.owner;
+        result.executionSuperseded = this.isSuperseded(record);
         const observations = this.visuals(record);
         result.visualObservations = observations;
         if (options.frameIds &&
@@ -478,6 +501,7 @@ export class FlightRecords {
             ? this.recentReports.get(record.printerKey)
             : undefined;
         if (!record ||
+            this.isSuperseded(record) ||
             !received?.matches ||
             received.id !== record.id ||
             this.now() - received.at > 15000 ||
@@ -564,6 +588,7 @@ export class FlightRecords {
                 frame.capturedAt = new Date(capturedAt).toISOString();
                 const current = this.get(key);
                 if (current?.id !== record.id ||
+                    this.isSuperseded(record) ||
                     this.recentReports.get(record.printerKey)?.matches !== true ||
                     this.recentReports.get(record.printerKey)?.id !== record.id ||
                     current.latest.gcode_state !== state ||
@@ -637,6 +662,23 @@ export class FlightRecords {
         })
             .sort((a, b) => b.dispatchedAt.localeCompare(a.dispatchedAt))
             .slice(0, this.maxJobs);
+    }
+    isSuperseded(record) {
+        return this.superseded.has(record.id) || fs.existsSync(this.file(record) + ".superseded");
+    }
+    /** Monotonic one-byte sidecar: another observer cannot overwrite the live owner's journal. */
+    invalidateExecution(record) {
+        this.superseded.add(record.id);
+        while (this.superseded.size > this.maxJobs)
+            this.superseded.delete(this.superseded.values().next().value);
+        const file = this.file(record), marker = file + ".superseded";
+        try {
+            if (fs.existsSync(file))
+                fs.writeFileSync(marker, "1", { flag: "wx", mode: 0o600 });
+            if (!fs.existsSync(file) && fs.existsSync(marker))
+                fs.unlinkSync(marker);
+        }
+        catch { /* Existing markers are already durable; storage failure stays volatile. */ }
     }
     file(record) {
         return path.join(this.dir, `${record.printerKey}-${record.id}.json`);
@@ -746,6 +788,10 @@ export class FlightRecords {
                 // Retention must not depend on parsing an older, possibly corrupt record.
                 const prefix = name.slice(0, -5);
                 fs.unlinkSync(path.join(this.dir, name));
+                try {
+                    fs.unlinkSync(path.join(this.dir, name + ".superseded"));
+                }
+                catch { }
                 try {
                     fs.unlinkSync(path.join(this.dir, prefix + ".visual.json"));
                 }

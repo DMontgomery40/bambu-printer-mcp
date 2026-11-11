@@ -29,6 +29,8 @@ export interface FlightRecord {
         token: string;
     };
     endedAt?: string;
+    execution?: Record<string, string>;
+    executionSuperseded?: boolean;
     id: string;
     printerKey: string;
     dispatchedAt: string;
@@ -69,6 +71,7 @@ export declare class FlightRecords {
     private readonly cache;
     private readonly pending;
     private readonly recentReports;
+    private readonly superseded;
     private warned;
     private readonly ownerToken;
     constructor(options?: {
@@ -140,6 +143,9 @@ export declare class FlightRecords {
     /** One process writes a dispatched job; fresh observations can take over after its process exits. */
     private canWrite;
     private jobSummaries;
+    private isSuperseded;
+    /** Monotonic one-byte sidecar: another observer cannot overwrite the live owner's journal. */
+    private invalidateExecution;
     private file;
     private frameFile;
     private files;
