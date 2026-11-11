@@ -82,6 +82,8 @@ export declare class FlightRecords {
     begin(key: string, input: FlightDispatch): string;
     accept(key: string, jobName: string): boolean;
     observe(key: string, raw: Record<string, any>, at?: number): void;
+    /** Progress may expose saved evidence only for the job in this returned report. */
+    physicalForReport(key: string, raw: Record<string, any> | null | undefined): import("./physical-evidence.js").PhysicalEvidence;
     read(key: string, options?: ReadRecordOptions): {
         physical: import("./physical-evidence.js").PhysicalEvidence;
         jobs?: {
