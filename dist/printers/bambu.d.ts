@@ -1,3 +1,4 @@
+import { FlightRecords, type PrintGeometry } from "../counterpart/flight-record.js";
 import { CameraStreams, type FrameOptions } from "./camera-stream.js";
 import { inspectPrintFile, type PrintFileInspection } from "../safety/print-file.js";
 import { type PrinterStateRequirements } from "../safety/printer-state.js";
@@ -42,6 +43,7 @@ export type ProgressReport = {
 /** The inspected bytes and limits of a started job, for the resume prompt and byte check. */
 export type CheckedFile = {
     sha256: string;
+    expected?: PrintGeometry;
     /** A project's printed plate: its number and the SHA-256 of its Metadata/plate_<index>.gcode. */
     plate?: {
         index: number;
@@ -71,6 +73,7 @@ export type PrintPreflight = {
 export { cameraFrameParser } from "./camera-wire.js";
 export declare class BambuImplementation {
     private readonly confirm?;
+    readonly flightRecords: FlightRecords;
     private printerStore;
     readonly cameraStreams: CameraStreams;
     /**
@@ -297,6 +300,7 @@ export declare class BambuImplementation {
         sizeBytes: number;
         base64: string;
         savedTo?: string;
+        capturedAt?: string;
         width?: number;
         height?: number;
         note?: string;

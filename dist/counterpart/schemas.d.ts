@@ -1,3 +1,4 @@
+import { type PhysicalEvidence } from "./physical-evidence.js";
 /**
  * The Counterpart tool contract (counterpart/1): output schemas shared by the
  * tool list and the tests. mcp-3D-printer-server declares the same results.
@@ -21,6 +22,7 @@ export type Temperature = {
     target: number;
 };
 export type PrintProgress = {
+    physical?: PhysicalEvidence;
     contract: typeof COUNTERPART_CONTRACT;
     observedAt: string;
     state: PrintState;
@@ -211,6 +213,28 @@ export declare const PRINTER_INFO_OUTPUT_SCHEMA: {
 export declare const PRINT_PROGRESS_OUTPUT_SCHEMA: {
     type: "object";
     properties: {
+        physical: {
+            type: string;
+            properties: {
+                status: {
+                    type: string;
+                    enum: string[];
+                };
+                evidence: {
+                    type: string;
+                    items: {
+                        type: string;
+                    };
+                };
+                limitations: {
+                    type: string;
+                    items: {
+                        type: string;
+                    };
+                };
+            };
+            required: string[];
+        };
         contract: {
             type: string;
             const: string;

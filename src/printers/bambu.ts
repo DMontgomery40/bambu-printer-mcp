@@ -1,3 +1,5 @@
+import {FlightRecords,flightKey,type PrintGeometry} from "../counterpart/flight-record.js";
+import {geometryFromGcode} from "../counterpart/print-geometry.js";
 import { PrinterRefusal, markPrintCommandSent } from "../refusal.js";
 import {CameraStreams, type FrameOptions} from "./camera-stream.js";
 import {openTcpCameraSource, openRtspCameraSource} from "./camera-sources.js";
@@ -598,6 +600,7 @@ export type ProgressReport = { raw: Record<string, any>; receivedAt: number };
 /** The inspected bytes and limits of a started job, for the resume prompt and byte check. */
 export type CheckedFile = {
   sha256: string;
+  expected?: PrintGeometry;
   /** A project's printed plate: its number and the SHA-256 of its Metadata/plate_<index>.gcode. */
   plate?: { index: number; sha256: string };
   model: string;
@@ -716,13 +719,18 @@ function reportsJob(raw: Record<string, any>, remotePath: string): boolean {
 export async function checkedFile(inspection: PrintFileInspection, filePath: string): Promise<CheckedFile> {
   const used = inspection.usedFilamentPositions.map(position => inspection.materials[position]).filter(Boolean);
   let plate: CheckedFile["plate"];
+  let expected: PrintGeometry | undefined;
   const plateNumber = /^Metadata\/plate_(\d+)\.gcode$/i.exec(inspection.plateInternalPath ?? "");
   if (plateNumber && /\.3mf$/i.test(filePath)) {
     const entry = (await readSafe3mfArchive(filePath)).zip.file(inspection.plateInternalPath!);
-    if (entry) plate = { index: Number(plateNumber[1]), sha256: createHash("sha256").update(await entry.async("nodebuffer")).digest("hex") };
+    if (entry) {
+      const bytes = await entry.async("nodebuffer");
+      plate = { index: Number(plateNumber[1]), sha256: createHash("sha256").update(bytes).digest("hex") };
+      if (bytes.length <= 64 * 1024 * 1024) expected = geometryFromGcode(bytes.toString("utf8"));
+    }
   }
   return {
-    sha256: inspection.sha256, ...(plate ? { plate } : {}), model: inspection.model,
+    sha256: inspection.sha256, ...(plate ? { plate } : {}), ...(expected ? { expected } : {}), model: inspection.model,
     maxNozzleTemperature: inspection.maxNozzleTemperature, maxBedTemperature: inspection.maxBedTemperature, maxChamberTemperature: inspection.maxChamberTemperature,
     materials: [...new Set(used.length ? used : inspection.materials)],
   };
@@ -753,6 +761,7 @@ export type PrintPreflight = { finishedJob?: string; serial: string; model: stri
 export {cameraFrameParser} from "./camera-wire.js";
 
 export class BambuImplementation {
+  readonly flightRecords = new FlightRecords();
   private printerStore: BambuClientStore;
   readonly cameraStreams = new CameraStreams();
   /**
@@ -851,11 +860,13 @@ export class BambuImplementation {
     this.checkedJobs.set(`${host}\n${serial}`, {
       ...structuredClone(file), remotePath, requirements: structuredClone(requirements), seenRunning: false, uploadedHere,
     });
+    this.flightRecords.begin(flightKey(host, serial), {sha256:file.sha256,jobName:remotePath,mapping:requirements.amsMapping,materials:file.materials,plate:file.plate,expected:file.expected});
     this.clearedErrors.delete(serial);
   }
 
   /** Feed one merged report to the resume record (internal; the client store calls it for every report). */
   observeReport(host: string, serial: string, raw: Record<string, any> | undefined): void {
+    if (raw) this.flightRecords.observe(flightKey(host, serial), raw);
     const key = `${host}\n${serial}`;
     const checked = this.checkedJobs.get(key);
     if (!checked || !raw || typeof raw.gcode_state !== "string") return;
@@ -2196,6 +2207,7 @@ export class BambuImplementation {
     sizeBytes: number;
     base64: string;
     savedTo?: string;
+    capturedAt?: string;
     width?: number;
     height?: number;
     note?: string;
@@ -2204,10 +2216,11 @@ export class BambuImplementation {
     const timeoutMs = options.timeoutMs ?? 8_000;
     const stream = this.cameraStreams.get(JSON.stringify([host, _serial]));
     if (stream && !stream.stopped) {
-      const jpeg = await stream.latest(Math.min(timeoutMs, 10_000));
-      if (!jpeg) throw new Error("The active camera stream has not produced a live frame");
+      const frame = await stream.frame({waitMs:Math.min(timeoutMs,10000),changedOnly:false});
+      if (frame.status!=="frame"||!frame.base64) throw new Error("The active camera stream has not produced a live frame");
+      const jpeg=Buffer.from(frame.base64,"base64");
       if (options.savePath) await (await import("node:fs/promises")).writeFile(options.savePath, jpeg);
-      return {status: "success", format: "image/jpeg", sizeBytes: jpeg.length, base64: jpeg.toString("base64"), transport: stream.transport,
+      return {status: "success", format: "image/jpeg", sizeBytes: jpeg.length, base64: jpeg.toString("base64"), transport: stream.transport, capturedAt:frame.capturedAt,
         ...(options.savePath ? {savedTo: options.savePath} : {})};
     }
     const model = (options.bambuModel ?? "").toLowerCase();

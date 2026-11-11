@@ -18,6 +18,7 @@ export const REMOTE_SCOPES = {
     blender_mcp_status: "read",
     counterpart_printer_info: "read",
     counterpart_print_progress: "read",
+    counterpart_print_record: "read",
     cad_status: "read",
     cad_setup: "read",
     cad_run: "design",

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import {flightKey} from "./counterpart/flight-record.js";
+import {FLIGHT_RECORD_PROPERTIES,FLIGHT_RECORD_DESCRIPTION,FLIGHT_RECORD_OUTPUT_SCHEMA,flightReadOptions} from "./counterpart/flight-tools.js";
 import {CAMERA_STREAM_TOOLS} from "./printers/camera-tools.js";
 import { withAnnotations } from "./tool-annotations.js";
 import { withRemote } from "./counterpart/remote.js";
@@ -3595,6 +3597,11 @@ class BambuPrinterMCPServer {
             }
           },
           {
+            name: "counterpart_print_record", description: FLIGHT_RECORD_DESCRIPTION,
+            inputSchema: {type:"object",properties:{...FLIGHT_RECORD_PROPERTIES,host:{type:"string",description:"Saved printer hostname or address; used only to select a local record."},bambu_serial:{type:"string",description:"Saved Bambu printer serial; used only to select a local record."}},additionalProperties:false},
+            outputSchema: FLIGHT_RECORD_OUTPUT_SCHEMA
+          },
+          {
             name: "counterpart_print_progress",
             description: "Counterpart contract (counterpart/1): the printer's state, current job (name, task id, percent, time left, layers, stage words), temperatures, active filament and problems with Bambu's HMS messages and links. Read from the MQTT report this server keeps, so a held session asks the printer nothing; observedAt is when the printer sent it. An unreachable printer reports state offline. Read-only; not a safety check.",
             inputSchema: {
@@ -5098,11 +5105,17 @@ class BambuPrinterMCPServer {
             break;
           }
 
+          case "counterpart_print_record":
+            result = this.bambu.flightRecords.read(flightKey(host,bambuSerial),flightReadOptions(args));
+            break;
+
           case "counterpart_print_progress": {
             const report = await this.bambu.readProgressReport(host, bambuSerial, bambuToken);
+            if (report) void this.bambu.flightRecords.sample(flightKey(host,bambuSerial), () => this.bambu.cameraSnapshot(host,bambuSerial,bambuToken,{bambuModel:this.displayModel(args,bambuSerial),timeoutMs:8000})).catch(() => undefined);
             result = report
               ? bambuProgress(report.raw, { receivedAt: report.receivedAt, serial: bambuSerial, model: this.displayModel(args, bambuSerial) })
               : offlineProgress(Date.now());
+            result = {...result, physical:this.bambu.flightRecords.read(flightKey(host,bambuSerial)).physical};
             break;
           }
 
