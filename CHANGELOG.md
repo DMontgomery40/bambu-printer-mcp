@@ -6,6 +6,24 @@
 
 - Accept a job sliced for the P1S on a printer that reports itself as a P1P. A P1P with the enclosure upgrade kit keeps its P1P identity while its jobs use the P1S preset, so every model value is refused: `p1s` fails the fresh identity check (`requested p1s, observed p1p`) and `p1p` fails the file check (`file model p1s contradicts requested model p1p`). Bambu Studio sends these jobs: its P1P entry lists the P1S in `compatible_machine`, and the two models have the same limits here. The file is still checked against the printer's own limits, the fresh identity, nozzle, material and temperature checks are unchanged, and no other cross-model job is accepted.
 
+## [1.1.88] – 2026-11-11
+
+### Changed
+
+- `fdm_design` starts a design from the product before any mechanism: establish what every working bought or published version of the thing has (a car phone holder turns and tilts to face the driver; a mount's base is sized by the moment of what it holds; an adhesive mount uses a full pad of the tape's grade, not a strip, on a surface the tape suits), keep all of it, and say what a design that leaves out a feature they all have lost and why that is acceptable for this person. "Consider a compliant mechanism first" is now scoped, in `fdm_design` and `fdm_flexures`, to the element that grips, clips, springs or latches: it is never a reason to make the whole product one piece or to drop a joint, adjustment or base the bought versions have. Connections (tape, screws, a snap) are judged against products that demonstrably work: a check that fails a bought product that holds for years is wrong, and is corrected before it is applied to the design. Prompt text only; checked with the design-guidance tests; no printer contacted.
+
+## [1.1.87] – 2026-11-11
+
+### Changed
+
+- `fdm_design` says when and how a design agent researches before designing or asking: whenever the request names something that exists outside the person's hands (a product, a vehicle and year, a case, a standard part, a mounting place) or a decision turns on a fact about the world; six short steps (list the deciding facts, search each by exact name and generation, read the page not the snippet, rephrase before writing "not found", keep each value with its source, design around what stays unknown) sized to take a few minutes with any model that has web tools; and never to ask the person for what a search answers. Prompt text only; checked with the design-guidance tests; no printer contacted.
+
+## [1.1.86] – 2026-11-11
+
+### Added
+
+- Serves two new design prompts and strengthens the everyday guidance. `fdm_fit` (also the resource `guidance://fdm/fit-by-function`) tells a design agent to choose each fit by what the interface has to do, never one clearance for every interface, keeping the object's size and uncertainty, the print correction, and the fit apart, with cited starting clearances and mechanisms that absorb uncertainty. `fdm_flexures` covers parts that flex, grip, snap, clip, spring, or hold something: compliant architectures, strain chosen by duty (once, daily, held bent), material and layer direction as planning bands, bite at the forced opening, heat and creep, and ease of use as a check equal to the hold (where the fingers go, the force to open, one-handed loading). `fdm_design` now carries the same judgement in short form for every task, including looking up published dimensions before asking, treating an unedited prefilled size as no measurement, designing to a cased product's size rather than the bare product's, fitting an object in its stiffest and largest state, treating printed screws at hand sizes as an ordinary choice with threads kept out of the main load path, and stating "prints without supports", "holds", or "fits" only with the engine check or slice number. `fdm_assembly`, `fdm_after_slice` and `cad_design` gain the matching fastener, review and parameter rules. The server's `instructions` say when to add each prompt. Supersedes the fit-by-function resource drafts by serving the fit text as a prompt as well, so prompt-only design workers read it. Checked with the design-guidance and CAD protocol tests; no printer contacted. Prompt text only; no tool, slicing, or print behavior changes.
+
 ## [1.1.85] – 2026-11-10
 
 ### Fixed

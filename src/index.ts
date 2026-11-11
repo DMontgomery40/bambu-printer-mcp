@@ -79,7 +79,7 @@ import { bambuPrinterInfo, bambuSliceCapabilities } from "./counterpart/info.js"
 import { DISCOVER_OUTPUT_SCHEMA, discoverBambu } from "./counterpart/discovery.js";
 import { SETUP_FIELDS_OUTPUT_SCHEMA, bambuSetupFields, slicerSetup, type SlicerSetup } from "./counterpart/setup.js";
 import { PROPOSE_FILAMENTS_INPUT_PROPERTIES, PROPOSE_FILAMENTS_OUTPUT_SCHEMA, NO_COLOUR_NAMES, bambuTrayLabel, loadColourNames, proposeFilaments, spoolName, type ColourNames, type ProposalTray } from "./counterpart/filaments.js";
-import { DESIGN_PROMPTS, FDM_CAPABILITY_GUIDANCE, FDM_CAPABILITY_RESOURCE, FDM_CAPABILITY_URI, FDM_SLICING_PROMPT, SERVER_INSTRUCTIONS, slicingGuidance } from "./design-guidance.js";
+import { DESIGN_PROMPTS, FDM_CAPABILITY_GUIDANCE, FDM_CAPABILITY_RESOURCE, FDM_CAPABILITY_URI, FDM_FIT_GUIDANCE, FDM_FIT_RESOURCE, FDM_FIT_URI, FDM_SLICING_PROMPT, SERVER_INSTRUCTIONS, slicingGuidance } from "./design-guidance.js";
 import { bambuProgress, offlineProgress } from "./counterpart/progress.js";
 import { makeCounterpart3mf } from "./counterpart/make-3mf.js";
 import { MAKE_3MF_OUTPUT_SCHEMA, PRINT_PROGRESS_OUTPUT_SCHEMA, PRINTER_INFO_OUTPUT_SCHEMA } from "./counterpart/schemas.js";
@@ -2428,7 +2428,8 @@ class BambuPrinterMCPServer {
             mimeType: "application/json",
             description: "HMS and error-related fields from the latest printer status"
           },
-          FDM_CAPABILITY_RESOURCE
+          FDM_CAPABILITY_RESOURCE,
+          FDM_FIT_RESOURCE
         ],
         templates: [
           {
@@ -2454,6 +2455,9 @@ class BambuPrinterMCPServer {
       const uri = request.params.uri;
       if (uri === FDM_CAPABILITY_URI) {
         return { contents: [{ uri, mimeType: FDM_CAPABILITY_RESOURCE.mimeType, text: FDM_CAPABILITY_GUIDANCE }] };
+      }
+      if (uri === FDM_FIT_URI) {
+        return { contents: [{ uri, mimeType: FDM_FIT_RESOURCE.mimeType, text: FDM_FIT_GUIDANCE }] };
       }
       const match = uri.match(/^printer:\/\/([^\/]+)\/(.+)$/);
 
