@@ -1,5 +1,5 @@
 import {FlightRecords,flightKey,type PrintGeometry} from "../counterpart/flight-record.js";
-import {geometryFromGcode} from "../counterpart/print-geometry.js";
+import {geometryFromGcode,geometryFromFile} from "../counterpart/print-geometry.js";
 import { PrinterRefusal, markPrintCommandSent } from "../refusal.js";
 import {CameraStreams, type FrameOptions} from "./camera-stream.js";
 import {openTcpCameraSource, openRtspCameraSource} from "./camera-sources.js";
@@ -728,7 +728,10 @@ export async function checkedFile(inspection: PrintFileInspection, filePath: str
       plate = { index: Number(plateNumber[1]), sha256: createHash("sha256").update(bytes).digest("hex") };
       if (bytes.length <= 64 * 1024 * 1024) expected = geometryFromGcode(bytes.toString("utf8"));
     }
+  } else if (!/\.3mf$/i.test(filePath)) {
+    expected = await geometryFromFile(filePath);
   }
+
   return {
     sha256: inspection.sha256, ...(plate ? { plate } : {}), ...(expected ? { expected } : {}), model: inspection.model,
     maxNozzleTemperature: inspection.maxNozzleTemperature, maxBedTemperature: inspection.maxBedTemperature, maxChamberTemperature: inspection.maxChamberTemperature,

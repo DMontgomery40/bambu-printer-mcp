@@ -220,6 +220,10 @@ export declare const PRINT_PROGRESS_OUTPUT_SCHEMA: {
                     type: string;
                     enum: string[];
                 };
+                assessment: {
+                    type: string;
+                    additionalProperties: boolean;
+                };
                 evidence: {
                     type: string;
                     items: {

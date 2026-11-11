@@ -1,5 +1,8 @@
 /** Pure assessment of explicit client measurements, not an embedded vision model or success gate. */
 export interface EvidenceFrame {
+    role?: "baseline" | "first_layer" | "periodic" | "height";
+    stage?: string;
+    imageContentIndex?: number;
     id: string;
     capturedAt: string;
     reportAt: string;
@@ -19,7 +22,16 @@ export interface HeightMeasurement {
     method: string;
 }
 export interface PhysicalEvidence {
-    status: "unknown" | "consistent" | "suspect_no_growth";
+    assessment?: {
+        required: boolean;
+        frameId: string;
+        referenceFrameIds: string[];
+        layer: number;
+        expectedHeightMm: number;
+        expectedFootprintMm: [number, number, number, number];
+        instruction: string;
+    };
+    status: "unknown" | "consistent" | "suspect_no_growth" | "suspect_no_extrusion";
     evidence: string[];
     limitations: string[];
 }
@@ -30,6 +42,10 @@ export declare const PHYSICAL_EVIDENCE_SCHEMA: {
         status: {
             type: string;
             enum: string[];
+        };
+        assessment: {
+            type: string;
+            additionalProperties: boolean;
         };
         evidence: {
             type: string;

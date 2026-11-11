@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { assessVisual, assessmentRequest, validateVisualSubmission, } from "./visual-evidence.js";
 import { assessPhysical, } from "./physical-evidence.js";
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const stem = (value) => path.posix
@@ -182,6 +183,8 @@ export class FlightRecords {
             nextSeq: 1,
             frames: [],
             skippedCheckpoints: [],
+            droppedFrames: 0,
+            sampledCheckpoints: [],
             storage: "durable",
         };
         this.cache.set(printerKey, record);
@@ -254,6 +257,33 @@ export class FlightRecords {
             };
         const result = structuredClone(record);
         delete result.owner;
+        const observations = this.visuals(record);
+        result.visualObservations = observations;
+        if (options.frameIds &&
+            (options.frameIds.length > 4 ||
+                options.frameIds.some((id) => !result.frames.some((f) => f.id === id))))
+            throw Error("Requested frame is not part of this job (at most four).");
+        const request = assessmentRequest(result.frames, observations, result.expected);
+        const selected = new Set(options.frameIds ??
+            (request
+                ? [request.frameId, ...request.referenceFrameIds]
+                : observations.length
+                    ? [
+                        observations.at(-1).frameId,
+                        ...(observations.at(-1).referenceFrameId
+                            ? [observations.at(-1).referenceFrameId]
+                            : []),
+                    ]
+                    : result.frames
+                        .filter((f) => f.status === "captured")
+                        .slice(-4)
+                        .map((f) => f.id)).slice(0, 4));
+        const verify = new Set(observations
+            .slice(-1)
+            .flatMap((o) => [
+            o.frameId,
+            ...(o.referenceFrameId ? [o.referenceFrameId] : []),
+        ]));
         for (const frame of result.frames) {
             if (frame.status !== "captured")
                 continue;
@@ -261,11 +291,13 @@ export class FlightRecords {
                 const file = this.frameFile(record, frame.id), stat = fs.lstatSync(file);
                 if (!stat.isFile() || stat.size > 512 * 1024)
                     throw Error("saved-frame-unavailable");
-                if (options.includeFrames) {
+                if ((options.includeFrames && selected.has(frame.id)) ||
+                    verify.has(frame.id)) {
                     const bytes = fs.readFileSync(file);
                     if (createHash("sha256").update(bytes).digest("hex") !== frame.sha256)
                         throw Error("saved-frame-changed");
-                    frame.base64 = bytes.toString("base64");
+                    if (options.includeFrames && selected.has(frame.id))
+                        frame.base64 = bytes.toString("base64");
                 }
             }
             catch {
@@ -273,48 +305,210 @@ export class FlightRecords {
                 frame.reason = "saved-frame-unavailable";
             }
         }
+        const physical = options.measurements?.length
+            ? assessPhysical(result.frames, options.measurements)
+            : (assessVisual(result.frames, observations, result.expected) ??
+                assessPhysical(result.frames));
+        physical.assessment = assessmentRequest(result.frames, observations, result.expected);
+        if (options.evidenceOnly) {
+            result.omittedReports = result.reports.length;
+            result.reports = [];
+            if (result.expected) {
+                const layers = result.expected.layers.filter((l) => result.frames.some((f) => selected.has(f.id) && f.layer === l.layer));
+                result.omittedGeometryLayers =
+                    result.expected.layers.length - layers.length;
+                result.expected = { ...result.expected, layers };
+            }
+        }
         return {
             contract: "counterpart/1",
             status: "recorded",
             ...(jobs ? { jobs } : {}),
             record: result,
-            physical: assessPhysical(result.frames, options.measurements),
+            physical,
         };
+    }
+    /** Persist only the client's frame-bound visual observation, without printer I/O or journal ownership changes. */
+    submitVisual(key, input) {
+        const value = validateVisualSubmission(input), record = this.get(key, value.jobId);
+        if (!record || record.dispatch.sha256 !== value.artifactSha256)
+            throw Error("Visual observation does not match the saved job/artifact.");
+        const frame = record.frames.find((f) => f.id === value.frameId &&
+            f.role !== "baseline" &&
+            f.status === "captured" &&
+            f.sha256 === value.imageSha256);
+        if (!frame)
+            throw Error("Visual observation frame/hash is unavailable or mismatched.");
+        const image = this.frameFile(record, frame.id), stat = fs.lstatSync(image);
+        if (!stat.isFile() || stat.size > 512 * 1024)
+            throw Error("Saved visual frame is unavailable or too large.");
+        const bytes = fs.readFileSync(image);
+        if (bytes.length > 512 * 1024 ||
+            createHash("sha256").update(bytes).digest("hex") !== frame.sha256)
+            throw Error("Saved visual frame hash changed.");
+        if (value.referenceFrameId &&
+            !record.frames.some((f) => f.id === value.referenceFrameId &&
+                f.role === "baseline" &&
+                f.status === "captured"))
+            throw Error("Reference frame is not a saved baseline candidate for this job.");
+        const observations = this.visuals(record), prior = observations.find((o) => o.frameId === value.frameId);
+        if (prior &&
+            JSON.stringify(validateVisualSubmission(prior)) === JSON.stringify(value))
+            return this.read(key, { jobId: record.id });
+        const next = [
+            ...observations.filter((o) => o.frameId !== value.frameId),
+            {
+                ...value,
+                at: new Date(this.now()).toISOString(),
+                source: "client-vision",
+            },
+        ].slice(-64);
+        const text = JSON.stringify({
+            version: 1,
+            jobId: record.id,
+            observations: next,
+        });
+        if (Buffer.byteLength(text) > 64 * 1024)
+            throw Error("Visual observation storage limit exceeded.");
+        fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+        const file = this.visualFile(record), tmp = file + "." + process.pid + ".tmp";
+        if (!fs.existsSync(this.file(record)))
+            throw Error("The saved job was pruned; its observation was not stored.");
+        fs.writeFileSync(tmp, text, { mode: 0o600 });
+        fs.renameSync(tmp, file);
+        if (!fs.existsSync(this.file(record))) {
+            try {
+                fs.unlinkSync(file);
+            }
+            catch { }
+            throw Error("The saved job was pruned; its observation was not stored.");
+        }
+        return this.read(key, { jobId: record.id });
+    }
+    visualFile(record) {
+        return this.file(record).replace(/\.json$/, ".visual.json");
+    }
+    visuals(record) {
+        try {
+            const file = this.visualFile(record), stat = fs.lstatSync(file);
+            if (!stat.isFile() || stat.size > 64 * 1024)
+                return [];
+            const data = JSON.parse(fs.readFileSync(file, "utf8"));
+            if (data.version !== 1 ||
+                data.jobId !== record.id ||
+                !Array.isArray(data.observations))
+                return [];
+            return data.observations
+                .slice(-64)
+                .flatMap((v) => {
+                try {
+                    const value = validateVisualSubmission(v);
+                    if (value.jobId !== record.id ||
+                        value.artifactSha256 !== record.dispatch.sha256 ||
+                        typeof v.at !== "string" ||
+                        !Number.isFinite(Date.parse(v.at)) ||
+                        !record.frames.some((f) => f.id === value.frameId && f.sha256 === value.imageSha256))
+                        return [];
+                    return [{ ...value, at: v.at, source: "client-vision" }];
+                }
+                catch {
+                    return [];
+                }
+            })
+                .sort((a, b) => {
+                const x = record.frames.find((f) => f.id === a.frameId), y = record.frames.find((f) => f.id === b.frameId);
+                return x.layer - y.layer || x.capturedAt.localeCompare(y.capturedAt);
+            });
+        }
+        catch {
+            return [];
+        }
+    }
+    trimFrames(record) {
+        const anomaly = this.visuals(record)
+            .filter((o) => o.visibility === "clear" &&
+            o.footprintVisible &&
+            o.attempted &&
+            o.deposition === "absent")
+            .at(-1)?.frameId;
+        while (record.frames.length > 32) {
+            const index = record.frames.findIndex((f) => f.role !== "baseline" && f.role !== "first_layer" && f.id !== anomaly);
+            if (index < 0)
+                break;
+            const [removed] = record.frames.splice(index, 1);
+            try {
+                fs.unlinkSync(this.frameFile(record, removed.id));
+            }
+            catch { }
+            record.droppedFrames = (record.droppedFrames ?? 0) + 1;
+        }
     }
     /** Called only after existing reports/reads, never on a timer; a sample cannot block the print. */
     async sample(key, capture) {
-        const record = this.get(key), layer = num(record?.latest.layer_num);
+        const record = this.get(key), layer = num(record?.latest.layer_num), state = record?.latest.gcode_state;
         if (!record ||
             !this.canWrite(record) ||
-            record.latest.gcode_state !== "RUNNING" ||
-            !layer ||
-            !record.expected?.heightMm ||
             this.pending.has(record.printerKey))
             return;
-        const geometry = record.expected.layers.find((l) => l.layer === layer);
-        if (!geometry)
-            return;
-        const targets = [0.05, 0.3, 0.6, 0.9];
-        const due = targets
-            .map((ratio, index) => ({ ratio, index }))
-            .filter((t) => geometry.zMm >= t.ratio * record.expected.heightMm &&
-            !record.frames.some((f) => f.checkpoint === t.index) &&
-            !record.skippedCheckpoints.includes(t.index));
-        if (!due.length || record.frames.length >= 4)
-            return;
-        const chosen = due[due.length - 1];
-        record.skippedCheckpoints.push(...due.slice(0, -1).map((t) => t.index));
+        const baseline = state === "PREPARE" || state === "SLICING";
+        let checkpoint, zMm, role;
+        const stage = JSON.stringify([
+            record.latest.mc_print_stage,
+            record.latest.mc_print_sub_stage,
+            record.latest.stg_cur,
+        ]);
+        if (baseline) {
+            const existing = record.frames.filter((f) => f.role === "baseline");
+            if (existing.length >= 3 || existing.some((f) => f.stage === stage))
+                return;
+            checkpoint = -100 - existing.length;
+            zMm = 0;
+            role = "baseline";
+        }
+        else {
+            if (state !== "RUNNING" || !layer || !record.expected?.heightMm)
+                return;
+            const geometry = record.expected.layers.find((l) => l.layer === layer);
+            if (!geometry)
+                return;
+            const due = [0.05, 0.3, 0.6, 0.9]
+                .map((ratio, index) => ({ ratio, index }))
+                .filter((t) => geometry.zMm >= t.ratio * record.expected.heightMm &&
+                !record.frames.some((f) => f.checkpoint === t.index) &&
+                !record.skippedCheckpoints.includes(t.index) &&
+                !record.sampledCheckpoints?.includes(t.index));
+            const attempts = record.frames.filter((f) => f.role === "first_layer");
+            const first = layer <= 2 &&
+                attempts.length < 2 &&
+                !attempts.some((f) => f.layer === layer);
+            const previous = record.frames.filter((f) => f.role !== "baseline").at(-1)?.layer ?? 0;
+            const periodic = !record.frames.some((f) => f.role !== "baseline") ||
+                layer - previous >= 10;
+            if (!first && !periodic && !due.length)
+                return;
+            const chosen = due.at(-1);
+            checkpoint =
+                chosen?.index ?? (first ? -10 : 100000 + Math.floor(layer / 10));
+            record.skippedCheckpoints.push(...due.slice(0, -1).map((t) => t.index));
+            if (chosen)
+                (record.sampledCheckpoints ?? (record.sampledCheckpoints = [])).push(chosen.index);
+            zMm = geometry.zMm;
+            role = first ? "first_layer" : periodic ? "periodic" : "height";
+        }
         const frame = {
             id: randomUUID(),
-            checkpoint: chosen.index,
-            layer,
-            expectedHeightMm: geometry.zMm,
+            checkpoint,
+            role,
+            ...(baseline ? { stage } : {}),
+            layer: layer ?? 0,
+            expectedHeightMm: zMm,
             reportAt: record.reports[record.reports.length - 1]?.at ?? record.dispatchedAt,
             capturedAt: new Date(this.now()).toISOString(),
             status: "unavailable",
             reason: "capture-pending",
         };
         record.frames.push(frame);
+        this.trimFrames(record);
         this.save(record);
         const work = (async () => {
             try {
@@ -335,8 +529,14 @@ export class FlightRecords {
                 frame.capturedAt = new Date(capturedAt).toISOString();
                 const current = this.get(key);
                 if (current?.id !== record.id ||
-                    current.latest.gcode_state !== "RUNNING" ||
-                    num(current.latest.layer_num) !== layer)
+                    current.latest.gcode_state !== state ||
+                    num(current.latest.layer_num) !== layer ||
+                    (baseline &&
+                        JSON.stringify([
+                            current.latest.mc_print_stage,
+                            current.latest.mc_print_sub_stage,
+                            current.latest.stg_cur,
+                        ]) !== stage))
                     throw Error("job-or-layer-changed");
                 if (!result.base64 ||
                     result.base64.length > Math.ceil((512 * 1024 * 4) / 3) + 4)
@@ -418,15 +618,16 @@ export class FlightRecords {
         }
     }
     get(key, id) {
-        const printerKey = hash(key), cached = this.cache.get(printerKey);
-        if (cached &&
-            cached.storage === "durable" &&
-            !fs.existsSync(this.file(cached)))
+        const printerKey = hash(key);
+        let cached = this.cache.get(printerKey);
+        if (cached?.storage === "durable" && !fs.existsSync(this.file(cached))) {
             this.cache.delete(printerKey);
-        else if (cached &&
-            cached.owner?.token === this.ownerToken &&
-            (!id || cached.id === id))
+            cached = undefined;
+        }
+        if (id && cached?.owner?.token === this.ownerToken && cached.id === id)
             return cached;
+        // A latest-job read must discover dispatches made by another MCP process,
+        // even while this process still owns a retained older job.
         let latest;
         for (const name of this.files().filter((f) => f.startsWith(printerKey + "-") &&
             (!id || f === `${printerKey}-${id}.json`))) {
@@ -449,8 +650,15 @@ export class FlightRecords {
                 /* A corrupt/incomplete file is unavailable, never a reason to connect to the printer. */
             }
         }
-        if (latest && !id)
+        if (!id &&
+            cached?.storage === "volatile" &&
+            (!latest || cached.dispatchedAt >= latest.dispatchedAt))
+            latest = cached;
+        if (latest && !id) {
+            if (cached?.id === latest.id && cached.owner?.token === this.ownerToken)
+                return cached;
             this.cache.set(printerKey, latest);
+        }
         return latest;
     }
     save(record) {
@@ -501,6 +709,10 @@ export class FlightRecords {
                 // Retention must not depend on parsing an older, possibly corrupt record.
                 const prefix = name.slice(0, -5);
                 fs.unlinkSync(path.join(this.dir, name));
+                try {
+                    fs.unlinkSync(path.join(this.dir, prefix + ".visual.json"));
+                }
+                catch { }
                 for (const file of fs
                     .readdirSync(this.dir)
                     .filter((file) => file.startsWith(prefix + "-") && /^[a-f\d-]+\.jpg$/.test(file))) {

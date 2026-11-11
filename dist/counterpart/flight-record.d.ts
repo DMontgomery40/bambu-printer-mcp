@@ -1,3 +1,4 @@
+import { type VisualSubmission, type VisualObservation } from "./visual-evidence.js";
 import type { PrintGeometry } from "./print-geometry.js";
 import { type EvidenceFrame, type HeightMeasurement } from "./physical-evidence.js";
 export type { PrintGeometry, HeightMeasurement };
@@ -43,9 +44,16 @@ export interface FlightRecord {
     nextSeq: number;
     frames: EvidenceFrame[];
     skippedCheckpoints: number[];
+    droppedFrames: number;
+    sampledCheckpoints?: number[];
+    visualObservations?: VisualObservation[];
+    omittedReports?: number;
+    omittedGeometryLayers?: number;
     storage: "durable" | "volatile";
 }
 export interface ReadRecordOptions {
+    evidenceOnly?: boolean;
+    frameIds?: string[];
     listJobs?: boolean;
     jobId?: string;
     includeFrames?: boolean;
@@ -95,6 +103,32 @@ export declare class FlightRecords {
         contract: "counterpart/1";
         status: "recorded";
     };
+    /** Persist only the client's frame-bound visual observation, without printer I/O or journal ownership changes. */
+    submitVisual(key: string, input: VisualSubmission): {
+        physical: import("./physical-evidence.js").PhysicalEvidence;
+        jobs?: {
+            id: string;
+            dispatchedAt: string;
+            sha256: string;
+            outcome: "accepted" | "unconfirmed" | "observed-active";
+        }[] | undefined;
+        contract: "counterpart/1";
+        status: "unavailable";
+    } | {
+        record: FlightRecord;
+        physical: import("./physical-evidence.js").PhysicalEvidence;
+        jobs?: {
+            id: string;
+            dispatchedAt: string;
+            sha256: string;
+            outcome: "accepted" | "unconfirmed" | "observed-active";
+        }[] | undefined;
+        contract: "counterpart/1";
+        status: "recorded";
+    };
+    private visualFile;
+    private visuals;
+    private trimFrames;
     /** Called only after existing reports/reads, never on a timer; a sample cannot block the print. */
     sample(key: string, capture: () => Promise<{
         base64?: string;

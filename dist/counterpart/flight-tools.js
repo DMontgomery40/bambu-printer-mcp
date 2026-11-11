@@ -1,5 +1,22 @@
 import { PHYSICAL_EVIDENCE_SCHEMA } from "./physical-evidence.js";
+import { validateVisualSubmission, VISIBILITIES } from "./visual-evidence.js";
 export const FLIGHT_RECORD_PROPERTIES = {
+    view: {
+        type: "string",
+        enum: ["record", "evidence"],
+        description: "Full journal (default), or compact vision evidence with omission counts. Image format defaults to evidence view to avoid sending a large journal to the worker.",
+    },
+    frame_format: {
+        type: "string",
+        enum: ["base64", "images"],
+        description: "Return requested JPEGs once as structured base64 (default) or normal MCP image content for a vision worker.",
+    },
+    frame_ids: {
+        type: "array",
+        maxItems: 4,
+        items: { type: "string" },
+        description: "At most four saved frame IDs to retrieve; defaults to the pending assessment and baseline candidates, or recent evidence.",
+    },
     list_jobs: {
         type: "boolean",
         description: "Include the retained job IDs, dispatch times, artifact hashes and outcomes for this printer, so an older job can be selected.",
@@ -54,7 +71,7 @@ export const FLIGHT_RECORD_PROPERTIES = {
         },
     },
 };
-export const FLIGHT_RECORD_DESCRIPTION = "Counterpart contract (counterpart/1): read a bounded persistent per-job flight record from disk, including dispatched SHA-256, selected mapping, timestamped allowlisted printer-report changes, expected selected-plate layer geometry and sampled camera evidence. Survives restart. No printer connection, polling or controls. Firmware FINISH is separate from physical unknown/consistent/suspect_no_growth. Without usable calibrated client measurements physical stays unknown. Missing history is unavailable, never fetched from the printer.";
+export const FLIGHT_RECORD_DESCRIPTION = "Counterpart contract (counterpart/1): read a bounded persistent per-job flight record from disk, including dispatched SHA-256, selected mapping, timestamped allowlisted printer-report changes, expected sliced layer geometry and sampled camera evidence. Survives restart. No printer connection, polling or controls. Firmware FINISH is separate from physical unknown/consistent/suspect_no_growth/suspect_no_extrusion. Inspect pending visual assessment requests with the client worker; clear empty-footprint observations can flag no extrusion without an empty-bed reference. Missing history is unavailable, never fetched from the printer.";
 export const FLIGHT_RECORD_OUTPUT_SCHEMA = {
     type: "object",
     properties: {
@@ -80,6 +97,17 @@ export const FLIGHT_RECORD_OUTPUT_SCHEMA = {
     required: ["contract", "status", "physical"],
 };
 export function flightReadOptions(args = {}) {
+    if (args.view !== undefined &&
+        !["record", "evidence"].includes(args.view))
+        throw Error("view must be record or evidence.");
+    if (args.frame_format !== undefined &&
+        !["base64", "images"].includes(args.frame_format))
+        throw Error("frame_format must be base64 or images.");
+    if (args.frame_ids !== undefined &&
+        (!Array.isArray(args.frame_ids) ||
+            args.frame_ids.length > 4 ||
+            args.frame_ids.some((v) => typeof v !== "string")))
+        throw Error("frame_ids must contain at most four saved frame IDs.");
     if (args.list_jobs !== undefined && typeof args.list_jobs !== "boolean")
         throw Error("list_jobs must be boolean.");
     if (args.job_id !== undefined && typeof args.job_id !== "string")
@@ -100,27 +128,105 @@ export function flightReadOptions(args = {}) {
         typeof v.method !== "string"))
         throw Error("Invalid frame measurement.");
     return {
+        evidenceOnly: args.view === "evidence" ||
+            (args.frame_format === "images" && args.view !== "record"),
+        frameIds: args.frame_ids,
         jobId: args.job_id,
         listJobs: args.list_jobs,
-        includeFrames: args.include_frames,
+        includeFrames: args.frame_format === "images"
+            ? true
+            : args.include_frames,
         measurements: measurements,
     };
 }
-/** Keep saved JPEG bytes only in structuredContent, like the existing camera_frame tool. */
-export function flightRecordResult(view) {
-    const metadata = {
-        ...view,
-        ...(view.record
-            ? {
-                record: {
-                    ...view.record,
-                    frames: view.record.frames.map(({ base64: _image, ...frame }) => frame),
-                },
-            }
-            : {}),
-    };
-    return {
-        content: [{ type: "text", text: JSON.stringify(metadata) }],
-        structuredContent: view,
-    };
+/** Image bytes appear once: normal MCP images for vision, or structuredContent base64. */
+export function flightRecordResult(view, asImages = false) {
+    const metadata = structuredClone(view);
+    const content = [{ type: "text", text: "" }];
+    for (const frame of metadata.record?.frames ?? []) {
+        const bytes = frame.base64;
+        delete frame.base64;
+        if (asImages && bytes) {
+            frame.imageContentIndex = content.length;
+            content.push({ type: "image", data: bytes, mimeType: "image/jpeg" });
+        }
+    }
+    content[0] = { type: "text", text: JSON.stringify(metadata) };
+    return { content, structuredContent: asImages ? metadata : view };
+}
+export const PRINT_EVIDENCE_GUIDANCE = " When monitoring a print, firmware layer counters do not verify deposition. Follow physical.assessment requests at the first layer and later checkpoints: fetch counterpart_print_record with frame_format images, inspect the expected footprint with the client vision worker, then submit counterpart_print_assess. A clear empty footprint after attempted printing is suspect_no_extrusion; no baseline is required for that direct observation. Dark/occluded/unlocatable views are unknown. Never announce a first layer is down from counters alone. Do not stop or pause automatically.";
+export const FLIGHT_ASSESS_DESCRIPTION = "Counterpart contract (counterpart/1): save a client vision worker observation against an exact saved job/artifact/frame hash. Local evidence only; no camera request, model call or printer controls. Clear visible empty expected footprint after attempted deposition reports suspect_no_extrusion, even without a usable baseline. Dark/occluded/unknown stays unknown; visible material does not verify success. Persists across restart; repeat observations are idempotent.";
+export const FLIGHT_ASSESS_PROPERTIES = {
+    job_id: {
+        type: "string",
+        description: "Saved job UUID returned by counterpart_print_record.",
+    },
+    artifact_sha256: {
+        type: "string",
+        description: "Exact dispatch SHA-256 returned in this job record.",
+    },
+    frame_id: {
+        type: "string",
+        description: "Saved printing frame ID that the client visually assessed.",
+    },
+    image_sha256: {
+        type: "string",
+        description: "Saved JPEG SHA-256 for that exact frame.",
+    },
+    visibility: {
+        type: "string",
+        enum: [...VISIBILITIES],
+        description: "Client visual judgement of illumination and occlusion in the expected deposition region.",
+    },
+    footprint_visible: {
+        type: "boolean",
+        description: "The client can locate sufficient expected deposition footprint from the sliced geometry to judge whether material is present.",
+    },
+    deposition: {
+        type: "string",
+        enum: ["absent", "present", "unknown"],
+        description: "Client visual observation in that footprint; absent means clearly empty, not merely an unchanged image.",
+    },
+    attempted: {
+        type: "boolean",
+        description: "The client establishes this image follows attempted object deposition. False or uncertain stays unknown; counters alone do not establish physical success.",
+    },
+    reference_frame_id: {
+        type: "string",
+        description: "Optional saved preparation-frame ID used as additional empty-bed context.",
+    },
+    reference_visibility: {
+        type: "string",
+        enum: [...VISIBILITIES],
+        description: "Visibility of the expected footprint in the optional reference.",
+    },
+    reference_empty: {
+        type: "boolean",
+        description: "True only if the client visually confirmed the reference footprint is empty.",
+    },
+};
+export const FLIGHT_ASSESS_REQUIRED = [
+    "job_id",
+    "artifact_sha256",
+    "frame_id",
+    "image_sha256",
+    "visibility",
+    "footprint_visible",
+    "deposition",
+    "attempted",
+];
+export function visualSubmission(args = {}) {
+    return validateVisualSubmission({
+        jobId: args.job_id,
+        artifactSha256: args.artifact_sha256,
+        frameId: args.frame_id,
+        imageSha256: args.image_sha256,
+        visibility: args.visibility,
+        footprintVisible: args.footprint_visible,
+        deposition: args.deposition,
+        attempted: args.attempted,
+        referenceFrameId: args.reference_frame_id,
+        referenceVisibility: args.reference_visibility,
+        referenceEmpty: args.reference_empty,
+    });
 }

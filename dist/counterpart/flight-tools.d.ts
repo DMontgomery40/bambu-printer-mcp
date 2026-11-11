@@ -1,5 +1,23 @@
 import type { ReadRecordOptions } from "./flight-record.js";
 export declare const FLIGHT_RECORD_PROPERTIES: {
+    readonly view: {
+        readonly type: "string";
+        readonly enum: readonly ["record", "evidence"];
+        readonly description: "Full journal (default), or compact vision evidence with omission counts. Image format defaults to evidence view to avoid sending a large journal to the worker.";
+    };
+    readonly frame_format: {
+        readonly type: "string";
+        readonly enum: readonly ["base64", "images"];
+        readonly description: "Return requested JPEGs once as structured base64 (default) or normal MCP image content for a vision worker.";
+    };
+    readonly frame_ids: {
+        readonly type: "array";
+        readonly maxItems: 4;
+        readonly items: {
+            readonly type: "string";
+        };
+        readonly description: "At most four saved frame IDs to retrieve; defaults to the pending assessment and baseline candidates, or recent evidence.";
+    };
     readonly list_jobs: {
         readonly type: "boolean";
         readonly description: "Include the retained job IDs, dispatch times, artifact hashes and outcomes for this printer, so an older job can be selected.";
@@ -48,7 +66,7 @@ export declare const FLIGHT_RECORD_PROPERTIES: {
         };
     };
 };
-export declare const FLIGHT_RECORD_DESCRIPTION = "Counterpart contract (counterpart/1): read a bounded persistent per-job flight record from disk, including dispatched SHA-256, selected mapping, timestamped allowlisted printer-report changes, expected selected-plate layer geometry and sampled camera evidence. Survives restart. No printer connection, polling or controls. Firmware FINISH is separate from physical unknown/consistent/suspect_no_growth. Without usable calibrated client measurements physical stays unknown. Missing history is unavailable, never fetched from the printer.";
+export declare const FLIGHT_RECORD_DESCRIPTION = "Counterpart contract (counterpart/1): read a bounded persistent per-job flight record from disk, including dispatched SHA-256, selected mapping, timestamped allowlisted printer-report changes, expected sliced layer geometry and sampled camera evidence. Survives restart. No printer connection, polling or controls. Firmware FINISH is separate from physical unknown/consistent/suspect_no_growth/suspect_no_extrusion. Inspect pending visual assessment requests with the client worker; clear empty-footprint observations can flag no extrusion without an empty-bed reference. Missing history is unavailable, never fetched from the printer.";
 export declare const FLIGHT_RECORD_OUTPUT_SCHEMA: {
     type: "object";
     properties: {
@@ -93,6 +111,10 @@ export declare const FLIGHT_RECORD_OUTPUT_SCHEMA: {
                     type: string;
                     enum: string[];
                 };
+                assessment: {
+                    type: string;
+                    additionalProperties: boolean;
+                };
                 evidence: {
                     type: string;
                     items: {
@@ -112,18 +134,76 @@ export declare const FLIGHT_RECORD_OUTPUT_SCHEMA: {
     required: string[];
 };
 export declare function flightReadOptions(args?: Record<string, unknown>): ReadRecordOptions;
-/** Keep saved JPEG bytes only in structuredContent, like the existing camera_frame tool. */
+/** Image bytes appear once: normal MCP images for vision, or structuredContent base64. */
 export declare function flightRecordResult<T extends {
     contract: string;
     record?: {
         frames: Array<{
             base64?: string;
+            imageContentIndex?: number;
         }>;
     };
-}>(view: T): {
-    content: {
+}>(view: T, asImages?: boolean): {
+    content: ({
         type: "text";
         text: string;
-    }[];
+    } | {
+        type: "image";
+        data: string;
+        mimeType: string;
+    })[];
     structuredContent: T;
 };
+export declare const PRINT_EVIDENCE_GUIDANCE = " When monitoring a print, firmware layer counters do not verify deposition. Follow physical.assessment requests at the first layer and later checkpoints: fetch counterpart_print_record with frame_format images, inspect the expected footprint with the client vision worker, then submit counterpart_print_assess. A clear empty footprint after attempted printing is suspect_no_extrusion; no baseline is required for that direct observation. Dark/occluded/unlocatable views are unknown. Never announce a first layer is down from counters alone. Do not stop or pause automatically.";
+export declare const FLIGHT_ASSESS_DESCRIPTION = "Counterpart contract (counterpart/1): save a client vision worker observation against an exact saved job/artifact/frame hash. Local evidence only; no camera request, model call or printer controls. Clear visible empty expected footprint after attempted deposition reports suspect_no_extrusion, even without a usable baseline. Dark/occluded/unknown stays unknown; visible material does not verify success. Persists across restart; repeat observations are idempotent.";
+export declare const FLIGHT_ASSESS_PROPERTIES: {
+    job_id: {
+        type: string;
+        description: string;
+    };
+    artifact_sha256: {
+        type: string;
+        description: string;
+    };
+    frame_id: {
+        type: string;
+        description: string;
+    };
+    image_sha256: {
+        type: string;
+        description: string;
+    };
+    visibility: {
+        type: string;
+        enum: ("dark" | "clear" | "unknown" | "occluded" | "out_of_view")[];
+        description: string;
+    };
+    footprint_visible: {
+        type: string;
+        description: string;
+    };
+    deposition: {
+        type: string;
+        enum: string[];
+        description: string;
+    };
+    attempted: {
+        type: string;
+        description: string;
+    };
+    reference_frame_id: {
+        type: string;
+        description: string;
+    };
+    reference_visibility: {
+        type: string;
+        enum: ("dark" | "clear" | "unknown" | "occluded" | "out_of_view")[];
+        description: string;
+    };
+    reference_empty: {
+        type: string;
+        description: string;
+    };
+};
+export declare const FLIGHT_ASSESS_REQUIRED: string[];
+export declare function visualSubmission(args?: Record<string, unknown>): import("./visual-evidence.js").VisualSubmission;

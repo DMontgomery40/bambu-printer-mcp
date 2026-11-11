@@ -1,5 +1,5 @@
 import { FlightRecords, flightKey } from "../counterpart/flight-record.js";
-import { geometryFromGcode } from "../counterpart/print-geometry.js";
+import { geometryFromGcode, geometryFromFile } from "../counterpart/print-geometry.js";
 import { PrinterRefusal, markPrintCommandSent } from "../refusal.js";
 import { CameraStreams } from "./camera-stream.js";
 import { openTcpCameraSource, openRtspCameraSource } from "./camera-sources.js";
@@ -609,6 +609,9 @@ export async function checkedFile(inspection, filePath) {
             if (bytes.length <= 64 * 1024 * 1024)
                 expected = geometryFromGcode(bytes.toString("utf8"));
         }
+    }
+    else if (!/\.3mf$/i.test(filePath)) {
+        expected = await geometryFromFile(filePath);
     }
     return {
         sha256: inspection.sha256, ...(plate ? { plate } : {}), ...(expected ? { expected } : {}), model: inspection.model,

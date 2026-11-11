@@ -14,7 +14,9 @@ export function assessPhysical(frames, measurements = []) {
     const seen = new Set();
     const usable = [];
     for (const measurement of measurements) {
-        const frame = frames.find((f) => f.id === measurement.frameId && f.status === "captured");
+        const frame = frames.find((f) => f.id === measurement.frameId &&
+            f.status === "captured" &&
+            f.role !== "baseline");
         if (!frame ||
             seen.has(frame.id) ||
             !measurement.visible ||
@@ -79,8 +81,14 @@ export const PHYSICAL_EVIDENCE_SCHEMA = {
     properties: {
         status: {
             type: "string",
-            enum: ["unknown", "consistent", "suspect_no_growth"],
+            enum: [
+                "unknown",
+                "consistent",
+                "suspect_no_growth",
+                "suspect_no_extrusion",
+            ],
         },
+        assessment: { type: "object", additionalProperties: true },
         evidence: { type: "array", items: { type: "string" } },
         limitations: { type: "array", items: { type: "string" } },
     },
