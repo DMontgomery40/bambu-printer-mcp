@@ -1,5 +1,9 @@
 import type { ReadRecordOptions } from "./flight-record.js";
 export declare const FLIGHT_RECORD_PROPERTIES: {
+    readonly list_jobs: {
+        readonly type: "boolean";
+        readonly description: "Include the retained job IDs, dispatch times, artifact hashes and outcomes for this printer, so an older job can be selected.";
+    };
     readonly job_id: {
         readonly type: "string";
         readonly description: "Saved record UUID; omit for the latest dispatched job on this printer.";
@@ -60,6 +64,28 @@ export declare const FLIGHT_RECORD_OUTPUT_SCHEMA: {
             type: string;
             additionalProperties: boolean;
         };
+        jobs: {
+            type: string;
+            maxItems: number;
+            items: {
+                type: string;
+                properties: {
+                    id: {
+                        type: string;
+                    };
+                    dispatchedAt: {
+                        type: string;
+                    };
+                    sha256: {
+                        type: string;
+                    };
+                    outcome: {
+                        type: string;
+                    };
+                };
+                required: string[];
+            };
+        };
         physical: {
             type: string;
             properties: {
@@ -86,3 +112,18 @@ export declare const FLIGHT_RECORD_OUTPUT_SCHEMA: {
     required: string[];
 };
 export declare function flightReadOptions(args?: Record<string, unknown>): ReadRecordOptions;
+/** Keep saved JPEG bytes only in structuredContent, like the existing camera_frame tool. */
+export declare function flightRecordResult<T extends {
+    contract: string;
+    record?: {
+        frames: Array<{
+            base64?: string;
+        }>;
+    };
+}>(view: T): {
+    content: {
+        type: "text";
+        text: string;
+    }[];
+    structuredContent: T;
+};

@@ -855,12 +855,20 @@ export class BambuImplementation {
    * verified: a resume then re-reads it if it can and otherwise matches the
    * unique name, as KAN-216 does for firmware that cannot download a file.
    */
+  /** At the existing send-authorization boundary: record evidence even if the reply/helper is lost. */
+  recordFlightDispatch(host:string,serial:string,remotePath:string,requirements:PrinterStateRequirements,file:CheckedFile):void {
+    this.flightRecords.begin(flightKey(host,serial),{sha256:file.sha256,jobName:remotePath,mapping:requirements.amsMapping,materials:file.materials,plate:file.plate,expected:file.expected});
+  }
+
   recordCheckedJob(host: string, serial: string, remotePath: string, requirements: PrinterStateRequirements, file: CheckedFile, uploadedHere = true): void {
     if (!/^[a-f0-9]{64}$/.test(file?.sha256 ?? "")) throw new Error("A started job needs the SHA-256 of its inspected bytes.");
     this.checkedJobs.set(`${host}\n${serial}`, {
       ...structuredClone(file), remotePath, requirements: structuredClone(requirements), seenRunning: false, uploadedHere,
     });
-    this.flightRecords.begin(flightKey(host, serial), {sha256:file.sha256,jobName:remotePath,mapping:requirements.amsMapping,materials:file.materials,plate:file.plate,expected:file.expected});
+    if(!this.flightRecords.accept(flightKey(host,serial),remotePath)){
+      this.recordFlightDispatch(host,serial,remotePath,requirements,file);
+      this.flightRecords.accept(flightKey(host,serial),remotePath);
+    }
     this.clearedErrors.delete(serial);
   }
 
@@ -1284,6 +1292,7 @@ export class BambuImplementation {
     assertActive();
     if (legacyContainer) {
       const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
+      this.recordFlightDispatch(host,serial,remoteProjectPath,requirements,resumeFile);
       markPrintCommandSent();
       try { await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath })); } catch (error) { watcher.dispose(); throw error; }
       this.recordCheckedJob(host, serial, remoteProjectPath, requirements, resumeFile);
@@ -1366,6 +1375,7 @@ export class BambuImplementation {
     }
 
     const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
+    this.recordFlightDispatch(host,serial,remoteProjectPath,requirements,resumeFile);
     markPrintCommandSent();
     try { await printer.publish(projectFileCmd); } catch (error) { watcher.dispose(); throw error; }
     this.recordCheckedJob(host, serial, remoteProjectPath, requirements, resumeFile);
@@ -2027,6 +2037,7 @@ export class BambuImplementation {
     const printer = await this.getPrinter(host, serial, token);
     assertActive();
     const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
+    this.recordFlightDispatch(host,serial,remotePath,requirements,resumeFile);
     markPrintCommandSent();
     try { await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remotePath })); } catch (error) { watcher.dispose(); throw error; }
     this.recordCheckedJob(host, serial, remotePath, requirements, resumeFile);

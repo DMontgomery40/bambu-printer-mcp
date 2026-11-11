@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import {flightKey} from "./counterpart/flight-record.js";
-import {FLIGHT_RECORD_PROPERTIES,FLIGHT_RECORD_DESCRIPTION,FLIGHT_RECORD_OUTPUT_SCHEMA,flightReadOptions} from "./counterpart/flight-tools.js";
+import {FLIGHT_RECORD_PROPERTIES,FLIGHT_RECORD_DESCRIPTION,FLIGHT_RECORD_OUTPUT_SCHEMA,flightReadOptions,flightRecordResult} from "./counterpart/flight-tools.js";
 import {CAMERA_STREAM_TOOLS} from "./printers/camera-tools.js";
 import { withAnnotations } from "./tool-annotations.js";
 import { withRemote } from "./counterpart/remote.js";
@@ -1959,6 +1959,7 @@ class BambuPrinterMCPServer {
             throw new Error("The printer's SD card or USB stick is no longer ready. Check it and start the print again.");
           }
           assertActive();
+          this.bambu.recordFlightDispatch(devIp,devId,remoteFileName,requirements,resumeFile);
           markPrintCommandSent();
         } });
         assertActive();
@@ -1974,7 +1975,7 @@ class BambuPrinterMCPServer {
           validatePrinterState(dispatchStatus, requirements);
           this.bambu.assertPrintPreflight(dispatchStatus, preflight);
         },
-        assertDispatchAllowed: method => { if (method === bridgeMethod || method === cloudFallbackMethod) { assertActive(); markPrintCommandSent(); } },
+        assertDispatchAllowed: method => { if (method === bridgeMethod || method === cloudFallbackMethod) { assertActive(); this.bambu.recordFlightDispatch(devIp,devId,remoteFileName,requirements,resumeFile); markPrintCommandSent(); } },
         onDispatched: method => { if (method === bridgeMethod || method === cloudFallbackMethod) retainForDispatchedUpload(); },
       };
       let jobUpdates: BridgeJobUpdate[] = [];
@@ -5106,8 +5107,7 @@ class BambuPrinterMCPServer {
           }
 
           case "counterpart_print_record":
-            result = this.bambu.flightRecords.read(flightKey(host,bambuSerial),flightReadOptions(args));
-            break;
+            return flightRecordResult(this.bambu.flightRecords.read(flightKey(host,bambuSerial),flightReadOptions(args)));
 
           case "counterpart_print_progress": {
             const report = await this.bambu.readProgressReport(host, bambuSerial, bambuToken);

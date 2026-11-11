@@ -1,6 +1,7 @@
 export function geometryFromGcode(gcode) {
     const layers = [];
     let z, layer;
+    let markerCount = 0, currentIndex = 0, previousMarkerZ;
     let x = 0, y = 0, e = 0, relative = false, executableEnded = false;
     for (const line of gcode.split(/\r?\n/)) {
         if (line === "; EXECUTABLE_BLOCK_END")
@@ -10,10 +11,17 @@ export function geometryFromGcode(gcode) {
         const marker = /^;\s*(?:Z_HEIGHT:|Z:)\s*([\d.]+)/.exec(line);
         if (marker) {
             z = Number(marker[1]);
+            if (z !== previousMarkerZ)
+                markerCount++;
+            previousMarkerZ = z;
+            currentIndex = markerCount;
             layer = undefined;
             if (!Number.isFinite(z) || z <= 0 || z > 10000)
                 z = undefined;
         }
+        const declared = /^;\s*layer num\/total_layer_count:\s*(\d+)\/\d+/.exec(line);
+        if (declared)
+            currentIndex = Number(declared[1]);
         if (/^M83(?:\s|$)/.test(line))
             relative = true;
         if (/^M82(?:\s|$)/.test(line))
@@ -40,7 +48,7 @@ export function geometryFromGcode(gcode) {
                 layer =
                     layers.at(-1)?.zMm === z
                         ? layers.at(-1)
-                        : { layer: layers.length + 1, zMm: z };
+                        : { layer: currentIndex, zMm: z };
                 if (layer && layers.at(-1) !== layer)
                     layers.push(layer);
                 if (layers.length > 10000)

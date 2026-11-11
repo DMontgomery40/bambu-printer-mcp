@@ -141,13 +141,57 @@ test("public counterpart_print_record retrieves a persisted record without any n
   assert.equal(tool.annotations.openWorldHint, false);
   const response = await client.callTool({
     name: "counterpart_print_record",
-    arguments: {},
+    arguments: { list_jobs: true },
   });
   assert.equal(response.isError, undefined, JSON.stringify(response));
   assert.equal(response.structuredContent.record.dispatch.sha256, hash);
   assert.equal(response.structuredContent.physical.status, "unknown");
+  assert.equal(response.structuredContent.jobs.length, 1);
+  assert.equal(response.structuredContent.jobs[0].sha256, hash);
   assert.equal(
     fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim() : "",
     "",
   );
+});
+
+test("dispatch authorization keeps durable hash/mapping if the transport response is lost; acceptance reuses the record", (t) => {
+  const dir = fixture(t),
+    bambu = new BambuImplementation();
+  Object.defineProperty(bambu, "flightRecords", {
+    value: new FlightRecords({ dir }),
+  });
+  const requirements = {
+    model: "p1s",
+    nozzleDiameters: [0.4],
+    materials: ["PLA"],
+    useAMS: true,
+    amsMapping: [0],
+  };
+  bambu.recordFlightDispatch(
+    "fixture",
+    "01PFIXTURE",
+    "checked-lost.3mf",
+    requirements,
+    file,
+  );
+  const pending = new FlightRecords({ dir }).read(
+    flightKey("fixture", "01PFIXTURE"),
+  );
+  assert.equal(pending.record.dispatch.sha256, hash);
+  assert.equal(pending.record.dispatch.outcome, "unconfirmed");
+  bambu.observeReport("fixture", "01PFIXTURE", {
+    subtask_name: "checked-lost",
+    gcode_state: "RUNNING",
+    layer_num: 1,
+  });
+  bambu.recordCheckedJob(
+    "fixture",
+    "01PFIXTURE",
+    "checked-lost.3mf",
+    requirements,
+    file,
+  );
+  const accepted = bambu.flightRecords.read(flightKey("fixture", "01PFIXTURE"));
+  assert.equal(accepted.record.id, pending.record.id);
+  assert.equal(accepted.record.reports.length, 1);
 });

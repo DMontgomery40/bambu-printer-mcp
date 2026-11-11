@@ -17,9 +17,19 @@ const num = (v) => typeof v === "number" && Number.isFinite(v)
         ? Number(v)
         : null;
 const token = (v) => typeof v === "string" && /^[a-zA-Z0-9 _.-]{1,48}$/.test(v) ? v : null;
+const diagnosticScalar = (value) => {
+    if (typeof value === "number")
+        return Number.isFinite(value) ? value : null;
+    if (typeof value === "boolean")
+        return value;
+    return typeof value === "string" &&
+        /^(?:-?\d+(?:\.\d+)?|(?:0x)?[a-f\d]{1,16})$/i.test(value)
+        ? value
+        : null;
+};
 const fields = (source, keys) => Object.fromEntries(keys
     .filter((k) => source?.[k] !== undefined)
-    .map((k) => [k, num(source[k])]));
+    .map((k) => [k, diagnosticScalar(source[k])]));
 function tray(value) {
     return {
         ...fields(value, [
@@ -62,7 +72,14 @@ export function flightSnapshot(raw) {
     if (raw.observation_source === "adapter-progress")
         snapshot.observation_source = "adapter-progress";
     if (Array.isArray(raw.adapter_problems))
-        snapshot.adapter_problems = raw.adapter_problems.slice(0, 32).map((p) => ({ code: token(p?.code), severity: ["fatal", "error", "warning", "info"].includes(p?.severity) ? p.severity : null }));
+        snapshot.adapter_problems = raw.adapter_problems
+            .slice(0, 32)
+            .map((p) => ({
+            code: token(p?.code),
+            severity: ["fatal", "error", "warning", "info"].includes(p?.severity)
+                ? p.severity
+                : null,
+        }));
     if (Array.isArray(raw.hms))
         snapshot.hms = raw.hms
             .slice(0, 32)
@@ -111,6 +128,7 @@ export class FlightRecords {
         this.cache = new Map();
         this.pending = new Map();
         this.warned = false;
+        this.ownerToken = randomUUID();
         this.dir =
             options.dir ??
                 process.env.COUNTERPART_RECORD_DIR ??
@@ -126,15 +144,19 @@ export class FlightRecords {
     begin(key, input) {
         if (!/^[a-f\d]{64}$/.test(input.sha256))
             throw Error("A print record requires an inspected artifact SHA-256.");
-        const printerKey = hash(key), id = randomUUID();
+        const printerKey = hash(key);
+        const id = randomUUID();
         const record = {
             version: 1,
+            seenActive: false,
+            owner: { pid: process.pid, token: this.ownerToken },
             id,
             printerKey,
             dispatchedAt: new Date(this.now()).toISOString(),
             dispatch: {
                 sha256: input.sha256,
                 jobHash: hash(stem(input.jobName)),
+                outcome: "unconfirmed",
                 ...(input.mapping
                     ? {
                         mapping: input.mapping
@@ -167,14 +189,29 @@ export class FlightRecords {
         this.prune();
         return id;
     }
+    accept(key, jobName) {
+        const record = this.get(key);
+        if (!record ||
+            record.dispatch.jobHash !== hash(stem(jobName)) ||
+            !this.canWrite(record))
+            return false;
+        if (!record.seenActive)
+            record.dispatch.outcome = "accepted";
+        record.dispatch.acceptedAt = new Date(this.now()).toISOString();
+        this.save(record);
+        return true;
+    }
     observe(key, raw, at = this.now()) {
         const record = this.get(key);
-        if (!record || !Number.isFinite(at) || at < Date.parse(record.dispatchedAt))
+        if (!record ||
+            !this.canWrite(record) ||
+            !Number.isFinite(at) ||
+            at < Date.parse(record.dispatchedAt))
             return;
         const names = [raw.subtask_name, raw.gcode_file].filter((n) => typeof n === "string" && !!n);
         if (!names.some((n) => hash(stem(n)) === record.dispatch.jobHash))
             return;
-        if (["FINISH", "FAILED", "IDLE"].includes(String(record.latest.gcode_state)))
+        if (record.endedAt)
             return;
         const previousAt = record.reports[record.reports.length - 1]?.at;
         if (previousAt && at < Date.parse(previousAt))
@@ -183,6 +220,13 @@ export class FlightRecords {
         const changes = Object.fromEntries(Object.entries(snapshot).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(record.latest[k])));
         if (!Object.keys(changes).length)
             return;
+        const state = String(snapshot.gcode_state);
+        if (["PREPARE", "SLICING", "RUNNING", "PAUSE"].includes(state)) {
+            record.seenActive = true;
+            record.dispatch.outcome = "observed-active";
+        }
+        if (record.seenActive && ["FINISH", "FAILED", "IDLE"].includes(state))
+            record.endedAt = new Date(at).toISOString();
         record.latest = { ...record.latest, ...changes };
         record.reports.push({
             seq: record.nextSeq++,
@@ -199,14 +243,17 @@ export class FlightRecords {
         if (options.jobId &&
             !/^[a-f\d]{8}(-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(options.jobId))
             throw Error("Invalid print record ID.");
+        const jobs = options.listJobs ? this.jobSummaries(key) : undefined;
         const record = this.get(key, options.jobId);
         if (!record)
             return {
                 contract: "counterpart/1",
                 status: "unavailable",
+                ...(jobs ? { jobs } : {}),
                 physical: assessPhysical([]),
             };
         const result = structuredClone(record);
+        delete result.owner;
         for (const frame of result.frames) {
             if (frame.status !== "captured")
                 continue;
@@ -229,6 +276,7 @@ export class FlightRecords {
         return {
             contract: "counterpart/1",
             status: "recorded",
+            ...(jobs ? { jobs } : {}),
             record: result,
             physical: assessPhysical(result.frames, options.measurements),
         };
@@ -237,6 +285,7 @@ export class FlightRecords {
     async sample(key, capture) {
         const record = this.get(key), layer = num(record?.latest.layer_num);
         if (!record ||
+            !this.canWrite(record) ||
             record.latest.gcode_state !== "RUNNING" ||
             !layer ||
             !record.expected?.heightMm ||
@@ -284,8 +333,11 @@ export class FlightRecords {
                     capturedAt > this.now() + 1000)
                     throw Error("stale-frame");
                 frame.capturedAt = new Date(capturedAt).toISOString();
-                if (this.get(key)?.id !== record.id)
-                    throw Error("job-changed");
+                const current = this.get(key);
+                if (current?.id !== record.id ||
+                    current.latest.gcode_state !== "RUNNING" ||
+                    num(current.latest.layer_num) !== layer)
+                    throw Error("job-or-layer-changed");
                 if (!result.base64 ||
                     result.base64.length > Math.ceil((512 * 1024 * 4) / 3) + 4)
                     throw Error("frame-unavailable");
@@ -312,6 +364,43 @@ export class FlightRecords {
         this.pending.set(record.printerKey, work);
         await work;
     }
+    /** One process writes a dispatched job; fresh observations can take over after its process exits. */
+    canWrite(record) {
+        if (record.owner?.token === this.ownerToken)
+            return true;
+        if (record.owner) {
+            try {
+                process.kill(record.owner.pid, 0);
+                return false;
+            }
+            catch (error) {
+                if (error.code !== "ESRCH")
+                    return false;
+            }
+        }
+        record.owner = { pid: process.pid, token: this.ownerToken };
+        return true;
+    }
+    jobSummaries(key) {
+        const prefix = hash(key) + "-";
+        return this.files()
+            .filter((name) => name.startsWith(prefix))
+            .flatMap((name) => {
+            const record = this.get(key, name.slice(prefix.length, -5));
+            return record
+                ? [
+                    {
+                        id: record.id,
+                        dispatchedAt: record.dispatchedAt,
+                        sha256: record.dispatch.sha256,
+                        outcome: record.dispatch.outcome,
+                    },
+                ]
+                : [];
+        })
+            .sort((a, b) => b.dispatchedAt.localeCompare(a.dispatchedAt))
+            .slice(0, this.maxJobs);
+    }
     file(record) {
         return path.join(this.dir, `${record.printerKey}-${record.id}.json`);
     }
@@ -330,7 +419,13 @@ export class FlightRecords {
     }
     get(key, id) {
         const printerKey = hash(key), cached = this.cache.get(printerKey);
-        if (cached && (!id || cached.id === id))
+        if (cached &&
+            cached.storage === "durable" &&
+            !fs.existsSync(this.file(cached)))
+            this.cache.delete(printerKey);
+        else if (cached &&
+            cached.owner?.token === this.ownerToken &&
+            (!id || cached.id === id))
             return cached;
         let latest;
         for (const name of this.files().filter((f) => f.startsWith(printerKey + "-") &&
@@ -389,6 +484,12 @@ export class FlightRecords {
         }
     }
     prune() {
+        while (this.cache.size > this.maxJobs) {
+            const oldest = this.cache.keys().next().value;
+            if (oldest === undefined)
+                break;
+            this.cache.delete(oldest);
+        }
         try {
             const files = this.files()
                 .map((name) => ({
@@ -397,15 +498,20 @@ export class FlightRecords {
             }))
                 .sort((a, b) => b.time - a.time);
             for (const { name } of files.slice(this.maxJobs)) {
-                const saved = JSON.parse(fs.readFileSync(path.join(this.dir, name), "utf8"));
+                // Retention must not depend on parsing an older, possibly corrupt record.
+                const prefix = name.slice(0, -5);
                 fs.unlinkSync(path.join(this.dir, name));
-                for (const frame of saved.frames ?? [])
+                for (const file of fs
+                    .readdirSync(this.dir)
+                    .filter((file) => file.startsWith(prefix + "-") && /^[a-f\d-]+\.jpg$/.test(file))) {
                     try {
-                        fs.unlinkSync(this.frameFile(saved, frame.id));
+                        fs.unlinkSync(path.join(this.dir, file));
                     }
                     catch { }
-                if (this.cache.get(saved.printerKey)?.id === saved.id)
-                    this.cache.delete(saved.printerKey);
+                }
+                const printerKey = name.slice(0, 64), id = name.slice(65, -5);
+                if (this.cache.get(printerKey)?.id === id)
+                    this.cache.delete(printerKey);
             }
         }
         catch {

@@ -17,9 +17,17 @@ export interface FlightDispatch {
 }
 interface StoredDispatch extends Omit<FlightDispatch, "jobName" | "expected"> {
     jobHash: string;
+    outcome: "unconfirmed" | "accepted" | "observed-active";
+    acceptedAt?: string;
 }
 export interface FlightRecord {
     version: 1;
+    seenActive: boolean;
+    owner?: {
+        pid: number;
+        token: string;
+    };
+    endedAt?: string;
     id: string;
     printerKey: string;
     dispatchedAt: string;
@@ -38,6 +46,7 @@ export interface FlightRecord {
     storage: "durable" | "volatile";
 }
 export interface ReadRecordOptions {
+    listJobs?: boolean;
     jobId?: string;
     includeFrames?: boolean;
     measurements?: HeightMeasurement[];
@@ -52,6 +61,7 @@ export declare class FlightRecords {
     private readonly cache;
     private readonly pending;
     private warned;
+    private readonly ownerToken;
     constructor(options?: {
         dir?: string;
         now?: () => number;
@@ -61,23 +71,38 @@ export declare class FlightRecords {
         maxCaptureMs?: number;
     });
     begin(key: string, input: FlightDispatch): string;
+    accept(key: string, jobName: string): boolean;
     observe(key: string, raw: Record<string, any>, at?: number): void;
     read(key: string, options?: ReadRecordOptions): {
+        physical: import("./physical-evidence.js").PhysicalEvidence;
+        jobs?: {
+            id: string;
+            dispatchedAt: string;
+            sha256: string;
+            outcome: "accepted" | "unconfirmed" | "observed-active";
+        }[] | undefined;
         contract: "counterpart/1";
         status: "unavailable";
-        physical: import("./physical-evidence.js").PhysicalEvidence;
-        record?: undefined;
     } | {
-        contract: "counterpart/1";
-        status: "recorded";
         record: FlightRecord;
         physical: import("./physical-evidence.js").PhysicalEvidence;
+        jobs?: {
+            id: string;
+            dispatchedAt: string;
+            sha256: string;
+            outcome: "accepted" | "unconfirmed" | "observed-active";
+        }[] | undefined;
+        contract: "counterpart/1";
+        status: "recorded";
     };
     /** Called only after existing reports/reads, never on a timer; a sample cannot block the print. */
     sample(key: string, capture: () => Promise<{
         base64?: string;
         capturedAt?: string;
     }>): Promise<void>;
+    /** One process writes a dispatched job; fresh observations can take over after its process exits. */
+    private canWrite;
+    private jobSummaries;
     private file;
     private frameFile;
     private files;

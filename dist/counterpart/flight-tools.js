@@ -1,5 +1,9 @@
 import { PHYSICAL_EVIDENCE_SCHEMA } from "./physical-evidence.js";
 export const FLIGHT_RECORD_PROPERTIES = {
+    list_jobs: {
+        type: "boolean",
+        description: "Include the retained job IDs, dispatch times, artifact hashes and outcomes for this printer, so an older job can be selected.",
+    },
     job_id: {
         type: "string",
         description: "Saved record UUID; omit for the latest dispatched job on this printer.",
@@ -57,11 +61,27 @@ export const FLIGHT_RECORD_OUTPUT_SCHEMA = {
         contract: { type: "string", const: "counterpart/1" },
         status: { type: "string", enum: ["recorded", "unavailable"] },
         record: { type: "object", additionalProperties: true },
+        jobs: {
+            type: "array",
+            maxItems: 10,
+            items: {
+                type: "object",
+                properties: {
+                    id: { type: "string" },
+                    dispatchedAt: { type: "string" },
+                    sha256: { type: "string" },
+                    outcome: { type: "string" },
+                },
+                required: ["id", "dispatchedAt", "sha256", "outcome"],
+            },
+        },
         physical: PHYSICAL_EVIDENCE_SCHEMA,
     },
     required: ["contract", "status", "physical"],
 };
 export function flightReadOptions(args = {}) {
+    if (args.list_jobs !== undefined && typeof args.list_jobs !== "boolean")
+        throw Error("list_jobs must be boolean.");
     if (args.job_id !== undefined && typeof args.job_id !== "string")
         throw Error("job_id must be a saved record UUID.");
     if (args.include_frames !== undefined &&
@@ -81,7 +101,26 @@ export function flightReadOptions(args = {}) {
         throw Error("Invalid frame measurement.");
     return {
         jobId: args.job_id,
+        listJobs: args.list_jobs,
         includeFrames: args.include_frames,
         measurements: measurements,
+    };
+}
+/** Keep saved JPEG bytes only in structuredContent, like the existing camera_frame tool. */
+export function flightRecordResult(view) {
+    const metadata = {
+        ...view,
+        ...(view.record
+            ? {
+                record: {
+                    ...view.record,
+                    frames: view.record.frames.map(({ base64: _image, ...frame }) => frame),
+                },
+            }
+            : {}),
+    };
+    return {
+        content: [{ type: "text", text: JSON.stringify(metadata) }],
+        structuredContent: view,
     };
 }
