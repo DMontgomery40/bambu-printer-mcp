@@ -1630,7 +1630,6 @@ class BambuPrinterMCPServer {
     }
     assertUniformCliNozzles(args);
 
-
     console.error(`3MF has no gcode - auto-slicing with ${slicerType} for ${printModel}`);
     const autoSliceOptions: BambuSliceOptions = {
       ...(slicerType === "orca-slicer-api" ? {} : {
@@ -4738,7 +4737,8 @@ class BambuPrinterMCPServer {
                 bedType: printBedType,
                 nozzleType: resolveNozzleType(args?.nozzle_type),
                 nozzleVolumeType: resolveNozzleVolumeType(args?.nozzle_volume_type),
-                ...(pauseLayers ? { pauseAtLayers: pauseLayers } : {}),
+                // A pause belongs to the plate being printed; the CLI carries custom G-code for one plate only.
+                ...(pauseLayers ? { pauseAtLayers: pauseLayers, slicePlate: plateIndex + 1 } : {}),
               };
               if (!explicitSlicerProfile) {
                 try {

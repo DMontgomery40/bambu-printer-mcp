@@ -55,7 +55,7 @@ Server.prototype.elicitInput = function (params, options) {
   return elicitInput.call(this, params, options);
 };
 ${realSlice ? '' : `STLManipulator.prototype.sliceSTL = async function (file, _type, _path, _profile, _progress, _preset, options) {
-  log({ action: 'slice', file, ...(options?.nozzleType ? { nozzleType: options.nozzleType } : {}) });
+  log({ action: 'slice', file, ...(options?.nozzleType ? { nozzleType: options.nozzleType } : {}), ...(options?.pauseAtLayers ? { pauseAtLayers: options.pauseAtLayers, slicePlate: options.slicePlate } : {}) });
   ${sliceSucceeds ? `return ${JSON.stringify(slicedOutput)};` : `throw new Error(${JSON.stringify(failure)});`}
 };`}
 BambuImplementation.prototype.ftpUpload = async function (_host, _token, file, remote) { log({ action: 'upload', file, remote, sha256: createHash('sha256').update(fs.readFileSync(file)).digest('hex') }); };
@@ -307,4 +307,13 @@ test('an accepted but unchecked hardware form explains missing confirmation and 
   assert.match(JSON.stringify(result.content),/checkbox|not checked/i);
   assert.doesNotMatch(JSON.stringify(result.content),/elicitation support|unavailable/i);
   assert.deepEqual(server.events().filter(event=>['upload','publish'].includes(event.action)),[]);
+});
+
+test("print_3mf slices a requested pause on the plate being printed", async (t) => {
+  // The CLI carries custom G-code for one plate only (Bambu Studio 02.08.02.61 BambuStudio.cpp:2224-2233),
+  // and a multi-plate project refuses pauses without one, so the chosen plate goes with the pause.
+  const server = await start(t, { sliceSucceeds: true });
+  await server.print(await server.makeProject("unsliced.3mf"), { plate_index: 1, pause_at_layers: [3] });
+  const slice = server.events().find(event => event.action === "slice");
+  assert.deepEqual([slice?.pauseAtLayers, slice?.slicePlate], [[3], 2]);
 });
