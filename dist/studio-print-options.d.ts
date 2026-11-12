@@ -55,3 +55,12 @@ export declare function usedNozzleCount(inspection: {
     usedFilamentPositions: number[];
     filamentNozzleIndices?: Array<number | undefined>;
 }): number | undefined;
+/** Report only verified direct-wire fields. A task boolean is not an SDK mode.
+ * null means this route does not transmit that option, not off/auto/unknown hardware state. */
+export declare function directPrintOptionReport(caller: CallerPrintOptions, resolved: StudioPrintOptions, packet: Record<string, unknown>): {
+    warning?: string | undefined;
+    requested: CallerPrintOptions;
+    resolved: StudioPrintOptions;
+    transmitted: Record<string, number | boolean | null>;
+    unsupported: string[];
+};
