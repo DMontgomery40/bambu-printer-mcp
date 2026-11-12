@@ -107,6 +107,8 @@ export function packageMcpb({ root = ROOT, outputPath = path.join(root, "bambu-p
     // The normal postinstall applies patches; developer node_modules is untouched.
     runNpm(["ci", "--omit=dev", "--no-audit", "--no-fund"], staging);
     installCameraRuntimes(staging);
+    // mcpb excludes declarations by default; the pinned patch and self-check need this patched file too.
+    fs.writeFileSync(path.join(staging, ".mcpbignore"), "!node_modules/bambu-node/dist/index.d.ts\n");
     const cli = ["exec", "--yes", `--package=@anthropic-ai/mcpb@${MCPB_VERSION}`, "--", "mcpb"];
     runNpm([...cli, "validate", "manifest.json"], staging);
     runNpm([...cli, "pack", ".", outputPath], staging);

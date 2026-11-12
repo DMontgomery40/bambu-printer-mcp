@@ -102,6 +102,9 @@ test("MCPB archive preserves runtime and licenses without local secrets or pruni
     await client.connect(transport);
     assert.equal(client.getServerVersion()?.name, "bambu-printer-mcp");
     assert.ok((await client.listTools()).tools.some((tool) => tool.name === "print_3mf"));
+    const self = await client.callTool({ name: "counterpart_self_check", arguments: {} });
+    assert.notEqual(self.isError, true, JSON.stringify(self));
+    assert.equal(self.structuredContent?.ok, true, JSON.stringify(self.structuredContent));
     assert.equal(fs.existsSync(path.join(launchDirectory, "temp")), false, "extension startup must not create a cwd-relative temp directory");
   } finally {
     await client.close();

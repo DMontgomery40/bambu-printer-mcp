@@ -57,6 +57,7 @@ import { DESIGN_PROMPTS, FDM_CAPABILITY_GUIDANCE, FDM_CAPABILITY_RESOURCE, FDM_C
 import { bambuProgress, offlineProgress } from "./counterpart/progress.js";
 import { makeCounterpart3mf } from "./counterpart/make-3mf.js";
 import { MAKE_3MF_OUTPUT_SCHEMA, PRINT_PROGRESS_OUTPUT_SCHEMA, PRINTER_INFO_OUTPUT_SCHEMA } from "./counterpart/schemas.js";
+import { SELF_CHECK_OUTPUT_SCHEMA, selfCheck } from "./counterpart/self-check.js";
 import { parseProcessOverrides } from "./slicer/process-overrides.js";
 import { PRINT_QUALITY_PROPERTIES, withPrintQuality } from "./slicer/print-quality.js";
 import { PrinterRefusal, withPrintDispatch, markPrintCommandSent, printOutcome } from "./refusal.js";
@@ -125,7 +126,7 @@ const SERVER_INFO = {
 /** Tools that declare an outputSchema: they always return structuredContent, and errors carry none. */
 const OUTPUT_SCHEMA_TOOLS = new Set([
     "cad_status", "cad_setup", "cad_run", "cad_check_fit", "cad_examples",
-    "counterpart_printer_info", "counterpart_print_progress", "counterpart_make_3mf",
+    "counterpart_printer_info", "counterpart_self_check", "counterpart_print_progress", "counterpart_make_3mf",
     "counterpart_discover_printers", "counterpart_setup_fields", "counterpart_propose_filaments",
     "fusion_mcp_status", "fusion_mcp_new_design", "fusion_mcp_export",
     "camera_stream_start", "camera_frame", "camera_stream_stop",
@@ -3059,6 +3060,12 @@ class BambuPrinterMCPServer {
                         outputSchema: PRINTER_INFO_OUTPUT_SCHEMA
                     },
                     {
+                        name: "counterpart_self_check",
+                        description: "Counterpart contract (counterpart/1): whether this install's own runtime dependencies and its bundled bambu-node patch loaded, each with its installed version. Run it after an update; ok is false when a check failed, with a message saying which. Sends nothing to the printer.",
+                        inputSchema: { type: "object", properties: {} },
+                        outputSchema: SELF_CHECK_OUTPUT_SCHEMA
+                    },
+                    {
                         name: "counterpart_discover_printers",
                         description: "Counterpart contract (counterpart/1): Bambu printers on the local network, from their own SSDP announcements (UDP 2021), with serial, model (as bambu_model names it), name and firmware. Listens for duration_ms (default 4000). network is \"unavailable\" when another app holds the port. Never connects to or authenticates with a printer.",
                         inputSchema: {
@@ -4375,6 +4382,9 @@ class BambuPrinterMCPServer {
                             sliced: args?.sliced === true, names: colourNames() });
                         break;
                     }
+                    case "counterpart_self_check":
+                        result = await selfCheck(SERVER_INFO);
+                        break;
                     case "counterpart_printer_info":
                         result = bambuPrinterInfo({ server: SERVER_INFO, host, serial: bambuSerial, model: this.displayModel(args, bambuSerial), slicerType: normalizeSlicerType(DEFAULT_SLICER_TYPE) });
                         break;

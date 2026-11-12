@@ -19,15 +19,20 @@ export function bambuSliceCapabilities(slicerType) {
         return { supports: true, copies: false, orient: true };
     return { supports: false, copies: false, orient: false };
 }
+/** The maker's own name for this model ("Bambu Lab P1S"), so a client shows it as given and composes nothing. */
+export const BAMBU_MAKER = "Bambu Lab";
 export function bambuPrinterInfo(options) {
     const model = normalizeModel(options.model);
+    const named = model ? DISPLAY_NAMES.get(model) : undefined;
     const serial = options.serial?.trim();
     return {
         contract: COUNTERPART_CONTRACT,
         server: options.server,
         printer: {
             kind: "bambu",
-            ...(model ? { model: DISPLAY_NAMES.get(model) ?? model.toUpperCase() } : {}),
+            ...(model ? { model: named ?? model.toUpperCase() } : {}),
+            // Only a name Bambu gives the model; nothing is composed from another value.
+            ...(named ? { displayName: `${BAMBU_MAKER} ${named}` } : {}),
             ...(serial ? { serial } : {}),
             host: options.host,
         },

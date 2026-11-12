@@ -44,6 +44,7 @@ export const TOOL_ANNOTATIONS = {
     list_templates: READ_LOCAL,
     get_slice_settings: LOCAL_OUTPUT, // a 3MF's settings are extracted to a fixed file in the temporary directory
     counterpart_printer_info: READ_LOCAL, // configuration and capabilities; sends nothing to the printer
+    counterpart_self_check: READ_LOCAL, // loads this install's own modules; sends nothing to the printer
     counterpart_setup_fields: READ_LOCAL, // the settings this server reads; no configured values
     // Local outputs in the server's temporary directory
     extend_stl_base: LOCAL_OUTPUT,

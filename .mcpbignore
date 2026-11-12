@@ -54,3 +54,6 @@ npm-debug.log
 
 # Packed bundle itself
 *.mcpb
+
+# Keep every file covered by the pinned bambu-node patch for counterpart_self_check.
+!node_modules/bambu-node/dist/index.d.ts
