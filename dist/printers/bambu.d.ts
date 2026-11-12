@@ -1,3 +1,4 @@
+import { FlightRecords, type PrintGeometry } from "../counterpart/flight-record.js";
 import { CameraStreams, type FrameOptions } from "./camera-stream.js";
 import { inspectPrintFile, type PrintFileInspection } from "../safety/print-file.js";
 import { type PrinterStateRequirements } from "../safety/printer-state.js";
@@ -42,6 +43,7 @@ export type ProgressReport = {
 /** The inspected bytes and limits of a started job, for the resume prompt and byte check. */
 export type CheckedFile = {
     sha256: string;
+    expected?: PrintGeometry;
     /** A project's printed plate: its number and the SHA-256 of its Metadata/plate_<index>.gcode. */
     plate?: {
         index: number;
@@ -71,6 +73,7 @@ export type PrintPreflight = {
 export { cameraFrameParser } from "./camera-wire.js";
 export declare class BambuImplementation {
     private readonly confirm?;
+    readonly flightRecords: FlightRecords;
     private printerStore;
     readonly cameraStreams: CameraStreams;
     /**
@@ -108,6 +111,8 @@ export declare class BambuImplementation {
      * verified: a resume then re-reads it if it can and otherwise matches the
      * unique name, as KAN-216 does for firmware that cannot download a file.
      */
+    /** At the existing send-authorization boundary: record evidence even if the reply/helper is lost. */
+    recordFlightDispatch(host: string, serial: string, remotePath: string, requirements: PrinterStateRequirements, file: CheckedFile): void;
     recordCheckedJob(host: string, serial: string, remotePath: string, requirements: PrinterStateRequirements, file: CheckedFile, uploadedHere?: boolean): void;
     /** Feed one merged report to the resume record (internal; the client store calls it for every report). */
     observeReport(host: string, serial: string, raw: Record<string, any> | undefined): void;
@@ -206,7 +211,7 @@ export declare class BambuImplementation {
         status: string;
         uploaded: boolean;
         printRequested: boolean;
-        dispatch: "started" | "unconfirmed";
+        dispatch: "unconfirmed" | "started";
         remotePath: string;
         jobName: string;
         message: string;
@@ -223,7 +228,7 @@ export declare class BambuImplementation {
         status: string;
         uploaded: boolean;
         printRequested: boolean;
-        dispatch: "started" | "unconfirmed";
+        dispatch: "unconfirmed" | "started";
         remotePath: string;
         jobName: string;
         message: string;
@@ -276,6 +281,7 @@ export declare class BambuImplementation {
     };
     cameraSnapshot(host: string, _serial: string, token: string, options?: {
         savePath?: string;
+        capturedAfter?: string;
         timeoutMs?: number;
         bambuModel?: string;
         /**
@@ -297,6 +303,7 @@ export declare class BambuImplementation {
         sizeBytes: number;
         base64: string;
         savedTo?: string;
+        capturedAt?: string;
         width?: number;
         height?: number;
         note?: string;
