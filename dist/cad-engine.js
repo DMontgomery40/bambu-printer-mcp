@@ -130,7 +130,7 @@ export class CadEngine {
         if (args.install !== true)
             return {
                 supported: ["darwin", "linux"].includes(this.system.platform),
-                ...(await this.status()),
+                ...(await this.ensureReady(signal)),
             };
         if (!["darwin", "linux"].includes(this.system.platform))
             throw new CadRefusal("cad-confinement-unavailable", `CAD confinement is unavailable on ${this.system.platform}.`);
@@ -168,29 +168,8 @@ export class CadEngine {
                     throw new CadRefusal("cad-uv-missing", "uv is not available on the MCP's PATH. Install uv, then run cad_setup again; no model was run.");
                 throw e;
             }
-            await this.system.run(python, ["-I", "-B", path.join(ASSETS, "worker.py"), "imports"], { ...opts, timeoutMs: 120000 });
-            const job = await fs.mkdtemp(path.join(this.dataDir, "verify-"));
-            const request = path.join(job, "request.json");
-            await fs.writeFile(request, JSON.stringify({ output: job, home: os.homedir() }), { mode: 0o600 });
-            const result = JSON.parse((await this.confined("smoke", request, job, [request], 180000, signal)).stdout);
-            if (result.build123d !== BUILD123D ||
-                !result.watertight ||
-                !result.manifold ||
-                !result.step_valid ||
-                result.solid_count !== 1)
-                throw new Error("CAD setup's confined STL/STEP round trip failed.");
-            const storage = {
-                installed_bytes: await measureEnvironment(this.dataDir),
-                measured_at: new Date().toISOString(),
-            };
-            await fs.writeFile(path.join(this.dataDir, "ready.json"), JSON.stringify({
-                build123d: BUILD123D,
-                platform: this.system.platform,
-                verifiedAt: new Date().toISOString(),
-                fingerprint: await this.fingerprint(),
-                dataDevice: (await fs.stat(this.dataDir)).dev,
-                storage,
-            }), { mode: 0o600 });
+            this.reverifyFailure = undefined;
+            await this.verify(opts, signal);
             return {
                 supported: true,
                 ...(await this.status()),
@@ -198,6 +177,141 @@ export class CadEngine {
                 message: "CAD is ready; confined import, build, STL and STEP round trip passed. No native files were re-signed.",
             };
         }, "setup", signal);
+    }
+    /**
+     * The proof setup ends with: the runtime's imports, then the confined build, STL and STEP round trip, then the ready
+     * marker with the engine fingerprint and the runtime identity it proved. Shared by cad_setup and the automatic
+     * re-verification after an update that changed only the engine's sources.
+     */
+    async verify(opts, signal, measured) {
+        // Setup proves the fresh install's imports outside confinement first; a re-check of an unchanged runtime relies on
+        // the confined round trip, which imports the same libraries.
+        if (measured === undefined) {
+            const python = path.join(this.dataDir, "runtime", "bin", "python");
+            await this.system.run(python, ["-I", "-B", path.join(ASSETS, "worker.py"), "imports"], { ...opts, timeoutMs: 120000 });
+        }
+        const job = await fs.mkdtemp(path.join(this.dataDir, "verify-"));
+        const request = path.join(job, "request.json");
+        await fs.writeFile(request, JSON.stringify({ output: job, home: os.homedir() }), { mode: 0o600 });
+        const result = JSON.parse((await this.confined("smoke", request, job, [request], 180000, signal)).stdout);
+        if (result.build123d !== BUILD123D ||
+            !result.watertight ||
+            !result.manifold ||
+            !result.step_valid ||
+            result.solid_count !== 1)
+            throw new Error("CAD setup's confined STL/STEP round trip failed.");
+        // A re-check of an unchanged runtime keeps the size setup measured instead of walking 1.4 GB again.
+        const storage = measured ?? {
+            installed_bytes: await measureEnvironment(this.dataDir),
+            measured_at: new Date().toISOString(),
+        };
+        await fs.writeFile(path.join(this.dataDir, "ready.json"), JSON.stringify({
+            build123d: BUILD123D,
+            platform: this.system.platform,
+            verifiedAt: new Date().toISOString(),
+            fingerprint: await this.fingerprint(),
+            runtime: await this.runtimeIdentity(),
+            dataDevice: (await fs.stat(this.dataDir)).dev,
+            storage,
+        }), { mode: 0o600 });
+    }
+    /**
+     * Re-verifies without installing when only the engine's own sources changed since the last proof (#609): the
+     * marker matches this platform, build123d and data device, its engine fingerprint differs, and the installed
+     * runtime still matches requirements.lock exactly with the same interpreter. Anything else, including a changed
+     * lock, still needs cad_setup with install: true. A failed re-verification is reported, not retried, until the
+     * engine changes again or setup runs.
+     */
+    async ensureReady(signal) {
+        const status = await this.status();
+        if (status.ready || !status.configured)
+            return status;
+        const fingerprint = await this.fingerprint();
+        if (!(await this.onlyEngineChanged(fingerprint)))
+            return status;
+        if (this.reverifyFailure?.fingerprint === fingerprint)
+            return { ...status, error: this.reverifyFailure.error };
+        const started = performance.now();
+        try {
+            await this.exclusive(async () => {
+                if ((await this.status()).ready)
+                    return;
+                const env = this.environment(this.dataDir);
+                await fs.mkdir(env.TMPDIR, { recursive: true });
+                const previous = await fs
+                    .readFile(path.join(this.dataDir, "ready.json"), "utf8")
+                    .then((text) => JSON.parse(text).storage, () => undefined);
+                await this.verify({ env, cwd: this.dataDir, signal, timeoutMs: 600000 }, signal, previous ?? null);
+            }, "setup", signal);
+        }
+        catch (e) {
+            signal?.throwIfAborted();
+            const reason = e instanceof Error ? e.message : String(e);
+            this.reverifyFailure = {
+                fingerprint,
+                error: `The automatic re-check after this MCP's update failed (${reason.slice(0, 300)}). Run cad_setup with install: true.`,
+            };
+            return { ...(await this.status()), error: this.reverifyFailure.error };
+        }
+        const after = await this.status();
+        return after.ready
+            ? {
+                ...after,
+                reverified: `Re-checked automatically after an update to the engine (${Math.round((performance.now() - started) / 1000)} s): the installed runtime was unchanged; confined import, build, STL and STEP round trip passed.`,
+            }
+            : after;
+    }
+    async onlyEngineChanged(fingerprint) {
+        try {
+            const marker = JSON.parse(await fs.readFile(path.join(this.dataDir, "ready.json"), "utf8"));
+            if (marker.build123d !== BUILD123D ||
+                marker.platform !== this.system.platform ||
+                marker.dataDevice !== (await fs.stat(this.dataDir)).dev ||
+                typeof marker.fingerprint !== "string" ||
+                marker.fingerprint === fingerprint)
+                return false;
+            const runtime = await this.runtimeIdentity();
+            if (!runtime.matchesLock)
+                return false;
+            // Markers written before 1.1.90 / 1.2.72 carry no interpreter: the exact package match and the re-run proof decide.
+            if (marker.runtime && marker.runtime.interpreter !== runtime.interpreter)
+                return false;
+            return true;
+        }
+        catch {
+            return false;
+        }
+    }
+    /** The interpreter the venv runs and whether its installed distributions are exactly requirements.lock's pins. */
+    async runtimeIdentity() {
+        const lock = await fs.readFile(path.join(ASSETS, "requirements.lock"), "utf8");
+        const runtime = path.join(this.dataDir, "runtime");
+        const cfg = await fs.readFile(path.join(runtime, "pyvenv.cfg"), "utf8").catch(() => "");
+        const field = (name) => cfg.match(new RegExp(`^${name}\\s*=\\s*(.+)$`, "m"))?.[1]?.trim() ?? "";
+        const interpreter = `${field("version_info") || field("version")} ${await fs.realpath(path.join(runtime, "bin", "python")).catch(() => "")}`;
+        const norm = (name) => name.toLowerCase().replace(/[-_.]+/g, "-");
+        const installed = new Map();
+        const lib = path.join(runtime, "lib");
+        for (const dir of await fs.readdir(lib).catch(() => [])) {
+            if (!/^python3\.\d+$/.test(dir))
+                continue;
+            for (const entry of await fs.readdir(path.join(lib, dir, "site-packages")).catch(() => [])) {
+                const m = entry.match(/^(.+)-([^-]+)\.dist-info$/);
+                if (m)
+                    installed.set(norm(m[1]), m[2]);
+            }
+        }
+        let matchesLock = installed.size > 0;
+        for (const line of lock.split("\n")) {
+            const m = line.match(/^\s*([A-Za-z0-9][A-Za-z0-9._-]*)==([^\s;]+)\s*(;.*)?$/);
+            if (!m)
+                continue;
+            const have = installed.get(norm(m[1]));
+            // A pin behind an environment marker may not apply here: absent is fine, a different version is not.
+            if (have === undefined ? !m[3] : have !== m[2])
+                matchesLock = false;
+        }
+        return { interpreter, lock_sha256: createHash("sha256").update(lock).digest("hex"), matchesLock };
     }
     async fingerprint() {
         const hash = createHash("sha256");
@@ -346,6 +460,7 @@ export class CadEngine {
                 inputs[alias] = await this.inputFile(value, ext);
             }
         }
+        await this.ensureReady(signal);
         return this.exclusive(async (queueWaitMs) => {
             const status = await this.status();
             if (!status.ready)
@@ -484,6 +599,7 @@ export class CadEngine {
             clearance < 0 ||
             clearance > 100)
             throw new Error("clearance_mm must be finite, between 0 and 100.");
+        await this.ensureReady(signal);
         return this.exclusive(async () => {
             const status = await this.status();
             if (!status.ready)

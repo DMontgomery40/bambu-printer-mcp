@@ -14,11 +14,14 @@ export interface CadStatus {
     platform: string;
     storage: CadStorage;
     error?: string;
+    /** Set when this call re-verified a runtime that only the engine's own sources had changed under. */
+    reverified?: string;
 }
 export declare class CadEngine {
     private readonly options;
     private readonly system;
     readonly dataDir: string;
+    private reverifyFailure?;
     constructor(options: CadOptions);
     status(): Promise<CadStatus>;
     failure(error: unknown, tool: string): Promise<{
@@ -35,6 +38,23 @@ export declare class CadEngine {
     private exclusive;
     private confined;
     setup(args: CadArguments, signal?: AbortSignal): Promise<Record<string, unknown>>;
+    /**
+     * The proof setup ends with: the runtime's imports, then the confined build, STL and STEP round trip, then the ready
+     * marker with the engine fingerprint and the runtime identity it proved. Shared by cad_setup and the automatic
+     * re-verification after an update that changed only the engine's sources.
+     */
+    private verify;
+    /**
+     * Re-verifies without installing when only the engine's own sources changed since the last proof (#609): the
+     * marker matches this platform, build123d and data device, its engine fingerprint differs, and the installed
+     * runtime still matches requirements.lock exactly with the same interpreter. Anything else, including a changed
+     * lock, still needs cad_setup with install: true. A failed re-verification is reported, not retried, until the
+     * engine changes again or setup runs.
+     */
+    ensureReady(signal?: AbortSignal): Promise<CadStatus>;
+    private onlyEngineChanged;
+    /** The interpreter the venv runs and whether its installed distributions are exactly requirements.lock's pins. */
+    private runtimeIdentity;
     private fingerprint;
     private requireSupportedStorage;
     private inputFile;

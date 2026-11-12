@@ -4396,7 +4396,7 @@ class BambuPrinterMCPServer {
                     case "cad_status":
                         if (args && Object.keys(args).length)
                             throw new Error("cad_status takes no arguments.");
-                        result = await this.cad.status();
+                        result = await this.cad.ensureReady(extra.signal);
                         break;
                     case "cad_setup":
                     case "cad_run":
