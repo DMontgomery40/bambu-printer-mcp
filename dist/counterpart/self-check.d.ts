@@ -71,6 +71,8 @@ export declare const SELF_CHECK_OUTPUT_SCHEMA: {
  * part stays) or ~x.y.z (the minor stays). Other forms are not judged (undefined).
  */
 export declare function meetsDeclared(version: string, declared: string): boolean | undefined;
+/** Why the installed version does not meet package.json's, or undefined when it does. A form not judged is a failure. */
+export declare function versionProblem(name: string, version: string | undefined, declared: string): string | undefined;
 export declare function selfCheck(server: {
     name: string;
     version: string;

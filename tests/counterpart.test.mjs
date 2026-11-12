@@ -208,6 +208,17 @@ test("the self-check judges installed versions against package.json's exact pins
     ["16.4.0", "~16.3.1", false], ["3.22.21-beta.1", "3.22.21", false], ["4.6.8-rc.0", "^4.6.7", false], ["1.0.0", ">=1", undefined]]) assert.equal(meetsDeclared(version, declared), meets, `${version} ${declared}`);
 });
 
+// A form the check cannot judge is reported, never passed (Muse P2 on #156/#110).
+test("the self-check fails a dependency whose declared version it cannot judge", async () => {
+  const { versionProblem } = await import("../dist/counterpart/self-check.js");
+  assert.equal(versionProblem("dep", "1.40.0", "^1.32.2"), undefined);
+  assert.match(versionProblem("dep", "1.10.0", "^1.32.2"), /needs dep \^1\.32\.2; 1\.10\.0 is installed/);
+  for (const declared of [">=1.0.0", "*", "1.x", "^1.2", "latest", "npm:other@1.0.0"]) {
+    assert.match(versionProblem("dep", "1.0.0", declared) ?? "", /cannot judge/, declared);
+  }
+  assert.match(versionProblem("dep", undefined, "^1.0.0"), /an unknown version/);
+});
+
 function boxStl(min, max) {
   const [x0, y0, z0] = min, [x1, y1, z1] = max;
   const v = [[x0, y0, z0], [x1, y0, z0], [x1, y1, z0], [x0, y1, z0], [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]];
