@@ -100,6 +100,8 @@ test("project manifests the sandbox could forge are refused before anything is w
   await assert.rejects(edit([{ op: "replace_part", object_id: 6, part_id: 5, path: "/3D/Objects/object_1.model", stl: 0 }]), /another model file/);
   await assert.rejects(edit([{ op: "set_part", object_id: 6, part_id: 9, name: "X" }]), /no part 9/);
   await assert.rejects(edit([{ op: "explode", object_id: 6 }]), /op is unknown/);
+  await assert.rejects(edit([{ op: "add_part", object_id: 2, name: "X", filament: 4, stl: 0 }]), /not one of the 3 filaments/);
+  await assert.rejects(edit([{ op: "set_part", object_id: 4, part_id: 3, filament: 4 }]), /not one of the 3 filaments/);
   await assert.rejects(writeCadProject3mf({ version: 2 }, run.parts, {}, run.out), /unknown version/);
   assert.equal(fs.existsSync(run.out), false);
   fs.writeFileSync(run.out, "taken");
@@ -170,4 +172,18 @@ test("cad_run edits a designer's 3MF and makes a new two-plate project (real CAD
   assert.ok(made.step, "an all-solid new project keeps its STEP");
   assert.deepEqual(made.three_mf_project.plates.map(plate => plate.parts.map(part => [part.name, part.filament])), [[["Tile", 1], ["Dot", 2]], [["Cube", 3]]]);
   await assert.rejects(call("cad_run", { script: EDIT, output_dir: dir, name: "solid-edit", inputs: [{ name: "kit", path: path.join(dir, "kit.3mf") }] }), /Editing a 3MF runs with mode/);
+});
+
+test("a part added to an object whose meshes are in the root model is defined before the object that uses it", async (t) => {
+  const run = job(t, [[[0, 0, 1], [1, 1, 2]]]);
+  const base = path.join(run.directory, "root.3mf");
+  const zip = new JSZip();
+  zip.file("3D/3dmodel.model", `<?xml version="1.0"?><model xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources><object id="1" type="model"><mesh><vertices><vertex x="0" y="0" z="0"/><vertex x="1" y="0" z="0"/><vertex x="0" y="1" z="0"/></vertices><triangles><triangle v1="0" v2="1" v3="2"/></triangles></mesh></object><object id="2" type="model"><components><component objectid="1"/></components></object></resources><build><item objectid="2"/></build></model>`);
+  zip.file("Metadata/model_settings.config", `<config><object id="2"><metadata key="name" value="Tag"/><metadata key="extruder" value="1"/><part id="1" subtype="normal_part"><metadata key="name" value="tag"/></part></object></config>`);
+  fs.writeFileSync(base, await zip.generateAsync({ type: "nodebuffer" }));
+  await writeCadProject3mf({ version: 1, base: "tag", edits: [{ op: "add_part", object_id: 2, name: "Dot", filament: 2, stl: 0 }] }, run.parts, { tag: base }, run.out);
+  const model = await (await JSZip.loadAsync(fs.readFileSync(run.out))).file("3D/3dmodel.model").async("string");
+  assert.ok(model.indexOf('<object id="3"') < model.indexOf('<object id="2"'), "the new mesh object precedes its assembly");
+  assert.match(model, /<component objectid="1"\/><component objectid="3" transform="1 0 0 0 1 0 0 0 1 0 0 0"\/><\/components>/);
+  assert.deepEqual((await listModelPlates(run.out)).plates[0].parts.map(part => [part.name, part.filament, part.object_id]), [["tag", 1, 1], ["Dot", 2, 3]]);
 });

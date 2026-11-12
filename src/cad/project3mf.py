@@ -61,6 +61,7 @@ class Part:
         self.mesh = mesh
         self.painted = painted
         self._local = local  # component transform: mesh coordinates -> object frame
+        self.plain = False  # the object is this one mesh, without parts (a plain 3MF): it cannot be edited
 
     def __repr__(self):
         return f'Part(id={self.id}, name={self.name!r}, filament={self.filament}, painted={self.painted})'
@@ -97,7 +98,7 @@ def _read(path):
         if any(re.fullmatch(r'Metadata/plate_\d+\.gcode', n) for n in names):
             raise ValueError('The input 3MF holds G-code: edit the project file, not a sliced .gcode.3mf.')
         # The input is a bounded snapshot (64 MiB): its model parts and settings are read once, here.
-        raw = {n: archive.read(n) for n in names if n.endswith('.model') or n == 'Metadata/model_settings.config'}
+        raw = {n: archive.read(n) for n in names if n.endswith('.model') or n in ('Metadata/model_settings.config', 'Metadata/project_settings.config')}
     models = {}
 
     def model(name):
@@ -163,11 +164,20 @@ def _read(path):
         else:
             mesh, painted = mesh_of(element)
             if mesh is not None:
-                parts.append(Part(int(object_id), int(object_id), '/' + ROOT_MODEL, meta.get('name', ''), object_filament, mesh, painted, np.eye(4)))
+                part = Part(int(object_id), int(object_id), '/' + ROOT_MODEL, meta.get('name', ''), object_filament, mesh, painted, np.eye(4))
+                part.plain = True
+                parts.append(part)
         objects.append(Object(int(object_id), meta.get('name', ''), plate_of.get(object_id, 1), parts, items))
     if not objects:
         raise ValueError('The input 3MF has no object with a mesh.')
-    return objects
+    # The filaments the project declares: a part can only print in one of them.
+    declared = 0
+    try:
+        project = json.loads(raw.get('Metadata/project_settings.config', b'{}'))
+        declared = max(len(project.get(key) or []) for key in ('filament_colour', 'filament_type', 'filament_ids'))
+    except (ValueError, AttributeError, TypeError):
+        declared = 0
+    return objects, min(declared, MAX_FILAMENT)
 
 
 def _geometry(value, label):
@@ -202,16 +212,28 @@ class Project3mf:
 
     def __init__(self, base, base_path):
         self.base = base
-        self.objects = _read(base_path) if base_path else []
+        self.objects, self.filaments = _read(base_path) if base_path else ([], 0)
         self._new = []      # new project: {object, plate, name, filament, geometry}
         self._edits = []    # edit: operations on the base
 
     def object(self, name_or_id):
-        """A base object by its name or root object id."""
+        """A base object by its root object id, or by its name when only one object has it."""
         for obj in self.objects:
-            if str(obj.id) == str(name_or_id) or obj.name == name_or_id:
+            if str(obj.id) == str(name_or_id):
                 return obj
+        named = [obj for obj in self.objects if obj.name == name_or_id]
+        if len(named) > 1:
+            raise ValueError(f'{len(named)} objects are named {name_or_id!r} (ids ' + ', '.join(str(o.id) for o in named)
+                             + '): pick one by id, or edit each copy.')
+        if named:
+            return named[0]
         raise ValueError(f'The input 3MF has no object {name_or_id!r}; objects: ' + ', '.join(repr(o.name) for o in self.objects))
+
+    def _declared(self, filament, label):
+        filament = _filament(filament, label)
+        if self.base and self.filaments and filament > self.filaments:
+            raise ValueError(f'{label} {filament} is not one of the {self.filaments} filaments the input 3MF declares.')
+        return filament
 
     def _count(self):
         if len(self._new) + sum(1 for e in self._edits if 'geometry' in e) >= MAX_PARTS:
@@ -227,10 +249,12 @@ class Project3mf:
             if object is None:
                 raise ValueError('Editing a 3MF, add_part needs object=: the base object (name or id) the part joins.')
             target = self.object(object)
+            if any(part.plain for part in target.parts):
+                raise ValueError(f'Object {target.name!r} is one mesh without parts (a plain 3MF): only a Bambu Studio or OrcaSlicer project\'s objects take new parts.')
             if plate != 1:
                 raise ValueError('Editing a 3MF, a new part sits on its object\'s plate; plate cannot be set.')
             self._edits.append({'op': 'add_part', 'object_id': target.id, 'name': name,
-                                'filament': _filament(filament if filament is not None else (target.parts[0].filament if target.parts else 1), 'filament'),
+                                'filament': self._declared(filament if filament is not None else (target.parts[0].filament if target.parts else 1), 'filament'),
                                 'geometry': geometry})
         else:
             if isinstance(plate, bool) or not isinstance(plate, int) or not 1 <= plate <= MAX_PLATES:
@@ -245,6 +269,8 @@ class Project3mf:
             raise ValueError('Only an edited 3MF has parts to change; add_part builds a new project.')
         if not isinstance(part, Part):
             raise ValueError('Pass a part from project.objects[...].parts (or project.object(...).part(...)).')
+        if part.plain:
+            raise ValueError(f'Part {part.name!r} is a plain 3MF object\'s only mesh, with no part settings to change: edit a Bambu Studio or OrcaSlicer project.')
         return part
 
     def replace_part(self, part, geometry):
@@ -262,7 +288,7 @@ class Project3mf:
         if name is not None:
             edit['name'] = _name(name, 'name')
         if filament is not None:
-            edit['filament'] = _filament(filament, 'filament')
+            edit['filament'] = self._declared(filament, 'filament')
         if len(edit) == 3:
             raise ValueError('set_part needs name= or filament=.')
         self._edits.append(edit)

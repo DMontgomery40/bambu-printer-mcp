@@ -19,6 +19,7 @@ import JSZip from "jszip";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { MACHINE_LIMITS, normalizeModel } from "../safety/limits.js";
 import { readSafe3mfArchive } from "../safety/archive.js";
+import { listModelPlates } from "./model-plates.js";
 import { COUNTERPART_CONTRACT } from "./schemas.js";
 
 const MAX_PARTS = 64;
@@ -28,6 +29,8 @@ const MAX_TOTAL_TRIANGLES = 5_000_000;
 const PART_KEYS = new Set(["stl_path", "name", "filament"]);
 
 export class Make3mfError extends Error {}
+
+const isFilament = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_FILAMENT;
 
 type Mesh = { vertices: Float32Array; indices: Uint32Array; triangles: number; min: number[]; max: number[] };
 type Part = { name: string; stlPath: string; filament: number; mesh: Mesh };
@@ -272,9 +275,7 @@ export async function makeCounterpart3mf(args: Record<string, unknown>): Promise
     const stlPath = path.resolve(nonEmptyText(entry.stl_path, `${label}.stl_path`));
     if (path.extname(stlPath).toLowerCase() !== ".stl") fail(`${label}.stl_path must name an STL file.`);
     const filament = entry.filament ?? index + 1;
-    if (typeof filament !== "number" || !Number.isInteger(filament) || filament < 1 || filament > MAX_FILAMENT) {
-      fail(`${label}.filament must be an integer from 1 to ${MAX_FILAMENT}.`);
-    }
+    if (!isFilament(filament)) fail(`${label}.filament must be an integer from 1 to ${MAX_FILAMENT}.`);
     const mesh = await readMesh(await fs.realpath(stlPath).catch(() => fail(`${label}.stl_path does not exist.`)), `${label}.stl_path`);
     triangles += mesh.triangles;
     if (triangles > MAX_TOTAL_TRIANGLES) fail(`The parts have more than ${MAX_TOTAL_TRIANGLES} triangles in total; decimate them first.`);
@@ -301,7 +302,6 @@ type ProjectEdit =
   | { op: "set_part"; object_id: number; part_id: number; name?: string; filament?: number };
 
 const isId = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
-const isFilament = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= MAX_FILAMENT;
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** One element by tag and id in XML text: its start offset, end offset and full text. */
@@ -386,6 +386,13 @@ export async function writeCadProject3mf(manifest: unknown, partsDir: string, in
   await read(ROOT);
   await read(SETTINGS);
   if (!Array.isArray(project.edits) || !project.edits.length || project.edits.length > 256) fail("A 3MF edit needs 1 to 256 edits.");
+  // A part can only print in a filament the project declares (none declared: the slicer's own list decides).
+  const declared = (await listModelPlates(inputs[alias], { paintLimits: { meshBytes: 0, totalBytes: 0 } })).project_filaments.length;
+  const declaredFilament = (value: unknown, label: string) => {
+    if (!isFilament(value)) fail(`${label} must be from 1 to ${MAX_FILAMENT}.`);
+    if (declared && value > declared) fail(`${label} ${value} is not one of the ${declared} filaments the base 3MF declares.`);
+    return value;
+  };
   const changed: string[] = [];
   // A root object's component in its model: the file a part's mesh lives in and its component transform.
   const componentsOf = (objectId: number) => {
@@ -405,7 +412,7 @@ export async function writeCadProject3mf(manifest: unknown, partsDir: string, in
     const edit = value as ProjectEdit;
     if (!edit || typeof edit !== "object" || !isId(edit.object_id)) fail(`edits[${index}] is malformed.`);
     if (edit.op === "add_part") {
-      if (!isFilament(edit.filament)) fail(`edits[${index}].filament must be from 1 to ${MAX_FILAMENT}.`);
+      declaredFilament(edit.filament, `edits[${index}].filament`);
       const name = text(edit.name, "part name");
       const components = componentsOf(edit.object_id);
       if (!components.length) fail(`Object ${edit.object_id} is a single mesh without parts; a part can only join an object made of parts.`);
@@ -415,9 +422,10 @@ export async function writeCadProject3mf(manifest: unknown, partsDir: string, in
       const id = Math.max(0, ...ids, ...components.map(component => component.id)) + 1;
       const filePrefix = productionPrefix(model);
       const objectXml = `  <object id="${id}"${filePrefix ? ` ${filePrefix}:UUID="${randomUUID()}"` : ""} type="model">\n${meshText(await partMesh(edit.stl, `edits[${index}]`))}  </object>\n `;
-      const resourcesEnd = model.lastIndexOf("</resources>");
-      if (resourcesEnd < 0) fail(`${target} has no resources.`);
-      files.set(target, model.slice(0, resourcesEnd) + objectXml + model.slice(resourcesEnd));
+      // A mesh kept in the root model goes before the object that uses it: the 3MF core forbids forward references.
+      const at = target === ROOT ? elementById(model, "object", edit.object_id)!.start : model.lastIndexOf("</resources>");
+      if (at < 0) fail(`${target} has no resources.`);
+      files.set(target, model.slice(0, at) + objectXml + model.slice(at));
       const root = files.get(ROOT)!;
       const object = elementById(root, "object", edit.object_id)!;
       const rootPrefix = productionPrefix(root);
@@ -452,7 +460,7 @@ export async function writeCadProject3mf(manifest: unknown, partsDir: string, in
         let next = part.text;
         if (edit.name !== undefined) next = setMetadata(next, "name", text(edit.name, "part name"));
         if (edit.filament !== undefined) {
-          if (!isFilament(edit.filament)) fail(`edits[${index}].filament must be from 1 to ${MAX_FILAMENT}.`);
+          declaredFilament(edit.filament, `edits[${index}].filament`);
           next = setMetadata(next, "extruder", String(edit.filament));
         }
         const updated = block.text.slice(0, part.start) + next + block.text.slice(part.end);
