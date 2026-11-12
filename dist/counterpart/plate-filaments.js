@@ -230,6 +230,10 @@ export async function plateFilaments(zip, settings, model, plates, limits = PAIN
                 for (const objectId of plate.objectIds)
                     for (const path of components.get(objectId)?.values() ?? [])
                         paintPaths.add(path);
+    // A build item whose object is itself the mesh (a plain 3MF) keeps its painting in the root model.
+    const ROOT_MODEL = "3D/3dmodel.model";
+    if (buildItems.some(item => rootMeshes.has(/\bobjectid="(\d+)"/.exec(item)?.[1] ?? "")))
+        paintPaths.add(ROOT_MODEL);
     const { painting, unread } = await readPainting(zip, paintPaths, limits);
     // Plates with a part whose painting couldn't be read: they list every declared filament and say they're incomplete.
     const incomplete = new Set();
@@ -239,8 +243,8 @@ export async function plateFilaments(zip, settings, model, plates, limits = PAIN
     const plateItems = new Map();
     const plateParts = new Map();
     const itemObject = buildItems.map(item => /\bobjectid="(\d+)"/.exec(item)?.[1]);
-    for (const plate of plates) {
-        // The plate's copies as root build items (0-based, in build order): a copy is its object's instance_id-th item.
+    // The plate's copies as root build items (0-based, in build order): a copy is its object's instance_id-th item.
+    const plateItemsOf = (plate) => {
         const items = new Set();
         if (plate.instances?.length)
             for (const copy of plate.instances) {
@@ -252,6 +256,10 @@ export async function plateFilaments(zip, settings, model, plates, limits = PAIN
         else
             itemObject.forEach((objectId, index) => { if (objectId && (plate.allItems || plate.objectIds.includes(objectId)))
                 items.add(index); });
+        return items;
+    };
+    for (const plate of plates) {
+        const items = plateItemsOf(plate);
         plateItems.set(plate.number, [...items].sort((a, b) => a - b));
         // Each model part of the plate's objects once, in its own filament: what a client colours when it draws the plate.
         const drawn = [];
@@ -260,7 +268,7 @@ export async function plateFilaments(zip, settings, model, plates, limits = PAIN
             const meshes = components.get(objectId);
             const objectFilament = intOf(object?.settings.get("extruder")) || (global("wall_filament") > 0 ? global("wall_filament") : 1);
             const entry = (id, name, filament) => {
-                const path = meshes?.get(id);
+                const path = meshes?.get(id) ?? (id === objectId && rootMeshes.has(objectId) ? ROOT_MODEL : undefined);
                 const paint = path ? painting.get(`${path}#${id}`) : undefined;
                 drawn.push({ object_id: Number(id), build_object_id: Number(objectId), ...(path && path !== "3D/3dmodel.model" ? { path: `/${path}` } : {}), name,
                     filament: valid(filament) ? filament : 1, ...(paint?.states.size ? { painted: true } : {}) });
@@ -360,6 +368,13 @@ export async function plateFilaments(zip, settings, model, plates, limits = PAIN
         if (!used.size && (plate.objectIds.some(id => !objects.has(id)) || (!objects.size && buildItems.length)))
             for (const key of FEATURES)
                 add(global(key) > 0 ? global(key) : 1);
+        // Painting on such an object's own mesh prints its painted filaments.
+        for (const index of items) {
+            const objectId = itemObject[index];
+            if (objectId && !objects.get(objectId)?.parts.length && rootMeshes.has(objectId))
+                for (const state of painting.get(`${ROOT_MODEL}#${objectId}`)?.states ?? [])
+                    add(state, objects.get(objectId)?.name || undefined);
+        }
         // A mixed filament slot prints as its component filaments (PartPlate.cpp:1437-1449, expand_mixed_filaments in
         // FilamentMixer.cpp:460-478; components are 1-based, comma-separated, FilamentMixer.cpp:165-180).
         const mixed = Array.isArray(config.filament_is_mixed) ? config.filament_is_mixed.map(value => boolOf(value) === true) : [];
