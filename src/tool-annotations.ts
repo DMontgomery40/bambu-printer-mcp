@@ -38,6 +38,8 @@ export const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
   cad_setup: hints(false, true, true, true),
   cad_run: hints(false, false, false, false),
   cad_check_fit: READ_LOCAL,
+  cad_examples: READ_LOCAL,
+  design_guidance: READ_LOCAL,
   // Printer and cloud reads
   get_printer_status: READ_OUTSIDE,
   get_printer_filaments: READ_OUTSIDE,
