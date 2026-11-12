@@ -20,7 +20,7 @@ import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, d
 import { describeHmsKey, hiddenHmsKeys, hiddenHmsNotices, reportedHmsKey, unchippedNozzles, validatePrinterState, manualHeatingRequirements, type PrinterStateRequirements } from "../safety/printer-state.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRemotePath, cancelPendingPrinterOperations } from "../safety/artifact.js";
 import { RTSP_CAMERA_MODELS, TCP_CAMERA_MODELS } from "./camera-models.js";
-import { resolveStudioPrintOptions, usedNozzleCount, type CallerPrintOptions } from "../studio-print-options.js";
+import { directPrintOptionReport, resolveStudioPrintOptions, usedNozzleCount, type CallerPrintOptions } from "../studio-print-options.js";
 import { Client as FTPClient } from "basic-ftp";
 import { uploadBytes } from "./ftp-upload.js";
 import * as mqtt from "mqtt";
@@ -1142,12 +1142,13 @@ export class BambuImplementation {
     });
     const resumeFile = await checkedFile(inspection, options.filePath);
     // The options Bambu Studio's Send dialog would send; explicit ones win.
-    const studio = resolveStudioPrintOptions(model, {
+    const caller: CallerPrintOptions = {
       bedLeveling: options.bedLeveling, flowCalibration: options.flowCalibration,
       vibrationCalibration: options.vibrationCalibration, layerInspect: options.layerInspect,
       autoBedLeveling: options.autoBedLeveling, autoFlowCali: options.autoFlowCali,
       autoOffsetCali: options.autoOffsetCali, extruderCaliManualMode: options.extruderCaliManualMode,
-    } satisfies CallerPrintOptions, { usedNozzles: usedNozzleCount(inspection) });
+    };
+    const studio = resolveStudioPrintOptions(model, caller, { usedNozzles: usedNozzleCount(inspection) });
     const projectMetadata = await this.resolveProjectFileMetadata(
       options.filePath,
       options.plateIndex,
@@ -1303,6 +1304,7 @@ export class BambuImplementation {
       const dispatch = await watcher.settled();
       return {
         status: "success", dispatch, remoteProjectPath,
+        calibration: directPrintOptionReport(caller, studio, {}),
         message: dispatch === "started"
           ? `The printer accepted and started the checked gcode.3mf print: ${options.projectName}`
           : `Uploaded the checked gcode.3mf and sent the print command for ${options.projectName}; the printer has not reported starting yet. ` +
@@ -1378,6 +1380,7 @@ export class BambuImplementation {
       };
     }
 
+    const calibration = directPrintOptionReport(caller, studio, projectFileCmd.print);
     const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
     this.recordFlightDispatch(host,serial,remoteProjectPath,requirements,resumeFile);
     markPrintCommandSent();
@@ -1388,6 +1391,7 @@ export class BambuImplementation {
 
     return {
       status: "success",
+      calibration,
       dispatch,
       message: dispatch === "started"
         ? `The printer accepted and started the checked 3MF print: ${options.projectName}`

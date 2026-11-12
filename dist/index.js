@@ -2454,7 +2454,7 @@ class BambuPrinterMCPServer {
                                 nozzle_mapping: { type: "string", description: "Raw JSON string for FULU PrintParams nozzle_mapping." },
                                 nozzles_info: { type: "string", description: "Raw JSON string for FULU PrintParams nozzles_info." },
                                 bed_leveling: { type: "boolean", description: "Auto bed leveling on or off. Omit to send what Bambu Studio's Send dialog would: the choice saved in BambuStudio.conf for this printer, else Studio's default." },
-                                flow_calibration: { type: "boolean", description: "Flow calibration on or off. Omit to send what Bambu Studio's Send dialog would (auto on P1/P1S)." },
+                                flow_calibration: { type: "boolean", description: "Flow calibration task boolean. Omission resolves Studio settings (auto on P1/P1S); direct MQTT sends false for auto but does not transmit the integer auto mode. The result calibration report distinguishes resolved and transmitted options." },
                                 vibration_calibration: { type: "boolean", description: "Vibration calibration (default false, as Bambu Studio sends)." },
                                 layer_inspect: { type: "boolean", description: "First-layer inspection where supported (default true, as Bambu Studio sends)." },
                                 timelapse: { type: "boolean", description: "Enable timelapse recording in FULU PrintParams (default: false)." },
@@ -2897,7 +2897,7 @@ class BambuPrinterMCPServer {
                                     description: "When true, match the sliced 3MF's tray_info_idx requirements against live AMS inventory and use the resulting ams_slots. Ignored when ams_mapping or ams_slots is provided."
                                 },
                                 bed_leveling: { type: "boolean", description: "Auto bed leveling on or off. Omit to send what Bambu Studio's Send dialog would: the choice saved in BambuStudio.conf for this printer, else Studio's default." },
-                                flow_calibration: { type: "boolean", description: "Flow calibration on or off. Omit to send what Bambu Studio's Send dialog would (auto on P1/P1S)." },
+                                flow_calibration: { type: "boolean", description: "Flow calibration task boolean. Omission resolves Studio settings (auto on P1/P1S); direct MQTT sends false for auto but does not transmit the integer auto mode. The result calibration report distinguishes resolved and transmitted options." },
                                 vibration_calibration: { type: "boolean", description: "Vibration calibration (default false, as Bambu Studio sends)." },
                                 timelapse: { type: "boolean", description: "Enable timelapse recording (default: false)" },
                                 slicer_profile: { type: "string", description: "Path to the slicer profile/config file for auto-slicing (optional)." },
@@ -2933,7 +2933,7 @@ class BambuPrinterMCPServer {
                                     description: "Bed plate type currently installed (default: textured_plate)"
                                 },
                                 bed_leveling: { type: "boolean", description: "Auto bed leveling on or off. Omit to send what Bambu Studio's Send dialog would: the choice saved in BambuStudio.conf for this printer, else Studio's default." },
-                                flow_calibration: { type: "boolean", description: "Flow calibration on or off. Omit to send what Bambu Studio's Send dialog would (auto on P1/P1S)." },
+                                flow_calibration: { type: "boolean", description: "Flow calibration task boolean. Omission resolves Studio settings (auto on P1/P1S); direct MQTT sends false for auto but does not transmit the integer auto mode. The result calibration report distinguishes resolved and transmitted options." },
                                 vibration_calibration: { type: "boolean", description: "Vibration calibration (default false, as Bambu Studio sends)." },
                                 timelapse: { type: "boolean", description: "Enable timelapse recording (default: false)" },
                                 slicer_profile: { type: "string", description: "Path to the slicer profile/config file for auto-slicing (optional)." },
