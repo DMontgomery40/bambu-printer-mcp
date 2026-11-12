@@ -483,12 +483,11 @@ export async function writeCadProject3mf(manifest, partsDir, inputs, outPath) {
         else if (edit.op === "replace_part" || edit.op === "set_part") {
             if (!isId(edit.part_id))
                 fail(`edits[${index}].part_id is malformed.`);
-            const component = componentsOf(edit.object_id).find(entry => entry.id === edit.part_id);
+            // A part is its (objectid, model file): two model files may reuse an object id.
+            const component = componentsOf(edit.object_id).find(entry => entry.id === edit.part_id && (edit.op !== "replace_part" || `/${entry.path}` === edit.path));
             if (!component)
-                fail(`Object ${edit.object_id} has no part ${edit.part_id}.`);
+                fail(`Object ${edit.object_id} has no part ${edit.part_id}${edit.op === "replace_part" ? ` in ${String(edit.path).slice(0, 200)}` : ""}.`);
             if (edit.op === "replace_part") {
-                if (`/${component.path}` !== edit.path)
-                    fail(`edits[${index}] names part ${edit.part_id} in another model file.`);
                 const model = await readModel(component.path);
                 const mesh = elementById(model, "object", edit.part_id);
                 if (!mesh || !/<(?:\w+:)?mesh\b/.test(mesh.text))
