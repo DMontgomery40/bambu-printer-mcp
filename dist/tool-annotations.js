@@ -24,6 +24,8 @@ export const TOOL_ANNOTATIONS = {
     resolve_3mf_ams_slots: READ_OUTSIDE, // reads the live AMS inventory
     list_printer_files: READ_OUTSIDE,
     counterpart_print_progress: READ_OUTSIDE,
+    counterpart_print_record: READ_LOCAL,
+    counterpart_print_assess: hints(false, false, true, false),
     counterpart_discover_printers: READ_OUTSIDE, // listens for the printers' own SSDP announcements
     counterpart_propose_filaments: READ_OUTSIDE, // reads the live AMS inventory
     // connect: true starts the bridge agent, which writes its configuration and device identity and can replace certificates.

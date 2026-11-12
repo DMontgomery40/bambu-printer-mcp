@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import {physicalProblems} from "./counterpart/visual-evidence.js";
+import {flightKey} from "./counterpart/flight-record.js";
+import {FLIGHT_RECORD_PROPERTIES,FLIGHT_RECORD_DESCRIPTION,FLIGHT_RECORD_OUTPUT_SCHEMA,flightReadOptions,flightRecordResult,FLIGHT_ASSESS_PROPERTIES,FLIGHT_ASSESS_REQUIRED,FLIGHT_ASSESS_DESCRIPTION,PRINT_EVIDENCE_GUIDANCE,visualSubmission} from "./counterpart/flight-tools.js";
 import {CAMERA_STREAM_TOOLS} from "./printers/camera-tools.js";
 import { withAnnotations } from "./tool-annotations.js";
 import { withRemote } from "./counterpart/remote.js";
@@ -1415,7 +1418,7 @@ class BambuPrinterMCPServer {
           resources: {},
           tools: {}
         },
-        instructions: SERVER_INSTRUCTIONS + (CAD_ENABLED ? " For headless dimensioned designs and parameter edits, read the cad_design prompt before using cad_run." : "")
+        instructions: SERVER_INSTRUCTIONS + PRINT_EVIDENCE_GUIDANCE + (CAD_ENABLED ? " For headless dimensioned designs and parameter edits, read the cad_design prompt before using cad_run." : "")
       }
     );
 
@@ -1959,6 +1962,7 @@ class BambuPrinterMCPServer {
             throw new Error("The printer's SD card or USB stick is no longer ready. Check it and start the print again.");
           }
           assertActive();
+          this.bambu.recordFlightDispatch(devIp,devId,remoteFileName,requirements,resumeFile);
           markPrintCommandSent();
         } });
         assertActive();
@@ -1974,7 +1978,7 @@ class BambuPrinterMCPServer {
           validatePrinterState(dispatchStatus, requirements);
           this.bambu.assertPrintPreflight(dispatchStatus, preflight);
         },
-        assertDispatchAllowed: method => { if (method === bridgeMethod || method === cloudFallbackMethod) { assertActive(); markPrintCommandSent(); } },
+        assertDispatchAllowed: method => { if (method === bridgeMethod || method === cloudFallbackMethod) { assertActive(); this.bambu.recordFlightDispatch(devIp,devId,remoteFileName,requirements,resumeFile); markPrintCommandSent(); } },
         onDispatched: method => { if (method === bridgeMethod || method === cloudFallbackMethod) retainForDispatchedUpload(); },
       };
       let jobUpdates: BridgeJobUpdate[] = [];
@@ -3598,6 +3602,16 @@ class BambuPrinterMCPServer {
             }
           },
           {
+            name: "counterpart_print_record", description: FLIGHT_RECORD_DESCRIPTION,
+            inputSchema: {type:"object",properties:{...FLIGHT_RECORD_PROPERTIES,host:{type:"string",description:"Saved printer hostname or address; used only to select a local record."},bambu_serial:{type:"string",description:"Saved Bambu printer serial; used only to select a local record."}},additionalProperties:false},
+            outputSchema: FLIGHT_RECORD_OUTPUT_SCHEMA
+          },
+          {
+            name:"counterpart_print_assess",description:FLIGHT_ASSESS_DESCRIPTION,
+            inputSchema:{type:"object",properties:{...FLIGHT_ASSESS_PROPERTIES,host:{type:"string",description:"Saved printer hostname or address; used only to select a local record."},bambu_serial:{type:"string",description:"Saved Bambu printer serial; used only to select a local record."}},required:FLIGHT_ASSESS_REQUIRED,additionalProperties:false},
+            outputSchema:FLIGHT_RECORD_OUTPUT_SCHEMA
+          },
+          {
             name: "counterpart_print_progress",
             description: "Counterpart contract (counterpart/1): the printer's state, current job (name, task id, percent, time left, layers, stage words), temperatures, active filament and problems with Bambu's HMS messages and links. Read from the MQTT report this server keeps, so a held session asks the printer nothing; observedAt is when the printer sent it. An unreachable printer reports state offline. Read-only; not a safety check.",
             inputSchema: {
@@ -5101,11 +5115,20 @@ class BambuPrinterMCPServer {
             break;
           }
 
+          case "counterpart_print_assess":
+            return flightRecordResult(this.bambu.flightRecords.submitVisual(flightKey(host,bambuSerial),visualSubmission(args)));
+
+          case "counterpart_print_record":
+            return flightRecordResult(this.bambu.flightRecords.read(flightKey(host,bambuSerial),flightReadOptions(args)),args?.frame_format==="images");
+
           case "counterpart_print_progress": {
             const report = await this.bambu.readProgressReport(host, bambuSerial, bambuToken);
+            if (report) void this.bambu.flightRecords.sample(flightKey(host,bambuSerial), after => this.bambu.cameraSnapshot(host,bambuSerial,bambuToken,{bambuModel:this.displayModel(args,bambuSerial),timeoutMs:8000,capturedAfter:after})).catch(() => undefined);
             result = report
               ? bambuProgress(report.raw, { receivedAt: report.receivedAt, serial: bambuSerial, model: this.displayModel(args, bambuSerial) })
               : offlineProgress(Date.now());
+            const physical=this.bambu.flightRecords.physicalForReport(flightKey(host,bambuSerial),report?.raw);
+            result = {...result, physical,problems:[...physicalProblems(physical, result.state === "finished"),...result.problems]};
             break;
           }
 

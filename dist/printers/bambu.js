@@ -1,3 +1,6 @@
+import { snapshotFrame } from "../counterpart/fresh-frame.js";
+import { FlightRecords, flightKey } from "../counterpart/flight-record.js";
+import { geometryFromGcode, geometryFromFile } from "../counterpart/print-geometry.js";
 import { PrinterRefusal, markPrintCommandSent } from "../refusal.js";
 import { CameraStreams } from "./camera-stream.js";
 import { openTcpCameraSource, openRtspCameraSource } from "./camera-sources.js";
@@ -597,14 +600,22 @@ function reportsJob(raw, remotePath) {
 export async function checkedFile(inspection, filePath) {
     const used = inspection.usedFilamentPositions.map(position => inspection.materials[position]).filter(Boolean);
     let plate;
+    let expected;
     const plateNumber = /^Metadata\/plate_(\d+)\.gcode$/i.exec(inspection.plateInternalPath ?? "");
     if (plateNumber && /\.3mf$/i.test(filePath)) {
         const entry = (await readSafe3mfArchive(filePath)).zip.file(inspection.plateInternalPath);
-        if (entry)
-            plate = { index: Number(plateNumber[1]), sha256: createHash("sha256").update(await entry.async("nodebuffer")).digest("hex") };
+        if (entry) {
+            const bytes = await entry.async("nodebuffer");
+            plate = { index: Number(plateNumber[1]), sha256: createHash("sha256").update(bytes).digest("hex") };
+            if (bytes.length <= 64 * 1024 * 1024)
+                expected = geometryFromGcode(bytes.toString("utf8"));
+        }
+    }
+    else if (!/\.3mf$/i.test(filePath)) {
+        expected = await geometryFromFile(filePath);
     }
     return {
-        sha256: inspection.sha256, ...(plate ? { plate } : {}), model: inspection.model,
+        sha256: inspection.sha256, ...(plate ? { plate } : {}), ...(expected ? { expected } : {}), model: inspection.model,
         maxNozzleTemperature: inspection.maxNozzleTemperature, maxBedTemperature: inspection.maxBedTemperature, maxChamberTemperature: inspection.maxChamberTemperature,
         materials: [...new Set(used.length ? used : inspection.materials)],
     };
@@ -632,6 +643,7 @@ export { cameraFrameParser } from "./camera-wire.js";
 export class BambuImplementation {
     constructor(confirm, options = {}) {
         this.confirm = confirm;
+        this.flightRecords = new FlightRecords();
         this.cameraStreams = new CameraStreams();
         /** In-flight counterpart_print_progress reads, one per printer. */
         this.progressReads = new Map();
@@ -708,16 +720,26 @@ export class BambuImplementation {
      * verified: a resume then re-reads it if it can and otherwise matches the
      * unique name, as KAN-216 does for firmware that cannot download a file.
      */
+    /** At the existing send-authorization boundary: record evidence even if the reply/helper is lost. */
+    recordFlightDispatch(host, serial, remotePath, requirements, file) {
+        this.flightRecords.begin(flightKey(host, serial), { sha256: file.sha256, jobName: remotePath, mapping: requirements.amsMapping, materials: file.materials, plate: file.plate, expected: file.expected });
+    }
     recordCheckedJob(host, serial, remotePath, requirements, file, uploadedHere = true) {
         if (!/^[a-f0-9]{64}$/.test(file?.sha256 ?? ""))
             throw new Error("A started job needs the SHA-256 of its inspected bytes.");
         this.checkedJobs.set(`${host}\n${serial}`, {
             ...structuredClone(file), remotePath, requirements: structuredClone(requirements), seenRunning: false, uploadedHere,
         });
+        if (!this.flightRecords.accept(flightKey(host, serial), remotePath)) {
+            this.recordFlightDispatch(host, serial, remotePath, requirements, file);
+            this.flightRecords.accept(flightKey(host, serial), remotePath);
+        }
         this.clearedErrors.delete(serial);
     }
     /** Feed one merged report to the resume record (internal; the client store calls it for every report). */
     observeReport(host, serial, raw) {
+        if (raw)
+            this.flightRecords.observe(flightKey(host, serial), raw);
         const key = `${host}\n${serial}`;
         const checked = this.checkedJobs.get(key);
         if (!checked || !raw || typeof raw.gcode_state !== "string")
@@ -1107,6 +1129,7 @@ export class BambuImplementation {
         assertActive();
         if (legacyContainer) {
             const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
+            this.recordFlightDispatch(host, serial, remoteProjectPath, requirements, resumeFile);
             markPrintCommandSent();
             try {
                 await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remoteProjectPath }));
@@ -1196,6 +1219,7 @@ export class BambuImplementation {
         }
         const calibration = directPrintOptionReport(caller, studio, projectFileCmd.print);
         const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
+        this.recordFlightDispatch(host, serial, remoteProjectPath, requirements, resumeFile);
         markPrintCommandSent();
         try {
             await printer.publish(projectFileCmd);
@@ -1803,6 +1827,7 @@ export class BambuImplementation {
         const printer = await this.getPrinter(host, serial, token);
         assertActive();
         const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
+        this.recordFlightDispatch(host, serial, remotePath, requirements, resumeFile);
         markPrintCommandSent();
         try {
             await invokeWithoutAck(printer, new GCodeFileCommand({ fileName: remotePath }));
@@ -1994,12 +2019,13 @@ export class BambuImplementation {
         const timeoutMs = options.timeoutMs ?? 8000;
         const stream = this.cameraStreams.get(JSON.stringify([host, _serial]));
         if (stream && !stream.stopped) {
-            const jpeg = await stream.latest(Math.min(timeoutMs, 10000));
-            if (!jpeg)
+            const frame = await snapshotFrame(stream, timeoutMs, options.capturedAfter);
+            if (frame.status !== "frame" || !frame.base64)
                 throw new Error("The active camera stream has not produced a live frame");
+            const jpeg = Buffer.from(frame.base64, "base64");
             if (options.savePath)
                 await (await import("node:fs/promises")).writeFile(options.savePath, jpeg);
-            return { status: "success", format: "image/jpeg", sizeBytes: jpeg.length, base64: jpeg.toString("base64"), transport: stream.transport,
+            return { status: "success", format: "image/jpeg", sizeBytes: jpeg.length, base64: jpeg.toString("base64"), transport: stream.transport, capturedAt: frame.capturedAt,
                 ...(options.savePath ? { savedTo: options.savePath } : {}) };
         }
         const model = (options.bambuModel ?? "").toLowerCase();

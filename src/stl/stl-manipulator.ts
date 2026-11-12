@@ -1,3 +1,4 @@
+import { normalize3mfMetadata } from "../slicer/3mf-xml.js";
 import { customGcodesWithPauses, layerTops, machinePauseGcode, pausedLayers, readPlateGcode, readProjectCustomGcodes } from "../slicer/layer-pauses.js";
 import * as THREE from 'three';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
@@ -2134,11 +2135,13 @@ export class STLManipulator extends EventEmitter {
       if (typeof slicerResult?.return_code === "number" && slicerResult.return_code !== 0) {
         throw new SlicerRunError(`Slicer failed: the slicer exited with code 0, but its result.json reports return_code ${slicerResult.return_code}.`, slicerResult);
       }
-      if (cacheKey && !restored && fs.existsSync(outputFilePath)) await keepSlice(cacheKey, cacheRun!);
 
       if (!fs.existsSync(outputFilePath)) {
           throw new SlicerRunError(`Slicer finished but output file not found: ${outputFilePath}`, slicerResult);
       }
+
+      if (/\.3mf$/i.test(outputFilePath)) await normalize3mfMetadata(outputFilePath);
+      if (cacheKey && !restored) await keepSlice(cacheKey, cacheRun!);
 
       if (progressCallback) progressCallback(100, "Slicing completed successfully");
       
