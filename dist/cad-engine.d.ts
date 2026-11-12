@@ -22,6 +22,8 @@ export declare class CadEngine {
     private readonly system;
     readonly dataDir: string;
     private reverifyFailure?;
+    /** How long a re-check waits for another CAD operation to let go of the engine. */
+    busyWaitMs: number;
     constructor(options: CadOptions);
     status(): Promise<CadStatus>;
     failure(error: unknown, tool: string): Promise<{

@@ -16,6 +16,8 @@ const PACKAGE_NAME = createRequire(import.meta.url)("../package.json")
 export class CadEngine {
     constructor(options) {
         this.options = options;
+        /** How long a re-check waits for another CAD operation to let go of the engine. */
+        this.busyWaitMs = 25000;
         this.system = options.system ?? defaultCadSystem;
         this.dataDir = path.resolve(options.dataDir ??
             process.env.CAD_DATA_DIR ??
@@ -232,17 +234,38 @@ export class CadEngine {
         if (this.reverifyFailure?.fingerprint === fingerprint)
             return { ...status, error: this.reverifyFailure.error };
         const started = performance.now();
+        const recheck = () => this.exclusive(async () => {
+            if ((await this.status()).ready)
+                return;
+            const env = this.environment(this.dataDir);
+            await fs.mkdir(env.TMPDIR, { recursive: true });
+            const previous = await fs
+                .readFile(path.join(this.dataDir, "ready.json"), "utf8")
+                .then((text) => JSON.parse(text).storage, () => undefined);
+            await this.verify({ env, cwd: this.dataDir, signal, timeoutMs: 600000 }, signal, previous ?? null);
+        }, "setup", signal);
         try {
-            await this.exclusive(async () => {
-                if ((await this.status()).ready)
-                    return;
-                const env = this.environment(this.dataDir);
-                await fs.mkdir(env.TMPDIR, { recursive: true });
-                const previous = await fs
-                    .readFile(path.join(this.dataDir, "ready.json"), "utf8")
-                    .then((text) => JSON.parse(text).storage, () => undefined);
-                await this.verify({ env, cwd: this.dataDir, signal, timeoutMs: 600000 }, signal, previous ?? null);
-            }, "setup", signal);
+            // Another call may hold the engine, usually this same re-check from another process (Counterpart reading
+            // cad_status while the design worker's first cad_run starts): wait for it and try again, never call it a failure.
+            for (const until = performance.now() + this.busyWaitMs;;) {
+                try {
+                    await recheck();
+                    break;
+                }
+                catch (e) {
+                    if (!(e instanceof CadRefusal && e.code === "cad-setup-busy"))
+                        throw e;
+                    signal?.throwIfAborted();
+                    if ((await this.status()).ready)
+                        break;
+                    if (performance.now() >= until)
+                        return {
+                            ...(await this.status()),
+                            error: "Another CAD operation is running; this MCP re-checks its unchanged runtime by itself when that finishes. Ask again shortly.",
+                        };
+                    await new Promise((resolve) => setTimeout(resolve, 500));
+                }
+            }
         }
         catch (e) {
             signal?.throwIfAborted();
@@ -273,8 +296,9 @@ export class CadEngine {
             const runtime = await this.runtimeIdentity();
             if (!runtime.matchesLock)
                 return false;
-            // Markers written before 1.1.90 / 1.2.72 carry no interpreter: the exact package match and the re-run proof decide.
-            if (marker.runtime && marker.runtime.interpreter !== runtime.interpreter)
+            // Markers from engines without the runtime record (bambu-printer-mcp 1.1.89, mcp-3D-printer-server 1.2.71 and
+            // earlier) qualify by the exact package match; the re-run proof decides the rest.
+            if (marker.runtime && (marker.runtime.interpreter !== runtime.interpreter || marker.runtime.lock_sha256 !== runtime.lock_sha256))
                 return false;
             return true;
         }
@@ -460,7 +484,9 @@ export class CadEngine {
                 inputs[alias] = await this.inputFile(value, ext);
             }
         }
-        await this.ensureReady(signal);
+        const before = await this.ensureReady(signal);
+        if (!before.ready)
+            throw new CadRefusal("cad-not-ready", before.error);
         return this.exclusive(async (queueWaitMs) => {
             const status = await this.status();
             if (!status.ready)
@@ -599,7 +625,9 @@ export class CadEngine {
             clearance < 0 ||
             clearance > 100)
             throw new Error("clearance_mm must be finite, between 0 and 100.");
-        await this.ensureReady(signal);
+        const before = await this.ensureReady(signal);
+        if (!before.ready)
+            throw new CadRefusal("cad-not-ready", before.error);
         return this.exclusive(async () => {
             const status = await this.status();
             if (!status.ready)

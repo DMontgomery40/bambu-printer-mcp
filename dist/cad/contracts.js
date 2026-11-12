@@ -65,7 +65,7 @@ const timeout = {
 export const CAD_TOOLS = [
     {
         name: "cad_status",
-        description: "Read the optional code-CAD runtime's readiness and pinned version. Never installs or downloads anything. When only this MCP's own engine files changed since the runtime was last verified (an update) and the installed runtime still matches the pinned lock exactly, it re-runs setup's confined import, build, STL and STEP proof (about 15 to 20 seconds) and reports ready; a changed runtime still needs cad_setup with install: true.",
+        description: "Read the optional code-CAD runtime's readiness and pinned version. Never installs or downloads anything. When only this MCP's own engine files changed since the runtime was last verified (an update) and the installed runtime still matches the pinned lock exactly, it re-runs setup's confined build, STL and STEP round trip (about 15 to 20 seconds) and reports ready; a changed runtime still needs cad_setup with install: true.",
         inputSchema: {
             type: "object",
             properties: {},
