@@ -60,6 +60,8 @@ import { importFileViaBambuConnect } from "./bambu-connect.js";
 import { CadEngine } from "./cad-engine.js";
 import { CadRefusal } from "./cad/refusal.js";
 import { CAD_TOOLS, cadEnabled } from "./cad/contracts.js";
+import { cadExamplesTool } from "./cad/examples.js";
+import { DESIGN_GUIDANCE_TOOL, designGuidance } from "./design-guidance.js";
 import { BlenderMcpBridge } from "./blender-mcp-bridge.js";
 import { FUSION_EXPORT_OUTPUT_SCHEMA, FUSION_MCP_DEFAULT_ARGS, FUSION_MCP_PIN, FUSION_NEW_DESIGN_OUTPUT_SCHEMA, FUSION_STATUS_OUTPUT_SCHEMA, FusionMcpBridge, addinAddress } from "./fusion-mcp-bridge.js";
 import { BLENDER_SETUP_OUTPUT_SCHEMA, BlenderAddonSetup, FUSION_ADDIN_REPOSITORY, FUSION_SETUP_OUTPUT_SCHEMA, FusionAddinSetup, defaultSetupSystem, parseAddonHandshake, type BlenderAddonHandshake } from "./design-app-setup.js";
@@ -155,7 +157,7 @@ const SERVER_INFO = {
 };
 /** Tools that declare an outputSchema: they always return structuredContent, and errors carry none. */
 const OUTPUT_SCHEMA_TOOLS = new Set([
-  "cad_status", "cad_setup", "cad_run", "cad_check_fit",
+  "cad_status", "cad_setup", "cad_run", "cad_check_fit", "cad_examples",
   "counterpart_printer_info", "counterpart_print_progress", "counterpart_make_3mf",
   "counterpart_discover_printers", "counterpart_setup_fields", "counterpart_propose_filaments",
   "fusion_mcp_status", "fusion_mcp_new_design", "fusion_mcp_export",
@@ -3478,6 +3480,7 @@ class BambuPrinterMCPServer {
               required: ["stl_path"]
             }
           },
+          DESIGN_GUIDANCE_TOOL,
           ...(CAD_ENABLED ? CAD_TOOLS : []),
           {
             name: "blender_mcp_status",
@@ -5108,6 +5111,14 @@ class BambuPrinterMCPServer {
 
           case "counterpart_make_3mf":
             result = await makeCounterpart3mf(args ?? {});
+            break;
+
+          case "design_guidance":
+            result = designGuidance(args ?? {});
+            break;
+
+          case "cad_examples":
+            result = cadExamplesTool(args ?? {});
             break;
 
           case "cad_status":
