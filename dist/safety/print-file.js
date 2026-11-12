@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { readBoundedPrintFile, loadSafe3mfArchive } from './archive.js';
 import { projectFilaments } from "../ams-mapping.js";
-import { MACHINE_LIMITS, isDualNozzleModel, normalizeMaterial, normalizeModel, validateStartupPurgeTemperature, validateTemperature } from './limits.js';
+import { MACHINE_LIMITS, fileModelFitsPrinter, isDualNozzleModel, normalizeMaterial, normalizeModel, validateStartupPurgeTemperature, validateTemperature } from './limits.js';
 const NUMBER = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
 const fail = (message) => { throw new Error(`Print safety: ${message}`); };
 function list(value) {
@@ -292,7 +292,7 @@ export async function inspectPrintFile(filePath, options) {
     const metadata = [project, ...headers];
     validateFffJob([...metadata, plate]);
     const declaredModel = consistent(metadataValues(metadata, ['printer_model']), normalizeModel, 'printer model');
-    if (declaredModel !== model)
+    if (!fileModelFitsPrinter(declaredModel, model))
         return fail(`file model ${declaredModel} contradicts requested model ${model}`);
     const nozzleDiameters = consistent(metadataValues(metadata, ['nozzle_diameter']), value => {
         const values = list(value);

@@ -39,6 +39,14 @@ export function isDualNozzleModel(model) {
     const normalized = normalizeModel(model);
     return normalized !== undefined && DUAL_NOZZLE_MODELS.has(normalized);
 }
+/** File models a printer accepts besides its own, keyed by the printer's observed model.
+ * A P1P with the enclosure upgrade kit still reports itself as a P1P, while its jobs are sliced with the P1S
+ * preset. Bambu Studio sends those jobs: resources/printers/C11.json (P1P) lists C12 (P1S) in compatible_machine.
+ * The two models have identical MACHINE_LIMITS, and the file is still checked against the printer's own limits. */
+export const ACCEPTED_FILE_MODELS = { p1p: new Set(['p1s']) };
+export function fileModelFitsPrinter(fileModel, printerModel) {
+    return fileModel === printerModel || ACCEPTED_FILE_MODELS[printerModel]?.has(fileModel) === true;
+}
 export function normalizeModel(value) {
     if (typeof value !== 'string')
         return undefined;

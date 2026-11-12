@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Accept a P1S-sliced job on a printer that freshly identifies itself as a P1P, following Bambu Studio's compatibility table while retaining the P1P's model, nozzle, material, thermal and readiness checks. Contributor inspection and hardware evidence is distinct from mocked MCP dispatch validation.
 - Align direct P1S calibration booleans with the shared Studio option resolver, preserve explicit choices, and report requested/resolved/transmitted options and unsupported overrides without guessing SDK wire fields. Payload regressions use fake transports with network blocked; this parity work does not establish a cure for scan-to-make #605 or physical print success.
 - `cad_run` no longer reports a printed screw in its nut as touching. The exact B-rep distance could call a shaft in its threaded hole "inside" the other solid and return 0 where the tessellations were apart and the solids shared no volume (`desk_clamp_hook` clamped at a 31 mm opening, 0.28 mm clear). In that case the surfaces are measured instead. Real contact and real overlap still read 0.
 

@@ -41,6 +41,16 @@ test('credible model nozzle and material metadata are mandatory and contradictio
   await assert.rejects(inspect(t,header()+'M104 S220\n',{model:'p1s',nozzleDiameters:[0.6]}),/nozzle/i);
   await assert.rejects(inspect(t,header()+'; curr_bed_type = Textured PEI Plate\nM104 S220\n',{model:'p1s',bedType:'Smooth PEI Plate'}),/bed/i);
 });
+test('a P1P accepts a job sliced for the P1S, and no other cross-model job is accepted',async t=>{
+  const r=await inspect(t,header('P1S')+'M104 S250\nM140 S60\n',{model:'p1p'});
+  assert.equal(r.model,'p1p');assert.equal(r.maxNozzleTemperature,250);
+  const entries={'Metadata/project_settings.config':{printer_model:'Bambu Lab P1S',nozzle_diameter:['0.4'],filament_type:['PLA']},'Metadata/plate_1.gcode':header('P1S')+'M104 S250\n'};
+  assert.equal((await inspect(t,'',{model:'p1p'},entries)).model,'p1p');
+  await assert.rejects(inspect(t,header('P1S')+'M104 S400\n',{model:'p1p'}),/temperature|limit|target/i,'limits still apply');
+  for(const [file,printer] of [['P1P','p1s'],['X1C','p1p'],['A1','p1p'],['P1S','a1'],['P1S','x1c']])
+    await assert.rejects(inspect(t,header(file)+'M104 S220\n',{model:printer}),/contradicts requested model/,`${file} file on ${printer}`);
+  await assert.rejects(inspect(t,header('P1S')+'; printer_model = Bambu Lab P1P\nM104 S220\n',{model:'p1p'}),/contradict/i,'mixed declarations in one file');
+});
 test('selected plate alone is inspected before dispatch and project metadata can supply headers',async t=>{
   const entries={'Metadata/project_settings.config':{printer_model:'Bambu Lab P1S',nozzle_diameter:['0.4'],filament_type:['PLA','PETG']},'Metadata/plate_1.gcode':header()+'M104 S400\n','Metadata/plate_2.gcode':'T1\nM104 S250\nM140 S60\n','Metadata/plate_2.json':{filament_ids:[1]}};
   const r=await inspect(t,'',{model:'p1s',plateIndex:1},entries);assert.equal(r.plateInternalPath,'Metadata/plate_2.gcode');assert.deepEqual(r.usedFilamentPositions,[1]);
