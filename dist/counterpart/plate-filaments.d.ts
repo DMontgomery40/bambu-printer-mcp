@@ -34,6 +34,21 @@ export interface PlateFilament {
     /** The first part (else object) on this plate that prints with it; absent for support, painting or tool changes only. */
     name?: string;
 }
+/**
+ * One part on a plate, as the open 3MF standard places it, so a client draws it in its filament's colour without
+ * reading slicer files: the mesh object `object_id`, in the model part `path` when that is not the root
+ * 3D/3dmodel.model (production extension p:path, as the file names it), and the 1-based project filament it prints
+ * with. `painted` is true when the slicer's painting (paint_color) recolours some of its facets.
+ */
+export interface PlatePart {
+    object_id: number;
+    /** The root object (a build item's objectid) this part belongs to: copies of one mesh may print in other filaments. */
+    build_object_id: number;
+    path?: string;
+    name: string;
+    filament: number;
+    painted?: true;
+}
 type Settings = Map<string, string>;
 interface Part {
     id: string;
@@ -74,6 +89,8 @@ export interface PlateLayout {
     }[];
     /** Metadata/plate_N.json filament_ids (0-based) when the file holds this plate's slice. */
     slicedFilamentIds?: number[];
+    /** The file has no plate metadata: this one plate holds every build item. */
+    allItems?: boolean;
 }
 /**
  * The filaments each plate prints with, keyed by plate number. `settings` is model_settings.config, `model` the root
@@ -83,5 +100,7 @@ export declare function plateFilaments(zip: JSZip, settings: string, model: stri
     plates: Map<number, PlateFilament[]>;
     incomplete: Set<number>;
     project: PlateFilament[];
+    buildItems: Map<number, number[]>;
+    parts: Map<number, PlatePart[]>;
 }>;
 export {};
