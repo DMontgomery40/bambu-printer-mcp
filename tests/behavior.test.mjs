@@ -2622,6 +2622,7 @@ function writeTemplateJsonFixture(
 // `behaviour` "stall" logs a line and then waits at 0% CPU, as Bambu Studio does behind AppKit's modal alert;
 // "busy" computes silently for 2.5 s before writing its output. Each run records its CFFIXED_USER_HOME.
 async function createFakeBambuSlicer({ result, exitCode = 0, machine = {}, behaviour } = {}) {
+  const fixtureZip=await new JSZip().file('fixture.txt','fake sliced 3mf').generateAsync({type:'base64'});
   const tempDir = trackedMkdtempSync(path.join(os.tmpdir(), "bambu-mcp-template-slicer-"));
   const fakeSlicerPath = path.join(tempDir, "fake-slicer.mjs");
   const argsOutPath = path.join(tempDir, "args.json");
@@ -2656,7 +2657,7 @@ const outputPath = path.isAbsolute(exportArg) ? exportArg : path.join(outputDir,
 fs.mkdirSync(path.dirname(outputPath), { recursive: true });
 ${result ? `fs.copyFileSync(${JSON.stringify(fileURLToPath(new URL(`./fixtures/studio-result/${result}`, import.meta.url)))}, path.join(outputDir, "result.json"));` : ""}
 ${exitCode ? `process.exit(${exitCode});` : ""}
-fs.writeFileSync(outputPath, "fake sliced 3mf");
+fs.writeFileSync(outputPath,Buffer.from(${JSON.stringify(fixtureZip)},'base64'));
 `
   );
   fs.chmodSync(fakeSlicerPath, 0o755);
@@ -2846,7 +2847,7 @@ test("slice_stl reuses an identical earlier slice, and slices again when an inpu
   const again = await slice(await connect());
   assert.equal(again.isError, undefined, again.content?.[0]?.text);
   assert.equal(ran(), false, "the slicer did not run again");
-  assert.equal(fs.readFileSync(again.structuredContent.path, "utf8"), "fake sliced 3mf");
+  assert.equal(await (await JSZip.loadAsync(fs.readFileSync(again.structuredContent.path))).file("fixture.txt").async("string"), "fake sliced 3mf");
   assert.deepEqual(again.structuredContent.slicer_result, first.structuredContent.slicer_result, "Studio's words come back with it");
   fs.appendFileSync(model, " ");
   assert.equal((await slice(client)).isError, undefined);
@@ -2880,7 +2881,8 @@ fs.mkdirSync(outputDir, { recursive: true });
 fs.copyFileSync(path.join(${JSON.stringify(fixtures)}, refused ? "p1s-empty-layers.json" : "p1s-floating-cantilever.json"), path.join(outputDir, "result.json"));
 await new Promise(resolve => setTimeout(resolve, ${holdMs} || 400));
 if (refused) process.exit(156);
-fs.writeFileSync(path.join(outputDir, args[args.indexOf("--export-3mf") + 1]), "sliced " + input);
+const {default:JSZip}=await import(${JSON.stringify(new URL('../node_modules/jszip/lib/index.js',import.meta.url).href)});
+fs.writeFileSync(path.join(outputDir,args[args.indexOf("--export-3mf")+1]),await new JSZip().file('fixture.txt','sliced '+input).generateAsync({type:'nodebuffer'}));
 `);
   const transport = new StdioClientTransport({
     command: process.execPath, args: [SERVER_ENTRY], cwd: fakeSlicer.tempDir,
@@ -2918,7 +2920,7 @@ test("overlapping slices of same-named models each keep their own sliced file an
     assert.deepEqual(result.structuredContent.slicer_result, studioResult("p1s-floating-cantilever.json"));
     assert.equal(result.structuredContent.slicer_report.failed, false);
     // Each returned file is the one sliced from its own model.
-    assert.equal(fs.readFileSync(result.structuredContent.path, "utf8"), `sliced ${inputs[index]}`);
+    assert.equal(await (await JSZip.loadAsync(fs.readFileSync(result.structuredContent.path))).file("fixture.txt").async("string"), `sliced ${inputs[index]}`);
     assert.match(result.structuredContent.path, /model_sliced\.3mf$/);
     paths.add(result.structuredContent.path);
   }
@@ -2940,7 +2942,7 @@ test("an identical slice still reuses the kept one from its own folder", async (
   assert.equal(again.isError, undefined, again.content?.[0]?.text);
   assert.equal(fs.readdirSync(pids).length, 1, "the slicer ran once; the second slice was restored from the cache");
   assert.notEqual(again.structuredContent.path, first.structuredContent.path);
-  assert.equal(fs.readFileSync(again.structuredContent.path, "utf8"), `sliced ${input}`);
+  assert.equal(await (await JSZip.loadAsync(fs.readFileSync(again.structuredContent.path))).file("fixture.txt").async("string"), `sliced ${input}`);
 });
 
 // A client that no longer wants a slice (Counterpart's sheet moved on to newer settings) cancels the call: the

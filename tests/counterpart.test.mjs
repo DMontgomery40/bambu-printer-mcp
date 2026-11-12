@@ -1,3 +1,5 @@
+import {SaxesParser} from 'saxes';
+import {spawnSync} from "node:child_process";
 import {trackedMkdtempSync} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -478,4 +480,27 @@ test("an HMS or print_error code missing from the bundled tables uses the user's
 
   process.env.BAMBU_STUDIO_CONFIG = "";
   assert.match(progress(raw).problems.find((problem) => problem.code === "0300_0D00_0002_0001").message, /has no description/);
+});
+
+
+test('every XML part of counterpart and charm 3MF output parses with quoted attribute values',async t=>{
+ const {parseStringPromise}=await import('xml2js');const f=parts(t);
+ const name='Lid "A" & <B>\tinner\nline 😀';
+ const out=path.join(f.directory,'plate "Q" & <one>.3mf');
+ await makeCounterpart3mf({out_path:out,parts:[{stl_path:f.base,name}]});
+ const check=async file=>{
+  const zip=await JSZip.loadAsync(fs.readFileSync(file));let count=0;
+  for(const entry of Object.values(zip.files)){
+   if(entry.dir)continue;const text=await entry.async('string');
+   if(/\.(?:xml|model|rels)$/i.test(entry.name)||(/\.config$/i.test(entry.name)&&text.trimStart().startsWith('<'))){assert.doesNotThrow(()=>new SaxesParser().write(text).close(),entry.name);await assert.doesNotReject(parseStringPromise(text),entry.name);count++;}
+  }
+  assert.equal(count,4);return zip;
+ };
+ const zip=await check(out);const settings=await parseStringPromise(await zip.file('Metadata/model_settings.config').async('string'));
+ assert.equal(settings.config.object[0].part[0].metadata[0].$.value,name);
+ const a=path.join(f.directory,'body "A" & <B>.stl'), c=path.join(f.directory,'cap "C" & <D>.stl');fs.copyFileSync(f.base,a);fs.copyFileSync(f.top,c);
+ const template=path.join(f.directory,'template.3mf');fs.writeFileSync(template,await new JSZip().file('Metadata/project_settings.config','{}').generateAsync({type:'nodebuffer'}));
+ const target=path.join(f.directory,'charm.3mf');
+ const result=spawnSync(process.execPath,[new URL('../scripts/build-charm-3mf.mjs',import.meta.url).pathname,'--stl-a',a,'--stl-b',c,'--template',template,'--out',target],{encoding:'utf8'});
+ assert.equal(result.status,0,result.stderr);await check(target);
 });

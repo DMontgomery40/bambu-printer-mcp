@@ -1,3 +1,4 @@
+import {createHash} from "node:crypto";
 import {trackedMkdtemp} from './support/temp.mjs';
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -16,7 +17,7 @@ const printerModule = new URL("../dist/printers/bambu.js", import.meta.url).href
 
 // Exercise platform dispatch on every CI OS. Only the OS selector and transport
 // boundaries are mocked; file inspection, AMS validation and preflight are real.
-async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState, dispatchError, installedHelper = true, installedPlugin = true, tunnelLibrary = true, arch = "x64", unpinnedOptIn = true, helperFails = false, mqttFails = false, mqttHangs = false, mqttDelay = 0, mqttFirstConnectionOffline = false, hms = [], storage = {}, dispatchStorage, env = {}, printer = "x2d", resumeAfterPrint = false } = {}) {
+async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState, dispatchError, installedHelper = true, installedPlugin = true, tunnelLibrary = true, arch = "x64", unpinnedOptIn = true, helperFails = false, crashAfterDispatch = false, mqttFails = false, mqttHangs = false, mqttDelay = 0, mqttFirstConnectionOffline = false, hms = [], storage = {}, dispatchStorage, env = {}, printer = "x2d", resumeAfterPrint = false } = {}) {
   // The printer the plate is sliced for and the fresh report describes; model only sets BAMBU_MODEL.
   const x1c = printer === "x1c";
   const dir = await trackedMkdtemp(path.join(os.tmpdir(), "bambu-native-test-"));
@@ -58,6 +59,7 @@ if (['--print-authorized', '--command-authorized'].includes(process.argv[2])) {
   if (await authorization !== 'native_dispatch_authorized=1') process.exit(21);
   input.close();
   appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({kind:'dispatched'}) + '\\n');
+  if (${crashAfterDispatch} && process.argv[2] === '--print-authorized') process.exit(1);
 }
 console.log('native_print result=0');
 `, { mode: 0o755 });
@@ -904,4 +906,17 @@ test('X1C native job resumes verified bytes over direct MQTT without prompting',
   assert.equal(events.filter(e=>e.kind==='mqtt').length,1);
   assert.equal(events.filter(e=>e.kind==='helper').length,1,'resume does not start another native helper');
   assert.deepEqual(s.prompts,[]);
+});
+
+test('native helper failure after authorized print retains the exact unconfirmed flight record through the public tool',async t=>{
+  const peer=await server(t,{crashAfterDispatch:true});
+  const sent=await peer.print({connection_mode:'bambu_native',ams_slots:[0]});
+  assert.equal(sent.isError,true);assert.equal(sent.structuredContent.printOutcome,'unknown');
+  assert.equal((await peer.events()).filter(e=>e.kind==='dispatched').length,1);
+  const saved=await peer.client.callTool({name:'counterpart_print_record',arguments:{host:'127.0.0.1',bambu_serial:'20PTEST'}});
+  assert.equal(saved.structuredContent.status,'recorded');
+  assert.equal(saved.structuredContent.record.dispatch.sha256,createHash('sha256').update(await fs.readFile(peer.file)).digest('hex'));
+  assert.deepEqual(saved.structuredContent.record.dispatch.mapping,[0]);
+  assert.equal(saved.structuredContent.record.dispatch.outcome,'unconfirmed');
+  assert.equal(saved.structuredContent.physical.status,'unknown');
 });
