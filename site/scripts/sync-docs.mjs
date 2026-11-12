@@ -461,6 +461,7 @@ const MODEL_LABELS = {
 // Keep these notes in step with docs/SETUP.md and docs/SLICING.md whenever
 // model support changes.
 const MODEL_NOTES = {
+  x1c: 'Direct LAN printing; optional native printing (connection_mode bambu_native) when the firmware refuses FTPS uploads.',
   x2d: 'Status and slicing; optional native printing on macOS or x86-64 Linux with a locally built helper.',
 };
 

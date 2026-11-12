@@ -20,7 +20,7 @@ import { bridgeAmsMapping2Entry, bridgeAmsMappingValue, externalTrayForNozzle, d
 import { describeHmsKey, hiddenHmsKeys, hiddenHmsNotices, reportedHmsKey, unchippedNozzles, validatePrinterState, manualHeatingRequirements, type PrinterStateRequirements } from "../safety/printer-state.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName, normalizedRemotePath, cancelPendingPrinterOperations } from "../safety/artifact.js";
 import { RTSP_CAMERA_MODELS, TCP_CAMERA_MODELS } from "./camera-models.js";
-import { resolveStudioPrintOptions, usedNozzleCount, type CallerPrintOptions } from "../studio-print-options.js";
+import { directPrintOptionReport, resolveStudioPrintOptions, usedNozzleCount, type CallerPrintOptions } from "../studio-print-options.js";
 import { Client as FTPClient } from "basic-ftp";
 import { uploadBytes } from "./ftp-upload.js";
 import * as mqtt from "mqtt";
@@ -156,6 +156,19 @@ const MODEL_ID_TO_NAME: Record<string, string> = {
 };
 
 const H2_MODEL_NAMES = new Set(["h2", "h2c", "h2d", "h2dpro", "h2d pro", "h2s", "x2d"]);
+
+/**
+ * X1C firmware 01.12.00.00 was seen refusing every FTPS STOR with
+ * "553 Could not create file." (card ready and writable, Developer Mode on)
+ * while Bambu Studio's networking plug-in still printed. Name that route.
+ */
+export function ftpsRefusalHint(error: unknown, model: string | undefined): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (normalizeModel(model) !== "x1c" || ((error as { code?: unknown })?.code !== 553 && !/^553\b/.test(message))) return "";
+  return ' X1C firmware 01.12.00.00 has been seen refusing every direct FTPS upload this way. ' +
+    'Retry with connection_mode: "bambu_native", which uploads through Bambu Studio\'s networking plug-in ' +
+    '(on macOS, first run npm run build:native in the package directory; on Linux, bambu-printer-mcp-native-setup).';
+}
 
 export function assertDirectPrintSupported(model: string | undefined, serial?: string): void {
   if (model?.trim().toLowerCase() === "x2d" || serial?.trim().toUpperCase().startsWith("20P")) {
@@ -1142,12 +1155,13 @@ export class BambuImplementation {
     });
     const resumeFile = await checkedFile(inspection, options.filePath);
     // The options Bambu Studio's Send dialog would send; explicit ones win.
-    const studio = resolveStudioPrintOptions(model, {
+    const caller: CallerPrintOptions = {
       bedLeveling: options.bedLeveling, flowCalibration: options.flowCalibration,
       vibrationCalibration: options.vibrationCalibration, layerInspect: options.layerInspect,
       autoBedLeveling: options.autoBedLeveling, autoFlowCali: options.autoFlowCali,
       autoOffsetCali: options.autoOffsetCali, extruderCaliManualMode: options.extruderCaliManualMode,
-    } satisfies CallerPrintOptions, { usedNozzles: usedNozzleCount(inspection) });
+    };
+    const studio = resolveStudioPrintOptions(model, caller, { usedNozzles: usedNozzleCount(inspection) });
     const projectMetadata = await this.resolveProjectFileMetadata(
       options.filePath,
       options.plateIndex,
@@ -1285,7 +1299,7 @@ export class BambuImplementation {
       await this.ftpUpload(host, token, options.filePath, remoteUploadPath, options.onUploadProgress);
     } catch (error) {
       // Nothing has been sent to the printer but (part of) a file, so the print certainly did not start.
-      throw new PrinterRefusal("printer-upload-failed", `The print file did not reach the printer (${error instanceof Error ? error.message : String(error)}). No print was started.`);
+      throw new PrinterRefusal("printer-upload-failed", `The print file did not reach the printer (${error instanceof Error ? error.message : String(error)}). No print was started.${ftpsRefusalHint(error, model)}`);
     }
     // Uploads can be long. Recheck current state before the command is dispatched.
     const dispatchStatus = await this.getSafetyStatus(host, serial, token);
@@ -1303,6 +1317,7 @@ export class BambuImplementation {
       const dispatch = await watcher.settled();
       return {
         status: "success", dispatch, remoteProjectPath,
+        calibration: directPrintOptionReport(caller, studio, {}),
         message: dispatch === "started"
           ? `The printer accepted and started the checked gcode.3mf print: ${options.projectName}`
           : `Uploaded the checked gcode.3mf and sent the print command for ${options.projectName}; the printer has not reported starting yet. ` +
@@ -1378,6 +1393,7 @@ export class BambuImplementation {
       };
     }
 
+    const calibration = directPrintOptionReport(caller, studio, projectFileCmd.print);
     const watcher = this.watchDispatch(printer, host, serial, token, dispatchStatus, assertActive);
     this.recordFlightDispatch(host,serial,remoteProjectPath,requirements,resumeFile);
     markPrintCommandSent();
@@ -1388,6 +1404,7 @@ export class BambuImplementation {
 
     return {
       status: "success",
+      calibration,
       dispatch,
       message: dispatch === "started"
         ? `The printer accepted and started the checked 3MF print: ${options.projectName}`
@@ -2007,7 +2024,15 @@ export class BambuImplementation {
         assertActive();
         const destination = path.posix.join(path.posix.dirname(remotePath), uniquePrintName(remotePath));
         if (upload) await upload(snapshot, destination, assertActive);
-        else await this.ftpUpload(host, token, snapshot, `/${destination}`);
+        else {
+          try {
+            await this.ftpUpload(host, token, snapshot, `/${destination}`);
+          } catch (error) {
+            const hint = ftpsRefusalHint(error, model);
+            if (hint && error instanceof Error) error.message += hint;
+            throw error;
+          }
+        }
         return { status: "success", uploaded: true, remotePath: destination, printRequested: false, inspected: printable };
       }));
     }

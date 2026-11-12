@@ -105,4 +105,8 @@ export type ExternalStorageState = "none" | "normal" | "abnormal" | "readonly";
  * (DevStorage.cpp, DeviceManager.cpp parse_home_flag and parse_new_info).
  */
 export declare function externalStorageState(raw: unknown): ExternalStorageState;
+/** Studio DeviceManager.cpp at 926a7192574b: fun2 bit 0 advertises eMMC printing.
+ * Use only a fresh raw report at the caller. Reject malformed flags rather than
+ * stripping arbitrary characters as Studio's general-purpose parser does. */
+export declare function internalPrintingSupported(raw: unknown): boolean;
 export {};
