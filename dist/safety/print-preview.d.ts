@@ -31,6 +31,8 @@ export declare function extrusionSegments(gcode: string): {
     segments: Segment[];
     layers: number;
 };
+/** An arc's centre from I/J (offsets from the start) or R (radius; negative takes the longer way round). */
+export declare function arcCentre(x: number, y: number, tx: number, ty: number, clockwise: boolean, i?: number, j?: number, r?: number): [number, number] | undefined;
 /** The top and bed-side pictures of one plate's G-code. `colours` are the project's filament colours by slot. */
 export declare function renderPrintPreview(gcode: string, colours?: unknown[]): PrintPreview | undefined;
 /** The preview of one plate of a sliced .3mf or a .gcode file, or undefined when it has no extruding moves. */

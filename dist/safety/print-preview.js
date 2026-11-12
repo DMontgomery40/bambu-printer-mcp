@@ -198,7 +198,7 @@ function parameterWords(text) {
     return words;
 }
 /** An arc's centre from I/J (offsets from the start) or R (radius; negative takes the longer way round). */
-function arcCentre(x, y, tx, ty, clockwise, i, j, r) {
+export function arcCentre(x, y, tx, ty, clockwise, i, j, r) {
     if (i !== undefined || j !== undefined)
         return [x + (i ?? 0), y + (j ?? 0)];
     if (r === undefined || r === 0 || (tx === x && ty === y))
