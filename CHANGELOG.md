@@ -9,6 +9,8 @@
 - `cad_run` returns `next`, beside the render paths: read the perspective view before the next change, and say what it shows is wrong against what is being made.
 - `cad_run` returns `printed`: whatever the script wrote with `print()`, up to 4000 characters (`build.log` keeps the rest). A design can report a number it computed, such as a spring's strain, without making a run fail to read it. It is the script's own words, not a measurement by the engine. `broom_grip` and `desk_edge_cable_holder` print their arm strain this way.
 
+- X1C can print and upload over the native route with `connection_mode: "bambu_native"` (Bambu Studio's networking plug-in, after `npm run build:native` on macOS). An X1C on firmware 01.12.00.00, with LAN Only and Developer Mode on and a ready, writable SD card, answers every direct FTPS `STOR` with `553 Could not create file.`, so `print_3mf` and `upload_file` cannot reach it, while Bambu Studio prints normally. The X1C default stays `lan_mqtt_ftps` and is not redirected; an X1C upload that fails with 553 now says to retry with `bambu_native`. The native route keeps the shared inspection, AMS mapping and fresh printer-state checks. Native controls stay X2D-only, so `cancel_print`, `pause_print` and `resume_print` named `bambu_native` for another model now use direct MQTT instead of failing with "The selected printer is not an X2D." Checked with mocked transport regressions and one physical X1C print on macOS (firmware 01.12.00.00, AMS 2 Pro slot, job stored on the SD card); Linux, other X1C firmware and X1E are untested, and X1E stays excluded.
+
 ### Changed
 
 - `cad_design` starts a new design from the product, in order: name two or three products a person would buy and say which the design follows; choose from the cookbook by purpose and read the example whose use is nearest; only then choose the mechanism. The concept, with the product it is modelled on, goes in the script's opening docstring, as in the cookbook, so the choice can be seen. In a test with Sonnet 5.5 the worker chose a clamp and a screw first and never listed the cookbook, and built a bracket with the mechanism bolted on.
@@ -20,6 +22,10 @@
 - Accept a P1S-sliced job on a printer that freshly identifies itself as a P1P, following Bambu Studio's compatibility table while retaining the P1P's model, nozzle, material, thermal and readiness checks. Contributor inspection and hardware evidence is distinct from mocked MCP dispatch validation.
 - Align direct P1S calibration booleans with the shared Studio option resolver, preserve explicit choices, and report requested/resolved/transmitted options and unsupported overrides without guessing SDK wire fields. Payload regressions use fake transports with network blocked; this parity work does not establish a cure for scan-to-make #605 or physical print success.
 - `cad_run` no longer reports a printed screw in its nut as touching. The exact B-rep distance could call a shaft in its threaded hole "inside" the other solid and return 0 where the tessellations were apart and the solids shared no volume (`desk_clamp_hook` clamped at a 31 mm opening, 0.28 mm clear). In that case the surfaces are measured instead. Real contact and real overlap still read 0.
+
+- Require fresh ready external storage for native X1C printing unless the fresh raw report advertises internal printing through Studio's `fun2` bit 0; recheck the selected storage at dispatch and reject unsupported explicit/environment eMMC requests. Validate storage changes, material mismatch and byte-verified MQTT resume with fake transports. Linux hardware remains unverified.
+
+- Accept an unambiguous single external slot reported as 255 on single-nozzle X1C firmware 01.12 while retaining material checks, explicit mapping validation and dual-nozzle selection.
 
 ## [1.1.91] – 2026-11-12
 

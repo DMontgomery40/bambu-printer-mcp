@@ -17,7 +17,9 @@ const printerModule = new URL("../dist/printers/bambu.js", import.meta.url).href
 
 // Exercise platform dispatch on every CI OS. Only the OS selector and transport
 // boundaries are mocked; file inspection, AMS validation and preflight are real.
-async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState, dispatchError, installedHelper = true, installedPlugin = true, tunnelLibrary = true, arch = "x64", unpinnedOptIn = true, helperFails = false, crashAfterDispatch = false, mqttFails = false, mqttHangs = false, mqttDelay = 0, mqttFirstConnectionOffline = false, hms = [], storage = {}, dispatchStorage, env = {} } = {}) {
+async function server(t, { platform = "darwin", model = "x2d", state = "IDLE", gcode = "G1 X0 Y0\n", decline = false, helperDelay = 0, ignoreTerm = false, dispatchState, dispatchError, installedHelper = true, installedPlugin = true, tunnelLibrary = true, arch = "x64", unpinnedOptIn = true, helperFails = false, crashAfterDispatch = false, mqttFails = false, mqttHangs = false, mqttDelay = 0, mqttFirstConnectionOffline = false, hms = [], storage = {}, dispatchStorage, env = {}, printer = "x2d", resumeAfterPrint = false } = {}) {
+  // The printer the plate is sliced for and the fresh report describes; model only sets BAMBU_MODEL.
+  const x1c = printer === "x1c";
   const dir = await trackedMkdtemp(path.join(os.tmpdir(), "bambu-native-test-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const eventsFile = path.join(dir, "events.jsonl");
@@ -63,11 +65,13 @@ console.log('native_print result=0');
 `, { mode: 0o755 });
   const zip = new JSZip();
   zip.file("3D/3dmodel.model", '<model unit="millimeter" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources/><build/></model>');
-  zip.file("Metadata/plate_1.gcode", `; printer_model = Bambu Lab X2D\n; nozzle_diameter = 0.4;0.4\n; filament_type = PLA\n; filament_map = 1\n; physical_extruder_map = 1,0\n; curr_bed_type = Textured PEI Plate\n; filament_colour = #FFFFFF\n${gcode}`);
+  zip.file("Metadata/plate_1.gcode", x1c
+    ? `; printer_model = Bambu Lab X1 Carbon\n; nozzle_diameter = 0.4\n; filament_type = PLA\n; curr_bed_type = Textured PEI Plate\n; filament_colour = #FFFFFF\n${gcode}`
+    : `; printer_model = Bambu Lab X2D\n; nozzle_diameter = 0.4;0.4\n; filament_type = PLA\n; filament_map = 1\n; physical_extruder_map = 1,0\n; curr_bed_type = Textured PEI Plate\n; filament_colour = #FFFFFF\n${gcode}`);
   zip.file("Metadata/plate_1.json", JSON.stringify({ filament_ids: [0] }));
   await fs.writeFile(file, await zip.generateAsync({ type: "nodebuffer" }));
   const preload = `
-    import { appendFileSync, readFileSync } from 'node:fs';
+    import { appendFileSync, readFileSync, copyFileSync } from 'node:fs';
     import { BambuImplementation } from ${JSON.stringify(printerModule)};
     Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} });
     Object.defineProperty(process, 'arch', { value: ${JSON.stringify(arch)} });
@@ -107,16 +111,21 @@ console.log('native_print result=0');
         appendFileSync(${JSON.stringify(eventsFile)}, JSON.stringify({ kind: 'mqtt', olderAlive: alive }) + '\\n');
       } };
     };
+    if (${resumeAfterPrint}) BambuImplementation.prototype.ftpDownload = async (_host, _token, _remote, destination) => {
+      record('reread'); copyFileSync(${JSON.stringify(file)}, destination);
+    };
     BambuImplementation.prototype.ftpUpload = async () => { record('ftp'); throw new Error('unexpected FTPS'); };
     BambuImplementation.prototype.disconnectAll = async () => { record('disconnect'); };
     BambuImplementation.prototype.getSafetyStatus = async (_host, serial) => {
       record('status');
       const helperStarted = readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper');
-      const observedState = ${JSON.stringify(dispatchState)} && helperStarted ? ${JSON.stringify(dispatchState)} : ${JSON.stringify(state)};
+      const completed = readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('dispatched');
+      const job = completed && ${resumeAfterPrint} ? JSON.parse(readFileSync(${JSON.stringify(eventsFile)}, 'utf8').trim().split('\\n').find(line => JSON.parse(line).kind === 'helper')) : undefined;
+      const observedState = job ? 'PAUSE' : ${JSON.stringify(dispatchState)} && helperStarted ? ${JSON.stringify(dispatchState)} : ${JSON.stringify(state)};
       const storage = ${JSON.stringify(dispatchStorage)} && helperStarted ? ${JSON.stringify(dispatchStorage)} : ${JSON.stringify(storage)};
-      return { connected:true, serial, model:'x2d', status:observedState,
-        raw: {serial,model:'x2d',vir_slot:[{id:254,tray_type:'PLA'},{id:255,tray_type:'PLA'}],gcode_state:observedState,print_error:${JSON.stringify(dispatchError)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchError)} : 0,hms:${JSON.stringify(hms)},nozzle_diameter:['0.4','0.4'],
-          ams: { ams:[{id:'0',tray:[{id:'0',tray_type:'PLA'}]}, {id:'128',tray:[{id:'0',tray_type:'PLA'}]}] }, ...storage },
+      return { connected:true, serial, model:${JSON.stringify(printer)}, status:observedState,
+        raw: {serial,model:${JSON.stringify(printer)},vir_slot:${x1c ? "[{id:255,tray_type:'PLA'}]" : "[{id:254,tray_type:'PLA'},{id:255,tray_type:'PLA'}]"},gcode_state:observedState,print_error:${JSON.stringify(dispatchError)} && readFileSync(${JSON.stringify(eventsFile)}, 'utf8').includes('helper') ? ${JSON.stringify(dispatchError)} : 0,hms:${JSON.stringify(hms)},nozzle_diameter:${x1c ? "'0.4'" : "['0.4','0.4']"},
+          ams: { ams:[{id:'0',tray:[{id:'0',tray_type:'PLA'}]}, {id:'128',tray:[{id:'0',tray_type:'PLA'}]}] }, ...storage, ...(job ? {subtask_name:job.destination,gcode_file:job.destination} : {}) },
         observation:{source:'mqtt',requestedAt:Date.now()-1,receivedAt:Date.now(),identitySource:'report'} };
     };
   `;
@@ -124,7 +133,7 @@ console.log('native_print result=0');
     command: process.execPath,
     args: ["--import", `data:text/javascript,${encodeURIComponent(preload)}`, entry], cwd: dir,
     env: { ...process.env, MCP_TRANSPORT: "stdio", BAMBU_MODEL: model, BAMBU_PRINTER_MODEL: "",
-      BAMBU_PRINTER_HOST: "127.0.0.1", BAMBU_PRINTER_SERIAL: "20PTEST", BAMBU_PRINTER_ACCESS_TOKEN: "DUMMY",
+      BAMBU_PRINTER_HOST: "127.0.0.1", BAMBU_PRINTER_SERIAL: x1c ? "00MTEST" : "20PTEST", BAMBU_PRINTER_ACCESS_TOKEN: "DUMMY",
       // An empty private home keeps a developer's real Linux setup out of the test.
       BAMBU_NATIVE_HELPER: installedHelper ? helper : "",
       BAMBU_NATIVE_HOME: installedPlugin ? createFakeNativeHome(dir, { tunnelLibrary }) : path.join(dir, "empty-native-home"),
@@ -760,15 +769,67 @@ for (const name of ["cancel_print", "set_temperature"]) {
   });
 }
 
-test("Linux native upload rejects a non-X2D model before asking for the native setup", async t => {
+test("Linux native upload rejects a model without the native route before asking for the native setup", async t => {
   const s = await server(t, { platform: "linux", installedHelper: false });
   const result = await s.client.callTool({ name: "upload_file", arguments: {
     file_path: s.file, filename: "cube.3mf", connection_mode: "bambu_native", bambu_model: "p1s" } });
   assert.equal(result.isError, true);
-  assert.match(result.content[0].text, /restricted to X2D/);
+  assert.match(result.content[0].text, /restricted to X2D and X1C/);
   assert.doesNotMatch(result.content[0].text, /native-setup/);
   assert.deepEqual(await s.events(), []);
 });
+
+// X1C firmware 01.12.00.00 refused every FTPS STOR with 553 while Bambu Studio's plug-in printed.
+test("X1C prints over the opt-in native route with the shared checks", async t => {
+  const s = await server(t, { model: "x1c", printer: "x1c", storage: { sdcard: true } });
+  const result = await s.print({ connection_mode: "bambu_native", ams_slots: [0] });
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  const events = await s.events();
+  assert.equal(events.some(e => ["ftp", "mqtt"].includes(e.kind)), false);
+  assert.ok(events.some(e => e.kind === "status"), "fresh printer state is checked");
+  const calls = events.filter(e => e.kind === "helper");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].mode, "--print-authorized");
+  assert.equal(calls[0].useAMS, "true");
+  assert.deepEqual(JSON.parse(calls[0].mapping), [0]);
+  assert.ok(events.some(e => e.kind === "dispatched"));
+});
+
+test("X1C keeps direct MQTT/FTPS as its default print route", async t => {
+  const s = await server(t, { model: "x1c", printer: "x1c", storage: { sdcard: true } });
+  const result = await s.print({ ams_slots: [0] });
+  assert.equal(result.isError, true, "the mocked FTPS upload fails");
+  const events = await s.events();
+  assert.ok(events.some(e => e.kind === "ftp"));
+  assert.equal(events.some(e => e.kind === "helper"), false, "X1C is not redirected to the native route");
+});
+
+test("X1C native upload-only uses the helper and never starts printing", async t => {
+  const s = await server(t, { model: "x1c", printer: "x1c", storage: { sdcard: true } });
+  const result = await s.client.callTool({ name: "upload_file", arguments: {
+    file_path: s.file, filename: "cube.3mf", connection_mode: "bambu_native", bambu_model: "x1c" } });
+  assert.notEqual(result.isError, true, JSON.stringify(result));
+  const calls = (await s.events()).filter(e => e.kind === "helper");
+  assert.deepEqual(calls.map(e => e.mode), ["--upload"]);
+  assert.equal((await s.events()).some(e => ["ftp", "dispatched"].includes(e.kind)), false);
+});
+
+test("native printing stays refused for a model without the native route", async t => {
+  const s = await server(t, { model: "p1s" });
+  const result = await s.print({ connection_mode: "bambu_native", ams_slots: [0] });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /restricted to X2D and X1C/);
+  assert.deepEqual(await s.events(), []);
+});
+
+for (const name of ["cancel_print", "pause_print"]) {
+  test(`${name} for an X1C native job goes over direct MQTT, not the X2D-only native controls`, async t => {
+    const s = await server(t, { model: "x1c", printer: "x1c", storage: { sdcard: true } });
+    const result = await s.client.callTool({ name, arguments: { connection_mode: "bambu_native" } });
+    assert.notEqual(result.isError, true, JSON.stringify(result));
+    assert.deepEqual((await s.events()).map(e => e.kind), ["mqtt"]);
+  });
+}
 
 test("X2D prints past the hidden boot camera notice without clearing, other codes still block", async t => {
   const s = await server(t, { hms: [{ attr: 83887616, code: 131184 }] });
@@ -791,6 +852,61 @@ test("an X2D job on FULU's cloud route is paused through that route, not the nat
   assert.equal((await s.events()).some(e => e.kind === "helper"), false, "the native helper sent nothing");
 });
 
+// X1C storage requires fresh printer evidence, independently of X2D's fallback.
+for (const [label, storage, env, args] of [
+  ['no card or capability', {}, {}, {}],
+  ['explicit internal with ready card', {sdcard:true}, {}, {try_emmc_print:true}],
+  ['environment internal with ready card', {sdcard:true}, {BAMBU_NATIVE_TRY_EMMC_PRINT:'1'}, {}],
+  ...[undefined, '', '0', '2', 'invalid', 1, true].map(fun2 => [`invalid/absent capability ${String(fun2)}`, {fun2}, {}, {}]),
+]) test(`X1C rejects ${label} before native upload or dispatch`, async t => {
+  const s = await server(t, {model:'x1c',printer:'x1c',storage,env});
+  const result = await s.print({connection_mode:'bambu_native',ams_slots:[0],...args});
+  assert.equal(result.isError,true,JSON.stringify(result));
+  assert.match(result.content[0].text,/X1C.*(storage|internal|SD card)/i);
+  assert.equal((await s.events()).some(e=>['helper','dispatched','ftp','mqtt'].includes(e.kind)),false);
+});
+
+for (const fun2 of ['1','0000000000000000000000000000000000000000000000000000000000000001',' 0X11 ']) {
+  test(`X1C permits internal storage advertised by fresh fun2 ${fun2}`, async t => {
+    const s = await server(t,{model:'x1c',printer:'x1c',storage:{fun2}});
+    const result = await s.print({connection_mode:'bambu_native',ams_slots:[0]});
+    assert.notEqual(result.isError,true,JSON.stringify(result));
+    assert.equal((await s.events()).find(e=>e.kind==='helper').tryEmmc,'true');
+    assert.equal((await s.events()).filter(e=>e.kind==='dispatched').length,1);
+  });
+}
+
+for (const [label, storage, dispatchStorage] of [
+  ['card removed',{sdcard:true},{sdcard:false}],
+  ['internal capability withdrawn',{fun2:'1'},{fun2:'0'}],
+]) test(`X1C refuses final dispatch when ${label}`, async t => {
+  const s=await server(t,{model:'x1c',printer:'x1c',storage,dispatchStorage});
+  const result=await s.print({connection_mode:'bambu_native',ams_slots:[0]});
+  assert.equal(result.isError,true);
+  assert.equal((await s.events()).filter(e=>e.kind==='helper').length,1);
+  assert.equal((await s.events()).some(e=>e.kind==='dispatched'),false);
+});
+
+test('X1C native print rejects fresh AMS material mismatch before the helper',async t=>{
+  const s=await server(t,{model:'x1c',printer:'x1c',storage:{sdcard:true,ams:{ams:[{id:'0',tray:[{id:'0',tray_type:'PETG'}]}]}}});
+  const result=await s.print({connection_mode:'bambu_native',ams_slots:[0]});
+  assert.equal(result.isError,true);
+  assert.match(result.content[0].text,/material|contradict/i);
+  assert.equal((await s.events()).some(e=>e.kind==='helper'),false);
+});
+
+test('X1C native job resumes verified bytes over direct MQTT without prompting',async t=>{
+  const s=await server(t,{model:'x1c',printer:'x1c',storage:{sdcard:true},resumeAfterPrint:true});
+  const printed=await s.print({connection_mode:'bambu_native',ams_slots:[0]});
+  assert.notEqual(printed.isError,true,JSON.stringify(printed));
+  const resumed=await s.client.callTool({name:'resume_print',arguments:{connection_mode:'bambu_native'}});
+  assert.notEqual(resumed.isError,true,JSON.stringify(resumed));
+  const events=await s.events();
+  assert.ok(events.some(e=>e.kind==='reread'));
+  assert.equal(events.filter(e=>e.kind==='mqtt').length,1);
+  assert.equal(events.filter(e=>e.kind==='helper').length,1,'resume does not start another native helper');
+  assert.deepEqual(s.prompts,[]);
+});
 
 test('native helper failure after authorized print retains the exact unconfirmed flight record through the public tool',async t=>{
   const peer=await server(t,{crashAfterDispatch:true});

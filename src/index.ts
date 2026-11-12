@@ -76,7 +76,7 @@ import { resolveStudioPrintOptions, usedNozzleCount, type CallerPrintOptions } f
 import { inspectPrintFile } from "./safety/print-file.js";
 import { previewPrintFile } from "./safety/print-preview.js";
 import { loadSafe3mfArchive } from "./safety/archive.js";
-import { SERIAL_MODELS, externalStorageState, validatePrinterState } from "./safety/printer-state.js";
+import { SERIAL_MODELS, internalPrintingSupported, externalStorageState, validatePrinterState } from "./safety/printer-state.js";
 import { isDualNozzleModel } from "./safety/limits.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safety/artifact.js";
 import { detectProfilesRoot } from "./slicer/profile-flatten.js";
@@ -184,17 +184,26 @@ function withEmergencyMqttTimeout<T>(send: (signal: AbortSignal) => Promise<T>):
 }
 
 /**
- * Whether an X2D native print stores its job on the SD card or USB stick
+ * Whether a native print stores its job on the SD card or USB stick
  * (true) or internal storage (eMMC). An explicit try_emmc_print wins, then
  * BAMBU_NATIVE_TRY_EMMC_PRINT read as the helper reads it; otherwise a ready
  * card is used, as OrcaSlicer does, so the job can be reprinted from the
- * printer and read over FTPS.
+ * printer and read over FTPS. X1C internal printing additionally requires
+ * the capability bit from fresh status, including at final dispatch.
  */
-function nativeExternalStorage(tryEmmcPrint: boolean | undefined, raw: unknown): boolean {
-  if (tryEmmcPrint !== undefined) return !tryEmmcPrint;
+function nativeExternalStorage(tryEmmcPrint: boolean | undefined, raw: unknown, model: string): boolean {
   const configured = process.env.BAMBU_NATIVE_TRY_EMMC_PRINT?.trim();
-  if (configured) return !["1", "true", "TRUE", "yes"].includes(configured);
-  return externalStorageState(raw) === "normal";
+  const external = tryEmmcPrint !== undefined ? !tryEmmcPrint
+    : configured ? !["1", "true", "TRUE", "yes"].includes(configured)
+      : externalStorageState(raw) === "normal";
+  if (!external) assertNativeInternalStorage(model, raw);
+  return external;
+}
+
+function assertNativeInternalStorage(model: string, raw: unknown): void {
+  if (model === "x1c" && !internalPrintingSupported(raw)) {
+    throw new Error("X1C internal printing is not advertised in the fresh status. Use a ready SD card or USB stick; unsupported internal storage requests are refused.");
+  }
 }
 
 function requestedPrintNozzles(args: Record<string, any>): number[] | undefined {
@@ -248,6 +257,11 @@ type BambuModel = typeof VALID_BAMBU_MODELS[number];
 // the dual-nozzle H2 path. Keep it in this gate so pre-sliced multi-filament
 // jobs take the correct branch instead of the legacy 5-slot mapping.
 const H2_BAMBU_MODELS = new Set<string>(["h2d", "h2dpro", "h2s", "h2c", "x2d"]);
+// Models that may print and upload over connection_mode=bambu_native. X2D
+// defaults to it. X1C opts in: firmware 01.12.00.00 was seen refusing every
+// direct FTPS STOR with 553 while Bambu Studio's plug-in still printed.
+const NATIVE_ROUTE_MODELS = new Set<string>(["x2d", "x1c"]);
+const NATIVE_ROUTE_RESTRICTION = "connection_mode=bambu_native is restricted to X2D and X1C.";
 
 const VALID_BED_TYPES = ["textured_plate", "cool_plate", "engineering_plate", "hot_plate", "supertack_plate"] as const;
 const VALID_NOZZLE_TYPES = ["stainless_steel", "hardened_steel", "tungsten_carbide", "brass"] as const;
@@ -1829,7 +1843,7 @@ class BambuPrinterMCPServer {
       printNozzle
     );
     if (native && args.use_ams !== false && !useAMS) {
-      throw new Error("Native X2D printing requires ams_mapping, ams_slots, auto_match_ams, or explicit use_ams: false for an external spool.");
+      throw new Error("Native printing requires ams_mapping, ams_slots, auto_match_ams, or explicit use_ams: false for an external spool.");
     }
     const threeMfFilename = path.basename(threeMFPath);
     const projectName = String(args?.project_name || args?.task_name || threeMfFilename.replace(/\.3mf$/i, ''));
@@ -1931,7 +1945,7 @@ class BambuPrinterMCPServer {
 
       assertActive();
       if (native) {
-        const externalStorage = nativeExternalStorage(args?.try_emmc_print, confirmedStatus.raw);
+        const externalStorage = nativeExternalStorage(args?.try_emmc_print, confirmedStatus.raw, printModel);
         if (externalStorage && externalStorageState(confirmedStatus.raw) !== "normal") {
           throw new Error("External storage was requested, but the printer reports no ready SD card or USB stick.");
         }
@@ -1961,6 +1975,7 @@ class BambuPrinterMCPServer {
           if (externalStorage && externalStorageState(dispatchStatus.raw) !== "normal") {
             throw new Error("The printer's SD card or USB stick is no longer ready. Check it and start the print again.");
           }
+          if (!externalStorage) assertNativeInternalStorage(printModel, dispatchStatus.raw);
           assertActive();
           this.bambu.recordFlightDispatch(devIp,devId,remoteFileName,requirements,resumeFile);
           markPrintCommandSent();
@@ -2085,7 +2100,7 @@ class BambuPrinterMCPServer {
   ): Promise<Record<string, unknown>> {
     assertBambuNativeAvailable();
     const model = await this.resolveBambuModel(args.bambu_model);
-    if (model !== "x2d") throw new Error("connection_mode=bambu_native is restricted to X2D.");
+    if (!NATIVE_ROUTE_MODELS.has(model)) throw new Error(NATIVE_ROUTE_RESTRICTION);
     return this.print3mfViaBambuNetwork(
       { ...args, bambu_model: model, connection_type: "lan", bambu_network_method: "start_local_print" },
       host, bambuSerial, bambuToken, { onUpdate, signal }
@@ -2098,9 +2113,9 @@ class BambuPrinterMCPServer {
   ): Promise<Record<string, unknown>> {
     if (args.print) throw new Error("Native upload never starts printing; use print_3mf.");
     // Resolve and enforce the model first, as the print path does, so a
-    // non-X2D request is never told to install the native helper.
+    // request for another model is never told to install the native helper.
     const model = await this.resolveBambuModel(args.bambu_model);
-    if (model !== "x2d") throw new Error("connection_mode=bambu_native is restricted to X2D.");
+    if (!NATIVE_ROUTE_MODELS.has(model)) throw new Error(NATIVE_ROUTE_RESTRICTION);
     assertBambuNativeAvailable();
     const unsupported = ["use_ams", "ams_mapping", "ams_mapping2", "ams_mapping_info", "nozzle_mapping", "nozzles_info",
       "bed_leveling", "flow_calibration", "vibration_calibration", "layer_inspect", "timelapse"];
@@ -3044,7 +3059,7 @@ class BambuPrinterMCPServer {
                 connection_mode: {
                   type: "string",
                   enum: ["lan_mqtt_ftps", "bambu_native"],
-                  description: "Upload transport; bambu_native uses the installed Bambu networking plug-in for X2D and never starts printing."
+                  description: "Upload transport; bambu_native uses the installed Bambu networking plug-in for X2D or X1C and never starts printing."
                 },
                 bambu_model: {
                   type: "string",
@@ -3353,9 +3368,9 @@ class BambuPrinterMCPServer {
                 connection_mode: {
                   type: "string",
                   enum: ["lan_mqtt_ftps", "bambu_network", "bambu_native", "bambu_connect"],
-                  description: "Print path: bambu_connect hands a printable file to the signed-in Bambu Connect app for cloud-mode review; X2D otherwise defaults to bambu_native (Bambu Studio's installed local networking plug-in, storing the job on a ready SD card or USB stick, otherwise internal eMMC); lan_mqtt_ftps is the legacy direct MQTT/FTPS path; bambu_network uses the FULU bridge."
+                  description: "Print path: bambu_connect hands a printable file to the signed-in Bambu Connect app for cloud-mode review; X2D otherwise defaults to bambu_native (Bambu Studio's installed local networking plug-in, storing the job on a ready SD card or USB stick, otherwise internal eMMC); X1C may opt in to bambu_native, for example when its firmware refuses FTPS uploads with 553; lan_mqtt_ftps is the legacy direct MQTT/FTPS path; bambu_network uses the FULU bridge."
                 },
-                try_emmc_print: { type: "boolean", description: "X2D native printing: true stores the job on internal storage (eMMC), false on the SD card or USB stick (refused unless the printer reports one ready). Omit to use the card when ready, else eMMC; BAMBU_NATIVE_TRY_EMMC_PRINT sets a server default." },
+                try_emmc_print: { type: "boolean", description: "X2D native printing: true stores the job on internal storage (eMMC), false on the SD card or USB stick (refused unless the printer reports one ready). Omit to use the card when ready, else eMMC; X1C requires fresh advertised internal-printing support before using eMMC. BAMBU_NATIVE_TRY_EMMC_PRINT sets a server default." },
                 connection_type: { type: "string", enum: ["cloud", "lan"], description: "BambuNetwork connection type when connection_mode is bambu_network; cloud uses restored internet printing, lan uses local bridge printing." },
                 bambu_network_method: { type: "string", enum: BAMBU_NETWORK_PRINT_METHODS, description: "FULU print method when connection_mode is bambu_network; defaults to start_local_print for lan, and for cloud to Bambu Studio's order: start_local_print_with_record, then start_print if that fails." },
                 dev_id: { type: "string", description: "Bambu device id for FULU BambuNetwork printing; defaults to BAMBU_DEV_ID or BAMBU_SERIAL." },
@@ -3816,7 +3831,9 @@ class BambuPrinterMCPServer {
             ? linuxEmergency(() => nativeCommand(), signal => this.bambu.sendStopOverMqtt(host, bambuSerial, bambuToken, signal))
             : nativeCommand;
         }
-        if (route.mode === "bambu_native") throw new Error(nativeUnavailableReason()!);
+        // Native controls are X2D-only. Another model printed natively (X1C)
+        // is stopped, paused and resumed over direct MQTT, as its default route is.
+        if (route.mode === "bambu_native" && x2dTarget) throw new Error(nativeUnavailableReason()!);
         if (route.mode !== "bambu_network") return undefined;
         return (assertActive?: () => void, beforeDispatch?: () => Promise<void>) => {
           const options = { assertDispatchAllowed: () => { extra.signal.throwIfAborted(); assertActive?.(); } };

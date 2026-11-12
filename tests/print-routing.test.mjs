@@ -10,7 +10,7 @@ import { BambuImplementation } from "../dist/printers/bambu.js";
 // Mocked printers never report a started job; tests that cover it opt back in.
 process.env.BAMBU_DISPATCH_CHECK_MS = "0";
 
-async function capture(t, model, serial, { sparse = false, useAMS = true, suffix = ".gcode.3mf", filamentIds, amsSlots = [1], trays } = {}) {
+async function capture(t, model, serial, { sparse = false, useAMS = true, suffix = ".gcode.3mf", filamentIds, amsSlots = [1], trays, ftpError } = {}) {
   const dir = await trackedMkdtemp(path.join(os.tmpdir(), "bambu-route-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, `cube${suffix}`);
@@ -24,7 +24,7 @@ async function capture(t, model, serial, { sparse = false, useAMS = true, suffix
   const printer = new BambuImplementation(async () => true);
   let uploadedPath;
   const published = [];
-  printer.ftpUpload = async (_host, _token, _file, remote) => { uploadedPath = remote; };
+  printer.ftpUpload = async (_host, _token, _file, remote) => { if (ftpError) throw ftpError; uploadedPath = remote; };
   printer.getSafetyStatus = async () => {
     const now = Date.now();
     return { connected: true, model, status: "IDLE", serial,
@@ -32,11 +32,17 @@ async function capture(t, model, serial, { sparse = false, useAMS = true, suffix
       observation: { source: "mqtt", requestedAt: now, receivedAt: now, identitySource: "report" } };
   };
   printer.getPrinter = async () => ({ publish: async (message) => { published.push(typeof message === "string" ? JSON.parse(message) : message); } });
-  const result = await printer.print3mf("127.0.0.1", serial, "test", {
+  const printing = printer.print3mf("127.0.0.1", serial, "test", {
     projectName: "cube", filePath: file, bambuModel: model,
     nozzleDiameters,
     useAMS, ...(useAMS ? { amsSlots } : {}),
   });
+  if (ftpError) {
+    const error = await printing.then(() => assert.fail("the upload should fail"), error => error);
+    assert.equal(published.length, 0);
+    return { error };
+  }
+  const result = await printing;
   assert.equal(published.length, 1);
   assert.match(path.posix.basename(uploadedPath), /^checked-[a-f0-9-]+-cube(?:\.gcode)?\.3mf$/);
   assert.equal(uploadedPath, `/${result.remoteProjectPath}`);
@@ -137,4 +143,46 @@ test("a two-filament assembly maps each project filament to its chosen AMS slot"
   const h2s = await capture(t, "h2s", "093TEST", { suffix: ".3mf", filamentIds: [0, 1], amsSlots: [2, 0], trays });
   assert.deepEqual(h2s.cmd.ams_mapping, [2, 0]);
   assert.deepEqual(h2s.cmd.ams_mapping2, [{ ams_id: 0, slot_id: 2 }, { ams_id: 0, slot_id: 0 }]);
+});
+
+// basic-ftp rejects a refused STOR with an FTPError carrying the reply code.
+function ftpRefusal(code, text) {
+  return Object.assign(new Error(`${code} ${text}`), { name: "FTPError", code });
+}
+
+test("an X1C FTPS upload refused with 553 suggests the opt-in native route", async (t) => {
+  const { error } = await capture(t, "x1c", "00MTEST", { useAMS: false, ftpError: ftpRefusal(553, "Could not create file.") });
+  assert.equal(error.code, "printer-upload-failed");
+  assert.match(error.message, /did not reach the printer \(553 Could not create file\.\)\. No print was started\./);
+  assert.match(error.message, /connection_mode: "bambu_native"/);
+  assert.match(error.message, /npm run build:native/);
+});
+
+for (const [model, serial, ftpError] of [
+  ["p1s", "01PTEST", ftpRefusal(553, "Could not create file.")],
+  ["x1c", "00MTEST", ftpRefusal(550, "Permission denied.")],
+  ["x1c", "00MTEST", new Error("Timeout (data socket)")],
+]) {
+  test(`${model} upload failure "${ftpError.message}" names no native route`, async (t) => {
+    const { error } = await capture(t, model, serial, { useAMS: false, ftpError });
+    assert.equal(error.code, "printer-upload-failed");
+    assert.doesNotMatch(error.message, /bambu_native/);
+  });
+}
+
+test("an X1C upload-only FTPS refusal with 553 suggests the opt-in native route", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "bambu-route-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "notes.txt");
+  await fs.writeFile(file, "hello\n");
+  for (const [model, hinted] of [["x1c", true], ["p1s", false]]) {
+    const printer = new BambuImplementation(async () => true);
+    printer.ftpUpload = async () => { throw ftpRefusal(553, "Could not create file."); };
+    const error = await printer.uploadFile("127.0.0.1", "TEST", "test", file, "notes.txt", false, model)
+      .then(() => assert.fail("the upload should fail"), error => error);
+    assert.match(error.message, /^553 Could not create file\./);
+    assert.equal(error.code, 553, "the FTP error itself is preserved");
+    if (hinted) assert.match(error.message, /connection_mode: "bambu_native"/);
+    else assert.doesNotMatch(error.message, /bambu_native/);
+  }
 });

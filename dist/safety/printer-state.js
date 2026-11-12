@@ -364,7 +364,7 @@ function trayRange(value, label) {
 /** Dual-nozzle printers report one virtual external slot per nozzle, numbered as Bambu
  * Studio does (VIRTUAL_TRAY_MAIN_ID 255 = right/main nozzle, VIRTUAL_TRAY_DEPUTY_ID 254 =
  * left/deputy nozzle), so the requested tray selects its slot. Single-nozzle printers keep
- * requiring exactly one slot 254 report, then the legacy vt_tray field. */
+ * requiring exactly one external slot report, then the legacy vt_tray field. */
 function externalTray(raw, trayIndex, model) {
     const slots = raw.vir_slot;
     const dualNozzle = isDualNozzleModel(model);
@@ -372,6 +372,10 @@ function externalTray(raw, trayIndex, model) {
         const selected = slots.filter((slot) => Number(slot?.id) === trayIndex);
         if (selected.length === 1 && (dualNozzle || slots.length === 1))
             return selected[0];
+        // X1C firmware 01.12 reports its single external slot as id 255 (ams_id 255, slot 0) while
+        // tray_now is 254. One external slot on a single-nozzle printer is unambiguous.
+        if (!dualNozzle && slots.length === 1 && [254, 255].includes(Number(slots[0]?.id)) && [254, 255].includes(trayIndex))
+            return slots[0];
         if (dualNozzle && selected.length === 0 && slots.length > 0)
             throw new Error(`External spool ${trayIndex} is not in the fresh per-nozzle report; cannot verify the selected material.`);
         if (slots.length > 0)
@@ -550,4 +554,13 @@ export function externalStorageState(raw) {
         state = EXTERNAL_STORAGE_STATES[Number((BigInt(`0x${raw.aux}`) >> 12n) & 3n)];
     }
     return state;
+}
+/** Studio DeviceManager.cpp at 926a7192574b: fun2 bit 0 advertises eMMC printing.
+ * Use only a fresh raw report at the caller. Reject malformed flags rather than
+ * stripping arbitrary characters as Studio's general-purpose parser does. */
+export function internalPrintingSupported(raw) {
+    if (!object(raw) || typeof raw.fun2 !== "string")
+        return false;
+    const flags = raw.fun2.trim().replace(/^0x/i, "");
+    return /^[0-9a-f]+$/i.test(flags) && (parseInt(flags.slice(-1), 16) & 1) === 1;
 }
