@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Require fresh ready external storage for native X1C printing unless the fresh raw report advertises internal printing through Studio's `fun2` bit 0; recheck the selected storage at dispatch and reject unsupported explicit/environment eMMC requests. Validate storage changes, material mismatch and byte-verified MQTT resume with fake transports. Linux hardware remains unverified.
+
 - Accept an unambiguous single external slot reported as 255 on single-nozzle X1C firmware 01.12 while retaining material checks, explicit mapping validation and dual-nozzle selection.
 
 

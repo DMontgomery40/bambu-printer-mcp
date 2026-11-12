@@ -42,7 +42,7 @@ import { resolveStudioPrintOptions, usedNozzleCount } from "./studio-print-optio
 import { inspectPrintFile } from "./safety/print-file.js";
 import { previewPrintFile } from "./safety/print-preview.js";
 import { loadSafe3mfArchive } from "./safety/archive.js";
-import { SERIAL_MODELS, externalStorageState, validatePrinterState } from "./safety/printer-state.js";
+import { SERIAL_MODELS, internalPrintingSupported, externalStorageState, validatePrinterState } from "./safety/printer-state.js";
 import { isDualNozzleModel } from "./safety/limits.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safety/artifact.js";
 import { detectProfilesRoot } from "./slicer/profile-flatten.js";
@@ -143,19 +143,26 @@ function withEmergencyMqttTimeout(send) {
     return Promise.race([Promise.resolve().then(() => send(controller.signal)), timeout]).finally(() => clearTimeout(timer));
 }
 /**
- * Whether an X2D native print stores its job on the SD card or USB stick
+ * Whether a native print stores its job on the SD card or USB stick
  * (true) or internal storage (eMMC). An explicit try_emmc_print wins, then
  * BAMBU_NATIVE_TRY_EMMC_PRINT read as the helper reads it; otherwise a ready
  * card is used, as OrcaSlicer does, so the job can be reprinted from the
- * printer and read over FTPS.
+ * printer and read over FTPS. X1C internal printing additionally requires
+ * the capability bit from fresh status, including at final dispatch.
  */
-function nativeExternalStorage(tryEmmcPrint, raw) {
-    if (tryEmmcPrint !== undefined)
-        return !tryEmmcPrint;
+function nativeExternalStorage(tryEmmcPrint, raw, model) {
     const configured = process.env.BAMBU_NATIVE_TRY_EMMC_PRINT?.trim();
-    if (configured)
-        return !["1", "true", "TRUE", "yes"].includes(configured);
-    return externalStorageState(raw) === "normal";
+    const external = tryEmmcPrint !== undefined ? !tryEmmcPrint
+        : configured ? !["1", "true", "TRUE", "yes"].includes(configured)
+            : externalStorageState(raw) === "normal";
+    if (!external)
+        assertNativeInternalStorage(model, raw);
+    return external;
+}
+function assertNativeInternalStorage(model, raw) {
+    if (model === "x1c" && !internalPrintingSupported(raw)) {
+        throw new Error("X1C internal printing is not advertised in the fresh status. Use a ready SD card or USB stick; unsupported internal storage requests are refused.");
+    }
 }
 function requestedPrintNozzles(args) {
     if (args.nozzle_diameters !== undefined && args.nozzle_diameter !== undefined) {
@@ -1533,7 +1540,7 @@ class BambuPrinterMCPServer {
             };
             assertActive();
             if (native) {
-                const externalStorage = nativeExternalStorage(args?.try_emmc_print, confirmedStatus.raw);
+                const externalStorage = nativeExternalStorage(args?.try_emmc_print, confirmedStatus.raw, printModel);
                 if (externalStorage && externalStorageState(confirmedStatus.raw) !== "normal") {
                     throw new Error("External storage was requested, but the printer reports no ready SD card or USB stick.");
                 }
@@ -1563,6 +1570,8 @@ class BambuPrinterMCPServer {
                         if (externalStorage && externalStorageState(dispatchStatus.raw) !== "normal") {
                             throw new Error("The printer's SD card or USB stick is no longer ready. Check it and start the print again.");
                         }
+                        if (!externalStorage)
+                            assertNativeInternalStorage(printModel, dispatchStatus.raw);
                         assertActive();
                         markPrintCommandSent();
                     } });
@@ -2847,7 +2856,7 @@ class BambuPrinterMCPServer {
                                     enum: ["lan_mqtt_ftps", "bambu_network", "bambu_native", "bambu_connect"],
                                     description: "Print path: bambu_connect hands a printable file to the signed-in Bambu Connect app for cloud-mode review; X2D otherwise defaults to bambu_native (Bambu Studio's installed local networking plug-in, storing the job on a ready SD card or USB stick, otherwise internal eMMC); X1C may opt in to bambu_native, for example when its firmware refuses FTPS uploads with 553; lan_mqtt_ftps is the legacy direct MQTT/FTPS path; bambu_network uses the FULU bridge."
                                 },
-                                try_emmc_print: { type: "boolean", description: "X2D native printing: true stores the job on internal storage (eMMC), false on the SD card or USB stick (refused unless the printer reports one ready). Omit to use the card when ready, else eMMC; BAMBU_NATIVE_TRY_EMMC_PRINT sets a server default." },
+                                try_emmc_print: { type: "boolean", description: "X2D native printing: true stores the job on internal storage (eMMC), false on the SD card or USB stick (refused unless the printer reports one ready). Omit to use the card when ready, else eMMC; X1C requires fresh advertised internal-printing support before using eMMC. BAMBU_NATIVE_TRY_EMMC_PRINT sets a server default." },
                                 connection_type: { type: "string", enum: ["cloud", "lan"], description: "BambuNetwork connection type when connection_mode is bambu_network; cloud uses restored internet printing, lan uses local bridge printing." },
                                 bambu_network_method: { type: "string", enum: BAMBU_NETWORK_PRINT_METHODS, description: "FULU print method when connection_mode is bambu_network; defaults to start_local_print for lan, and for cloud to Bambu Studio's order: start_local_print_with_record, then start_print if that fails." },
                                 dev_id: { type: "string", description: "Bambu device id for FULU BambuNetwork printing; defaults to BAMBU_DEV_ID or BAMBU_SERIAL." },

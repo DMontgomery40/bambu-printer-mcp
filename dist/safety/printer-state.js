@@ -555,3 +555,12 @@ export function externalStorageState(raw) {
     }
     return state;
 }
+/** Studio DeviceManager.cpp at 926a7192574b: fun2 bit 0 advertises eMMC printing.
+ * Use only a fresh raw report at the caller. Reject malformed flags rather than
+ * stripping arbitrary characters as Studio's general-purpose parser does. */
+export function internalPrintingSupported(raw) {
+    if (!object(raw) || typeof raw.fun2 !== "string")
+        return false;
+    const flags = raw.fun2.trim().replace(/^0x/i, "");
+    return /^[0-9a-f]+$/i.test(flags) && (parseInt(flags.slice(-1), 16) & 1) === 1;
+}
