@@ -1,4 +1,5 @@
 declare const FIELDS: {
+    readonly "Use for": "use_for";
     readonly Pattern: "pattern";
     readonly "Modelled on": "modelled_on";
     readonly "Published sizes used": "published_sizes";
@@ -15,7 +16,7 @@ export type CadExample = {
 export declare const CAD_EXAMPLE_ORDER: string[];
 /** Every example on disk, in cookbook order (unlisted files last, by name). Empty when the folder is missing. */
 export declare function cadExamples(): CadExample[];
-/** One line per example for the cad_design prompt: "name: what it is; the pattern it shows". */
+/** One line per example for the cad_design prompt: "name: what it is for". */
 export declare function cadExampleLines(): string;
 /** cad_examples: without a name, the list; with one, that example's record and script. */
 export declare function cadExamplesTool(args: Record<string, unknown>): Record<string, unknown>;
