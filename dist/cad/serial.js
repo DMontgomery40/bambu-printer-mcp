@@ -15,13 +15,13 @@ function dead(pid) {
         return e.code === "ESRCH";
     }
 }
-/** One dispatched operation per environment; runs queue across processes and never replay. */
+/** One dispatched operation per environment; runs and fit checks queue across processes and never replay. */
 export async function withCadLock(data, options, work) {
     await fs.mkdir(data, { recursive: true, mode: 0o700 });
     const lock = path.join(data, "operation.lock"), queue = path.join(data, "queue");
     const start = performance.now();
     let ticket, temporary;
-    const queued = options.operation === "run";
+    const queued = options.operation !== "setup";
     if (queued) {
         await fs.mkdir(queue, { recursive: true, mode: 0o700 });
         const name = `${String(Date.now()).padStart(13, "0")}-${process.hrtime.bigint().toString().padStart(20, "0")}-${randomUUID()}.json`;
@@ -37,7 +37,7 @@ export async function withCadLock(data, options, work) {
         for (;;) {
             options.signal?.throwIfAborted();
             if (queued && performance.now() >= options.deadline)
-                throw new CadRefusal("cad-queue-timeout", "The CAD run's timeout expired while waiting for another operation. This run was not dispatched.");
+                throw new CadRefusal("cad-queue-timeout", `The CAD ${options.operation === "fit" ? "fit check" : "run"}'s timeout expired while waiting for another operation. It was not dispatched.`);
             const names = (await fs.readdir(queue).catch((e) => {
                 if (e.code === "ENOENT")
                     return [];
@@ -99,9 +99,7 @@ export async function withCadLock(data, options, work) {
                 }
             }
             if (!queued)
-                throw new CadRefusal(options.operation === "setup"
-                    ? "cad-setup-busy"
-                    : "cad-operation-busy", "Another CAD operation is already running or queued. Wait for it to finish; this request was not dispatched.");
+                throw new CadRefusal("cad-setup-busy", "Another CAD operation is already running or queued. Wait for it to finish; this request was not dispatched.");
             await delay(Math.min(50, Math.max(1, options.deadline - performance.now())), undefined, { signal: options.signal });
         }
     }

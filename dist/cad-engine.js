@@ -587,8 +587,13 @@ export class CadEngine {
                         throw new Error(`CAD ${ext} export is missing, unsafe or too large.`);
                 }
                 const checked = JSON.parse((await this.confined("inspect", request, job, protectedFiles, remaining(), signal, readableInputs)).stdout);
+                const printed = built.stdout.trim();
                 const result = {
                     ...checked,
+                    // Beside the image paths, where the next step is decided.
+                    next: "Read renders.perspective before the next cad_run or any other change: say what it shows is wrong against what you are making (the bought product you named, or the object in the photos), then fix that.",
+                    // The script's own print() output: its words, not a measurement by this engine.
+                    ...(printed ? { printed: printed.length > 4000 ? printed.slice(0, 4000) + "\n[cut at 4000 characters; build.log has the rest]" : printed } : {}),
                     status: "completed",
                     final: args.final === true,
                     completed_at: new Date().toISOString(),
@@ -649,7 +654,7 @@ export class CadEngine {
         // One deadline for the whole call: the automatic re-check and the fit share timeout_ms.
         const deadline = performance.now() + milliseconds(args.timeout_ms);
         const before = await this.ensureReady(signal, deadline);
-        return this.exclusive(async () => {
+        return this.exclusive(async (queueWaitMs) => {
             const status = await this.status();
             if (!status.ready)
                 throw new CadRefusal("cad-not-ready", before.error ?? status.error);
@@ -664,21 +669,21 @@ export class CadEngine {
                     transform: args.transform ?? {},
                     clearance_mm: clearance,
                 }));
-                return JSON.parse((await this.confined("fit", request, job, [
-                    request,
-                    path.join(job, "model.stl"),
-                    path.join(job, "reference.stl"),
-                ], (() => {
-                    const left = Math.floor(deadline - performance.now());
-                    if (left <= 0)
-                        throw new Error("CAD fit timed out.");
-                    return left;
-                })(), signal)).stdout);
+                return { queue_wait_ms: queueWaitMs, ...JSON.parse((await this.confined("fit", request, job, [
+                        request,
+                        path.join(job, "model.stl"),
+                        path.join(job, "reference.stl"),
+                    ], (() => {
+                        const left = Math.floor(deadline - performance.now());
+                        if (left <= 0)
+                            throw new Error("CAD fit timed out.");
+                        return left;
+                    })(), signal)).stdout) };
             }
             finally {
                 await fs.rm(job, { recursive: true, force: true });
             }
-        }, "fit", signal);
+        }, "fit", signal, deadline);
     }
 }
 function only(args, keys) {
