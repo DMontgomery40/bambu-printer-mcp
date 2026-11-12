@@ -179,7 +179,7 @@ export declare const FLIGHT_ASSESS_PROPERTIES: {
     };
     visibility: {
         type: string;
-        enum: ("dark" | "clear" | "unknown" | "occluded" | "out_of_view")[];
+        enum: ("dark" | "unknown" | "clear" | "occluded" | "out_of_view")[];
         description: string;
     };
     footprint_visible: {
@@ -201,7 +201,7 @@ export declare const FLIGHT_ASSESS_PROPERTIES: {
     };
     reference_visibility: {
         type: string;
-        enum: ("dark" | "clear" | "unknown" | "occluded" | "out_of_view")[];
+        enum: ("dark" | "unknown" | "clear" | "occluded" | "out_of_view")[];
         description: string;
     };
     reference_empty: {

@@ -64,5 +64,10 @@ export declare class CadEngine {
     private requireSupportedStorage;
     private inputFile;
     run(args: CadArguments, signal?: AbortSignal): Promise<Record<string, unknown>>;
+    /**
+     * When build() returned project_3mf(), write <name>.3mf from the sandbox's manifest and part STLs (this trusted
+     * process writes it; the sandbox only meshed the parts) and read it back as list_3mf_plates does.
+     */
+    private project3mf;
     checkFit(args: CadArguments, signal?: AbortSignal): Promise<Record<string, unknown>>;
 }

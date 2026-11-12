@@ -4,6 +4,7 @@ import * as fs from 'fs/promises';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash, randomUUID } from 'node:crypto';
 import * as path from 'node:path';
+import { readSafe3mfArchive } from './safety/archive.js';
 // Parses Bambu Studio's JSON config data
 function parseBambuJSONConfig(jsonData) {
     const config = {};
@@ -462,8 +463,8 @@ export async function analyze3MFAmsRequirements(filePath, plateIndex = 0) {
  * is never a slice_info object.
  */
 export async function analyze3MFPlateObjects(filePath, plateIndex = 0) {
-    const data = await fs.readFile(filePath);
-    const zip = await JSZip.loadAsync(data);
+    // Bounded, with colliding or inconsistent entry names refused, as the other 3MF reads here.
+    const { zip } = await readSafe3mfArchive(filePath);
     const plateNumber = plateIndex + 1;
     const sliceInfo = zip.file('Metadata/slice_info.config');
     if (!sliceInfo) {

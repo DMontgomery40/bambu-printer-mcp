@@ -6,6 +6,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { performance } from "node:perf_hooks";
 import { CadRefusal, cadFailure } from "./cad/refusal.js";
+import { writeCadProject3mf } from "./counterpart/make-3mf.js";
+import { listModelPlates } from "./counterpart/model-plates.js";
 import { withCadLock } from "./cad/serial.js";
 import { measureEnvironment, snapshotInputs, storageInfo, } from "./cad/storage.js";
 import { cadSandbox, defaultCadSystem } from "./cad/process.js";
@@ -365,6 +367,7 @@ export class CadEngine {
             "worker.py",
             "geometry.py",
             "scan_touchup.py",
+            "project3mf.py",
             "process.ts",
             "storage.ts",
             "serial.ts",
@@ -588,8 +591,10 @@ export class CadEngine {
                 }
                 const checked = JSON.parse((await this.confined("inspect", request, job, protectedFiles, remaining(), signal, readableInputs)).stdout);
                 const printed = built.stdout.trim();
+                const project = await this.project3mf(job, name, snapshots);
                 const result = {
                     ...checked,
+                    ...project,
                     // Beside the image paths, where the next step is decided.
                     next: "Read renders.perspective before the next cad_run or any other change: say what it shows is wrong against what you are making (the bought product you named, or the object in the photos), then fix that.",
                     // The script's own print() output: its words, not a measurement by this engine.
@@ -635,6 +640,35 @@ export class CadEngine {
                 throw new Error(message);
             }
         }, "run", signal, deadline);
+    }
+    /**
+     * When build() returned project_3mf(), write <name>.3mf from the sandbox's manifest and part STLs (this trusted
+     * process writes it; the sandbox only meshed the parts) and read it back as list_3mf_plates does.
+     */
+    async project3mf(job, name, inputs) {
+        const manifestPath = path.join(job, `${name}.project.json`);
+        const st = await fs.lstat(manifestPath).catch(() => undefined);
+        if (!st)
+            return {};
+        if (!st.isFile() || st.size > 1024 * 1024)
+            throw new Error("The design's 3MF project manifest is unsafe or too large.");
+        const partsDir = path.join(job, `${name}.parts`);
+        const dir = await fs.lstat(partsDir).catch(() => undefined);
+        if (!dir?.isDirectory())
+            throw new Error("The design's 3MF project parts are missing.");
+        const out = path.join(job, `${name}.3mf`);
+        const written = await writeCadProject3mf(JSON.parse(await fs.readFile(manifestPath, "utf8")), partsDir, inputs, out);
+        const listed = await listModelPlates(out);
+        return {
+            three_mf: out,
+            three_mf_project: {
+                base: written.base,
+                changes: written.changed,
+                plate_count: listed.plate_count,
+                plates: listed.plates.map(plate => ({ index: plate.index, name: plate.name, build_items: plate.build_items, parts: plate.parts, filaments: plate.filaments })),
+                project_filaments: listed.project_filaments,
+            },
+        };
     }
     async checkFit(args, signal) {
         only(args, [
