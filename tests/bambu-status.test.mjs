@@ -201,7 +201,7 @@ test("progress polls of an unreachable printer share one read and send one PushA
 
 // A P1S's first pushes of a new job carried its name and layer count before its layer number, so the merged report
 // read the previous job's last layer against the new total ("315/150") for one poll (Counterpart #702).
-test("a new job's first reports start at layer 0, not the previous job's last layer", async () => {
+test("a new job's first reports show no layer until it reports one, not the previous job's last layer", async () => {
   const { bambuProgress } = await import("../dist/counterpart/progress.js");
   const bambu = new BambuImplementation();
   const store = bambu.printerStore;
@@ -222,7 +222,8 @@ test("a new job's first reports start at layer 0, not the previous job's last la
   assert.equal(job().layer, 315, "the finished job keeps its last layer");
   await push({ gcode_state: "PREPARE", subtask_name: "hook", total_layer_num: 150 });
   assert.equal(printer.data.layer_num, 315, "bambu-node's own merge still holds the old layer");
-  assert.deepEqual([job().name, job().layer, job().totalLayers], ["hook", 0, 150]);
+  // No layer, percentage or remaining time until the new job reports its own (the same in mcp-3D-printer-server).
+  assert.deepEqual([job().name, job().layer, job().progress, job().remainingSec, job().totalLayers], ["hook", undefined, undefined, undefined, 150]);
   await push({ gcode_state: "RUNNING", layer_num: 1 });
   assert.deepEqual([job().layer, job().totalLayers], [1, 150]);
 });
@@ -233,14 +234,22 @@ test("a report merge restarts the progress only when a different job starts with
   const progress = (report) => [report.layer_num, report.mc_percent, report.mc_remaining_time];
   assert.equal(mergeBambuReport(undefined, { layer_num: 12 }).layer_num, 12, "the first report is taken as it is");
   assert.deepEqual(progress(mergeBambuReport(finished, { nozzle_temper: 30 })), [40, 100, 0], "an idle delta keeps the last job's progress");
-  assert.deepEqual(progress(mergeBambuReport(finished, { gcode_state: "PREPARE" })), [0, 0, undefined], "a start after a finished job restarts it");
-  assert.equal(Object.hasOwn(mergeBambuReport(finished, { gcode_state: "PREPARE" }), "mc_remaining_time"), false, "an unknown remaining time is left out");
-  assert.deepEqual(progress(mergeBambuReport(finished, { gcode_state: "PREPARE", mc_remaining_time: 95 })), [0, 0, 95], "what the new job sent is kept");
-  assert.equal(mergeBambuReport(finished, { gcode_file: "/sdcard/b.gcode" }).layer_num, 0, "another file is another job");
+  assert.deepEqual(progress(mergeBambuReport(finished, { gcode_state: "PREPARE" })), [undefined, undefined, undefined], "a start after a finished job drops its progress");
+  for (const field of ["layer_num", "mc_percent", "mc_remaining_time"]) {
+    assert.equal(Object.hasOwn(mergeBambuReport(finished, { gcode_state: "PREPARE" }), field), false, `${field} is left out until the new job reports it`);
+  }
+  assert.deepEqual(progress(mergeBambuReport(finished, { gcode_state: "PREPARE", mc_remaining_time: 95 })), [undefined, undefined, 95], "what the new job sent is kept");
+  assert.equal(mergeBambuReport(finished, { gcode_file: "/sdcard/b.gcode" }).layer_num, undefined, "another file is another job");
   assert.equal(mergeBambuReport(finished, { task_id: "77" }).layer_num, 40, "a job id the report never had names no other job");
-  assert.equal(mergeBambuReport({ ...finished, task_id: "76" }, { task_id: "77" }).layer_num, 0);
+  assert.equal(mergeBambuReport({ ...finished, task_id: "76" }, { task_id: "77" }).layer_num, undefined);
   assert.equal(mergeBambuReport(finished, { subtask_name: "b", total_layer_num: 10, layer_num: 3 }).layer_num, 3, "a full report's own layer wins");
   assert.equal(mergeBambuReport({ ...finished, gcode_state: "PAUSE" }, { gcode_state: "RUNNING" }).layer_num, 40, "a resume is the same job");
+  // A job resumed after FAILED, or one whose layer count is revised, is the same job (Muse P2 on #156/#110).
+  const failed = { ...finished, gcode_state: "FAILED" };
+  assert.deepEqual(progress(mergeBambuReport(failed, { gcode_state: "RUNNING" })), [40, 100, 0], "a resume after FAILED keeps its progress");
+  assert.equal(mergeBambuReport(failed, { gcode_state: "PREPARE" }).layer_num, undefined, "a new start after FAILED prepares first");
+  assert.equal(mergeBambuReport(failed, { gcode_state: "RUNNING", subtask_name: "b" }).layer_num, undefined, "another job after FAILED");
+  assert.equal(mergeBambuReport({ ...finished, gcode_state: "RUNNING" }, { total_layer_num: 41 }).layer_num, 40, "a revised layer count is the same job");
   // Placeholders name no job: a total of 0 before slicing, an empty file, LAN's task_id "0".
   const running = { gcode_state: "RUNNING", subtask_name: "a", gcode_file: "/sdcard/a.gcode", task_id: "0", total_layer_num: 0, layer_num: 7 };
   for (const update of [{ total_layer_num: 150 }, { gcode_file: "" }, { task_id: "123" }, { subtask_name: " " }]) {

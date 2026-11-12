@@ -1,14 +1,19 @@
 /**
  * Merging Bambu MQTT reports. P1/A1 printers push only what changed, so a merged report keeps every field until the
  * printer sends it again. A new job's first pushes can carry its name and layer count before its layer number, and the
- * previous job's last layer then read against the new total ("315/150").
+ * previous job's last layer then read against the new total ("315/150"). Until the new job reports its own progress,
+ * its report has none.
  */
-/** Fields that name the job a report describes. */
-const JOB_FIELDS = ["subtask_name", "gcode_file", "task_id", "total_layer_num"];
-const ENDED = new Set(["FINISH", "FAILED", "IDLE"]);
-const STARTING = new Set(["PREPARE", "SLICING", "RUNNING"]);
-/** The previous job's progress, which a new job restarts until the printer reports its own. */
-const JOB_PROGRESS = { layer_num: 0, mc_percent: 0, mc_remaining_time: undefined };
+/**
+ * Fields that name the job a report describes. The layer count is not one: a running job's count can be revised, and a
+ * different job differs in its name, file or task id.
+ */
+const JOB_FIELDS = ["subtask_name", "gcode_file", "task_id"];
+/** A new job prepares (PREPARE, SLICING) after any end; RUNNING straight after FAILED is that job resuming. */
+const PREPARING = new Set(["PREPARE", "SLICING"]);
+const DONE = new Set(["FINISH", "IDLE"]);
+/** The previous job's progress, left out of a new job's report until the printer reports the new job's own. */
+const JOB_PROGRESS = ["layer_num", "mc_percent", "mc_remaining_time"];
 /** A job field's value, or undefined for a placeholder: empty, or 0 (LAN prints report task_id "0"). */
 function named(value) {
     const text = value === undefined || value === null ? "" : String(value).trim();
@@ -23,25 +28,19 @@ export function startsNewJob(previous, update) {
         if (before !== undefined && after !== undefined && before !== after)
             return true;
     }
-    return ENDED.has(String(previous.gcode_state)) && STARTING.has(String(update.gcode_state));
+    const before = String(previous.gcode_state), after = String(update.gcode_state);
+    return (DONE.has(before) || before === "FAILED") && PREPARING.has(after) || DONE.has(before) && after === "RUNNING";
 }
-/**
- * The fields to set when update merges into previous: for a new job, the layer and percentage it did not send start
- * at 0, and a remaining time it did not send is dropped. Nothing for the same job.
- */
+/** The previous job's progress fields to leave out when update starts a new job without reporting them. */
 export function newJobResets(previous, update) {
     if (!startsNewJob(previous, update))
-        return {};
-    return Object.fromEntries(Object.entries(JOB_PROGRESS).filter(([field]) => update[field] === undefined && previous?.[field] !== undefined));
+        return [];
+    return JOB_PROGRESS.filter(field => update[field] === undefined && previous?.[field] !== undefined);
 }
-/** previous merged with update, restarting a new job's progress (newJobResets). */
+/** previous merged with update, without the previous job's progress when update starts a new one (newJobResets). */
 export function mergeBambuReport(previous, update) {
     const merged = { ...previous, ...update };
-    for (const [field, value] of Object.entries(newJobResets(previous, update))) {
-        if (value === undefined)
-            delete merged[field];
-        else
-            merged[field] = value;
-    }
+    for (const field of newJobResets(previous, update))
+        delete merged[field];
     return merged;
 }
