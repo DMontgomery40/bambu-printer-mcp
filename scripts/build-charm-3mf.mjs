@@ -42,6 +42,7 @@
  * Override if your template uses a different filament layout.
  */
 
+import { xmlAttribute } from "../dist/slicer/3mf-xml.js";
 import fs from "node:fs";
 import path from "node:path";
 import { Buffer } from "node:buffer";
@@ -243,12 +244,12 @@ function modelSettingsConfigXml(objects, opts = {}) {
   // the project filament slot (1-indexed) that BambuStudio will assign
   // to the object during slicing.
   const blocks = objects.map((o) => `  <object id="${o.objId}">
-    <metadata key="name" value="${o.name}"/>
+    <metadata key="name" value="${xmlAttribute(o.name)}"/>
     <metadata key="extruder" value="${o.extruder}"/>
     <part id="${o.objId}" subtype="normal_part">
-      <metadata key="name" value="${o.name}"/>
+      <metadata key="name" value="${xmlAttribute(o.name)}"/>
       <metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>
-      <metadata key="source_file" value="${o.name}"/>
+      <metadata key="source_file" value="${xmlAttribute(o.name)}"/>
       <metadata key="source_object_id" value="0"/>
       <metadata key="source_volume_id" value="0"/>
       <metadata key="source_offset_x" value="0"/>
@@ -273,8 +274,8 @@ ${blocks}
     <metadata key="plater_name" value=""/>
     <metadata key="locked" value="false"/>
     <metadata key="filament_map_mode" value="Auto For Flush"/>
-    <metadata key="filament_maps" value="${filamentMaps}"/>
-    <metadata key="filament_volume_maps" value="${filamentVolumeMaps}"/>
+    <metadata key="filament_maps" value="${xmlAttribute(filamentMaps)}"/>
+    <metadata key="filament_volume_maps" value="${xmlAttribute(filamentVolumeMaps)}"/>
     <metadata key="gcode_file" value=""/>
   </plate>
 </config>

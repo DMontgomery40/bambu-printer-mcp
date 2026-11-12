@@ -1,3 +1,4 @@
+import { xmlAttribute } from "../slicer/3mf-xml.js";
 /**
  * counterpart_make_3mf: combine separately exported STL parts into one 3MF for
  * multi-colour printing (PRD §8.4/§8.5, M3b).
@@ -77,10 +78,6 @@ async function readMesh(filePath, label) {
     finally {
         geometry?.dispose();
     }
-}
-function xmlAttribute(value) {
-    return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-        .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "");
 }
 /** Shortest decimal that reads back as the same float32. */
 const coordinate = (value) => String(Number(value.toPrecision(9)));
