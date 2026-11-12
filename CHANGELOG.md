@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.94] – 2026-11-12
+
+### Added
+
+- `cad_run` writes a multi-part, multi-colour 3MF project when a design script returns `project_3mf()`: a new project (parts with names and filaments, grouped into objects, on plates laid out as Bambu Studio lays them out) or an edit of a declared input 3MF (add a part to an object, replace a part's mesh, rename or recolour a part) that copies every file it does not change byte for byte, so the designer's print settings, painting and plates stay. Replacing a mesh that other objects share gives the edited object its own copy, so the others keep the original. The run's checks see each object's parts fused into one body, as a new solid project's STEP does, so touching colour parts pass and a part with a hole still fails. The sandbox only meshes the parts; the MCP writes the 3MF with `counterpart_make_3mf`'s writer and escaped names, and returns `three_mf` with the file read back per plate. A real `cad_run` on Linux edited Bambu Studio 02.08.02.61's two-plate, three-filament project and made a new two-plate project, both read back with their parts and colours; neither has been opened in Bambu Studio's GUI, sliced or printed (no profile tree on the test machine). Refs DMontgomery40/scan-to-make#642.
+- `list_3mf_plates` reports each plate's root `build_items` (0-based) and `parts` (`object_id`, `path` when the mesh is in another model part, `build_object_id`, `name`, 1-based `filament`, `painted: true` for slicer painting), so a client draws each plate and each part in its own colour from the open 3MF standard alone. Additive to `counterpart/1`. Refs DMontgomery40/scan-to-make#645.
+
+### Fixed
+
+- Refuse CAD inspection of imported 3MF projects with negative volumes until subtraction is supported, rather than return an uncut inspection STL that differs from the preserved project. A real Python fixture reproduces the 1000 mm³ uncut body before the fix and verifies a clear refusal with no inspection output afterwards; no printer contact.
+
+- Refuse CAD inspection of nested or empty component assemblies instead of silently dropping an unselected assembly from the inspection STL and renders. A Python regression checks refusal before output; archive-writer preservation of shared nested references remains covered separately.
+
 ## [1.1.93] – 2026-11-12
 
 ### Added

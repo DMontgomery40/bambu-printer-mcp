@@ -1,4 +1,4 @@
-import { type PaintLimits, type PlateFilament } from "./plate-filaments.js";
+import { type PaintLimits, type PlateFilament, type PlatePart } from "./plate-filaments.js";
 export interface ModelPlate {
     /** Zero-based, as inspect_print_file's plate_index; slice_stl's slice_plate is index + 1. */
     index: number;
@@ -26,6 +26,13 @@ export interface ModelPlate {
      * so every declared filament is listed rather than risk leaving out one that prints. A client offers them all.
      */
     filaments_complete: boolean;
+    /**
+     * The root 3D/3dmodel.model build items on this plate, 0-based in build order (counterpart/1): the copies a client
+     * places to draw this plate from the open 3MF standard alone. Empty for a sliced-only file without a model.
+     */
+    build_items: number[];
+    /** Each model part of this plate's objects once, with the filament it prints in (counterpart/1; see PlatePart). */
+    parts: PlatePart[];
     /** The plate's own preview from the file (Metadata/plate_N.png), when asked for and present. */
     thumbnail_png_base64?: string;
 }

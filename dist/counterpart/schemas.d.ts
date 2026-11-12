@@ -258,7 +258,7 @@ export declare const PRINT_PROGRESS_OUTPUT_SCHEMA: {
         };
         state: {
             type: string;
-            enum: ("failed" | "cancelled" | "idle" | "offline" | "preparing" | "printing" | "paused" | "finished" | "busy")[];
+            enum: ("failed" | "cancelled" | "idle" | "preparing" | "printing" | "paused" | "finished" | "offline" | "busy")[];
         };
         job: {
             type: string;
@@ -353,7 +353,7 @@ export declare const PRINT_PROGRESS_OUTPUT_SCHEMA: {
                     };
                     severity: {
                         type: string;
-                        enum: ("error" | "info" | "fatal" | "warning")[];
+                        enum: ("fatal" | "error" | "info" | "warning")[];
                     };
                     message: {
                         type: string;
