@@ -2163,12 +2163,12 @@ export class STLManipulator extends EventEmitter {
          }, 500);
 
          process.on('exit', () => {
-           clearInterval(checkCancel);
+           // Exit can precede a client cancel while a helper retains output pipes; polling runs until close.
            // A helper that outlived the slicer still holds its output; finish it so the call can settle.
            if (cancelled && group) stop('SIGKILL');
          });
          // The deadline runs until every process sharing the slicer's output has let go, not only the slicer.
-         process.on('close', () => { clearTimeout(forceKill); clearTimeout(abandon); });
+         process.on('close', () => { clearInterval(checkCancel); clearTimeout(forceKill); clearTimeout(abandon); });
          process.on('error', () => { clearInterval(checkCancel); clearTimeout(forceKill); clearTimeout(abandon); });
          watchForStall(process, stallSeconds, () => {
            stalled = true;
