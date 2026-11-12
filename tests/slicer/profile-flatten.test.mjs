@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import JSZip from "jszip";
 import { fileURLToPath } from "node:url";
 
 import { flattenForCli, detectProfilesRoot } from "../../dist/slicer/profile-flatten.js";
@@ -133,6 +134,8 @@ test("STLManipulator flattening uses the active slicer_path profile root", async
     filament_type: ["PLA"],
   });
 
+  const fixturePath=path.join(tempDir,"fixture.3mf");
+  await fs.writeFile(fixturePath,await new JSZip().file("fixture.txt","fake 3mf").generateAsync({type:"nodebuffer"}));
   await fs.writeFile(
     activeSlicerPath,
     [
@@ -152,7 +155,7 @@ test("STLManipulator flattening uses the active slicer_path profile root", async
       "  shift",
       "done",
       "mkdir -p \"$outdir\"",
-      "printf 'fake 3mf\\n' > \"$outdir/$export_name\"",
+      `cp ${shQuote(fixturePath)} "$outdir/$export_name"`,
       "",
     ].join("\n"),
     { mode: 0o755 }

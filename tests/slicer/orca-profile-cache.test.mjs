@@ -1,3 +1,4 @@
+import JSZip from 'jszip';
 import {trackedMkdtemp} from '../support/temp.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -75,6 +76,7 @@ test('public cache slicing stages canonical User identities and preserves projec
   const { STLManipulator } = await import('../../dist/stl/stl-manipulator.js');
   const executable = path.join(root, 'fake-orca');
   const trace = path.join(root, 'trace.json');
+  const fallback=await new JSZip().file('fixture.txt','fixture output').generateAsync({type:'base64'});
   await fs.writeFile(executable, `#!/usr/bin/env node
 const fs=require('node:fs'),path=require('node:path');
 const args=process.argv.slice(2),get=k=>args[args.indexOf(k)+1];
@@ -83,7 +85,7 @@ const configs=files.map(f=>JSON.parse(fs.readFileSync(f,'utf8')));
 const cache=fs.readFileSync(path.join(get('--datadir'),'system/BBL.opc')).toString('base64');
 fs.writeFileSync(${JSON.stringify(trace)},JSON.stringify({args,files,configs,cache}));
 if(fs.existsSync(${JSON.stringify(path.join(root, 'fail-cli'))}))process.exit(2);
-fs.writeFileSync(path.join(get('--outputdir'),get('--export-3mf')),'fixture output');
+fs.writeFileSync(path.join(get('--outputdir'),get('--export-3mf')),Buffer.from(${JSON.stringify(fallback)},'base64'));
 `, { mode: 0o755 });
   const input = path.join(root, 'cube.stl'); await fs.writeFile(input, 'solid cube\nendsolid cube');
   const processFile = path.join(root, 'process.json');
