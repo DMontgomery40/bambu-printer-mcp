@@ -42,6 +42,8 @@ export const REMOTE_SCOPES: Readonly<Record<string, RemoteScope>> = {
   counterpart_printer_info: "read",
   counterpart_print_progress: "read",
   cad_status: "read",
+  cad_examples: "read",
+  design_guidance: "read",
   cad_setup: "read",
   cad_run: "design",
   cad_check_fit: "design",

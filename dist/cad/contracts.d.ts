@@ -6,6 +6,7 @@ export declare const CAD_CAPABILITY: {
     readonly setup: "cad_setup";
     readonly run: "cad_run";
     readonly checkFit: "cad_check_fit";
+    readonly examples: "cad_examples";
     readonly prompt: "cad_design";
 };
 export declare const CAD_TOOLS: ({
@@ -242,6 +243,89 @@ export declare const CAD_TOOLS: ({
         };
         required: string[];
         additionalProperties: boolean;
+    };
+    outputSchema: {
+        type: "object";
+        anyOf: ({
+            type: string;
+            properties: {
+                status: {
+                    type: string;
+                    const: string;
+                };
+                code: {
+                    type: string;
+                    enum: ("cad-uv-missing" | "cad-data-volume-refused" | "cad-setup-busy" | "cad-operation-busy" | "cad-queue-timeout" | "cad-not-ready" | "cad-confinement-unavailable" | "cad-disabled" | "cad-failed")[];
+                };
+                message: {
+                    type: string;
+                };
+                tool: {
+                    type: string;
+                };
+                retryable: {
+                    type: string;
+                };
+                suggestion: {
+                    type: string;
+                };
+                storage: {
+                    type: string;
+                    properties: {
+                        expected_download_bytes: {
+                            type: string;
+                        };
+                        expected_installed_bytes: {
+                            type: string;
+                        };
+                        installed_bytes: {
+                            type: string[];
+                        };
+                        measurement: {
+                            type: string;
+                            const: string;
+                        };
+                        measured_at: {
+                            type: string;
+                        };
+                    };
+                    required: string[];
+                };
+            };
+            required: string[];
+        } | {
+            type: string;
+            properties: Record<string, unknown>;
+            required: string[];
+        })[];
+    };
+} | {
+    name: string;
+    description: string;
+    inputSchema: {
+        type: "object";
+        properties: {
+            name: {
+                type: string;
+                description: string;
+                maxLength?: undefined;
+            };
+            install?: undefined;
+            inputs?: undefined;
+            mode?: undefined;
+            script?: undefined;
+            script_path?: undefined;
+            parameters?: undefined;
+            output_dir?: undefined;
+            final?: undefined;
+            timeout_ms?: undefined;
+            model?: undefined;
+            reference?: undefined;
+            transform?: undefined;
+            clearance_mm?: undefined;
+        };
+        additionalProperties: boolean;
+        required?: undefined;
     };
     outputSchema: {
         type: "object";
