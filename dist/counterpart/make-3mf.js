@@ -16,6 +16,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import JSZip from "jszip";
+import { SaxesParser } from "saxes";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { MACHINE_LIMITS, normalizeModel } from "../safety/limits.js";
 import { readSafe3mfArchive } from "../safety/archive.js";
@@ -293,6 +294,33 @@ function elementById(xml, tag, id) {
     const match = pattern.exec(xml);
     return match ? { start: match.index, end: match.index + match[0].length, text: match[0] } : undefined;
 }
+/**
+ * Whether XML text is a 3MF model document: well-formed, a <model> root and one <resources> directly under it, closed
+ * once in the text, so a splice at its close lands inside the model's resources and nowhere else.
+ */
+function isModelDocument(xml) {
+    if ((xml.match(/<\/(?:\w+:)?resources\s*>/g) ?? []).length !== 1)
+        return false;
+    let depth = 0, root = "", resources = 0;
+    try {
+        const parser = new SaxesParser({ xmlns: false });
+        parser.on("error", error => { throw error; });
+        parser.on("opentag", tag => {
+            const local = tag.name.replace(/^\w+:/, "");
+            if (depth === 0)
+                root = local;
+            else if (depth === 1 && local === "resources")
+                resources += 1;
+            depth += 1;
+        });
+        parser.on("closetag", () => { depth -= 1; });
+        parser.write(xml).close();
+    }
+    catch {
+        return false;
+    }
+    return root === "model" && resources === 1;
+}
 /** The prefix a document binds to the 3MF production extension, if any. */
 const productionPrefix = (xml) => /\bxmlns:(\w+)="http:\/\/schemas\.microsoft\.com\/3dmanufacturing\/production\/2015\/06"/.exec(xml)?.[1];
 /** A mesh as <mesh> text, for splicing into an existing model part. */
@@ -371,7 +399,18 @@ export async function writeCadProject3mf(manifest, partsDir, inputs, outPath) {
         return files.get(name);
     };
     const ROOT = "3D/3dmodel.model", SETTINGS = "Metadata/model_settings.config";
-    await read(ROOT);
+    // A component's path comes from the untrusted base: only a model part may take a mesh.
+    const checkedModels = new Set();
+    const readModel = async (name) => {
+        const model = await read(name);
+        if (!checkedModels.has(name)) {
+            if ((name !== ROOT && !name.toLowerCase().endsWith(".model")) || !isModelDocument(model))
+                fail(`The base 3MF's ${name} is not a 3MF model part; a part's mesh can only go into one.`);
+            checkedModels.add(name);
+        }
+        return model;
+    };
+    await readModel(ROOT);
     await read(SETTINGS);
     if (!Array.isArray(project.edits) || !project.edits.length || project.edits.length > 256)
         fail("A 3MF edit needs 1 to 256 edits.");
@@ -412,7 +451,7 @@ export async function writeCadProject3mf(manifest, partsDir, inputs, outPath) {
             if (!components.length)
                 fail(`Object ${edit.object_id} is a single mesh without parts; a part can only join an object made of parts.`);
             const target = components[0].path;
-            const model = await read(target);
+            const model = await readModel(target);
             const ids = [...model.matchAll(/<(?:\w+:)?object\b[^>]*\bid="(\d+)"/g)].map(match => Number(match[1]));
             const id = Math.max(0, ...ids, ...components.map(component => component.id)) + 1;
             const filePrefix = productionPrefix(model);
@@ -446,7 +485,7 @@ export async function writeCadProject3mf(manifest, partsDir, inputs, outPath) {
             if (edit.op === "replace_part") {
                 if (`/${component.path}` !== edit.path)
                     fail(`edits[${index}] names part ${edit.part_id} in another model file.`);
-                const model = await read(component.path);
+                const model = await readModel(component.path);
                 const mesh = elementById(model, "object", edit.part_id);
                 if (!mesh || !/<(?:\w+:)?mesh\b/.test(mesh.text))
                     fail(`Part ${edit.part_id} of object ${edit.object_id} has no mesh to replace.`);
