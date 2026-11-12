@@ -459,15 +459,16 @@ export async function writeCadProject3mf(manifest, partsDir, inputs, outPath) {
             fail(`The base 3MF's model_settings.config does not describe object ${objectId}.`);
         return block;
     };
-    // Every reference to mesh resource `id` in model file `target`: components in the root model (and, inside a model
-    // part, its own components) and, in the root model, build items.
+    // Every reference to mesh resource `id` in model file `target`: the root model's components and build items, and a
+    // model part's own components.
     const usesOf = (target, id) => {
         const sameId = (attributes) => Number(/\bobjectid="(\d+)"/.exec(attributes)?.[1]) === id;
         let uses = [...files.get(ROOT).matchAll(/<(?:\w+:)?component\b([^>]*)\/?>/g)]
             .filter(match => sameId(match[1]) && ((/\b(?:\w+:)?path="\/?([^"]+)"/.exec(match[1])?.[1]) ?? ROOT) === target).length;
-        if (target === ROOT)
-            uses += [...files.get(ROOT).matchAll(/<(?:\w+:)?item\b([^>]*)\/?>/g)].filter(match => sameId(match[1])).length;
-        else
+        // A build item may place an object of another model file directly (production extension p:path).
+        uses += [...files.get(ROOT).matchAll(/<(?:\w+:)?item\b([^>]*)\/?>/g)]
+            .filter(match => sameId(match[1]) && ((/\b(?:\w+:)?path="\/?([^"]+)"/.exec(match[1])?.[1]) ?? ROOT) === target).length;
+        if (target !== ROOT)
             uses += [...files.get(target).matchAll(/<(?:\w+:)?component\b([^>]*)\/?>/g)].filter(match => sameId(match[1]) && !/\bpath="/.test(match[1])).length;
         return uses;
     };
