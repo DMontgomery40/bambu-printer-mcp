@@ -2,6 +2,11 @@
   "name": "bambu-printer-mcp",
   "version": "1.1.92",
   "description": "MCP server for Bambu Lab 3D printers with STL manipulation, slicing, and print management",
+  "counterpart": {
+    "contract": "counterpart/1",
+    "notes": "Adds counterpart_self_check and the printer's display name with its maker, and starts a new job's live layer at 0.",
+    "autoUpdate": true
+  },
   "main": "dist/index.js",
   "repository": {
     "type": "git",

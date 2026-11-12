@@ -10,6 +10,8 @@ export declare function bambuSliceCapabilities(slicerType: string | undefined): 
     copies: boolean;
     orient: boolean;
 };
+/** The maker's own name for this model ("Bambu Lab P1S"), so a client shows it as given and composes nothing. */
+export declare const BAMBU_MAKER = "Bambu Lab";
 export declare function bambuPrinterInfo(options: {
     server: {
         name: string;

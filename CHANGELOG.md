@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `counterpart_self_check` (counterpart/1) reports whether this install's own runtime dependencies and its bundled bambu-node patch loaded: one check per dependency in `package.json`, with the installed version (an exact pin, `^` or `~` range must be met; any other form fails as one the check cannot judge), and a read-only check that every hunk of the bundled patch is in the installed bambu-node, plus an in-memory H2D version report that only the patched bambu-node reads. `ok` is false when any check fails, and that check's `message` says why. It loads modules from the server's own install and sends nothing to the printer. Checked against the real tarball in a local install, before and after its bambu-node is broken (Counterpart #644).
+- `package.json` has a `counterpart` field, readable with `npm view bambu-printer-mcp counterpart` before downloading: `contract` (`counterpart/1`), one sentence of `notes` about the release, and `autoUpdate`, which a release sets to false to opt out of the app's automatic update. The MCP `initialize` version stays the package version, now covered by a test (Counterpart #644).
+- `counterpart_printer_info` returns `printer.displayName`, the model with its maker as Bambu names it ("Bambu Lab P1S", "Bambu Lab H2D Pro"), so a client shows it as given. It is absent when the model is unknown (Counterpart #698).
+
+### Fixed
+
+- At the start of a print, `counterpart_print_progress` could read the previous job's last layer against the new job's layer count ("315/150") for one poll, because a P1/A1 printer's first pushes for the new job carry its name and layer count before its layer number. A report that names a different job (name, file or task id), prepares after any end, or runs after a finished or idle job now leaves out the previous job's layer, percentage and remaining time until the printer reports the new job's own; mcp-3D-printer-server reports the same. A job running again straight after FAILED is that job resuming, and a revised layer count is the same job, so neither loses its progress. Empty values and LAN's task id "0" name no job. Checked with bambu-node's own parser fed recorded-style pushes, no printer connection (Counterpart #702).
+- A cancelled `slice_stl` call now stops the slicer and, on macOS and Linux, every helper process it started (the slicer leads its own process group), and settles once they have all gone. The slice's folder is removed only after that, so nothing writes into it afterwards. A slicer or helper that ignores the stop is killed after 5 s; if a helper outside that group (a daemonized one, or any helper on Windows) still holds the slicer's output a second later, the server lets go of it and the call settles anyway. The server logs the removal, and the cancellation test waits for that line instead of reading the folder as soon as the process is gone, which failed under load (Counterpart #699).
+- Four changelog entries carried the day their version was bumped rather than the day it was published: 1.1.80 to 1.1.83 were published on 2026-11-10 (Counterpart #699).
+
 ## [1.1.92] – 2026-11-12
 
 ### Added
@@ -102,7 +116,7 @@
 
 - On macOS, a Bambu-compatible slicer that uses no CPU and writes nothing for `SLICER_STALL_SECONDS` (default 20; 0 turns it off) is stopped and reported with the stable `structuredContent.code` `slicer-waiting-on-dialog`. The message says to open the slicer once, answer what it shows and slice again; nothing is sent to the printer. It carries no `slicer_report`, because it is no verdict on the model. Previously such a slice waited until the client gave up.
 
-## [1.1.83] – 2026-11-09
+## [1.1.83] – 2026-11-10
 
 ### Added
 
@@ -110,17 +124,17 @@
 
 - Add optional confined code-CAD tools (`cad_status`, `cad_setup`, `cad_run`, `cad_check_fit`) and MCP-owned `cad_design` instructions for dimensioned parts and parameter edits. Setup installs pinned build123d/mesh libraries only on request; `CAD_ENABLED=0` leaves the family out. Explicit read-only input snapshots and a unit/up-axis/grounding helper support captured-mesh scripts in the same environment, with scikit-image and Shapely alongside the CAD and mesh libraries. macOS setup requires an internal ownership-enabled data volume; it never re-signs native files. No printer, installed app or Fusion-bridge behavior changes.
 
-## [1.1.82] – 2026-11-08
+## [1.1.82] – 2026-11-10
 
 ### Added
 
 - `counterpart_setup_fields` says for each printer kind whether `camera_snapshot` reads its camera with only the settings the fields write (`cameraSnapshot`). It is `true` for Bambu: every offered model has a camera transport, chosen by the model field; RTSP models (X1, P2S, H2, X2D) still need ffmpeg, as `camera_snapshot` always has. A client such as Counterpart can then ask for a camera picture in its setup check only where the MCP says it can, instead of deciding by the printer type's name. Every kind declares it; a client reads it missing as an older server. Checked with the setup-fields tests; no printer contacted.
 
-## [1.1.81] – 2026-11-08
+## [1.1.81] – 2026-11-10
 
 - Report `printOutcome` in `print_3mf` and `upload_gcode` errors (`counterpart/1`): `not-sent` before any print command, `unknown` after a possible dispatch, or `rejected` when the printer refuses it. Fresh MQTT report timeouts no longer make clients guess whether printing started. Request-local tracking covers direct MQTT, FULU and native routes without matching error wording; Connect imports send no print command. Verified with mocked transports; no physical print started.
 
-## [1.1.80] – 2026-11-08
+## [1.1.80] – 2026-11-10
 
 ### Fixed
 

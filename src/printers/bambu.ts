@@ -23,6 +23,7 @@ import { RTSP_CAMERA_MODELS, TCP_CAMERA_MODELS } from "./camera-models.js";
 import { directPrintOptionReport, resolveStudioPrintOptions, usedNozzleCount, type CallerPrintOptions } from "../studio-print-options.js";
 import { Client as FTPClient } from "basic-ftp";
 import { uploadBytes } from "./ftp-upload.js";
+import { mergeBambuReport } from "./report-merge.js";
 import * as mqtt from "mqtt";
 import {
   BambuClient,
@@ -425,10 +426,33 @@ class BambuClientStore {
       return;
     }
 
-    const previous = this.reportSnapshots.get(key) || {};
-    this.reportSnapshots.set(key, { ...previous, ...update });
+    this.reportSnapshots.set(key, mergeBambuReport(this.reportSnapshots.get(key), update));
     this.reportTimes.set(key, Date.now());
     this.resolveInitialReport(key);
+  }
+
+  /** Merges the printer's reports into its snapshot as they arrive (tests feed a client without a connection). */
+  private watchReports(printer: BambuClient, host: string, serial: string, key: string): void {
+    printer.on("rawMessage", (_topic, payload) => {
+      try {
+        const parsed = JSON.parse(payload.toString());
+        const printMessage = parsed?.print;
+        if (printMessage && typeof printMessage === "object") {
+          this.updateReportSnapshot(key, printMessage);
+          this.reportObserved(host, serial, key);
+        }
+      } catch {
+        // Ignore unrelated payloads.
+      }
+    });
+
+    // bambu-node passes its whole merged report and then what changed. Only the change is merged here, so a field the
+    // printer has not sent again (the previous job's layer) is not copied back over this merge's own reset.
+    printer.on("printer:dataUpdate", (_data, changed) => {
+      if (!changed || typeof changed !== "object") return;
+      this.updateReportSnapshot(key, changed);
+      this.reportObserved(host, serial, key);
+    });
   }
 
   private reportObserved(host: string, serial: string, key: string): void {
@@ -528,23 +552,7 @@ class BambuClientStore {
     });
     this.ensureInitialReportPromise(key);
 
-    printer.on("rawMessage", (_topic, payload) => {
-      try {
-        const parsed = JSON.parse(payload.toString());
-        const printMessage = parsed?.print;
-        if (printMessage && typeof printMessage === "object") {
-          this.updateReportSnapshot(key, printMessage);
-          this.reportObserved(host, serial, key);
-        }
-      } catch {
-        // Ignore unrelated payloads.
-      }
-    });
-
-    printer.on("printer:dataUpdate", (data) => {
-      this.updateReportSnapshot(key, data);
-      this.reportObserved(host, serial, key);
-    });
+    this.watchReports(printer, host, serial, key);
 
     printer.on("client:connect", () => {
       this.printers.set(key, printer);

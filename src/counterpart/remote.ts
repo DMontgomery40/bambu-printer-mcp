@@ -40,6 +40,7 @@ export const REMOTE_SCOPES: Readonly<Record<string, RemoteScope>> = {
   inspect_print_file: "read",
   blender_mcp_status: "read",
   counterpart_printer_info: "read",
+  counterpart_self_check: "read",
   counterpart_print_progress: "read",
   counterpart_print_record: "read",
   counterpart_print_assess: "control", // local evidence mutation, never a printer command

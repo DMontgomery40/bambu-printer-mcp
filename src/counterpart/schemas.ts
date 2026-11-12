@@ -28,7 +28,8 @@ export type PrintProgress = {
 export type PrinterInfo = {
   contract: typeof COUNTERPART_CONTRACT;
   server: { name: string; version: string };
-  printer: { kind: typeof PRINTER_KINDS[number]; model?: string; serial?: string; host: string; name?: string };
+  /** displayName: the model with its maker ("Bambu Lab P1S"), shown as given; absent when the model is unknown. */
+  printer: { kind: typeof PRINTER_KINDS[number]; model?: string; displayName?: string; serial?: string; host: string; name?: string };
   capabilities: {
     cad?: {contract: string; status: string; setup: string; run: string; checkFit: string; prompt: string};
     progress: boolean; layers: boolean;
@@ -61,6 +62,7 @@ export const PRINTER_INFO_OUTPUT_SCHEMA = {
       properties: {
         kind: { type: "string", enum: [...PRINTER_KINDS] },
         model: { type: "string" },
+        displayName: { type: "string" },
         serial: { type: "string" },
         host: { type: "string" },
         name: { type: "string" },

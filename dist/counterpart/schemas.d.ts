@@ -54,9 +54,11 @@ export type PrinterInfo = {
         name: string;
         version: string;
     };
+    /** displayName: the model with its maker ("Bambu Lab P1S"), shown as given; absent when the model is unknown. */
     printer: {
         kind: typeof PRINTER_KINDS[number];
         model?: string;
+        displayName?: string;
         serial?: string;
         host: string;
         name?: string;
@@ -115,6 +117,9 @@ export declare const PRINTER_INFO_OUTPUT_SCHEMA: {
                     enum: ("bambu" | "octoprint" | "klipper" | "prusa" | "duet" | "repetier" | "creality")[];
                 };
                 model: {
+                    type: string;
+                };
+                displayName: {
                     type: string;
                 };
                 serial: {
