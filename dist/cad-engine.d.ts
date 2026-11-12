@@ -22,8 +22,11 @@ export declare class CadEngine {
     private readonly system;
     readonly dataDir: string;
     private reverifyFailure?;
-    /** How long a re-check waits for another CAD operation to let go of the engine. */
+    /** How long a re-check waits for another CAD operation to let go of the engine (Counterpart reads status with 30 s). */
     busyWaitMs: number;
+    /** Within this window a freed engine is re-checked here; later this call only waits for the other call's result, so
+     * a wait plus a ~17 s re-check cannot overrun the status deadline. */
+    busyRetryMs: number;
     constructor(options: CadOptions);
     status(): Promise<CadStatus>;
     failure(error: unknown, tool: string): Promise<{
