@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- Preserve the patched bambu-node declaration in the desktop extension, overriding the packer’s default type-file exclusion so counterpart_self_check verifies every bundled patch hunk. Exercise the self-check on the extracted archive.
+
 - Keep cancellation polling until the slicer output closes, so a cancel after the slicer exits still reaches the bounded pipe cleanup when a helper holds its output. Covered with an exit-before-abort subprocess fixture; no printer contact.
 
 - At the start of a print, `counterpart_print_progress` could read the previous job's last layer against the new job's layer count ("315/150") for one poll, because a P1/A1 printer's first pushes for the new job carry its name and layer count before its layer number. A report that names a different job (name, file or task id), prepares after any end, or runs after a finished or idle job now leaves out the previous job's layer, percentage and remaining time until the printer reports the new job's own; mcp-3D-printer-server reports the same. A job running again straight after FAILED is that job resuming, and a revised layer count is the same job, so neither loses its progress. Empty values and LAN's task id "0" name no job. Checked with bambu-node's own parser fed recorded-style pushes, no printer connection (Counterpart #702).
