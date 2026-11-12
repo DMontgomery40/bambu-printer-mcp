@@ -15,6 +15,7 @@ import { bambuProgress, bambuState, formatHmsCode, hmsUrl, offlineProgress, stag
 import { bambuPrinterInfo } from "../dist/counterpart/info.js";
 import { makeCounterpart3mf } from "../dist/counterpart/make-3mf.js";
 import { MAKE_3MF_OUTPUT_SCHEMA, PRINT_PROGRESS_OUTPUT_SCHEMA, PRINTER_INFO_OUTPUT_SCHEMA } from "../dist/counterpart/schemas.js";
+import { SELF_CHECK_OUTPUT_SCHEMA } from "../dist/counterpart/self-check.js";
 import { BAMBU_STAGES, BAMBU_STAGES_SOURCE } from "../dist/printers/bambu-stages.js";
 import { HMS_MESSAGES, HMS_MESSAGES_SOURCE, PRINT_ERROR_MESSAGES } from "../dist/safety/hms-messages.js";
 import { HIDDEN_HMS_SOURCE } from "../dist/safety/hidden-hms.js";
@@ -181,6 +182,8 @@ test("printer info reports the camera transport and controls for each model with
     assert.deepEqual(info.server, server);
     assert.equal(info.printer.kind, "bambu");
     assert.equal(info.printer.model, display);
+    // The model with its maker, as Bambu names it; nothing is composed when the model is unknown (Counterpart #698).
+    assert.equal(info.printer.displayName, display && `Bambu Lab ${display}`);
     assert.equal(info.printer.host, "192.0.2.10");
     assert.equal(info.capabilities.camera, camera);
     assert.equal(info.capabilities.gcode, gcode);
@@ -195,6 +198,14 @@ test("printer info reports the camera transport and controls for each model with
   }
   assert.deepEqual(bambuPrinterInfo({ server, host: "h", slicerType: "orcaslicer" }).capabilities.slicing, { supports: true, copies: true, orient: true });
   assert.equal(bambuPrinterInfo({ server, host: "h", serial: "" }).printer.serial, undefined);
+  assert.equal(bambuPrinterInfo({ server, host: "h", model: "a printer nobody makes" }).printer.displayName, undefined);
+});
+
+test("the self-check judges installed versions against package.json's exact pins, ^ and ~ ranges", async () => {
+  const { meetsDeclared } = await import("../dist/counterpart/self-check.js");
+  for (const [version, declared, meets] of [["3.22.21", "3.22.21", true], ["3.22.22", "3.22.21", false], ["1.32.2", "^1.32.2", true], ["1.40.0", "^1.32.2", true],
+    ["1.10.0", "^1.32.2", false], ["2.0.0", "^1.32.2", false], ["0.173.1", "^0.173.0", true], ["0.174.0", "^0.173.0", false], ["16.3.9", "~16.3.1", true],
+    ["16.4.0", "~16.3.1", false], ["3.22.21-beta.1", "3.22.21", false], ["4.6.8-rc.0", "^4.6.7", false], ["1.0.0", ">=1", undefined]]) assert.equal(meetsDeclared(version, declared), meets, `${version} ${declared}`);
 });
 
 function boxStl(min, max) {
@@ -313,9 +324,36 @@ test("counterpart tools declare outputSchemas and return structuredContent with 
   assert.equal(info.isError, undefined);
   assert.deepEqual(JSON.parse(info.content[0].text), info.structuredContent);
   assert.equal(info.structuredContent.printer.model, "P1S");
+  assert.equal(info.structuredContent.printer.displayName, "Bambu Lab P1S");
   assert.equal(info.structuredContent.printer.serial, "01PTESTSERIAL");
   assert.equal(info.structuredContent.server.version, JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version);
   assert.doesNotMatch(info.content[0].text, /printer-secret/);
+});
+
+// What auto-update reads (Counterpart #644): package.json's counterpart field before downloading, then the
+// initialize version and counterpart_self_check from the updated server.
+test("package.json's counterpart field names the contract, one sentence of notes and the auto-update choice", () => {
+  const { counterpart } = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  assert.deepEqual(Object.keys(counterpart).sort(), ["autoUpdate", "contract", "notes"]);
+  assert.equal(counterpart.contract, "counterpart/1");
+  assert.equal(typeof counterpart.autoUpdate, "boolean");
+  assert.match(counterpart.notes, /^[A-Z][^\n]*[.!]$/);
+  assert.equal(counterpart.notes.split(/[.!?](?:\s|$)/).filter(Boolean).length, 1, "one sentence");
+});
+
+test("counterpart_self_check reports each runtime dependency and the bambu-node patch, and the server's version is the package's", async t => {
+  const { client, tools } = await server(t);
+  const { version, dependencies } = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  assert.equal(client.getServerVersion().version, version, "initialize reports the package version");
+  assert.deepEqual(tools.find(tool => tool.name === "counterpart_self_check")?.outputSchema, JSON.parse(JSON.stringify(SELF_CHECK_OUTPUT_SCHEMA)));
+  const result = await client.callTool({ name: "counterpart_self_check", arguments: {} });
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  assert.deepEqual(JSON.parse(result.content[0].text), result.structuredContent);
+  const { contract, server: info, ok, checks } = result.structuredContent;
+  assert.deepEqual([contract, info.version, ok], ["counterpart/1", version, true], JSON.stringify(checks.filter(check => !check.ok)));
+  assert.deepEqual(checks.map(check => check.name), ["package", ...Object.keys(dependencies), "bambu-node patch"]);
+  assert.ok(checks.every(check => check.ok));
+  assert.equal(checks.find(check => check.name === "bambu-node").version, dependencies["bambu-node"], "the pinned version is the one loaded");
 });
 
 const NO_BRIDGE = { BAMBU_NETWORK_BRIDGE_COMMAND: undefined, FULU_BAMBU_NETWORK_BRIDGE_COMMAND: undefined, PJARCZAK_BAMBU_BRIDGE_COMMAND: undefined };

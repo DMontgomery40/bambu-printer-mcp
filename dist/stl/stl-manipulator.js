@@ -1667,11 +1667,16 @@ export class STLManipulator extends EventEmitter {
                 const launch = await prepareSlicerLaunch(slicerType, this.tempDir);
                 const stallSeconds = launch.stallSeconds;
                 let stalled = false;
+                let cancelled = false;
                 // Execute the slicer
                 try {
                     await new Promise((resolve, reject) => {
                         const process = execFile(slicerPath, args, launch.env ? { env: launch.env } : {}, (error, stdout, stderr) => {
-                            if (stalled && error) {
+                            if (cancelled) {
+                                // Settled only once the slicer has exited (also on 'exit' below), so its folder is removed after it stops.
+                                reject(new Error("Slicing operation cancelled"));
+                            }
+                            else if (stalled && error) {
                                 reject(stalledSlicerError(slicerType, stallSeconds));
                             }
                             else if (error) {
@@ -1691,13 +1696,19 @@ export class STLManipulator extends EventEmitter {
                         // Optional: Add listeners for stdout/stderr for real-time progress if slicer provides it
                         // process.stdout?.on('data', (data) => { console.error(`Slicer stdout: ${data}`); });
                         // process.stderr?.on('data', (data) => { console.error(`Slicer stderr: ${data}`); });
-                        // Check for cancellation periodically
+                        // Check for cancellation periodically: the slicer is stopped, and the call settles when it has exited.
+                        let forceKill;
                         const checkCancel = setInterval(() => {
                             if (!this.activeOperations.get(operationId)) {
                                 clearInterval(checkCancel);
+                                cancelled = true;
                                 try {
-                                    process.kill(); // Attempt to kill the slicer process
-                                    reject(new Error("Slicing operation cancelled"));
+                                    process.kill();
+                                    // A slicer that ignores SIGTERM is killed outright rather than waited on.
+                                    forceKill = setTimeout(() => { try {
+                                        process.kill('SIGKILL');
+                                    }
+                                    catch { /* it has exited */ } }, 5000);
                                 }
                                 catch (killError) {
                                     console.error("Error attempting to kill slicer process:", killError);
@@ -1705,8 +1716,14 @@ export class STLManipulator extends EventEmitter {
                                 }
                             }
                         }, 500);
-                        process.on('exit', () => clearInterval(checkCancel));
-                        process.on('error', () => clearInterval(checkCancel)); // Ensure interval cleared on process error too
+                        process.on('exit', () => {
+                            clearInterval(checkCancel);
+                            clearTimeout(forceKill);
+                            // A cancelled slice settles on the slicer's exit: a helper it started may keep its output pipes open.
+                            if (cancelled)
+                                reject(new Error("Slicing operation cancelled"));
+                        });
+                        process.on('error', () => { clearInterval(checkCancel); clearTimeout(forceKill); });
                         watchForStall(process, stallSeconds, () => {
                             stalled = true;
                             console.error(`${slicerType} used no CPU and wrote nothing for ${stallSeconds} s; stopping it as waiting on a dialog.`);
@@ -1753,8 +1770,9 @@ export class STLManipulator extends EventEmitter {
         catch (error) {
             console.error(`Slicing failed for ${stlFilePath}:`, error);
             // Nothing in a failed or cancelled slice's folder is handed back (its result.json is already in the error).
-            if (sliceDir)
-                await fs.promises.rm(sliceDir, { recursive: true, force: true }).catch(() => undefined);
+            if (sliceDir) {
+                await fs.promises.rm(sliceDir, { recursive: true, force: true }).then(() => console.error(`Removed the folder of the failed or cancelled slice: ${sliceDir}`), removeError => console.error(`Could not remove the folder of the failed or cancelled slice ${sliceDir}:`, removeError));
+            }
             this.emit('operationError', {
                 operationId,
                 type: 'slice',

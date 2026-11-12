@@ -28,6 +28,7 @@ export const PRINTER_INFO_OUTPUT_SCHEMA = {
             properties: {
                 kind: { type: "string", enum: [...PRINTER_KINDS] },
                 model: { type: "string" },
+                displayName: { type: "string" },
                 serial: { type: "string" },
                 host: { type: "string" },
                 name: { type: "string" },

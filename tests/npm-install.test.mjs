@@ -46,6 +46,19 @@ function assertPatchedParser(packageRoot) {
   assert.equal(result.status, 0, result.stderr || result.error?.message);
 }
 
+/** counterpart_self_check's result from an installed package, without starting the server. */
+function installedSelfCheck(packageRoot) {
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+    const fs = await import("node:fs");
+    const { pathToFileURL } = await import("node:url");
+    const { selfCheck } = await import(pathToFileURL(process.argv[1] + "/dist/counterpart/self-check.js"));
+    const { name, version } = JSON.parse(fs.readFileSync(process.argv[1] + "/package.json", "utf8"));
+    console.log(JSON.stringify(await selfCheck({ name, version })));
+  `, packageRoot], { encoding: "utf8", timeout: 20_000 });
+  assert.equal(result.status, 0, result.stderr || result.error?.message);
+  return JSON.parse(result.stdout.trim().split(/\r?\n/).at(-1));
+}
+
 function assertNativePackage(packageRoot, cwd) {
   assert.ok(fs.existsSync(path.join(packageRoot, "native/bambu-native-print.cpp")));
   assert.ok(fs.existsSync(path.join(packageRoot, "scripts/build-bambu-native.sh")));
@@ -100,8 +113,18 @@ test("published tarball patches the resolved dependency in local, global, and np
     assert.equal(fs.realpathSync(require.resolve("bambu-node/package.json")), fs.realpathSync(path.join(local, "node_modules/bambu-node/package.json")));
     assertPatchedParser(packageRoot);
     const { targets } = assertIdempotent(packageRoot, execCwd);
+    // What the app reads before and after an update (Counterpart #644): the npm metadata and the installed self-check.
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8")).counterpart,
+      JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).counterpart);
+    const installed = installedSelfCheck(packageRoot);
+    assert.equal(installed.ok, true, JSON.stringify(installed.checks.filter(check => !check.ok)));
+    assert.deepEqual(installed.checks.find(check => check.name === "bambu-node"), { name: "bambu-node", ok: true, version: "3.22.21" });
+    assert.equal(installed.checks.find(check => check.name === "bambu-node patch").ok, true);
     const declarations = fs.readFileSync(targets[1]);
     fs.writeFileSync(targets[0], "incompatible dependency contents\n");
+    const broken = installedSelfCheck(packageRoot);
+    assert.equal(broken.ok, false, "a broken bambu-node fails the self-check");
+    assert.deepEqual(broken.checks.filter(check => !check.ok).map(check => check.name), ["bambu-node", "bambu-node patch"]);
     const failed = spawnSync(process.execPath, [path.join(packageRoot, "scripts/install-patches.mjs")], { cwd: execCwd, encoding: "utf8" });
     assert.notEqual(failed.status, 0, "incompatible patches must fail installation");
     assert.match(failed.stderr, /Unable to apply.*bambu-node/i);

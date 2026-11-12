@@ -198,3 +198,52 @@ test("progress polls of an unreachable printer share one read and send one PushA
   assert.equal((await quiet.readProgressReport("127.0.0.1", "01PTEST", "test", 5000)).raw.gcode_state, "RUNNING");
   assert.deepEqual(quietPublished, []);
 });
+
+// A P1S's first pushes of a new job carried its name and layer count before its layer number, so the merged report
+// read the previous job's last layer against the new total ("315/150") for one poll (Counterpart #702).
+test("a new job's first reports start at layer 0, not the previous job's last layer", async () => {
+  const { bambuProgress } = await import("../dist/counterpart/progress.js");
+  const bambu = new BambuImplementation();
+  const store = bambu.printerStore;
+  const printer = client("01PTEST");
+  const key = "127.0.0.1-01PTEST-test";
+  store.watchReports(printer, "127.0.0.1", "01PTEST", key);
+  // As over MQTT: the raw message first, then bambu-node's own merge and its dataUpdate.
+  const push = async (print) => {
+    const payload = { print: { command: "push_status", ...print } };
+    printer.emit("rawMessage", "device/01PTEST/report", Buffer.from(JSON.stringify(payload)));
+    await report(printer, payload);
+  };
+  const job = () => bambuProgress(store.getCachedReport("127.0.0.1", "01PTEST", "test"), { receivedAt: Date.now(), serial: "01PTEST", model: "p1s" }).job;
+  await push({ gcode_state: "RUNNING", subtask_name: "bracket", total_layer_num: 315, layer_num: 314, mc_percent: 99 });
+  await push({ layer_num: 315 });
+  assert.equal(job().layer, 315, "a delta of the same job keeps its layer");
+  await push({ gcode_state: "FINISH", mc_percent: 100 });
+  assert.equal(job().layer, 315, "the finished job keeps its last layer");
+  await push({ gcode_state: "PREPARE", subtask_name: "hook", total_layer_num: 150 });
+  assert.equal(printer.data.layer_num, 315, "bambu-node's own merge still holds the old layer");
+  assert.deepEqual([job().name, job().layer, job().totalLayers], ["hook", 0, 150]);
+  await push({ gcode_state: "RUNNING", layer_num: 1 });
+  assert.deepEqual([job().layer, job().totalLayers], [1, 150]);
+});
+
+test("a report merge restarts the progress only when a different job starts without its own", async () => {
+  const { mergeBambuReport } = await import("../dist/printers/report-merge.js");
+  const finished = { gcode_state: "FINISH", subtask_name: "a", gcode_file: "/sdcard/a.gcode", total_layer_num: 40, layer_num: 40, mc_percent: 100, mc_remaining_time: 0 };
+  const progress = (report) => [report.layer_num, report.mc_percent, report.mc_remaining_time];
+  assert.equal(mergeBambuReport(undefined, { layer_num: 12 }).layer_num, 12, "the first report is taken as it is");
+  assert.deepEqual(progress(mergeBambuReport(finished, { nozzle_temper: 30 })), [40, 100, 0], "an idle delta keeps the last job's progress");
+  assert.deepEqual(progress(mergeBambuReport(finished, { gcode_state: "PREPARE" })), [0, 0, undefined], "a start after a finished job restarts it");
+  assert.equal(Object.hasOwn(mergeBambuReport(finished, { gcode_state: "PREPARE" }), "mc_remaining_time"), false, "an unknown remaining time is left out");
+  assert.deepEqual(progress(mergeBambuReport(finished, { gcode_state: "PREPARE", mc_remaining_time: 95 })), [0, 0, 95], "what the new job sent is kept");
+  assert.equal(mergeBambuReport(finished, { gcode_file: "/sdcard/b.gcode" }).layer_num, 0, "another file is another job");
+  assert.equal(mergeBambuReport(finished, { task_id: "77" }).layer_num, 40, "a job id the report never had names no other job");
+  assert.equal(mergeBambuReport({ ...finished, task_id: "76" }, { task_id: "77" }).layer_num, 0);
+  assert.equal(mergeBambuReport(finished, { subtask_name: "b", total_layer_num: 10, layer_num: 3 }).layer_num, 3, "a full report's own layer wins");
+  assert.equal(mergeBambuReport({ ...finished, gcode_state: "PAUSE" }, { gcode_state: "RUNNING" }).layer_num, 40, "a resume is the same job");
+  // Placeholders name no job: a total of 0 before slicing, an empty file, LAN's task_id "0".
+  const running = { gcode_state: "RUNNING", subtask_name: "a", gcode_file: "/sdcard/a.gcode", task_id: "0", total_layer_num: 0, layer_num: 7 };
+  for (const update of [{ total_layer_num: 150 }, { gcode_file: "" }, { task_id: "123" }, { subtask_name: " " }]) {
+    assert.equal(mergeBambuReport(running, update).layer_num, 7, JSON.stringify(update));
+  }
+});
