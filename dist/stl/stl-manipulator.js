@@ -10,7 +10,7 @@ import path from 'path';
 import { promisify } from 'util';
 import { EventEmitter } from 'events';
 import * as crypto from 'crypto';
-import { execFile } from 'child_process';
+import { spawn } from 'child_process';
 import { keepSlice, restoreSlice, sliceCacheKey } from '../slicer/slice-cache.js';
 import { listModelPlates } from '../counterpart/model-plates.js';
 import { flattenForCli, detectProfilesRoot, resolveBblMachineProfile } from '../slicer/profile-flatten.js';
@@ -168,6 +168,31 @@ function slicerResultText(result) {
         result.return_code === 0 ? undefined : result.error_string,
         ...plates.map(plate => plate && typeof plate === "object" ? plate.warning_message : undefined),
     ].filter((text) => typeof text === "string" && text.trim() !== "").map(text => text.trim()).join("\n");
+}
+/** The output kept from each stream, as execFile's default maxBuffer; the rest is dropped, not failed. */
+const SLICER_OUTPUT_LIMIT = 1024 * 1024;
+/**
+ * execFile for the slicer, with detached passed through (execFile drops it): on POSIX the slicer then leads its own
+ * process group, so a cancel can stop the helpers it starts too. The callback gets what execFile's would.
+ */
+function execSlicer(file, args, env, detached, callback) {
+    const child = spawn(file, args, { ...(env ? { env } : {}), detached });
+    let stdout = "", stderr = "", settled = false;
+    const keep = (text, chunk) => text.length >= SLICER_OUTPUT_LIMIT ? text : (text + chunk.toString("utf8")).slice(0, SLICER_OUTPUT_LIMIT);
+    child.stdout?.on("data", (chunk) => { stdout = keep(stdout, chunk); });
+    child.stderr?.on("data", (chunk) => { stderr = keep(stderr, chunk); });
+    const finish = (error) => { if (!settled) {
+        settled = true;
+        callback(error, stdout, stderr);
+    } };
+    child.on("error", error => finish(Object.assign(error, { cmd: [file, ...args].join(" ") })));
+    child.on("close", (code, signal) => {
+        if (code === 0 && !signal)
+            return finish(null);
+        const cmd = [file, ...args].join(" ");
+        finish(Object.assign(new Error(`Command failed: ${cmd}\n${stderr}`), { code, signal, killed: child.killed, cmd }));
+    });
+    return child;
 }
 function describeSlicerFailure(error, stdout, stderr, cli) {
     const status = typeof error.signal === "string" && error.signal
@@ -1671,9 +1696,12 @@ export class STLManipulator extends EventEmitter {
                 // Execute the slicer
                 try {
                     await new Promise((resolve, reject) => {
-                        const process = execFile(slicerPath, args, launch.env ? { env: launch.env } : {}, (error, stdout, stderr) => {
+                        // POSIX: the slicer leads its own process group, so stopping it also stops the helpers it starts.
+                        const group = globalThis.process.platform !== 'win32';
+                        const process = execSlicer(slicerPath, args, launch.env, group, (error, stdout, stderr) => {
                             if (cancelled) {
-                                // Settled only once the slicer has exited (also on 'exit' below), so its folder is removed after it stops.
+                                // Settled once the slicer and every process sharing its output have gone, so its folder is removed after
+                                // nothing can write to it.
                                 reject(new Error("Slicing operation cancelled"));
                             }
                             else if (stalled && error) {
@@ -1696,41 +1724,42 @@ export class STLManipulator extends EventEmitter {
                         // Optional: Add listeners for stdout/stderr for real-time progress if slicer provides it
                         // process.stdout?.on('data', (data) => { console.error(`Slicer stdout: ${data}`); });
                         // process.stderr?.on('data', (data) => { console.error(`Slicer stderr: ${data}`); });
-                        // Check for cancellation periodically: the slicer is stopped, and the call settles when it has exited.
+                        // Stops the slicer and, on POSIX, its whole process group (a group already gone is not an error).
+                        const stop = (signal) => {
+                            try {
+                                if (group && process.pid !== undefined)
+                                    globalThis.process.kill(-process.pid, signal);
+                                else
+                                    process.kill(signal);
+                            }
+                            catch (killError) {
+                                if (killError.code !== 'ESRCH')
+                                    console.error(`Could not send ${signal} to the slicer:`, killError);
+                            }
+                        };
+                        // Check for cancellation periodically: the slicer is stopped, and the call settles when it has gone.
                         let forceKill;
                         const checkCancel = setInterval(() => {
                             if (!this.activeOperations.get(operationId)) {
                                 clearInterval(checkCancel);
                                 cancelled = true;
-                                try {
-                                    process.kill();
-                                    // A slicer that ignores SIGTERM is killed outright rather than waited on.
-                                    forceKill = setTimeout(() => { try {
-                                        process.kill('SIGKILL');
-                                    }
-                                    catch { /* it has exited */ } }, 5000);
-                                }
-                                catch (killError) {
-                                    console.error("Error attempting to kill slicer process:", killError);
-                                    reject(new Error("Slicing operation cancelled, but failed to kill process."));
-                                }
+                                stop('SIGTERM');
+                                // A slicer or helper that ignores SIGTERM is killed outright rather than waited on.
+                                forceKill = setTimeout(() => stop('SIGKILL'), 5000);
                             }
                         }, 500);
                         process.on('exit', () => {
                             clearInterval(checkCancel);
+                            // A helper that outlived the slicer still holds its output; finish it so the call can settle.
+                            if (cancelled && group)
+                                stop('SIGKILL');
                             clearTimeout(forceKill);
-                            // A cancelled slice settles on the slicer's exit: a helper it started may keep its output pipes open.
-                            if (cancelled)
-                                reject(new Error("Slicing operation cancelled"));
                         });
                         process.on('error', () => { clearInterval(checkCancel); clearTimeout(forceKill); });
                         watchForStall(process, stallSeconds, () => {
                             stalled = true;
                             console.error(`${slicerType} used no CPU and wrote nothing for ${stallSeconds} s; stopping it as waiting on a dialog.`);
-                            try {
-                                process.kill('SIGKILL');
-                            }
-                            catch { /* its exit is reported through the callback */ }
+                            stop('SIGKILL');
                         });
                     });
                 }
