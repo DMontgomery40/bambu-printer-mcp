@@ -56,7 +56,7 @@ export declare class CadEngine {
      * lock, still needs cad_setup with install: true. A failed re-verification is reported, not retried, until the
      * engine changes again or setup runs.
      */
-    ensureReady(signal?: AbortSignal): Promise<CadStatus>;
+    ensureReady(signal?: AbortSignal, deadline?: number): Promise<CadStatus>;
     private onlyEngineChanged;
     /** The interpreter the venv runs and whether its installed distributions are exactly requirements.lock's pins. */
     private runtimeIdentity;
