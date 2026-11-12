@@ -3033,6 +3033,31 @@ test("a cancelled slice_stl call settles even when a daemonized helper holds the
   assert.deepEqual(fs.existsSync(slices) ? fs.readdirSync(slices) : [], []);
 });
 
+test("cancelling after the slicer exits still settles when its helper holds the output open", async (t) => {
+  const { model, slice, pids, fakeSlicer, logged } = await startOverlapSlicer(t, { holdMs: 0, helper: "session" });
+  const helpers = () => fs.readdirSync(pids).filter(name => name.startsWith("helper-")).map(name => Number(name.slice(7)));
+  let helper;
+  t.after(() => { if (helper) try { process.kill(helper, "SIGKILL"); } catch { /* gone */ } });
+  const controller = new AbortController();
+  const call = slice(model("daemon"), { signal: controller.signal });
+  call.catch(() => undefined);
+  const started = Date.now();
+  while (!helpers().length && Date.now() - started < 10000) await new Promise(resolve => setTimeout(resolve, 50));
+  [helper] = helpers();
+  assert.ok(helper, "the helper started");
+  const slicer = fs.readdirSync(pids).filter(name => /^\d+$/.test(name)).map(Number)[0];
+  const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const exiting = Date.now();
+  while (alive(slicer) && Date.now() - exiting < 10000) await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(alive(slicer), false, "the slicer exited before cancellation");
+  assert.equal(alive(helper), true, "the helper still holds its pipes");
+  controller.abort();
+  await assert.rejects(call);
+  await logged(/Removed the folder of the failed or cancelled slice: /);
+  const slices = path.join(fakeSlicer.tempDir, "out", "slices");
+  assert.deepEqual(fs.existsSync(slices) ? fs.readdirSync(slices) : [], []);
+});
+
 // Bambu Studio 02.08.02.61 sliced the fin-down stove gap filler for a P1S and
 // warned about a floating cantilever; slice_stl used to drop that warning.
 test("slice_stl returns Bambu Studio's result.json, warnings included, in structuredContent", async (t) => {
