@@ -2861,7 +2861,7 @@ const studioResult = (name) => JSON.parse(fs.readFileSync(new URL(`./fixtures/st
 // Nov 6: opening Counterpart's Print sheet started four slices of one model at once, each named model.3mf. They all
 // wrote TEMP_DIR/model_sliced.3mf and TEMP_DIR/result.json, and each run deleted the result.json the others were about
 // to read. Overlapping slices of same-named inputs now each get their own folder, sliced file and result.json.
-async function startOverlapSlicer(t, { holdMs = 0, env = {}, helper = false } = {}) {
+async function startOverlapSlicer(t, { holdMs = 0, env = {}, helper = "" } = {}) {
   const fakeSlicer = await createFakeBambuSlicer();
   t.after(() => fs.rmSync(fakeSlicer.tempDir, { recursive: true, force: true }));
   const pids = path.join(fakeSlicer.tempDir, "pids");
@@ -2879,10 +2879,16 @@ const input = args.at(-1);
 const refused = path.basename(path.dirname(input)) === "refused";
 fs.mkdirSync(outputDir, { recursive: true });
 fs.copyFileSync(path.join(${JSON.stringify(fixtures)}, refused ? "p1s-empty-layers.json" : "p1s-floating-cantilever.json"), path.join(outputDir, "result.json"));
-if (${helper}) {
+if (${JSON.stringify(helper)} === "group") {
   // A helper the slicer starts: it shares the slicer's output pipes and keeps writing into the slice folder.
   const { spawn } = await import("node:child_process");
   const child = spawn(process.execPath, ["-e", ${JSON.stringify('const fs=require("fs"),path=require("path");setInterval(()=>{fs.mkdirSync(process.argv[1],{recursive:true});fs.writeFileSync(path.join(process.argv[1],"helper.txt"),"late")},50)')}, outputDir], { stdio: "inherit" });
+  fs.writeFileSync(path.join(${JSON.stringify(pids)}, "helper-" + child.pid), "");
+} else if (${JSON.stringify(helper)} === "session") {
+  // A daemonized helper (its own session, as setsid makes it) that holds the slicer's output pipes open.
+  const { spawn } = await import("node:child_process");
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "inherit", detached: true });
+  child.unref();
   fs.writeFileSync(path.join(${JSON.stringify(pids)}, "helper-" + child.pid), "");
 }
 await new Promise(resolve => setTimeout(resolve, ${holdMs} || 400));
@@ -2986,7 +2992,7 @@ test("a cancelled slice_stl call stops the slicer and keeps nothing", async (t) 
 
 // The slicer's helpers are stopped with it, so none writes into the slice's folder after it is removed (Muse P2 on #156).
 test("a cancelled slice_stl call stops the slicer's helper processes before removing its folder", async (t) => {
-  const { model, slice, pids, fakeSlicer, logged } = await startOverlapSlicer(t, { holdMs: 30000, helper: true });
+  const { model, slice, pids, fakeSlicer, logged } = await startOverlapSlicer(t, { holdMs: 30000, helper: "group" });
   const helpers = () => fs.readdirSync(pids).filter(name => name.startsWith("helper-")).map(name => Number(name.slice(7)));
   const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
   let helper;
@@ -3004,6 +3010,27 @@ test("a cancelled slice_stl call stops the slicer's helper processes before remo
   assert.equal(alive(helper), false, "the helper was stopped with the slicer");
   const slices = path.join(fakeSlicer.tempDir, "out", "slices");
   assert.deepEqual(fs.existsSync(slices) ? fs.readdirSync(slices) : [], [], "nothing was written back after the removal");
+});
+
+// A helper outside the slicer's process group (daemonized, or any helper on Windows) can hold its output pipes after
+// the slicer exits; the cancelled call still settles and removes the folder (Muse on #156).
+test("a cancelled slice_stl call settles even when a daemonized helper holds the slicer's output open", async (t) => {
+  const { model, slice, pids, fakeSlicer, logged } = await startOverlapSlicer(t, { holdMs: 30000, helper: "session" });
+  const helpers = () => fs.readdirSync(pids).filter(name => name.startsWith("helper-")).map(name => Number(name.slice(7)));
+  let helper;
+  t.after(() => { if (helper) try { process.kill(helper, "SIGKILL"); } catch { /* gone */ } });
+  const controller = new AbortController();
+  const call = slice(model("daemon"), { signal: controller.signal });
+  call.catch(() => undefined);
+  const started = Date.now();
+  while (!helpers().length && Date.now() - started < 10000) await new Promise(resolve => setTimeout(resolve, 50));
+  [helper] = helpers();
+  assert.ok(helper, "the helper started");
+  controller.abort();
+  await assert.rejects(call);
+  await logged(/Removed the folder of the failed or cancelled slice: /);
+  const slices = path.join(fakeSlicer.tempDir, "out", "slices");
+  assert.deepEqual(fs.existsSync(slices) ? fs.readdirSync(slices) : [], []);
 });
 
 // Bambu Studio 02.08.02.61 sliced the fin-down stove gap filler for a P1S and

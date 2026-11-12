@@ -176,7 +176,8 @@ const SLICER_OUTPUT_LIMIT = 1024 * 1024;
  * process group, so a cancel can stop the helpers it starts too. The callback gets what execFile's would.
  */
 function execSlicer(file, args, env, detached, callback) {
-    const child = spawn(file, args, { ...(env ? { env } : {}), detached });
+    // stdin is ignored, as execFile ends it: no slicer reads it.
+    const child = spawn(file, args, { ...(env ? { env } : {}), detached, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "", stderr = "", settled = false;
     const keep = (text, chunk) => text.length >= SLICER_OUTPUT_LIMIT ? text : (text + chunk.toString("utf8")).slice(0, SLICER_OUTPUT_LIMIT);
     child.stdout?.on("data", (chunk) => { stdout = keep(stdout, chunk); });
@@ -1739,13 +1740,23 @@ export class STLManipulator extends EventEmitter {
                         };
                         // Check for cancellation periodically: the slicer is stopped, and the call settles when it has gone.
                         let forceKill;
+                        let abandon;
                         const checkCancel = setInterval(() => {
                             if (!this.activeOperations.get(operationId)) {
                                 clearInterval(checkCancel);
                                 cancelled = true;
                                 stop('SIGTERM');
-                                // A slicer or helper that ignores SIGTERM is killed outright rather than waited on.
-                                forceKill = setTimeout(() => stop('SIGKILL'), 5000);
+                                // A slicer or helper that ignores SIGTERM is killed outright rather than waited on. A helper outside the
+                                // group (daemonized, or any helper on Windows) can still hold the output pipes, so 'close' never comes:
+                                // a second later the pipes are let go and the cancel settles.
+                                forceKill = setTimeout(() => {
+                                    stop('SIGKILL');
+                                    abandon = setTimeout(() => {
+                                        process.stdout?.destroy();
+                                        process.stderr?.destroy();
+                                        reject(new Error("Slicing operation cancelled"));
+                                    }, 1000);
+                                }, 5000);
                             }
                         }, 500);
                         process.on('exit', () => {
@@ -1753,9 +1764,10 @@ export class STLManipulator extends EventEmitter {
                             // A helper that outlived the slicer still holds its output; finish it so the call can settle.
                             if (cancelled && group)
                                 stop('SIGKILL');
-                            clearTimeout(forceKill);
                         });
-                        process.on('error', () => { clearInterval(checkCancel); clearTimeout(forceKill); });
+                        // The deadline runs until every process sharing the slicer's output has let go, not only the slicer.
+                        process.on('close', () => { clearTimeout(forceKill); clearTimeout(abandon); });
+                        process.on('error', () => { clearInterval(checkCancel); clearTimeout(forceKill); clearTimeout(abandon); });
                         watchForStall(process, stallSeconds, () => {
                             stalled = true;
                             console.error(`${slicerType} used no CPU and wrote nothing for ${stallSeconds} s; stopping it as waiting on a dialog.`);
