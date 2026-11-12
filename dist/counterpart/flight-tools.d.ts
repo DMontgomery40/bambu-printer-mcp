@@ -111,6 +111,10 @@ export declare const FLIGHT_RECORD_OUTPUT_SCHEMA: {
                     type: string;
                     enum: string[];
                 };
+                observedLayer: {
+                    type: string;
+                    minimum: number;
+                };
                 assessment: {
                     type: string;
                     additionalProperties: boolean;

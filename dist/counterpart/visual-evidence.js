@@ -41,10 +41,7 @@ export function validateVisualSubmission(v) {
             : {}),
     };
 }
-export function assessVisual(frames, observations, expected) {
-    const observation = observations.at(-1);
-    if (!observation)
-        return;
+function assessObservation(frames, observation, expected) {
     const limitations = [
         "Firmware completion is separate from physical success.",
         "Image interpretation is supplied by the client vision worker; the MCP runs no vision model.",
@@ -72,7 +69,11 @@ export function assessVisual(frames, observations, expected) {
         observation.deposition === "unknown")
         return unknown("The expected footprint is dark, occluded, out of view, unlocatable or unassessed.");
     if (observation.deposition === "present")
-        return unknown("The client reports visible material; height, coverage and final success remain unverified.");
+        return {
+            ...unknown("The client reports visible material; height, coverage and final success remain unverified."),
+            observedLayer: frame.layer,
+            evidence: [frame.id],
+        };
     const reference = frames.find((f) => f.id === observation.referenceFrameId && f.status === "captured");
     const evidence = [frame.id];
     if (reference &&
@@ -81,6 +82,7 @@ export function assessVisual(frames, observations, expected) {
         evidence.unshift(reference.id);
     return {
         status: "suspect_no_extrusion",
+        observedLayer: frame.layer,
         evidence,
         limitations: [
             ...limitations,
@@ -94,6 +96,31 @@ export function assessVisual(frames, observations, expected) {
                 ]),
         ],
     };
+}
+/** Unknown checkpoints cannot erase clear empty-footprint evidence for this execution. */
+export function assessVisual(frames, observations, expected) {
+    let latest;
+    let suspect;
+    let recovery;
+    const ordered = [...observations].sort((a, b) => (frames.find(f => f.id === a.frameId)?.layer ?? 0) - (frames.find(f => f.id === b.frameId)?.layer ?? 0));
+    for (const observation of ordered) {
+        latest = assessObservation(frames, observation, expected);
+        if (latest.status === "suspect_no_extrusion") {
+            suspect = latest;
+            recovery = undefined;
+        }
+        else if (suspect && observation.deposition === "present" &&
+            latest.evidence.includes(observation.frameId) &&
+            (latest.observedLayer ?? 0) > (suspect.observedLayer ?? 0)) {
+            suspect = undefined;
+            latest.limitations.push("A later clear, visible-footprint present observation at a higher layer supersedes the earlier no-extrusion warning; final physical success remains unverified.");
+            recovery = latest;
+        }
+    }
+    if (!suspect)
+        return recovery ?? latest;
+    return { ...suspect, limitations: [...suspect.limitations,
+            "This job's no-extrusion warning stays active through unknown checkpoints and firmware completion. Only a later clear present observation with a visible footprint at a higher layer can supersede it."] };
 }
 export function assessmentRequest(frames, observations, expected) {
     const pending = frames.filter((f) => f.status === "captured" &&
@@ -116,14 +143,13 @@ export function assessmentRequest(frames, observations, expected) {
         instruction: "Fetch this frame (and any usable reference) with counterpart_print_record include_frames:true frame_format:images. Have the client vision worker locate the expected footprint. Record its observation with counterpart_print_assess. A clearly empty footprint after attempted printing is suspect_no_extrusion even without a usable reference. Dark/occluded/unlocatable is unknown. Never infer a first layer is down from counters.",
     };
 }
-export function physicalProblems(physical) {
-    return physical.status === "suspect_no_extrusion"
-        ? [
-            {
-                code: "physical-no-extrusion",
-                severity: "error",
-                message: "Possible extrusion failure: the expected print area appeared empty. Check the print.",
-            },
-        ]
-        : [];
+export function physicalProblems(physical, finished = false) {
+    if (physical.status !== "suspect_no_extrusion")
+        return [];
+    const layer = Number.isInteger(physical.observedLayer) && physical.observedLayer > 0
+        ? ` at layer ${physical.observedLayer}` : "";
+    const message = finished
+        ? `The printer reports finished, but the camera showed the part's area empty${layer}. Check the nozzle and filament path.`
+        : `Nothing seems to be coming out of the nozzle: the camera shows the part's area empty${layer}. The printer can still count layers without printing anything. Check the nozzle and filament path.`;
+    return [{ code: "physical-no-extrusion", severity: "error", message }];
 }

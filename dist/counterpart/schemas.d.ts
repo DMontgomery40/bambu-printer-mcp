@@ -220,6 +220,10 @@ export declare const PRINT_PROGRESS_OUTPUT_SCHEMA: {
                     type: string;
                     enum: string[];
                 };
+                observedLayer: {
+                    type: string;
+                    minimum: number;
+                };
                 assessment: {
                     type: string;
                     additionalProperties: boolean;

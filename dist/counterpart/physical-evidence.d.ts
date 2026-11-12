@@ -23,6 +23,7 @@ export interface HeightMeasurement {
     method: string;
 }
 export interface PhysicalEvidence {
+    observedLayer?: number;
     assessment?: {
         required: boolean;
         frameId: string;
@@ -43,6 +44,10 @@ export declare const PHYSICAL_EVIDENCE_SCHEMA: {
         status: {
             type: string;
             enum: string[];
+        };
+        observedLayer: {
+            type: string;
+            minimum: number;
         };
         assessment: {
             type: string;

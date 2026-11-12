@@ -5125,7 +5125,7 @@ class BambuPrinterMCPServer {
               ? bambuProgress(report.raw, { receivedAt: report.receivedAt, serial: bambuSerial, model: this.displayModel(args, bambuSerial) })
               : offlineProgress(Date.now());
             const physical=this.bambu.flightRecords.physicalForReport(flightKey(host,bambuSerial),report?.raw);
-            result = {...result, physical,problems:[...result.problems,...physicalProblems(physical)]};
+            result = {...result, physical,problems:[...physicalProblems(physical, result.state === "finished"),...result.problems]};
             break;
           }
 

@@ -20,6 +20,7 @@ export interface VisualObservation extends VisualSubmission {
     source: "client-vision";
 }
 export declare function validateVisualSubmission(v: VisualSubmission): VisualSubmission;
+/** Unknown checkpoints cannot erase clear empty-footprint evidence for this execution. */
 export declare function assessVisual(frames: EvidenceFrame[], observations: VisualObservation[], expected?: PrintGeometry): PhysicalEvidence | undefined;
 export declare function assessmentRequest(frames: EvidenceFrame[], observations: VisualObservation[], expected?: PrintGeometry): {
     required: boolean;
@@ -30,7 +31,7 @@ export declare function assessmentRequest(frames: EvidenceFrame[], observations:
     expectedFootprintMm: [number, number, number, number];
     instruction: string;
 } | undefined;
-export declare function physicalProblems(physical: PhysicalEvidence): {
+export declare function physicalProblems(physical: PhysicalEvidence, finished?: boolean): {
     code: string;
     severity: "error";
     message: string;

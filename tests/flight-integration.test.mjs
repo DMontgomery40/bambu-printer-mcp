@@ -191,8 +191,17 @@ test("checked standalone G-code carries bounded expected geometry for camera che
   assert.equal(checked.plate, undefined);
 });
 
-async function recordClient(t, dir, log) {
-  const preload = path.join(root, "tests/fixtures/inspection-no-network.mjs");
+async function recordClient(t, dir, log, report) {
+  let preload = path.join(root, "tests/fixtures/inspection-no-network.mjs");
+  if (report) {
+    const fixturePreload=path.join(dir,"progress-preload.mjs");
+    fs.writeFileSync(fixturePreload,`import ${JSON.stringify(new URL('../tests/fixtures/inspection-no-network.mjs',import.meta.url).href)};
+import {BambuImplementation} from ${JSON.stringify(new URL('../dist/printers/bambu.js',import.meta.url).href)};
+BambuImplementation.prototype.readProgressReport=async()=>({raw:${JSON.stringify(report)},receivedAt:Date.now()});
+BambuImplementation.prototype.cameraSnapshot=async()=>({});
+`);
+    preload=fixturePreload;
+  }
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ["--import", preload, path.join(root, "dist/index.js")],
@@ -324,6 +333,12 @@ test("public real-frame visual replay persists no-extrusion warning through FINI
   });
   assert.equal(done.structuredContent.record.latest.gcode_state, "FINISH");
   assert.equal(done.structuredContent.physical.status, "suspect_no_extrusion");
+  const progressClient=await recordClient(t,dir,log,{subtask_name:"visual-job",gcode_state:"FINISH",layer_num:265,print_error:1});
+  const progress=await progressClient.callTool({name:"counterpart_print_progress",arguments:{}});
+  assert.equal(progress.isError,undefined,JSON.stringify(progress));
+  assert.equal(progress.structuredContent.problems[0].code,"physical-no-extrusion");
+  assert.match(progress.structuredContent.problems[0].message,/printer reports finished.*layer 1/i);
+  assert.ok(progress.structuredContent.problems.length>1,"firmware problems are preserved after the physical warning");
   assert.equal(
     fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim() : "",
     "",
