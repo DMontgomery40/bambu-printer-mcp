@@ -533,9 +533,11 @@ export class CadEngine {
                 }
             }
             await fs.writeFile(parameters, JSON.stringify({ ...previous, ...overrides }), { mode: 0o600 });
+            // Not final until the engine has found it ready: an interrupted run never reads as selected.
             await atomicJson(resultManifest, {
                 status: "pending",
-                final: args.final === true,
+                final: false,
+                ...(args.final === true ? { final_requested: true } : {}),
                 lineage_id: lineage,
             });
             try {
