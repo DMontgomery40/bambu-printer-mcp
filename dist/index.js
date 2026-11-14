@@ -71,6 +71,8 @@ const CAD_ENABLED = cadEnabled();
 const DEFAULT_HOST = process.env.BAMBU_PRINTER_HOST || process.env.PRINTER_HOST || "localhost";
 const DEFAULT_BAMBU_SERIAL = process.env.BAMBU_PRINTER_SERIAL || process.env.BAMBU_SERIAL || "";
 const DEFAULT_BAMBU_TOKEN = process.env.BAMBU_PRINTER_ACCESS_TOKEN || process.env.BAMBU_TOKEN || "";
+/** Access-code names people try that this server does not read (counterpart_diagnostics names them when set). */
+const UNREAD_ACCESS_CODE_NAMES = ["BAMBU_PRINTER_ACCESS_CODE", "BAMBU_ACCESS_CODE", "BAMBU_ACCESS_TOKEN", "BAMBU_PRINTER_TOKEN"];
 const DEFAULT_BAMBU_DEV_ID = process.env.BAMBU_DEV_ID || DEFAULT_BAMBU_SERIAL;
 // os.tmpdir(), not process.cwd() — a packaged Claude Desktop extension is
 // spawned with a cwd we don't control (and may not be writable), so a
@@ -4592,6 +4594,10 @@ class BambuPrinterMCPServer {
             }] : [];
         if (!configured)
             notes.push("No printer is configured (BAMBU_SERIAL and BAMBU_PRINTER_HOST are unset).");
+        // A look-alike name this server never reads leaves accessCodeSet false; name it so the bundle says why.
+        const ignored = UNREAD_ACCESS_CODE_NAMES.filter(key => process.env[key]);
+        if (ignored.length)
+            notes.push(`${ignored.join(" and ")} ${ignored.length > 1 ? "are" : "is"} set, but this server reads the access code only from BAMBU_TOKEN or BAMBU_PRINTER_ACCESS_TOKEN (in the environment or its .env).`);
         const selected = wanted ? printers.filter(p => [p.id, p.host, p.serial].some(v => v?.toLowerCase() === wanted)) : printers;
         if (wanted && !selected.length)
             notes.push(`No configured printer is ${args.printer}; printers.json lists none.`);
