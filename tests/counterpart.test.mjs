@@ -369,6 +369,31 @@ test("counterpart_self_check reports each runtime dependency and the bambu-node 
 });
 
 const NO_BRIDGE = { BAMBU_NETWORK_BRIDGE_COMMAND: undefined, FULU_BAMBU_NETWORK_BRIDGE_COMMAND: undefined, PJARCZAK_BAMBU_BRIDGE_COMMAND: undefined };
+
+test("counterpart_diagnostics says accessCodeSet from every place this server reads the code, and never returns it", async t => {
+  const code = "dummy-access-7731";
+  // dotenv never overrides the environment, so the .env cases clear both names there.
+  const unset = { BAMBU_TOKEN: undefined, BAMBU_PRINTER_ACCESS_TOKEN: undefined };
+  const cases = [
+    ["BAMBU_TOKEN in the environment", { BAMBU_TOKEN: code }, {}],
+    ["BAMBU_PRINTER_ACCESS_TOKEN in the environment", { ...unset, BAMBU_PRINTER_ACCESS_TOKEN: code }, {}],
+    ["BAMBU_TOKEN in .env", unset, { ".env": { text: `BAMBU_TOKEN=${code}\n`, mode: 0o600 } }],
+    ["BAMBU_PRINTER_ACCESS_TOKEN in .env", unset, { ".env": { text: `BAMBU_PRINTER_ACCESS_TOKEN=${code}\n`, mode: 0o600 } }],
+  ];
+  for (const [label, env, files] of cases) {
+    const { client } = await server(t, { ...NO_BRIDGE, ...env }, files);
+    const bundle = (await client.callTool({ name: "counterpart_diagnostics", arguments: {} })).structuredContent;
+    const printers = JSON.parse(bundle.files.find(file => file.name === "printers.json").content).printers;
+    assert.deepEqual(printers.map(p => p.accessCodeSet), [true], label);
+    assert.ok(!JSON.stringify(bundle).includes(code), `${label}: the code leaked`);
+  }
+  // A name this server does not read: false, a note that names it, and its value still redacted.
+  const { client } = await server(t, { ...NO_BRIDGE, ...unset, BAMBU_PRINTER_ACCESS_CODE: code });
+  const bundle = (await client.callTool({ name: "counterpart_diagnostics", arguments: {} })).structuredContent;
+  assert.deepEqual(JSON.parse(bundle.files.find(file => file.name === "printers.json").content).printers.map(p => p.accessCodeSet), [false]);
+  assert.ok(bundle.notes.some(note => /BAMBU_PRINTER_ACCESS_CODE is set, but this server reads the access code only from BAMBU_TOKEN/.test(note)), bundle.notes.join("\n"));
+  assert.ok(!JSON.stringify(bundle).includes(code), "the unread code leaked");
+});
 const ROUTE_ENV = { ...NO_BRIDGE, BAMBU_DEFAULT_CONNECTION_MODE: undefined, BAMBU_DEFAULT_CONNECTION_TYPE: undefined };
 const WITH_BRIDGE = { ...ROUTE_ENV, BAMBU_NETWORK_BRIDGE_COMMAND: "/usr/bin/true" };
 const route = async (client, args = {}) => JSON.parse((await client.callTool({ name: "counterpart_print_route", arguments: args })).content[0].text);
