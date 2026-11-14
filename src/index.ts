@@ -48,6 +48,7 @@ import {
 import { BambuNetworkBridge, bridgeSnapshotRoot, describeBambuNetworkPrintError, type BambuNetworkBridgeOptions, type BridgeJobUpdate } from "./bambu-network-bridge.js";
 import {
   assertBambuNativeAvailable,
+  bambuNativeManagedPaths,
   bambuNativeControlsAvailable,
   bambuNativeUnavailableReason,
   interruptNativeOperations,
@@ -89,6 +90,7 @@ import { bambuProgress, offlineProgress } from "./counterpart/progress.js";
 import { makeCounterpart3mf } from "./counterpart/make-3mf.js";
 import { MAKE_3MF_OUTPUT_SCHEMA, PRINT_PROGRESS_OUTPUT_SCHEMA, PRINTER_INFO_OUTPUT_SCHEMA } from "./counterpart/schemas.js";
 import { SELF_CHECK_OUTPUT_SCHEMA, selfCheck } from "./counterpart/self-check.js";
+import { DIAGNOSTICS_INPUT_PROPERTIES, DIAGNOSTICS_OUTPUT_SCHEMA, appVersion, buildDiagnostics, captureServerLog, diagnosticsBudget, jsonText, newestLogs, recordToolError, rememberSecretArguments, serverLogText, settingsSnapshot, toolErrorsText, type DiagnosticsSource } from "./counterpart/diagnostics.js";
 import { parseProcessOverrides } from "./slicer/process-overrides.js";
 import { PRINT_QUALITY_PROPERTIES, withPrintQuality } from "./slicer/print-quality.js";
 import { PrinterRefusal, withPrintDispatch, markPrintCommandSent, printOutcome } from "./refusal.js";
@@ -96,6 +98,8 @@ import { uploadProgressReporter } from "./upload-progress.js";
 import { machinePauseGcode, parsePauseLayers, pausedLayers, readPlateGcode } from "./slicer/layer-pauses.js";
 
 dotenv.config();
+// What the server writes to stderr is also kept for counterpart_diagnostics.
+captureServerLog();
 
 const CAD_ENABLED = cadEnabled();
 const DEFAULT_HOST = process.env.BAMBU_PRINTER_HOST || process.env.PRINTER_HOST || "localhost";
@@ -162,7 +166,7 @@ const SERVER_INFO = {
 /** Tools that declare an outputSchema: they always return structuredContent, and errors carry none. */
 const OUTPUT_SCHEMA_TOOLS = new Set([
   "cad_status", "cad_setup", "cad_run", "cad_check_fit", "cad_examples",
-  "counterpart_printer_info", "counterpart_self_check", "counterpart_print_progress", "counterpart_make_3mf",
+  "counterpart_printer_info", "counterpart_self_check", "counterpart_diagnostics", "counterpart_print_progress", "counterpart_make_3mf",
   "counterpart_discover_printers", "counterpart_setup_fields", "counterpart_propose_filaments",
   "fusion_mcp_status", "fusion_mcp_new_design", "fusion_mcp_export",
   "camera_stream_start", "camera_frame", "camera_stream_stop",
@@ -3575,6 +3579,12 @@ class BambuPrinterMCPServer {
             outputSchema: SELF_CHECK_OUTPUT_SCHEMA
           },
           {
+            name: "counterpart_diagnostics",
+            description: "Counterpart contract (counterpart/1): this server's own diagnostics for a bug report, as files for the client to add to its export: the configured printers (model, serial, connection; firmware is not read), this server's settings, slicer path and version, CAD runtime status, recent tool errors, this run's stderr log (MQTT and connection messages) and the tails of the FULU control trace and Bambu network plug-in logs. Access codes, passwords, tokens, cookies, API keys and account emails are redacted; serial numbers stay. Names, contents and notes stay within max_bytes; anything missing is listed in notes. Sends nothing to the printer.",
+            inputSchema: { type: "object", properties: DIAGNOSTICS_INPUT_PROPERTIES, additionalProperties: false },
+            outputSchema: DIAGNOSTICS_OUTPUT_SCHEMA
+          },
+          {
             name: "counterpart_discover_printers",
             description: "Counterpart contract (counterpart/1): Bambu printers on the local network, from their own SSDP announcements (UDP 2021), with serial, model (as bambu_model names it), name and firmware. Listens for duration_ms (default 4000). network is \"unavailable\" when another app holds the port. Never connects to or authenticates with a printer.",
             inputSchema: {
@@ -3762,6 +3772,7 @@ class BambuPrinterMCPServer {
     // A designer's settings extracted for this call are removed when it settles.
     this.server.setRequestHandler(CallToolRequestSchema, (request, extra) => withPrintDispatch(() => withExtractedSettingsCleanup(async () => {
       const { name, arguments: args } = request.params;
+      rememberSecretArguments(args);
       const sendNativeCommand = (
         options: Parameters<typeof sendCommandWithBambuNative>[0],
         execution: Parameters<typeof sendCommandWithBambuNative>[1] = {}
@@ -5109,6 +5120,10 @@ class BambuPrinterMCPServer {
             result = await selfCheck(SERVER_INFO);
             break;
 
+          case "counterpart_diagnostics":
+            result = await this.diagnostics(args ?? {});
+            break;
+
           case "counterpart_printer_info":
             result = bambuPrinterInfo({ server: SERVER_INFO, host, serial: bambuSerial, model: this.displayModel(args, bambuSerial), slicerType: normalizeSlicerType(DEFAULT_SLICER_TYPE) });
             break;
@@ -5243,6 +5258,7 @@ class BambuPrinterMCPServer {
         return { content: [{ type: "text", text }] };
 
       } catch (error) {
+        recordToolError(name, error);
         if (name.startsWith("cad_")) {
           const failure = await this.cad.failure(error, name);
           return {isError: true, content: [{type: "text" as const, text: failure.message}], structuredContent: failure};
@@ -5278,6 +5294,71 @@ class BambuPrinterMCPServer {
         };
       }
     })));
+  }
+
+  /** counterpart_diagnostics: this server's own redacted bundle (src/counterpart/diagnostics.ts). Sends nothing to a printer. */
+  private async diagnostics(args: Record<string, unknown>): Promise<ReturnType<typeof buildDiagnostics>> {
+    const unknown = Object.keys(args).filter(key => key !== "printer" && key !== "max_bytes");
+    if (unknown.length) throw new Error(`counterpart_diagnostics takes only printer and max_bytes, not ${unknown.join(", ")}.`);
+    if (args.printer !== undefined && typeof args.printer !== "string") throw new Error("printer must be a string.");
+    const maxBytes = diagnosticsBudget(args.max_bytes);
+    const wanted = (args.printer as string | undefined)?.trim().toLowerCase();
+    const notes: string[] = [];
+
+    const model = DEFAULT_BAMBU_MODEL || undefined;
+    let connection: { mode: string; type: string } | { error: string };
+    try { connection = resolveConnection(undefined, model); } catch (error) { connection = { error: error instanceof Error ? error.message : String(error) }; }
+    const configured = DEFAULT_BAMBU_SERIAL || process.env.BAMBU_PRINTER_HOST || process.env.PRINTER_HOST;
+    const printers = configured ? [{
+      id: DEFAULT_BAMBU_SERIAL || DEFAULT_HOST,
+      kind: "bambu",
+      host: DEFAULT_HOST,
+      ...(DEFAULT_BAMBU_SERIAL ? { serial: DEFAULT_BAMBU_SERIAL } : {}),
+      ...(model ? { model } : {}),
+      connection,
+      accessCodeSet: Boolean(DEFAULT_BAMBU_TOKEN),
+      // Firmware comes only from the printer; this tool asks it nothing.
+      firmware: "unknown",
+    }] : [];
+    if (!configured) notes.push("No printer is configured (BAMBU_SERIAL and BAMBU_PRINTER_HOST are unset).");
+    const selected = wanted ? printers.filter(p => [p.id, p.host, p.serial].some(v => v?.toLowerCase() === wanted)) : printers;
+    if (wanted && !selected.length) notes.push(`No configured printer is ${args.printer}; printers.json lists none.`);
+    if (printers.length) notes.push("Printer firmware is not included: only the printer reports it, and this tool sends it nothing.");
+
+    let slicer: Record<string, unknown>;
+    try {
+      const { fields: _fields, ...setup } = slicerSetupNow();
+      const version = appVersion(setup.path);
+      slicer = { ...setup, ...(version ? { version } : {}) };
+      if (setup.type === "orca-slicer-api") { if (!setup.found) notes.push("The remote OrcaSlicer API slicer has no SLICER_API_URL."); }
+      else if (!setup.found) notes.push(`The ${setup.type} slicer is not installed where this server looks (${setup.path ?? "no path"}).`);
+      else if (!version && setup.path) notes.push("Slicer version is unknown: its install doesn't name it, and this tool doesn't run the slicer.");
+    } catch (error) { slicer = { error: error instanceof Error ? error.message : String(error) }; }
+
+    let cad: unknown;
+    try { cad = await this.cad.status(); } catch (error) { cad = { error: error instanceof Error ? error.message : String(error) }; }
+
+    const settings = settingsSnapshot(/^(?:BAMBU|PRINTER|SLICER|ORCA|CAD|BLENDER|FUSION|BED_TYPE|NOZZLE|MCP|PJARCZAK|FULU|TEMP_DIR)/);
+
+    const bridgeDir = this.bambuNetwork.resolveConfigDir();
+    const nativeDir = process.env.BAMBU_NATIVE_CONFIG_DIR || bambuNativeManagedPaths().configDir;
+    const sources: DiagnosticsSource[] = [
+      { name: "server.json", text: jsonText({ package: SERVER_INFO.name, version: SERVER_INFO.version, node: process.version, platform: process.platform, arch: process.arch, uptimeSec: Math.round(process.uptime()) }) },
+      { name: "printers.json", text: jsonText({ printers: selected }) },
+      { name: "settings.json", text: jsonText(settings) },
+      { name: "slicer.json", text: jsonText(slicer) },
+      { name: "cad.json", text: jsonText(cad) },
+      { name: "tool-errors.log", text: toolErrorsText() || "No tool has failed since this server started.\n" },
+      { name: "server-stderr.log", text: serverLogText() || "Nothing written to stderr since this server started.\n" },
+      { name: "fulu/control-trace.log", file: path.join(bridgeDir, "control-trace.log"), missing: "fulu/control-trace.log: no FULU control trace yet (no control was sent over the Bambu network route)." },
+    ];
+    const pluginLogs = newestLogs([bridgeDir, path.join(bridgeDir, "log")], 3, ["control-trace.log"]);
+    for (const file of pluginLogs) sources.push({ name: `fulu/${path.basename(file)}`, file });
+    if (!pluginLogs.length) notes.push("fulu: no Bambu network plug-in log files.");
+    const nativeLogs = newestLogs([nativeDir, path.join(nativeDir, "log")], 3);
+    for (const file of nativeLogs) sources.push({ name: `native/${path.basename(file)}`, file });
+    if (!nativeLogs.length) notes.push("native: no Bambu native helper log files.");
+    return buildDiagnostics({ package: SERVER_INFO.name, version: SERVER_INFO.version, sources, notes, maxBytes, secrets: DEFAULT_BAMBU_TOKEN ? [DEFAULT_BAMBU_TOKEN] : [] });
   }
 
   async startStdio() {
