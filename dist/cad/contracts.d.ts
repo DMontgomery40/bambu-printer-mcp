@@ -23,6 +23,7 @@ export declare const CAD_TOOLS: ({
             parameters?: undefined;
             output_dir?: undefined;
             name?: undefined;
+            role?: undefined;
             final?: undefined;
             timeout_ms?: undefined;
             model?: undefined;
@@ -106,6 +107,7 @@ export declare const CAD_TOOLS: ({
             parameters?: undefined;
             output_dir?: undefined;
             name?: undefined;
+            role?: undefined;
             final?: undefined;
             timeout_ms?: undefined;
             model?: undefined;
@@ -224,6 +226,12 @@ export declare const CAD_TOOLS: ({
                 maxLength: number;
                 description: string;
             };
+            role: {
+                type: string;
+                enum: string[];
+                default: string;
+                description: string;
+            };
             final: {
                 type: string;
                 default: boolean;
@@ -317,6 +325,7 @@ export declare const CAD_TOOLS: ({
             script_path?: undefined;
             parameters?: undefined;
             output_dir?: undefined;
+            role?: undefined;
             final?: undefined;
             timeout_ms?: undefined;
             model?: undefined;
@@ -439,6 +448,7 @@ export declare const CAD_TOOLS: ({
             parameters?: undefined;
             output_dir?: undefined;
             name?: undefined;
+            role?: undefined;
             final?: undefined;
         };
         required: string[];
