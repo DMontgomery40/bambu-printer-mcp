@@ -3581,7 +3581,7 @@ class BambuPrinterMCPServer {
           },
           {
             name: "counterpart_diagnostics",
-            description: "Counterpart contract (counterpart/1): this server's own diagnostics for a bug report, as files for the client to add to its export: the configured printers (model, serial, connection; firmware is not read), this server's settings, slicer path and version, CAD runtime status, recent tool errors, this run's stderr log (MQTT and connection messages) and the tails of the FULU control trace and Bambu network plug-in logs. Access codes, passwords, tokens, cookies, API keys and account emails are redacted; serial numbers stay. Names, contents and notes stay within max_bytes; anything missing is listed in notes. Sends nothing to the printer.",
+            description: "Counterpart contract (counterpart/1): this server's own diagnostics for a bug report, as files for the client to add to its export: the configured printers (model, serial, connection; firmware is not read), this server's settings, slicer path and version, CAD runtime status, recent tool errors, this run's stderr log (MQTT and connection messages). The Bambu network plug-in logs are not included. Redaction fails closed: configured secrets go in their encoded forms, JSON is redacted by key, and any log line that names a secret is withheld whole; serial numbers, error codes and whether a secret is set stay. Names, contents and notes stay within max_bytes; anything missing is listed in notes. Sends nothing to the printer.",
             inputSchema: { type: "object", properties: DIAGNOSTICS_INPUT_PROPERTIES, additionalProperties: false },
             outputSchema: DIAGNOSTICS_OUTPUT_SCHEMA
           },
@@ -5305,6 +5305,8 @@ class BambuPrinterMCPServer {
     const maxBytes = diagnosticsBudget(args.max_bytes);
     const wanted = (args.printer as string | undefined)?.trim().toLowerCase();
     const notes: string[] = [];
+    // This server's own sentences, built only from setting names it reads: their secret words name settings.
+    const fixedNotes: string[] = [];
 
     const model = DEFAULT_BAMBU_MODEL || undefined;
     let connection: { mode: string; type: string } | { error: string };
@@ -5324,7 +5326,7 @@ class BambuPrinterMCPServer {
     if (!configured) notes.push("No printer is configured (BAMBU_SERIAL and BAMBU_PRINTER_HOST are unset).");
     // A look-alike name this server never reads leaves accessCodeSet false; name it so the bundle says why.
     const ignored = UNREAD_ACCESS_CODE_NAMES.filter(key => process.env[key]);
-    if (ignored.length) notes.push(`${ignored.join(" and ")} ${ignored.length > 1 ? "are" : "is"} set, but this server reads the access code only from BAMBU_TOKEN or BAMBU_PRINTER_ACCESS_TOKEN (in the environment or its .env).`);
+    if (ignored.length) fixedNotes.push(`${ignored.join(" and ")} ${ignored.length > 1 ? "are" : "is"} set, but this server reads the access code only from BAMBU_TOKEN or BAMBU_PRINTER_ACCESS_TOKEN (in the environment or its .env).`);
     const selected = wanted ? printers.filter(p => [p.id, p.host, p.serial].some(v => v?.toLowerCase() === wanted)) : printers;
     if (wanted && !selected.length) notes.push(`No configured printer is ${args.printer}; printers.json lists none.`);
     if (printers.length) notes.push("Printer firmware is not included: only the printer reports it, and this tool sends it nothing.");
@@ -5355,8 +5357,8 @@ class BambuPrinterMCPServer {
     ];
     // The Bambu network plug-in and native helper logs are written by other programs, in forms this server does not
     // control, and can carry secrets it never held (a cloud token, another printer's code): they stay out.
-    notes.push("The Bambu network plug-in (fulu) and native helper logs are not included: other programs write them, and they can hold secrets this server cannot recognise.");
-    return buildDiagnostics({ package: SERVER_INFO.name, version: SERVER_INFO.version, sources, notes, maxBytes, secrets: DEFAULT_BAMBU_TOKEN ? [DEFAULT_BAMBU_TOKEN] : [] });
+    fixedNotes.push("The Bambu network plug-in (fulu) and native helper logs are not included: other programs write them, and they can hold secrets this server cannot recognise.");
+    return buildDiagnostics({ package: SERVER_INFO.name, version: SERVER_INFO.version, sources, notes, fixedNotes, maxBytes, secrets: DEFAULT_BAMBU_TOKEN ? [DEFAULT_BAMBU_TOKEN] : [] });
   }
 
   async startStdio() {

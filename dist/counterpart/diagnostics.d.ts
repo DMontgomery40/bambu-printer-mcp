@@ -100,9 +100,8 @@ export declare const WITHHELD = "[line withheld: may contain a secret]";
 /** Whether a line may carry a secret: a secret word anywhere in it, in any spelling or encoding. */
 export declare function suspectLine(line: string): boolean;
 /**
- * Free text with each suspect line withheld whole, with the lines that continue it (indented, inside a quote or a
- * bracket it left open, or a YAML block it starts); its time and level stay. A suspect line that is only a name and a
- * safe value stays.
+ * Free text with each suspect line withheld whole, with the lines that continue it; its time and level stay. A suspect
+ * line that is only a name and a safe value stays, but what continues it is withheld all the same.
  */
 export declare function withholdSuspectLines(text: string): string;
 /**
@@ -137,6 +136,7 @@ export declare function buildDiagnostics(options: {
     version: string;
     sources: DiagnosticsSource[];
     notes?: string[];
+    fixedNotes?: string[];
     maxBytes?: number;
     secrets?: string[];
 }): DiagnosticsResult;
