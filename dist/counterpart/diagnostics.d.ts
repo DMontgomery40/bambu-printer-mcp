@@ -89,6 +89,7 @@ export declare const serverLogText: () => string;
 export declare const toolErrorsText: () => string;
 /** For tests: forgets what was recorded. */
 export declare function resetDiagnosticsMemory(): void;
+export declare function isSecretName(name: string): boolean;
 /** The values of this environment's secret-named variables. */
 export declare function environmentSecrets(env?: NodeJS.ProcessEnv): string[];
 /**
