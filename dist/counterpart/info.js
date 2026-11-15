@@ -43,6 +43,7 @@ export function bambuPrinterInfo(options) {
             // camera_snapshot needs the model to choose its transport.
             camera: model && TCP_CAMERA_MODELS.has(model) ? "bambu-tcp" : model && RTSP_CAMERA_MODELS.has(model) ? "rtsp" : "none",
             cameraStream: !!model && (TCP_CAMERA_MODELS.has(model) || RTSP_CAMERA_MODELS.has(model)),
+            diagnostics: true,
             filaments: "ams",
             pause: true,
             resume: true,
