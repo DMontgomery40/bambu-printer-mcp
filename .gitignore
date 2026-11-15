@@ -50,3 +50,7 @@ native/*.dSYM/
 !/docs/prd/scan-to-print-PRD.md
 
 !/docs/CAD.md
+
+# Python bytecode from running the CAD engine's scripts
+__pycache__/
+*.pyc
