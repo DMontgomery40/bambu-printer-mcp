@@ -97,6 +97,10 @@ export declare function environmentSecrets(env?: NodeJS.ProcessEnv): string[];
 /** text with every known secret (configured, in this environment, or seen in tool arguments) removed in each encoded form. */
 export declare function removeKnownSecrets(text: string, secrets?: Iterable<string>): string;
 export declare const WITHHELD = "[line withheld: may contain a secret]";
+/** The canonical phrases of REASONS, in order: all a withheld marker may name. */
+export declare const WITHHELD_REASONS: string[];
+/** The withheld marker for these lines: WITHHELD, naming the REASONS they mention ("claude auth login" over "auth login"). */
+export declare function withheldMarker(lines: string): string;
 /** Whether a line may carry a secret: a secret word anywhere in it, in any spelling or encoding. */
 export declare function suspectLine(line: string): boolean;
 /**
