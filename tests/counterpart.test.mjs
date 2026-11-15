@@ -580,7 +580,7 @@ test('every XML part of counterpart and charm 3MF output parses with quoted attr
  assert.equal(result.status,0,result.stderr);await check(target);
 });
 
-test("counterpart_diagnostics returns this server's redacted bundle within max_bytes, with missing logs as notes", async t => {
+test("counterpart_diagnostics returns this server's redacted bundle within max_bytes, and leaves the plug-in logs out", async t => {
   const config = trackedMkdtempSync(path.join(os.tmpdir(), "diagnostics-config-"));
   t.after(() => fs.rmSync(config, { recursive: true, force: true }));
   const bridgeDir = path.join(config, "bambu-network");
@@ -611,13 +611,12 @@ test("counterpart_diagnostics returns this server's redacted bundle within max_b
   const { name, version } = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
   assert.deepEqual([bundle.package, bundle.version], [name, version]);
   const names = bundle.files.map(file => file.name);
-  for (const expected of ["server.json", "printers.json", "settings.json", "slicer.json", "cad.json", "tool-errors.log", "server-stderr.log", "fulu/control-trace.log", "fulu/debug_network.log"]) assert.ok(names.includes(expected), expected);
+  assert.deepEqual(names, ["server.json", "printers.json", "settings.json", "slicer.json", "cad.json", "tool-errors.log", "server-stderr.log"]);
+  // Other programs write the plug-in and native helper logs, and they can hold secrets this server cannot recognise.
+  assert.ok(bundle.notes.some(note => /fulu\) and native helper logs are not included/.test(note)), bundle.notes.join("\n"));
   assert.ok(names.every(file => !path.isAbsolute(file) && !file.split("/").includes("..")));
   const size = bundle.files.reduce((sum, file) => sum + Buffer.byteLength(file.name) + Buffer.byteLength(file.content), 0) + bundle.notes.reduce((sum, note) => sum + Buffer.byteLength(note), 0);
   assert.ok(size <= maxBytes, `${size} > ${maxBytes}`);
-  const plugin = bundle.files.find(file => file.name === "fulu/debug_network.log");
-  assert.equal(plugin.truncated, true);
-  assert.match(plugin.content, /serial 01PTESTSERIAL\n$/, "the tail, with the serial kept");
   assert.equal(JSON.parse(bundle.files.find(file => file.name === "settings.json").content).BAMBU_TOKEN, "[set]");
 
   const text = JSON.stringify(bundle);
@@ -627,8 +626,6 @@ test("counterpart_diagnostics returns this server's redacted bundle within max_b
   const printers = JSON.parse(bundle.files.find(file => file.name === "printers.json").content).printers;
   assert.deepEqual(printers.map(p => [p.id, p.serial, p.model, p.accessCodeSet, p.firmware]), [["01PTESTSERIAL", "01PTESTSERIAL", "p1s", true, "unknown"]]);
   assert.match(bundle.files.find(file => file.name === "tool-errors.log").content, /counterpart_make_3mf: /);
-  assert.ok(bundle.notes.some(note => /native: no Bambu native helper log files/.test(note)));
-  assert.match(bundle.files.find(file => file.name === "fulu/control-trace.log").content, /"step":"delivered"/);
 
   const other = await client.callTool({ name: "counterpart_diagnostics", arguments: { printer: "01POTHER" } });
   assert.deepEqual(JSON.parse(other.structuredContent.files.find(file => file.name === "printers.json").content).printers, []);

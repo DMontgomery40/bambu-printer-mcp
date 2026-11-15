@@ -89,16 +89,40 @@ export declare const serverLogText: () => string;
 export declare const toolErrorsText: () => string;
 /** For tests: forgets what was recorded. */
 export declare function resetDiagnosticsMemory(): void;
+/** Text with \\uXXXX, \\xXX and %XX escapes read, so "\\x70assword" and "pass%77ord" are seen as "password". */
+export declare function decodeEscapes(text: string): string;
 export declare function isSecretName(name: string): boolean;
 /** The values of this environment's secret-named variables. */
 export declare function environmentSecrets(env?: NodeJS.ProcessEnv): string[];
+/** text with every known secret (configured, in this environment, or seen in tool arguments) removed in each encoded form. */
+export declare function removeKnownSecrets(text: string, secrets?: Iterable<string>): string;
+export declare const WITHHELD = "[line withheld: may contain a secret]";
+/** Whether a line may carry a secret: a secret word anywhere in it, in any spelling or encoding. */
+export declare function suspectLine(line: string): boolean;
 /**
- * text with every secret this module can recognise replaced: values of secret-named keys and arguments, the known
- * secret values anywhere (configured access codes, API keys, tokens and passwords, and any seen in tool arguments),
- * cookies, authorization headers, URL credentials, emails, JWTs, PEM private keys and long random tokens. Serial
- * numbers, hosts and lowercase hashes stay.
+ * Free text with each suspect line withheld whole, with the lines that continue it (indented, inside a quote or a
+ * bracket it left open, or a YAML block it starts); its time and level stay. A suspect line that is only a name and a
+ * safe value stays.
+ */
+export declare function withholdSuspectLines(text: string): string;
+/**
+ * text with every secret this module can recognise replaced, failing closed: known secret values in every encoded
+ * form; then the named patterns (values of secret-named keys, cookies, authorization headers, URL credentials,
+ * emails, JWTs, bare tokens, PEM blocks, other people's home folders); then every line that still names a secret
+ * withheld whole. Serial numbers, hosts, error codes and lowercase hashes stay.
  */
 export declare function redactText(text: string, secrets?: Iterable<string>): string;
+/** The pattern rules alone (redactText without withholding lines): what each named form becomes. */
+export declare function redactPatterns(text: string, secrets?: Iterable<string>): string;
+/**
+ * A logged or composed value with its secrets removed, by its structure: a secret-named key's value goes (a bare
+ * measure such as tokenCount stays); an object where any field names a secret ({"name":"BAMBU_ACCESS_CODE", …})
+ * loses its other scalars; a string holding JSON is read and walked; any other string is redacted as text, one
+ * value per line, so a string that names a secret is withheld.
+ */
+export declare function redactValue(value: unknown, secrets?: Iterable<string>, depth?: number): unknown;
+/** A JSON file's text with its values redacted by structure (it stays valid JSON); other text as free text. */
+export declare function redactJsonText(text: string, secrets?: Iterable<string>): string;
 /** The last `bytes` of text, starting at a whole line where one starts inside it. */
 export declare function tailText(text: string, bytes: number): {
     text: string;
@@ -116,7 +140,12 @@ export declare function buildDiagnostics(options: {
     maxBytes?: number;
     secrets?: string[];
 }): DiagnosticsResult;
-/** The environment settings whose names match, sorted; a secret-named one shows only "[set]". */
+/**
+ * Settings whose values are known not to be secret (paths, hosts, ports, modes, models, timeouts). Any other setting
+ * shows only whether it is set: commands and their arguments, URLs and anything else can carry a credential.
+ */
+export declare const SAFE_SETTINGS: Set<string>;
+/** The environment settings whose names match, sorted: a known non-secret one with its value, any other only "[set]" (or ""). */
 export declare function settingsSnapshot(names: RegExp, env?: NodeJS.ProcessEnv): Record<string, string>;
 /** The text of a JSON value for a bundle file. */
 export declare const jsonText: (value: unknown) => string;

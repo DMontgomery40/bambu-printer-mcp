@@ -28,7 +28,7 @@ import { createServer as createHttpServer } from "node:http";
 import { createHash, randomUUID } from "node:crypto";
 import { STLManipulator, SLICER_TYPES, normalizeSlicerType, SlicerRunError, } from "./stl/stl-manipulator.js";
 import { BambuNetworkBridge, bridgeSnapshotRoot, describeBambuNetworkPrintError } from "./bambu-network-bridge.js";
-import { assertBambuNativeAvailable, bambuNativeManagedPaths, bambuNativeControlsAvailable, bambuNativeUnavailableReason, interruptNativeOperations, validateBambuNativeMetadata, buildBambuNativeFanCommand, buildBambuNativeTemperatureCommand, printWithBambuNative, sendCommandWithBambuNative, uploadWithBambuNative, } from "./bambu-native.js";
+import { assertBambuNativeAvailable, bambuNativeControlsAvailable, bambuNativeUnavailableReason, interruptNativeOperations, validateBambuNativeMetadata, buildBambuNativeFanCommand, buildBambuNativeTemperatureCommand, printWithBambuNative, sendCommandWithBambuNative, uploadWithBambuNative, } from "./bambu-native.js";
 import { importFileViaBambuConnect } from "./bambu-connect.js";
 import { CadEngine } from "./cad-engine.js";
 import { CadRefusal } from "./cad/refusal.js";
@@ -58,7 +58,7 @@ import { bambuProgress, offlineProgress } from "./counterpart/progress.js";
 import { makeCounterpart3mf } from "./counterpart/make-3mf.js";
 import { MAKE_3MF_OUTPUT_SCHEMA, PRINT_PROGRESS_OUTPUT_SCHEMA, PRINTER_INFO_OUTPUT_SCHEMA } from "./counterpart/schemas.js";
 import { SELF_CHECK_OUTPUT_SCHEMA, selfCheck } from "./counterpart/self-check.js";
-import { DIAGNOSTICS_INPUT_PROPERTIES, DIAGNOSTICS_OUTPUT_SCHEMA, appVersion, buildDiagnostics, captureServerLog, diagnosticsBudget, jsonText, newestLogs, recordToolError, rememberSecretArguments, serverLogText, settingsSnapshot, toolErrorsText } from "./counterpart/diagnostics.js";
+import { DIAGNOSTICS_INPUT_PROPERTIES, DIAGNOSTICS_OUTPUT_SCHEMA, appVersion, buildDiagnostics, captureServerLog, diagnosticsBudget, jsonText, recordToolError, rememberSecretArguments, serverLogText, settingsSnapshot, toolErrorsText } from "./counterpart/diagnostics.js";
 import { parseProcessOverrides } from "./slicer/process-overrides.js";
 import { PRINT_QUALITY_PROPERTIES, withPrintQuality } from "./slicer/print-quality.js";
 import { PrinterRefusal, withPrintDispatch, markPrintCommandSent, printOutcome } from "./refusal.js";
@@ -4628,8 +4628,6 @@ class BambuPrinterMCPServer {
             cad = { error: error instanceof Error ? error.message : String(error) };
         }
         const settings = settingsSnapshot(/^(?:BAMBU|PRINTER|SLICER|ORCA|CAD|BLENDER|FUSION|BED_TYPE|NOZZLE|MCP|PJARCZAK|FULU|TEMP_DIR)/);
-        const bridgeDir = this.bambuNetwork.resolveConfigDir();
-        const nativeDir = process.env.BAMBU_NATIVE_CONFIG_DIR || bambuNativeManagedPaths().configDir;
         const sources = [
             { name: "server.json", text: jsonText({ package: SERVER_INFO.name, version: SERVER_INFO.version, node: process.version, platform: process.platform, arch: process.arch, uptimeSec: Math.round(process.uptime()) }) },
             { name: "printers.json", text: jsonText({ printers: selected }) },
@@ -4638,18 +4636,10 @@ class BambuPrinterMCPServer {
             { name: "cad.json", text: jsonText(cad) },
             { name: "tool-errors.log", text: toolErrorsText() || "No tool has failed since this server started.\n" },
             { name: "server-stderr.log", text: serverLogText() || "Nothing written to stderr since this server started.\n" },
-            { name: "fulu/control-trace.log", file: path.join(bridgeDir, "control-trace.log"), missing: "fulu/control-trace.log: no FULU control trace yet (no control was sent over the Bambu network route)." },
         ];
-        const pluginLogs = newestLogs([bridgeDir, path.join(bridgeDir, "log")], 3, ["control-trace.log"]);
-        for (const file of pluginLogs)
-            sources.push({ name: `fulu/${path.basename(file)}`, file });
-        if (!pluginLogs.length)
-            notes.push("fulu: no Bambu network plug-in log files.");
-        const nativeLogs = newestLogs([nativeDir, path.join(nativeDir, "log")], 3);
-        for (const file of nativeLogs)
-            sources.push({ name: `native/${path.basename(file)}`, file });
-        if (!nativeLogs.length)
-            notes.push("native: no Bambu native helper log files.");
+        // The Bambu network plug-in and native helper logs are written by other programs, in forms this server does not
+        // control, and can carry secrets it never held (a cloud token, another printer's code): they stay out.
+        notes.push("The Bambu network plug-in (fulu) and native helper logs are not included: other programs write them, and they can hold secrets this server cannot recognise.");
         return buildDiagnostics({ package: SERVER_INFO.name, version: SERVER_INFO.version, sources, notes, maxBytes, secrets: DEFAULT_BAMBU_TOKEN ? [DEFAULT_BAMBU_TOKEN] : [] });
     }
     async startStdio() {
