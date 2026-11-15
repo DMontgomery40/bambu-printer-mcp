@@ -35,6 +35,8 @@ export type PrinterInfo = {
     progress: boolean; layers: boolean;
     camera: "bambu-tcp" | "rtsp" | "http-snapshot" | "none";
     cameraStream?: boolean;
+    /** counterpart_diagnostics is here: this server hands over its own redacted diagnostics bundle. */
+    diagnostics?: boolean;
     filaments: "ams" | "single" | "none";
     pause: boolean; resume: boolean; cancel: boolean; print3mf: boolean; gcode: boolean;
     /** What slice_stl can apply with this server's slicer (the same field in mcp-3D-printer-server). */
@@ -77,6 +79,7 @@ export const PRINTER_INFO_OUTPUT_SCHEMA = {
         layers: { type: "boolean" },
         camera: { type: "string", enum: ["bambu-tcp", "rtsp", "http-snapshot", "none"] },
         cameraStream: { type: "boolean" },
+        diagnostics: { type: "boolean", description: "counterpart_diagnostics is available." },
         filaments: { type: "string", enum: ["ams", "single", "none"] },
         pause: { type: "boolean" },
         resume: { type: "boolean" },

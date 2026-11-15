@@ -76,6 +76,8 @@ export type PrinterInfo = {
         layers: boolean;
         camera: "bambu-tcp" | "rtsp" | "http-snapshot" | "none";
         cameraStream?: boolean;
+        /** counterpart_diagnostics is here: this server hands over its own redacted diagnostics bundle. */
+        diagnostics?: boolean;
         filaments: "ams" | "single" | "none";
         pause: boolean;
         resume: boolean;
@@ -174,6 +176,10 @@ export declare const PRINTER_INFO_OUTPUT_SCHEMA: {
                 };
                 cameraStream: {
                     type: string;
+                };
+                diagnostics: {
+                    type: string;
+                    description: string;
                 };
                 filaments: {
                     type: string;
