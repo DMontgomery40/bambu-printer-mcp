@@ -3200,12 +3200,12 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "fusion_mcp_status",
-                        description: `Check Autodesk Fusion through the configured Fusion MCP server (fusion360-mcp-server, faust-machines or the pinned fork with document binding): whether it is configured, Fusion is running, the Fusion360MCP add-in answers on its port, and the server's tools and schemas. connected is true only when the add-in answers. With launch: true, starts Fusion on macOS when it is not running and waits up to 90 s for the add-in. Configure FUSION_MCP_COMMAND (uvx) and FUSION_MCP_ARGS (${JSON.stringify(FUSION_MCP_DEFAULT_ARGS)}), or run fusion_mcp_setup.`,
+                        description: `Check Autodesk Fusion through the configured Fusion MCP server (fusion360-mcp-server, faust-machines or the pinned fork with document binding): whether it is configured, Fusion is running, the Fusion360MCP add-in answers on its port, and the server's tools and schemas. Reports state (starting, ready, unresponsive), responsive and reason from a fresh no-op execute_code command probe, capped at 5 s; a ping or design read alone is not readiness. The probe never edits or opens a document. With launch: true, starts Fusion on macOS when it is not running and waits up to 90 s for the add-in. Configure FUSION_MCP_COMMAND (uvx) and FUSION_MCP_ARGS (${JSON.stringify(FUSION_MCP_DEFAULT_ARGS)}), or run fusion_mcp_setup.`,
                         inputSchema: {
                             type: "object",
                             properties: {
                                 launch: { type: "boolean", description: "Start Autodesk Fusion (open -a \"Autodesk Fusion\") when it is not running, then wait up to 90 s for the add-in." },
-                                timeout_ms: { type: "integer", minimum: 100, maximum: 600000, description: "Connection and discovery deadline in milliseconds; defaults to FUSION_MCP_TIMEOUT_MS or 180000." }
+                                timeout_ms: { type: "integer", minimum: 100, maximum: 600000, description: "Connection, discovery and command-probe deadline, capped at 5000 ms even if a larger value is requested. Launch waiting is separate." }
                             },
                             additionalProperties: false
                         },

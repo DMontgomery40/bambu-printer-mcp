@@ -53,6 +53,12 @@ reader.on("line", (line) => {
     : ok(request.id, name, { design_type: "parametric", design_type_id: 1 });
   if (name === "new_document") return ok(request.id, name, {document: "Untitled", document_id: "owned-document-token", document_binding: 1, parametric: "True"});
   if (name === "execute_code") {
+    if (args.code.startsWith("# BAMBU_FUSION status_probe")) {
+      if (mode === "write-hang") return;
+      if (mode === "write-error") return error(request.id, name, "UNKNOWN", "write handler unavailable");
+      const nonce = /"nonce": "([^"]+)"/.exec(args.code)?.[1];
+      return ok(request.id, name, {executed: "True", result: JSON.stringify({nonce: mode === "stale-probe" ? "stale" : nonce, startupComplete: mode !== "starting"})});
+    }
     const marker = /^# BAMBU_FUSION (\w+)/.exec(args.code)?.[1];
     const result = marker === "new_design" ? { document: "Untitled", parametric: true }
       // The fixture STL is a flat 10 x 10 x 0 triangle; Fusion reports centimetres. Hidden and surface bodies are never exported.

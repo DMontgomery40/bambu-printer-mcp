@@ -1489,12 +1489,23 @@ FUSION_MCP_PORT=<port>`. To start Fusion yourself, run the same command. If Fusi
 is already open on the default port, quit it first, because `--env` takes effect
 only when the app starts.
 
-1. `fusion_mcp_status` returns `{configured, connected, addinReachable, fusionRunning, tools[]}`,
+1. `fusion_mcp_status` returns `{configured, connected, responsive, state, reason, addinReachable, fusionRunning, tools[]}`,
    plus `launched`, `pin`, the server's `server` info and any `error`.
    `addinReachable` is true only when the `Fusion360MCP` add-in answers its own
    `ping` on `FUSION_MCP_HOST:FUSION_MCP_PORT`; Blender's MCP add-on, which also
    defaults to port 9876, doesn't count, so it can't hide a stopped Fusion.
-   `connected` is true only when the add-in answers the server's `ping`. With
+   After ping and the design read, a fresh no-op `execute_code` probe traverses the
+   pinned add-in's mutation snapshots and command handler without editing or opening a
+   document. `responsive: true` and `state: ready` require its fresh receipt;
+   `state: starting` comes from Fusion's own `Application.isStartupComplete` flag.
+   A sign-in or update dialog that prevents the probe from answering cannot be
+   distinguished from a hang; readiness stays unverified.
+   A timeout or failed probe reports `unresponsive`, `connected: false` and a plain
+   `reason`. No open design is reported separately as `activeDesign: false` with a
+   reason to open one. The probe is capped at five seconds, including MCP connection
+   and discovery; the initial port check and optional launch wait are separate.
+   This checks the command path, not whether every future design operation will succeed.
+   With
    `{"launch": true}`, it starts Fusion on macOS (`open -a "Autodesk Fusion" --env FUSION_MCP_PORT=<port>`)
    when it is not running and waits up to 90 seconds for the add-in.
 2. `fusion_mcp_call` takes `{tool_name, arguments?, timeout_ms?}` and passes the

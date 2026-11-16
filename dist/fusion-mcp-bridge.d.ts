@@ -45,6 +45,19 @@ export declare const FUSION_STATUS_OUTPUT_SCHEMA: {
             type: string;
             description: string;
         };
+        responsive: {
+            type: string;
+            description: string;
+        };
+        state: {
+            type: string;
+            enum: string[];
+            description: string;
+        };
+        reason: {
+            type: string;
+            description: string;
+        };
         addinReachable: {
             type: string;
             description: string;
