@@ -90,6 +90,8 @@ export type PrinterInfo = {
             copies: boolean;
             orient: boolean;
         };
+        /** counterpart_part_meshes is here: one STL per printable part of any 3MF, with its filament's colour (#691, #845). */
+        partMeshes?: boolean;
     };
 };
 export declare const PRINTER_INFO_OUTPUT_SCHEMA: {
@@ -178,6 +180,10 @@ export declare const PRINTER_INFO_OUTPUT_SCHEMA: {
                     type: string;
                 };
                 diagnostics: {
+                    type: string;
+                    description: string;
+                };
+                partMeshes: {
                     type: string;
                     description: string;
                 };
@@ -413,6 +419,10 @@ export declare const MAKE_3MF_OUTPUT_SCHEMA: {
                     triangles: {
                         type: string;
                         minimum: number;
+                    };
+                    color: {
+                        type: string;
+                        pattern: string;
                     };
                 };
                 required: string[];

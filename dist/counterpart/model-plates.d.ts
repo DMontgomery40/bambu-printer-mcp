@@ -33,6 +33,8 @@ export interface ModelPlate {
     build_items: number[];
     /** Each model part of this plate's objects once, with the filament it prints in (counterpart/1; see PlatePart). */
     parts: PlatePart[];
+    /** How many more parts the plate has beyond the 1000 listed, when it has more. */
+    parts_truncated?: number;
     /** The plate's own preview from the file (Metadata/plate_N.png), when asked for and present. */
     thumbnail_png_base64?: string;
 }

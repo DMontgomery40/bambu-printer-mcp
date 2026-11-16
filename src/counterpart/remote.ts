@@ -58,6 +58,7 @@ export const REMOTE_SCOPES: Readonly<Record<string, RemoteScope>> = {
   slice_stl: "design",
   lay_flat: "design",
   counterpart_make_3mf: "design",
+  counterpart_part_meshes: "design",
   // control
   bambu_connect_import_file: "control",
   camera_stream_start: "control",

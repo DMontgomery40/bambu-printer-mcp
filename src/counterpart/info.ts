@@ -47,6 +47,7 @@ export function bambuPrinterInfo(options: { server: { name: string; version: str
       camera: model && TCP_CAMERA_MODELS.has(model) ? "bambu-tcp" : model && RTSP_CAMERA_MODELS.has(model) ? "rtsp" : "none",
       cameraStream: !!model && (TCP_CAMERA_MODELS.has(model) || RTSP_CAMERA_MODELS.has(model)),
       diagnostics: true,
+      partMeshes: true,
       filaments: "ams",
       pause: true,
       resume: true,
