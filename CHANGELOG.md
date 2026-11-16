@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.96] – 2026-11-16
+
+### Fixed
+
+- Detect Fusion's stalled command path even when ping and the design read succeed. `fusion_mcp_status` runs a fresh no-op through the pinned add-in's mutation handler, caps the probe at five seconds, and returns `responsive`, `state` (`starting`, `ready`, `unresponsive`) and a plain `reason`. Startup comes from Fusion's own startup flag; failed probes clear `connected`, close timed-out sessions and never replay. No document is opened or edited. Thanks to David Montgomery for the real-world report in #167. Verified with isolated MCP fixtures and pinned add-in source; no live Fusion or physical printer test.
+
 ## [1.1.95] – 2026-11-15
 
 ### Added

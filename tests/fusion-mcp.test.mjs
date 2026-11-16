@@ -130,7 +130,7 @@ test("activeDesign comes from the add-in's read-only get_design_type: true with 
   const open = await status("normal");
   assert.equal(open.result.connected, true);
   assert.equal(open.result.activeDesign, true);
-  assert.deepEqual(open.calls, ["ping", "get_design_type"], "one read, nothing that changes the design");
+  assert.deepEqual(open.calls, ["ping", "get_design_type", "execute_code"], "read plus a no-op command probe, no design mutation");
   // Fusion's Home tab (faust issue #12): the add-in's own error kind says no design is open.
   const home = await status("no-design");
   assert.equal(home.result.connected, true);
@@ -437,4 +437,46 @@ test("Fusion proxy preserves upstream images and genuine structured results with
   const {client} = await start(t, "mixed-content");
   const reply = await client.callTool({name: "fusion_mcp_call", arguments: {tool_name: "create_sketch"}});
   assert.deepEqual(reply, {content: [{type: "text", text: "Visible sketch result"}, {type: "image", mimeType: "image/png", data: "aW1hZ2U="}], structuredContent: {sketch: "Sketch1"}});
+});
+
+
+test("status detects a hung write handler after a successful design read, without replay", async t => {
+  const port = await addin(t);
+  const {client, logPath} = await start(t, "write-hang", {FUSION_MCP_PORT: String(port)});
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const began = Date.now();
+    const result = (await client.callTool({name: "fusion_mcp_status", arguments: {timeout_ms: 500}})).structuredContent;
+    assert.equal(result.connected, false, "a read-only success cannot certify the write path");
+    assert.equal(result.responsive, false);
+    assert.equal(result.state, "unresponsive");
+    assert.match(result.reason, /Restart Fusion/);
+    assert.ok(Date.now() - began < 3000);
+  }
+  const log = events(logPath);
+  assert.equal(log.filter(e => e.event === "spawn").length, 2, "discard each timed-out session");
+  assert.equal(log.filter(e => e.name === "execute_code").length, 2, "one probe per request, never replay");
+  assert.equal(log.filter(e => e.name === "get_design_type").length, 2, "read path really answered");
+});
+
+test("status requires a fresh no-op receipt and reports Fusion's own startup state", async t => {
+  const port = await addin(t);
+  for (const [mode, state, responsive] of [["normal", "ready", true], ["starting", "starting", false], ["write-error", "unresponsive", false], ["stale-probe", "unresponsive", false]]) {
+    const {client, logPath} = await start(t, mode, {FUSION_MCP_PORT: String(port)});
+    const result = (await client.callTool({name: "fusion_mcp_status", arguments: {}})).structuredContent;
+    assert.equal(result.state, state, mode);
+    assert.equal(result.responsive, responsive, mode);
+    const probe = events(logPath).find(e => e.name === "execute_code");
+    assert.match(probe.args.code, /app.isStartupComplete/);
+    assert.doesNotMatch(probe.args.code, /documents.add|\.close\(|designType\s*=/, "status never opens/closes or edits a document");
+  }
+});
+
+
+test("status caps a caller's long timeout at five seconds for an existing Fusion session", async t => {
+  const port = await addin(t);
+  const {client} = await start(t, "write-hang", {FUSION_MCP_PORT: String(port)});
+  const began = Date.now();
+  const result = (await client.callTool({name: "fusion_mcp_status", arguments: {timeout_ms: 90000}})).structuredContent;
+  assert.equal(result.state, "unresponsive");
+  assert.ok(Date.now() - began < 8000, "status cannot inherit the 90-second design deadline");
 });
