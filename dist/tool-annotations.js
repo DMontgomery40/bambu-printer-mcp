@@ -59,6 +59,8 @@ export const TOOL_ANNOTATIONS = {
     slice_with_template: hints(false, true, false, true),
     // New 3MF at a caller-chosen path; never overwrites, so a repeat fails and changes nothing.
     counterpart_make_3mf: hints(false, false, true, false),
+    // A new folder of STLs each call, inside a caller-chosen folder; never overwrites.
+    counterpart_part_meshes: hints(false, false, false, false),
     // Copies into the template registry, replacing a template of the same name.
     save_template: hints(false, true, true, false),
     // Replaces BAMBU_DEFAULT_CONNECTION_MODE/TYPE in .env and in this process.

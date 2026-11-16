@@ -11,6 +11,7 @@ export type Make3mfResult = {
         stl_path: string;
         filament: number;
         triangles: number;
+        color?: string;
     }[];
 };
 export declare function makeCounterpart3mf(args: Record<string, unknown>): Promise<Make3mfResult>;

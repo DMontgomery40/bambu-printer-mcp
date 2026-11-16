@@ -41,6 +41,8 @@ export type PrinterInfo = {
     pause: boolean; resume: boolean; cancel: boolean; print3mf: boolean; gcode: boolean;
     /** What slice_stl can apply with this server's slicer (the same field in mcp-3D-printer-server). */
     slicing?: { supports: boolean; copies: boolean; orient: boolean };
+    /** counterpart_part_meshes is here: one STL per printable part of any 3MF, with its filament's colour (#691, #845). */
+    partMeshes?: boolean;
   };
 };
 
@@ -80,6 +82,7 @@ export const PRINTER_INFO_OUTPUT_SCHEMA = {
         camera: { type: "string", enum: ["bambu-tcp", "rtsp", "http-snapshot", "none"] },
         cameraStream: { type: "boolean" },
         diagnostics: { type: "boolean", description: "counterpart_diagnostics is available." },
+        partMeshes: { type: "boolean", description: "counterpart_part_meshes is available." },
         filaments: { type: "string", enum: ["ams", "single", "none"] },
         pause: { type: "boolean" },
         resume: { type: "boolean" },
@@ -164,6 +167,7 @@ export const MAKE_3MF_OUTPUT_SCHEMA = {
           stl_path: { type: "string" },
           filament: { type: "integer", minimum: 1 },
           triangles: { type: "integer", minimum: 1 },
+          color: { type: "string", pattern: "^#[0-9A-F]{6}$" },
         },
         required: ["name", "stl_path", "filament", "triangles"],
       },

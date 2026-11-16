@@ -10,8 +10,11 @@
  * - printer-upload-failed: the print file didn't reach the printer, so no print command was sent.
  * - slicer-waiting-on-dialog: the slicer stopped working (no CPU, no output) as it does while a window waits for an
  *   answer, and was stopped; nothing was sliced or sent. Not the slicer's verdict on the model: no slicer_report.
+ * - needs-more-filaments: the design is in more colours than there are filaments to slice it with (a two-colour 3MF on
+ *   a printer with no AMS loaded); nothing was sliced. structuredContent.filament_slots says how many of each, and
+ *   slicer_report.message the plain answer a client shows (scan-to-make #858, the DAD pass).
  */
-export declare const REFUSAL_CODES: readonly ["printer-command-rejected", "printer-not-ready", "printer-upload-failed", "slicer-waiting-on-dialog"];
+export declare const REFUSAL_CODES: readonly ["printer-command-rejected", "printer-not-ready", "printer-upload-failed", "slicer-waiting-on-dialog", "needs-more-filaments"];
 export type RefusalCode = (typeof REFUSAL_CODES)[number];
 export declare class PrinterRefusal extends Error {
     readonly code: RefusalCode;
@@ -27,3 +30,14 @@ export declare function withPrintDispatch<T>(run: () => T): T;
 /** Call immediately before handing a print command to a transport. An acknowledgement may then be lost. */
 export declare function markPrintCommandSent(): void;
 export declare function printOutcome(error: unknown): PrintOutcome;
+/**
+ * More filament colours than filament slots to slice with: the plain answer a person is shown, and the counts. The
+ * DAD pass sliced its two-colour 3MF for a P1S with no AMS loaded and got only "2 filament colours were supplied for
+ * 1 filament slots".
+ */
+export declare class FilamentSlotsError extends PrinterRefusal {
+    readonly colours: number;
+    readonly slots: number;
+    readonly plain: string;
+    constructor(colours: number, slots: number);
+}

@@ -69,6 +69,8 @@ export type BlenderSetupReport = {
     target_problem?: "not-installed" | "several-modules";
     /** What the person can do, in plain words, when the add-on can't be checked or updated here (reason, target_problem). */
     message?: string;
+    /** not-configured: the server settings that connect Blender, for a setup screen or a log; never shown as the message. */
+    settings?: string[];
     /** The installed file's protocol is what the package expects. */
     current?: boolean;
     /** Set by update. */
@@ -119,6 +121,13 @@ export declare const BLENDER_SETUP_OUTPUT_SCHEMA: {
         readonly reason: {
             readonly type: "string";
             readonly enum: readonly ["not-configured", "custom-command", "custom-package"];
+        };
+        readonly settings: {
+            readonly type: "array";
+            readonly items: {
+                readonly type: "string";
+            };
+            readonly description: "not-configured: the server settings that connect Blender (BLENDER_MCP_COMMAND, BLENDER_MCP_ARGS).";
         };
         readonly package: {
             readonly type: "string";

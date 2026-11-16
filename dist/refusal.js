@@ -11,8 +11,11 @@ import { AsyncLocalStorage } from "node:async_hooks";
  * - printer-upload-failed: the print file didn't reach the printer, so no print command was sent.
  * - slicer-waiting-on-dialog: the slicer stopped working (no CPU, no output) as it does while a window waits for an
  *   answer, and was stopped; nothing was sliced or sent. Not the slicer's verdict on the model: no slicer_report.
+ * - needs-more-filaments: the design is in more colours than there are filaments to slice it with (a two-colour 3MF on
+ *   a printer with no AMS loaded); nothing was sliced. structuredContent.filament_slots says how many of each, and
+ *   slicer_report.message the plain answer a client shows (scan-to-make #858, the DAD pass).
  */
-export const REFUSAL_CODES = ["printer-command-rejected", "printer-not-ready", "printer-upload-failed", "slicer-waiting-on-dialog"];
+export const REFUSAL_CODES = ["printer-command-rejected", "printer-not-ready", "printer-upload-failed", "slicer-waiting-on-dialog", "needs-more-filaments"];
 export class PrinterRefusal extends Error {
     constructor(code, message) {
         super(message);
@@ -41,4 +44,19 @@ export function printOutcome(error) {
     if (error instanceof PrinterRefusal && error.code === "printer-command-rejected")
         return "rejected";
     return printDispatch.getStore()?.attempted === false ? "not-sent" : "unknown";
+}
+/**
+ * More filament colours than filament slots to slice with: the plain answer a person is shown, and the counts. The
+ * DAD pass sliced its two-colour 3MF for a P1S with no AMS loaded and got only "2 filament colours were supplied for
+ * 1 filament slots".
+ */
+export class FilamentSlotsError extends PrinterRefusal {
+    constructor(colours, slots) {
+        const plain = `This design is in ${colours} colours, but only ${slots} filament${slots === 1 ? " is" : "s are"} available to print it. It needs a printer with an AMS loaded with ${colours} colours, or it can print in one colour.`;
+        super("needs-more-filaments", `${plain}\nThe slicer setup said: ${colours} filament colours were supplied for ${slots} filament slots.`);
+        this.colours = colours;
+        this.slots = slots;
+        this.name = "FilamentSlotsError";
+        this.plain = plain;
+    }
 }
