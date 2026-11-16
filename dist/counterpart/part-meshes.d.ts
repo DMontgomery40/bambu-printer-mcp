@@ -1,4 +1,6 @@
 import { COUNTERPART_CONTRACT } from "./schemas.js";
+/** All the STLs one call writes, together: about 200 MB of binary STL. Parts beyond it are listed in skipped. */
+export declare const MAX_TOTAL_TRIANGLES = 4000000;
 export declare class PartMeshesError extends Error {
 }
 export interface PartMesh {

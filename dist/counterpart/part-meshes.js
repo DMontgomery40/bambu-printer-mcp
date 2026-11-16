@@ -18,7 +18,7 @@ const MAX_MODEL_BYTES = 64 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 256 * 1024 * 1024;
 const MAX_DEPTH = 8;
 /** All the STLs one call writes, together: about 200 MB of binary STL. Parts beyond it are listed in skipped. */
-const MAX_TOTAL_TRIANGLES = 4000000;
+export const MAX_TOTAL_TRIANGLES = 4000000;
 const ROOT = "3D/3dmodel.model";
 const UNITS = { micron: 0.001, millimeter: 1, centimeter: 10, inch: 25.4, foot: 304.8, meter: 1000 };
 export class PartMeshesError extends Error {
@@ -113,7 +113,7 @@ function parseMesh(model, file, id, mesh) {
     return result;
 }
 /** An object's triangles in the build frame: its own mesh, or its components' meshes, each through its transform. */
-async function collect(read, file, id, transform, out, depth = 0) {
+async function collect(read, file, id, transform, out, budget, depth = 0) {
     if (depth > MAX_DEPTH)
         return "its components nest too deeply";
     const model = await read(file);
@@ -128,6 +128,9 @@ async function collect(read, file, id, transform, out, depth = 0) {
         if (typeof parsedMesh === "string")
             return parsedMesh;
         const t = transform, v = parsedMesh.vertices, corners = parsedMesh.corners;
+        // Checked before each mesh is expanded: nested components placing one mesh many times stop here, not in memory.
+        if (out.length / 9 + corners.length / 3 > budget)
+            return `it has more triangles than this call's remaining ${Math.max(0, Math.floor(budget))} of ${MAX_TOTAL_TRIANGLES}`;
         // A mirroring placement (negative determinant) turns the surface inside out: each triangle's winding is reversed.
         const mirrored = t[0] * (t[4] * t[8] - t[5] * t[7]) - t[1] * (t[3] * t[8] - t[5] * t[6]) + t[2] * (t[3] * t[7] - t[4] * t[6]) < 0;
         for (let i = 0; i < corners.length; i += 3)
@@ -143,7 +146,7 @@ async function collect(read, file, id, transform, out, depth = 0) {
         if (!child)
             continue;
         const childFile = /\b(?:\w+:)?path="\/?([^"]+)"/.exec(component[1])?.[1] ?? file;
-        const problem = await collect(read, childFile, child, compose(matrix(/\btransform="([^"]+)"/.exec(component[1])?.[1]), transform), out, depth + 1);
+        const problem = await collect(read, childFile, child, compose(matrix(/\btransform="([^"]+)"/.exec(component[1])?.[1]), transform), out, budget, depth + 1);
         if (problem)
             return problem;
     }
@@ -240,8 +243,9 @@ export async function partMeshes(args) {
                         let problem;
                         try {
                             const placed = matrix(/\btransform="([^"]+)"/.exec(item)?.[1]);
-                            problem = component === undefined ? await collect(read, ROOT, objectId, placed, triangles)
-                                : await collect(read, file, String(part.object_id), compose(matrix(/\btransform="([^"]+)"/.exec(component)?.[1]), placed), triangles);
+                            const budget = MAX_TOTAL_TRIANGLES - written;
+                            problem = component === undefined ? await collect(read, ROOT, objectId, placed, triangles, budget)
+                                : await collect(read, file, String(part.object_id), compose(matrix(/\btransform="([^"]+)"/.exec(component)?.[1]), placed), triangles, budget);
                         }
                         catch (error) {
                             // A malformed transform spoils this part only: it is listed with why, and the others are still written.
@@ -251,8 +255,6 @@ export async function partMeshes(args) {
                         }
                         if (!problem && !triangles.length)
                             problem = "it has no triangles";
-                        if (!problem && written + triangles.length / 9 > MAX_TOTAL_TRIANGLES)
-                            problem = `the parts before it already fill this call's ${MAX_TOTAL_TRIANGLES} triangles`;
                         // The root model's unit covers every model part and transform in the package (3MF core spec, 3.4).
                         if (rootScale !== 1)
                             for (let i = 0; i < triangles.length; i++)
