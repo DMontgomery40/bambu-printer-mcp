@@ -127,6 +127,9 @@ export async function listModelPlates(filePath, options = {}) {
         if (geometry) {
             plate.build_items = filaments.buildItems.get(plate.index + 1) ?? [];
             plate.parts = filaments.parts.get(plate.index + 1) ?? [];
+            const truncated = filaments.partsTruncated.get(plate.index + 1);
+            if (truncated)
+                plate.parts_truncated = truncated;
         }
     }
     result.project_filaments = filaments.project;

@@ -42,7 +42,7 @@ export declare function floatingRegions(triangles: Float64Array, options?: {
 }): FloatingRegions;
 /** The slicer said a model has floating regions or small islands: a cosmetic warning this rule bounds. */
 export declare function isFloatingWarning(message: string | undefined): boolean;
-export declare const SLICE_WARNING_RULE = "A cosmetic warning (floating regions, small islands) gets one targeted fix and one re-slice, then stops: if it remains, report it in the result or slice with supports on. Do not rebuild and re-slice to chase it.";
+export declare const SLICE_WARNING_RULE = "A cosmetic warning (floating regions, small islands) gets one targeted fix and one re-slice, then stops: if it remains, report it in the result or slice with supports on. Do not rebuild and re-slice to chase it. A region that is a separate body in mid-air, or on a feature that carries load or makes a fit, is not cosmetic: fix that one properly.";
 /**
  * What slice_stl adds to a slice that worked but warned about floating regions: the rule above, and where the
  * regions are when the input is an STL the slicer did not turn (orient, rotate). Never throws: a location it

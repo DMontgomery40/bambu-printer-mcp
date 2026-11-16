@@ -48,6 +48,8 @@ export interface PlatePart {
     name: string;
     filament: number;
     painted?: true;
+    /** How many times the object places this mesh as a component, when more than once (a plain 3MF's wheels). */
+    components?: number;
 }
 type Settings = Map<string, string>;
 interface Part {
@@ -102,5 +104,6 @@ export declare function plateFilaments(zip: JSZip, settings: string, model: stri
     project: PlateFilament[];
     buildItems: Map<number, number[]>;
     parts: Map<number, PlatePart[]>;
+    partsTruncated: Map<number, number>;
 }>;
 export {};
