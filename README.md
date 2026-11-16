@@ -1498,6 +1498,8 @@ only when the app starts.
    pinned add-in's mutation snapshots and command handler without editing or opening a
    document. `responsive: true` and `state: ready` require its fresh receipt;
    `state: starting` comes from Fusion's own `Application.isStartupComplete` flag.
+   A sign-in or update dialog that prevents the probe from answering cannot be
+   distinguished from a hang; readiness stays unverified.
    A timeout or failed probe reports `unresponsive`, `connected: false` and a plain
    `reason`. No open design is reported separately as `activeDesign: false` with a
    reason to open one. The probe is capped at five seconds, including MCP connection
