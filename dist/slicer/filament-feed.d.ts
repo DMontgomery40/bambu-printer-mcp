@@ -34,8 +34,9 @@ export interface PrinterFeed {
 export declare function feedFromBambuReport(raw: unknown, connected: boolean, dualNozzle: boolean): PrinterFeed;
 export declare const UNKNOWN_FEED: (source: string, dualNozzle?: boolean) => PrinterFeed;
 /**
- * The colours a slice prints with and its filament changes, from Bambu Studio / OrcaSlicer's result.json: the plate
- * with the most colours (each plate prints on its own), and its filament changes.
+ * The colours a slice prints with and its filament changes, from Bambu Studio / OrcaSlicer's result.json: the most
+ * colours any one plate prints with (each plate prints on its own), and the changes of every plate that prints in
+ * more than one, added up, so a second plate's changes are never left out (Codex review, #170).
  */
 export declare function sliceColours(result: unknown): {
     colours: number;
