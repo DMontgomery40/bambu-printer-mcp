@@ -6,7 +6,9 @@
  * How the printer's feeds are known (the judgement, written down):
  * - Feeds are the AMS trays the printer reports (every tray of every AMS unit, loaded or not: a person can load an
  *   empty one). Without an AMS, its external spool holders, one per nozzle (two on a dual-nozzle model). A print
- *   doesn't mix the external spool with AMS trays, so the two are not added.
+ *   doesn't mix the external spool with AMS trays, so the two are not added. Two external spools feed two colours
+ *   only when each colour is on its own nozzle; the slice's nozzle bindings aren't read here, so a dual-nozzle
+ *   printer without an AMS is unknown for two colours (flagged, not passed) and too few for three.
  * - Known only from a connected printer's report that carries its AMS block; one that lists no AMS unit in it means
  *   no AMS. A report without the block says nothing. The model alone never decides it: every model's AMS is
  *   optional.
