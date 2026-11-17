@@ -51,12 +51,23 @@ export function printOutcome(error) {
  * 1 filament slots".
  */
 export class FilamentSlotsError extends PrinterRefusal {
-    constructor(colours, slots) {
-        const plain = `This design is in ${colours} colours, but only ${slots} filament${slots === 1 ? " is" : "s are"} available to print it. It needs a printer with an AMS loaded with ${colours} colours, or it can print in one colour.`;
-        super("needs-more-filaments", `${plain}\nThe slicer setup said: ${colours} filament colours were supplied for ${slots} filament slots.`);
+    /**
+     * colours: the colours the design prints with; slots: the filaments there are to feed them (slice slots, or the
+     * printer's AMS trays plus external spools). `options` carries the plain sentence when the printer's feeds decide
+     * it, and the filament changes the slice would make.
+     */
+    constructor(colours, slots, options = {}) {
+        const plain = options.plain ?? `This design is in ${colours} colours, but only ${slots} filament${slots === 1 ? " is" : "s are"} available to print it. It needs a printer with an AMS loaded with ${colours} colours, or it can print in one colour.`;
+        const detail = options.plain
+            ? `The design prints in ${colours} filaments and the printer can feed ${slots}${options.changes !== undefined ? `; the slice makes ${options.changes} filament changes` : ""}.`
+            : `${colours} filament colours were supplied for ${slots} filament slots.`;
+        super("needs-more-filaments", `${plain}\n${options.plain ? "The slice said" : "The slicer setup said"}: ${detail}`);
         this.colours = colours;
         this.slots = slots;
         this.name = "FilamentSlotsError";
         this.plain = plain;
+        this.detail = detail;
+        if (options.changes !== undefined)
+            this.changes = options.changes;
     }
 }

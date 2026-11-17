@@ -2717,9 +2717,11 @@ test("slice_with_template prefers named template settings over BAMBU_SLICER_PROF
 async function sliceWithFakeBambuSlicer(t, options) {
   const fakeSlicer = await createFakeBambuSlicer(options);
   t.after(() => fs.rmSync(fakeSlicer.tempDir, { recursive: true, force: true }));
+  // options.status: a stubbed printer report (getStatus), with dummy credentials so the server asks for it.
+  const preload = options?.status === undefined ? [] : ["--import", `data:text/javascript;base64,${Buffer.from(`import { BambuImplementation } from ${JSON.stringify(new URL("../dist/printers/bambu.js", import.meta.url).href)}; BambuImplementation.prototype.getStatus = async () => (${JSON.stringify(options.status)});`).toString("base64")}`];
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [SERVER_ENTRY],
+    args: [...preload, SERVER_ENTRY],
     cwd: fakeSlicer.tempDir,
     env: {
       ...process.env,
@@ -2729,6 +2731,7 @@ async function sliceWithFakeBambuSlicer(t, options) {
       BAMBU_TOKEN: "",
       BAMBU_SLICER_PROFILE: "",
       BAMBU_PROFILES_ROOT: fakeSlicer.profilesRoot,
+      ...(options?.status === undefined ? {} : { BAMBU_SERIAL: "TEST_SERIAL", BAMBU_TOKEN: "TEST_TOKEN", BAMBU_PRINTER_HOST: "192.0.2.1", PRINTER_HOST: "192.0.2.1" }),
       TEMP_DIR: path.join(fakeSlicer.tempDir, "out"),
       SLICER_TYPE: "bambustudio",
       MCP_ALLOW_EXECUTABLE_ARG: "1",
@@ -3106,6 +3109,47 @@ test("slice_stl with more colours than filaments refuses with a plain answer and
   assert.equal(result.structuredContent.slicer_report.failed, true);
   assert.equal(result.structuredContent.slicer_report.message, "This design is in 2 colours, but only 1 filament is available to print it. It needs a printer with an AMS loaded with 2 colours, or it can print in one colour.");
   assert.match(result.content[0].text, /^Error: This design is in 2 colours/);
+});
+
+// Beta 8's DAD replay (Nov 17): a two-colour 3MF with declared colours sliced for a P1S with no AMS succeeded with 85
+// filament changes and no word. A printer known to have no AMS now refuses it with the changes and a plain answer;
+// one that can't be asked flags it; manual_filament_changes accepts it.
+const NO_AMS_P1S = { connected: true, model: "P1S", status: "IDLE", raw: { gcode_state: "IDLE", ams: { ams: [], ams_exist_bits: "0", tray_now: "255" } } };
+test("slice_stl refuses a two-colour slice on a P1S with no AMS, with the filament changes and a plain answer", async (t) => {
+  const result = await sliceWithFakeBambuSlicer(t, { result: "p1s-dad-two-colours.json", status: NO_AMS_P1S, arguments: { use_printer_filaments: true } });
+  assert.equal(result.isError, true, JSON.stringify(result.structuredContent));
+  const s = result.structuredContent;
+  assert.equal(s.code, "needs-more-filaments");
+  assert.deepEqual(s.filament_slots, { colours: 2, slots: 1 });
+  assert.equal(s.filament_changes, 85);
+  assert.deepEqual(s.filament_feed, { colours: 2, filament_changes: 85, source: "the printer reports no AMS", printer: "too-few-feeds", feeds: 1 });
+  assert.equal(s.slicer_report.failed, true);
+  assert.equal(s.slicer_report.message, "This prints in 2 colours. Your printer has no AMS, so it would stop 85 times for you to change filament. Print it in one colour instead, or print each colour as its own part.");
+  assert.match(s.suggestion, /slice again with manual_filament_changes: true/);
+  assert.equal(s.slicer_result.sliced_plates[0].filament_change_times, 85, "the slicer's result comes with the refusal");
+});
+
+test("slice_stl returns the two-colour slice with its changes when the person will change filament by hand", async (t) => {
+  const result = await sliceWithFakeBambuSlicer(t, { result: "p1s-dad-two-colours.json", status: NO_AMS_P1S, arguments: { use_printer_filaments: true, manual_filament_changes: true } });
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  assert.deepEqual(result.structuredContent.filament_feed, { colours: 2, filament_changes: 85, source: "the printer reports no AMS", printer: "too-few-feeds", feeds: 1, manual: true });
+  assert.equal(result.structuredContent.slicer_report.message, "Your printer has no AMS, so this print stops 85 times for you to change filament.");
+});
+
+test("slice_stl flags a two-colour slice when it can't ask the printer, and passes one an AMS can feed", async (t) => {
+  const unknown = await sliceWithFakeBambuSlicer(t, { result: "p1s-dad-two-colours.json" });
+  assert.equal(unknown.isError, undefined, unknown.content?.[0]?.text);
+  assert.equal(unknown.structuredContent.filament_feed.printer, "unknown");
+  assert.equal(unknown.structuredContent.filament_feed.filament_changes, 85);
+  assert.equal(unknown.structuredContent.slicer_report.message, "This prints in 2 colours and changes filament 85 times. Without an AMS, the printer stops for each change for you to swap filament: print it in one colour, or each colour as its own part.");
+  const withAms = await sliceWithFakeBambuSlicer(t, { result: "p1s-dad-two-colours.json", arguments: { use_printer_filaments: true },
+    status: { connected: true, model: "P1S", status: "IDLE", raw: { gcode_state: "IDLE", ams: { tray_now: "0", ams: [{ id: "0", tray: [{ id: "0" }, { id: "1" }, { id: "2" }, { id: "3" }] }] } } } });
+  assert.equal(withAms.isError, undefined, withAms.content?.[0]?.text);
+  assert.deepEqual(withAms.structuredContent.filament_feed, { colours: 2, filament_changes: 85, source: "the printer reports 1 AMS unit", printer: "feeds-all", feeds: 4 });
+  assert.equal(withAms.structuredContent.slicer_report.message, undefined);
+  // One colour: no filament_feed at all.
+  const single = await sliceWithFakeBambuSlicer(t, { result: "p1s-success.json", status: NO_AMS_P1S, arguments: { use_printer_filaments: true } });
+  assert.equal(single.structuredContent.filament_feed, undefined);
 });
 
 // Bambu Studio's auto-orient tilted the gap filler and failed with return

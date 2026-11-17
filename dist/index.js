@@ -8,6 +8,7 @@ import { withRemote } from "./counterpart/remote.js";
 import { refusalReport, slicedFileFacts, slicerReport } from "./counterpart/sliced-file.js";
 import { listModelPlates } from "./counterpart/model-plates.js";
 import { floatingWarningFacts } from "./slicer/floating-regions.js";
+import { feedFromBambuReport, feedVerdict, sliceColours, UNKNOWN_FEED } from "./slicer/filament-feed.js";
 /** The slicer's verdict beside its result.json (`slicer_report`). */
 function reportOf(result) {
     const report = slicerReport(result);
@@ -1730,6 +1731,33 @@ class BambuPrinterMCPServer {
             }, onUpdate, { signal, assertActive });
         });
     }
+    /**
+     * The filaments the configured printer can feed itself, for a multi-colour slice (src/slicer/filament-feed.ts):
+     * its AMS trays and external spools from a fresh report, or unknown without one. Only reads status.
+     */
+    async printerFeed(usePrinterFilaments, model, host, bambuSerial, bambuToken) {
+        const dual = isDualNozzleModel(model);
+        const unknown = (source) => UNKNOWN_FEED(source, dual);
+        if (!usePrinterFilaments)
+            return unknown("use_printer_filaments is false, so the printer wasn't asked");
+        if (!bambuSerial || !bambuToken)
+            return unknown("no printer is configured to ask");
+        try {
+            let status = await this.bambu.getStatus(host, bambuSerial, bambuToken);
+            let feed = feedFromBambuReport(status?.raw, status?.connected === true, dual);
+            // An idle printer's first push can be sparse; its AMS block follows (as get_printer_filaments waits for). A
+            // printer that isn't connected isn't asked twice.
+            if (status?.connected === true && (!feed.known || feed.ams_slots === 0)) {
+                await new Promise(resolve => setTimeout(resolve, 1500));
+                status = await this.bambu.getStatus(host, bambuSerial, bambuToken);
+                feed = feedFromBambuReport(status?.raw, status?.connected === true, dual);
+            }
+            return feed;
+        }
+        catch {
+            return unknown("the printer could not be reached");
+        }
+    }
     async getResolvedPrinterFilamentInventory(host, bambuSerial, bambuToken, bambuModel, nozzleDiameter) {
         const status = await this.bambu.getStatus(host, bambuSerial, bambuToken);
         let inventory = normalizePrinterFilamentInventory(status, bambuModel, nozzleDiameter);
@@ -2301,11 +2329,12 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "slice_stl",
-                        description: "Slice an STL or 3MF file using a slicer to generate printable G-code or sliced 3MF. IMPORTANT: bambu_model must be specified to ensure the slicer generates safe G-code for the correct printer. The text result is the sliced file's path. When Bambu Studio or OrcaSlicer writes a result.json, structuredContent.slicer_result carries it verbatim, success or error: error_string, return_code and each sliced_plates[].warning_message, such as a floating cantilever. structuredContent.slicer_report says whether it failed; for a failure, its message is a plain sentence for a person and slicer_message keeps the slicer's words, which a failed slice's text gives after that sentence. When a slice that worked warns of floating regions, next carries the stop rule (one targeted fix and one re-slice, then report it or slice with supports on) and, for an STL the slicer did not turn, structuredContent.floating_regions lists where they are: x and y in the STL's own millimetres, z above its lowest point, and depth_mm, how far each hangs below where it joins the rest. A 3MF that carries its own process settings (a designer's Bambu Studio or Orca project) slices with them unless slicer_profile, template_name or template_3mf_path is given; the machine still comes from bambu_model. quality and strength adjust that process, and strength never lowers its walls or infill.",
+                        description: "Slice an STL or 3MF file using a slicer to generate printable G-code or sliced 3MF. IMPORTANT: bambu_model must be specified to ensure the slicer generates safe G-code for the correct printer. The text result is the sliced file's path. When Bambu Studio or OrcaSlicer writes a result.json, structuredContent.slicer_result carries it verbatim, success or error: error_string, return_code and each sliced_plates[].warning_message, such as a floating cantilever. structuredContent.slicer_report says whether it failed; for a failure, its message is a plain sentence for a person and slicer_message keeps the slicer's words, which a failed slice's text gives after that sentence. When a slice that worked warns of floating regions, next carries the stop rule (one targeted fix and one re-slice, then report it or slice with supports on) and, for an STL the slicer did not turn, structuredContent.floating_regions lists where they are: x and y in the STL's own millimetres, z above its lowest point, and depth_mm, how far each hangs below where it joins the rest. A slice in two or more colours carries filament_feed: the colours, the filament changes the slicer reports, and whether the printer can feed them (its AMS trays and external spools from a fresh status read; unknown without one). When the printer is known not to (no AMS, or fewer filaments than colours), slice_stl refuses with code needs-more-filaments, filament_slots, filament_changes and a plain slicer_report.message, unless manual_filament_changes is true; when it is unknown, the slice succeeds and slicer_report.message says how many times it would stop without an AMS. A 3MF that carries its own process settings (a designer's Bambu Studio or Orca project) slices with them unless slicer_profile, template_name or template_3mf_path is given; the machine still comes from bambu_model. quality and strength adjust that process, and strength never lowers its walls or infill.",
                         inputSchema: {
                             type: "object",
                             properties: {
                                 stl_path: { type: "string", description: "Path to the STL or 3MF file to slice" },
+                                manual_filament_changes: { type: "boolean", description: "The person will change filament by hand: a slice in more colours than the printer can feed (no AMS) is returned, with the number of changes, instead of refused with needs-more-filaments." },
                                 bambu_model: {
                                     type: "string",
                                     enum: [...VALID_BAMBU_MODELS],
@@ -4121,7 +4150,19 @@ class BambuPrinterMCPServer {
                         const turned = Boolean(args?.orient) || [args?.rotate, args?.rotate_x, args?.rotate_y].some(r => r !== undefined && Number(r) !== 0)
                             || (args?.scale !== undefined && Number(args.scale) !== 1);
                         const located = await floatingWarningFacts(reported.slicer_report, String(args.stl_path), turned);
-                        return { content: [{ type: "text", text: sliced.path }], structuredContent: { ...reported, ...located } };
+                        // A slice in several colours on a printer that can't feed them is refused or flagged, never sent on
+                        // silently (beta 8 DAD replay: 85 manual changes on a P1S with no AMS). See src/slicer/filament-feed.ts.
+                        let feedFacts = {};
+                        if (sliceColours(sliced.slicer_result).colours >= 2) {
+                            const verdict = feedVerdict(sliced.slicer_result, await this.printerFeed(usePrinterFilaments, sliceModel, host, bambuSerial, bambuToken), args?.manual_filament_changes === true);
+                            if (verdict.refusal)
+                                throw Object.assign(verdict.refusal, { slicerResult: sliced.slicer_result });
+                            if (verdict.facts)
+                                feedFacts = { filament_feed: verdict.facts };
+                            if (verdict.note && reported.slicer_report)
+                                reported.slicer_report = { ...reported.slicer_report, message: reported.slicer_report.message ? `${reported.slicer_report.message}\n${verdict.note}` : verdict.note };
+                        }
+                        return { content: [{ type: "text", text: sliced.path }], structuredContent: { ...reported, ...located, ...feedFacts } };
                     }
                     case "print_3mf": {
                         if (!args?.three_mf_path) {
@@ -4579,7 +4620,11 @@ class BambuPrinterMCPServer {
                     // A design in more colours than filaments to slice it with: the counts and the plain answer a client shows.
                     ...(error instanceof FilamentSlotsError ? {
                         filament_slots: { colours: error.colours, slots: error.slots },
-                        slicer_report: { failed: true, message: error.plain, slicer_message: `${error.colours} filament colours were supplied for ${error.slots} filament slots.` },
+                        ...(error.changes !== undefined ? { filament_changes: error.changes } : {}),
+                        ...(error.feed ? { filament_feed: error.feed } : {}),
+                        ...(error.slicerResult ? { slicer_result: error.slicerResult } : {}),
+                        ...(error.feed ? { suggestion: "Make it in one colour, or print each colour as its own part. If the person will change filament by hand, slice again with manual_filament_changes: true." } : {}),
+                        slicer_report: { failed: true, message: error.plain, slicer_message: error.detail },
                     } : {}),
                 };
                 // MCP clients validate structuredContent against a declared outputSchema even on
