@@ -39,5 +39,21 @@ export declare class FilamentSlotsError extends PrinterRefusal {
     readonly colours: number;
     readonly slots: number;
     readonly plain: string;
-    constructor(colours: number, slots: number);
+    /** The filament changes the slice would make, when the slicer reported them (a printer with too few feeds). */
+    readonly changes?: number;
+    /** The slicer's own words, or this server's when the printer's feeds decided it. */
+    readonly detail: string;
+    /** The printer's feeds and the slice's colours, when they decided it (slice_stl's filament_feed). */
+    feed?: Record<string, unknown>;
+    /** The slicer's own result.json for the slice the printer's feeds refused. */
+    slicerResult?: unknown;
+    /**
+     * colours: the colours the design prints with; slots: the filaments there are to feed them (slice slots, or the
+     * printer's AMS trays plus external spools). `options` carries the plain sentence when the printer's feeds decide
+     * it, and the filament changes the slice would make.
+     */
+    constructor(colours: number, slots: number, options?: {
+        plain?: string;
+        changes?: number;
+    });
 }
