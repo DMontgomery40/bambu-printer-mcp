@@ -41,8 +41,12 @@ export interface ValidatedPrinterState {
     filaments: ReportedFilament[];
 }
 export declare function finiteNumber(value: unknown): number | undefined;
+/** Models observed retaining FAILED with fail_reason 0300400C after a canceled job:
+ * X2D, and H2C (a fresh report after a Stop: FAILED, print_error 0, fail_reason
+ * "50348044", the stopped job's name and file). Add a model only with that hardware evidence. */
+export declare const CANCELLED_JOB_MODELS: ReadonlySet<string>;
 /**
- * X2D retains FAILED after a canceled job even with no active print error.
+ * X2D and H2C retain FAILED after a canceled job even with no active print error.
  * Bambu Studio classifies FAILED as a finished job; its v02.08.02.61
  * hms_en_20P table (926a7192574bcb9b3a732e1ec59a46d79cb45466)
  * calls 0300400C "The task was canceled."
@@ -50,7 +54,7 @@ export declare function finiteNumber(value: unknown): number | undefined;
  * Callers still validate HMS, identity, hardware and material configuration,
  * and print dispatch rechecks the identity of the observed job.
  */
-export declare function isCancelledX2DJob(raw: Record<string, any>, model: string): boolean;
+export declare function isCancelledJob(raw: Record<string, any>, model: string): boolean;
 /** Models observed retaining FAILED for a named prior job while explicitly reporting
  * idle with no print error and no HMS: P1S (#87) and A1 firmware 01.08.01.00 after a
  * user-stopped job. Add a model only with that hardware evidence. */

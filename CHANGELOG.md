@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Prints that use both extruders of an H2C, H2D, H2D Pro or X2D, sliced with Bambu Studio 02.09.01.70, pass file inspection. Its `M104 T<heater> S<target> N<nozzle> W|C` pre-heating and pre-cooling lines are accepted in that exact form only; the target keeps its hardware and material ceilings.
+- `upload_file` without printing puts a bare filename at the FTP root on H2-series printers (not X2D) instead of under `cache/`, which an H2C refuses with `553 Could not create file.` It returns the path as `/<name>`.
+- `list_printer_files` lists files in the printer's top-level folder (`directories["/"]`, and `/<name>` in `files`), where H2-series printers keep print and upload files. On those printers `delete_printer_file` and `start_print_job` accept that `/<name>`; a bare name still means `cache/<name>`.
+- An H2C that reports `FAILED` with `0300400C` ("The task was canceled.") after a stopped job is ready for the next print or upload, as an X2D already is.
+
 ## [1.1.98] – 2026-11-17
 
 ### Fixed

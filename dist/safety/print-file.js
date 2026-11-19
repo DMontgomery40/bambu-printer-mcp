@@ -563,7 +563,7 @@ export async function inspectPrintFile(filePath, options) {
                 continue;
             }
             if (['M104', 'M109', 'M140', 'M190', 'M141', 'M191'].includes(code)) {
-                const args = parameters(argumentsText, code === 'M104' ? 'AM' : 'A');
+                const args = parameters(argumentsText, code === 'M104' ? (dualNozzle ? 'AMCW' : 'AM') : 'A');
                 // Studio 2.9's GCodeWriter marks layer-temperature changes with bare M.
                 // Accept only its exact S-target / optional T form; targets and tool
                 // selectors still pass through the independent thermal checks below.
@@ -571,6 +571,17 @@ export async function inspectPrintFile(filePath, options) {
                     if (!Number.isNaN(args.get('M')) || !args.has('S') || [...args.keys()].some(key => !'MST'.includes(key)))
                         fail('unsupported M104 layer-change temperature parameters');
                     args.delete('M');
+                }
+                // Studio 2.9.1's GCodeProcessor ends each multi-extruder pre-heating and
+                // pre-cooling line with a bare W (heating) or C (cooling) marker:
+                // `M104 T<heater> S<target> N<nozzle> W|C`. The marker is never a heat target.
+                // Accept only that exact form on dual-nozzle models; T, N and the S target
+                // still pass through the independent thermal checks below.
+                const markers = code === 'M104' && dualNozzle ? ['C', 'W'].filter(key => args.has(key)) : [];
+                if (markers.length) {
+                    if (markers.length !== 1 || !Number.isNaN(args.get(markers[0])) || args.size !== 4 || !args.has('T') || !args.has('S') || !args.has('N'))
+                        fail('unsupported M104 multi-extruder pre-heating or pre-cooling parameters');
+                    args.delete(markers[0]);
                 }
                 // Official A1 and A1 mini start G-code waits with M109 S<target> H<limit>
                 // (S25 H140, S100 H170, S220 H300). H is not a heater target: S stays the

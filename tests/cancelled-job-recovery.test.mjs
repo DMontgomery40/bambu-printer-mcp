@@ -33,6 +33,18 @@ test('only the exact clean X2D cancellation qualifies as terminal', () => {
   assert.throws(() => validatePrinterState(stale, requirements), /fresh|stale/);
 });
 
+// H2C (serial prefix 31B) after a Stop sent through this server: gcode_state FAILED,
+// print_error 0, fail_reason "50348044" (0300400C), the stopped job's name and file.
+test('the exact clean H2C cancellation qualifies as terminal', () => {
+  const h2c = overrides => ({ ...fresh(canceled({ model: 'h2c', ...overrides })), serial: '31BCANCELTEST' });
+  const required = { ...requirements, model: 'h2c' };
+  assert.doesNotThrow(() => validatePrinterState(h2c(), required));
+  for (const overrides of [
+    { fail_reason: undefined }, { fail_reason: 0 }, { fail_reason: 0x0300400d }, { print_error: 123 },
+    { subtask_name: '', gcode_file: '' }, { gcode_state: 'RUNNING' }, { hms: [{ attr: 1, code: 0x20001 }] },
+  ]) assert.throws(() => validatePrinterState(h2c(overrides), required), JSON.stringify(overrides));
+});
+
 test('the same canceled report from a matching non-X2D printer stays blocked', () => {
   for (const [model, prefix, nozzles] of [['h2d', '094', ['0.4', '0.4']], ['h2dpro', '239', ['0.4', '0.4']], ['p1s', '01P', ['0.4']]]) {
     const status = { ...fresh(canceled({ model, nozzle_diameter: nozzles })), serial: `${prefix}CANCELTEST` };

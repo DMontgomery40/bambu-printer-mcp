@@ -39,7 +39,7 @@ test("file listing preserves its response and uses shared FTPS options and absol
   const result = await new BambuImplementation().getFiles(...credentials);
   assert.deepEqual(result, {
     files: ["cache/part.3mf", "timelapse/video.mp4"],
-    directories: { cache: ["part.3mf"], timelapse: ["video.mp4"], logs: [] },
+    directories: { "/": [], cache: ["part.3mf"], timelapse: ["video.mp4"], logs: [] },
   });
   const options = calls[0][1];
   assert.equal(options.host, credentials[0]);
@@ -54,9 +54,23 @@ test("file listing preserves its response and uses shared FTPS options and absol
 test("optional directories absent from a successful root listing remain empty without creation", async t => {
   const calls = ftp(t, { "/": [directory("timelapse")], "/timelapse": [] });
   assert.deepEqual(await new BambuImplementation().getFiles(...credentials), {
-    files: [], directories: { cache: [], timelapse: [], logs: [] },
+    files: [], directories: { "/": [], cache: [], timelapse: [], logs: [] },
   });
   assert.deepEqual(calls.slice(1), [["list", "/"], ["list", "/timelapse"], ["close"]]);
+});
+
+// H2-series printers keep print and upload files at the root, beside cache/, timelapse/ and logs/.
+test("file listing includes files at the root without listing other directories", async t => {
+  const calls = ftp(t, {
+    "/": [directory("cache"), directory("timelapse"), directory("model"), file("checked-1-job.gcode.3mf"), { name: "link", isDirectory: false, isSymbolicLink: true }],
+    "/cache": [],
+    "/timelapse": [],
+  });
+  assert.deepEqual(await new BambuImplementation().getFiles(...credentials), {
+    files: ["/checked-1-job.gcode.3mf"],
+    directories: { "/": ["checked-1-job.gcode.3mf"], cache: [], timelapse: [], logs: [] },
+  });
+  assert.deepEqual(calls.slice(1), [["list", "/"], ["list", "/cache"], ["list", "/timelapse"], ["close"]]);
 });
 
 for (const code of [522, "ECONNRESET", "ETIMEDOUT", 550]) {

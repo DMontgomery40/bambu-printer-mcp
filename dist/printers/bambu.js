@@ -8,7 +8,7 @@ import { cameraNumber } from "./camera-tools.js";
 import { cameraFrameParser, cameraAuth } from "./camera-wire.js";
 import { createHash } from "node:crypto";
 import { controlReply, refusedControlMessage } from "../control-reply.js";
-import { isFinishedIdleJob, isCancelledX2DJob, readFreshPrinterStatus } from "../safety/printer-state.js";
+import { isFinishedIdleJob, isCancelledJob, readFreshPrinterStatus } from "../safety/printer-state.js";
 import fs from "node:fs/promises";
 import { createReadStream, readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -168,6 +168,26 @@ function isH2ModelName(model) {
 }
 function isP2SModelName(model) {
     return String(model ?? "").trim().toLowerCase() === "p2s";
+}
+/** H2-series printers take files at the FTP root, by model name or an H2S/H2D/H2C/H2D Pro serial prefix. */
+function isH2Series(model, serial) {
+    return ["093", "094", "31B", "239"].some(prefix => serial.startsWith(prefix)) || isH2ModelName(model);
+}
+/**
+ * Printers seen keeping uploads at the FTP root (an H2C refuses STOR under cache/). The X2D's
+ * direct FTPS uploads keep cache/ until there is hardware evidence for the root.
+ */
+function storesAtFtpRoot(model, serial) {
+    return isH2Series(model, serial) && normalizeModel(String(model ?? "")) !== "x2d" && !serial.toUpperCase().startsWith("20P");
+}
+/**
+ * The printer path for a file name. A single leading slash with no other ("/job.gcode") names
+ * a file at the FTP root on printers that store files there, as list_printer_files reports it;
+ * elsewhere, and for every other form, a bare name still means cache/<name>.
+ */
+function printerFilePath(filename, model, serial) {
+    const normalized = normalizedRemotePath(filename);
+    return /^\/[^/]+$/.test(filename) && storesAtFtpRoot(model, serial) ? filename.slice(1) : normalized;
 }
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
@@ -692,7 +712,7 @@ export class BambuImplementation {
     }
     finishedJobIdentity(status) {
         const raw = status.raw;
-        return raw.gcode_state === "FINISH" || (isCancelledX2DJob(raw, String(status.model ?? "")) || isFinishedIdleJob(raw, String(status.model ?? "")))
+        return raw.gcode_state === "FINISH" || (isCancelledJob(raw, String(status.model ?? "")) || isFinishedIdleJob(raw, String(status.model ?? "")))
             ? printJobIdentity(raw)
             : undefined;
     }
@@ -993,9 +1013,7 @@ export class BambuImplementation {
         // P2S keeps the /cache/<name> upload but only accepts the H2-style
         // project_file command, referenced via ftp:///cache/<name> (verified on
         // P2S firmware 01.02.00.00; file:///sdcard/... fails with ERROR STATE).
-        const isH2 = serial.startsWith("093") ||
-            serial.startsWith("094") ||
-            isH2ModelName(options.bambuModel);
+        const isH2 = isH2Series(options.bambuModel, serial);
         const isP2S = serial.startsWith("22E") || isP2SModelName(options.bambuModel);
         const isA1 = String(options.bambuModel ?? "").trim().toLowerCase() === "a1" ||
             (!options.bambuModel && serial.startsWith("039"));
@@ -1752,6 +1770,9 @@ export class BambuImplementation {
             // Discover absent optional directories without creating them or treating
             // ambiguous FTP 550 responses (including permission errors) as emptiness.
             const root = await client.list("/");
+            // H2-series printers keep print and upload files at the root, beside these directories.
+            // `files` names them with a leading slash, the form delete_printer_file and start_print_job accept.
+            filesByDirectory["/"] = root.filter(entry => !entry.isDirectory && !entry.isSymbolicLink).map(entry => entry.name);
             for (const directory of directories) {
                 const present = root.some(entry => entry.name === directory && (entry.isDirectory || entry.isSymbolicLink));
                 filesByDirectory[directory] = present
@@ -1762,7 +1783,7 @@ export class BambuImplementation {
         finally {
             client.close();
         }
-        const files = Object.entries(filesByDirectory).flatMap(([directory, names]) => names.map((name) => `${directory}/${name}`));
+        const files = Object.entries(filesByDirectory).flatMap(([directory, names]) => names.map((name) => directory === "/" ? `/${name}` : `${directory}/${name}`));
         return {
             files,
             directories: filesByDirectory,
@@ -1811,7 +1832,13 @@ export class BambuImplementation {
                     }
                 }
                 assertActive();
-                const destination = path.posix.join(path.posix.dirname(remotePath), uniquePrintName(remotePath));
+                // H2-series printers take files at the FTP root, where print_3mf lands its project, and
+                // refuse a write under cache/ ("553 Could not create file." on an H2C). A bare filename
+                // goes to the root on the direct FTPS route; an explicit directory and the native
+                // uploader's destination are kept. A root path is returned as "/<name>".
+                const bare = !filename.replace(/^\/+/, "").includes("/");
+                const atRoot = !upload && bare && storesAtFtpRoot(bambuModel, serial);
+                const destination = path.posix.join(atRoot ? "" : path.posix.dirname(remotePath), uniquePrintName(remotePath));
                 if (upload)
                     await upload(snapshot, destination, assertActive);
                 else {
@@ -1825,7 +1852,7 @@ export class BambuImplementation {
                         throw error;
                     }
                 }
-                return { status: "success", uploaded: true, remotePath: destination, printRequested: false, inspected: printable };
+                return { status: "success", uploaded: true, remotePath: atRoot ? `/${destination}` : destination, printRequested: false, inspected: printable };
             }));
         }
         assertDirectPrintSupported(bambuModel, serial);
@@ -1964,7 +1991,7 @@ export class BambuImplementation {
         assertDirectPrintSupported(bambuModel, serial);
         if (!normalizeModel(bambuModel))
             throw new Error("A supported bambuModel is required before printing.");
-        const remotePath = normalizedRemotePath(filename);
+        const remotePath = printerFilePath(filename, bambuModel, serial);
         if (!remotePath.toLowerCase().endsWith(".gcode")) {
             throw new Error("Remote starts require inspectable .gcode. Use print_3mf with the local project for .3mf printing.");
         }
@@ -2249,9 +2276,10 @@ export class BambuImplementation {
      *
      * Only the printer-managed directories (cache/, timelapse/, logs/) are
      * accepted as parents to avoid letting an agent wander further into the
-     * filesystem than expected.
+     * filesystem than expected. On printers that store files at the FTP root,
+     * "/<name>" (as list_printer_files reports it) names a file there.
      */
-    async deleteFile(host, _serial, token, filename, confirm) {
+    async deleteFile(host, serial, token, filename, confirm) {
         if (confirm !== true) {
             return {
                 status: "skipped",
@@ -2267,12 +2295,13 @@ export class BambuImplementation {
         if (normalizedFileName.split("/").some((seg) => seg === "..")) {
             throw new Error(`delete_printer_file: path traversal segments are not allowed (got "${filename}").`);
         }
-        const remotePath = normalizedFileName.includes("/")
+        const atRoot = /^\/[^/]+$/.test(filename) && storesAtFtpRoot(undefined, serial);
+        const remotePath = atRoot || normalizedFileName.includes("/")
             ? normalizedFileName
             : `cache/${normalizedFileName}`;
         const topDir = remotePath.split("/")[0];
         const ALLOWED_DIRS = new Set(["cache", "timelapse", "logs"]);
-        if (!ALLOWED_DIRS.has(topDir)) {
+        if (!atRoot && !ALLOWED_DIRS.has(topDir)) {
             throw new Error(`delete_printer_file: refusing to delete outside cache/, timelapse/, logs/. Got "${remotePath}".`);
         }
         await this.ftpDelete(host, token, `/${remotePath}`);

@@ -2456,6 +2456,24 @@ test("delete_printer_file with confirm:true normalizes bare names to cache/ and 
   assert.equal(result.remotePath, "cache/old_print.gcode.3mf");
 });
 
+test("delete_printer_file deletes /<name> at the FTP root only on H2-series printers", async () => {
+  const bambu = new BambuImplementation(async () => true);
+  const calls = [];
+  bambu.ftpDelete = async (_host, _token, remote) => {
+    calls.push(remote);
+  };
+
+  const h2c = await bambu.deleteFile("h", "31BTEST", "t", "/checked-1-job.gcode.3mf", true);
+  assert.equal(h2c.remotePath, "checked-1-job.gcode.3mf");
+  await bambu.deleteFile("h", "31BTEST", "t", "checked-1-job.gcode.3mf", true);
+  await bambu.deleteFile("h", "01PTEST", "t", "/checked-1-job.gcode.3mf", true);
+  await bambu.deleteFile("h", "20PTEST", "t", "/checked-1-job.gcode.3mf", true);
+  await assert.rejects(bambu.deleteFile("h", "31BTEST", "t", "/userdata/secrets.bin", true), /refusing to delete outside/i);
+
+  assert.deepEqual(calls, ["/checked-1-job.gcode.3mf", "/cache/checked-1-job.gcode.3mf",
+    "/cache/checked-1-job.gcode.3mf", "/cache/checked-1-job.gcode.3mf"]);
+});
+
 test("delete_printer_file accepts explicit timelapse/ and logs/ paths", async () => {
   const bambu = new BambuImplementation(async () => true);
   const calls = [];
