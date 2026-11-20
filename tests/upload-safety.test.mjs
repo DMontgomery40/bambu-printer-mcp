@@ -149,6 +149,45 @@ for (const type of ["gcode", "3mf", "txt"]) {
   });
 }
 
+// An H2C refuses every STOR under cache/ with "553 Could not create file." and accepts the
+// same bytes at the FTP root, where print_3mf lands its project.
+test("upload-only puts a bare filename at the FTP root on H2-series printers", async t => {
+  const h2c = ["127.0.0.1", "31BTESTUPLOAD", "DUMMY"];
+  const now = Date.now();
+  const file = await artifact(t, "; printer_model = Bambu Lab H2C\n; nozzle_diameter = 0.4;0.4\n; filament_type = PLA\nM104 S220\nM140 S60\nG1 X10 Y10 Z1\n");
+  const { printer, uploads } = capturedUpload();
+  printer.getSafetyStatus = async () => ({ connected: true, model: "h2c", serial: h2c[1], status: "RUNNING",
+    raw: { model: "h2c", gcode_state: "RUNNING", nozzle_diameter: ["0.4", "0.4"], print_error: 0, hms: [] },
+    observation: { source: "mqtt", requestedAt: now, receivedAt: now, identitySource: "report" } });
+  const bare = await printer.uploadFile(...h2c, file, "job.gcode", false, "h2c");
+  assert.match(bare.remotePath, /^\/checked-[a-f0-9-]+-job\.gcode$/, "a root path is returned as /<name>");
+  assert.equal(uploads[0].remote, bare.remotePath);
+  const notes = await printer.uploadFile(...h2c, await artifact(t, "notes", "notes.txt"), "notes.txt", false);
+  assert.match(notes.remotePath, /^\/checked-[a-f0-9-]+-notes\.txt$/, "an H2C serial alone selects the root for a file without a model");
+  const explicit = await printer.uploadFile(...h2c, file, "cache/job.gcode", false, "h2c");
+  assert.match(explicit.remotePath, /^cache\/checked-[a-f0-9-]+-job\.gcode$/, "an explicit directory is kept");
+  const native = [];
+  const viaNative = await printer.uploadFile(...h2c, file, "job.gcode", false, "h2c", async (_snapshot, destination) => { native.push(destination); });
+  assert.match(viaNative.remotePath, /^cache\/checked-[a-f0-9-]+-job\.gcode$/, "the native uploader's destination is unchanged");
+  assert.deepEqual(native, [viaNative.remotePath]);
+  const other = capturedUpload();
+  const p1s = await other.printer.uploadFile(...credentials, await artifact(t), "job.gcode", false, "p1s");
+  assert.match(p1s.remotePath, /^cache\/checked-[a-f0-9-]+-job\.gcode$/, "P1S keeps cache/");
+  const x2d = await other.printer.uploadFile("127.0.0.1", "20PTESTUPLOAD", "DUMMY", await artifact(t, "notes", "notes.txt"), "notes.txt", false, "x2d");
+  assert.match(x2d.remotePath, /^cache\/checked-[a-f0-9-]+-notes\.txt$/, "X2D keeps cache/");
+});
+
+test("start_print_job reads /<name> from the FTP root on H2-series printers and a bare name from cache/", async () => {
+  const printer = new BambuImplementation(async () => true);
+  const downloads = [];
+  printer.ftpDownload = async (_host, _token, remote) => { downloads.push(remote); throw new Error("stop after download"); };
+  for (const [serial, model, name] of [["31BTESTSTART", "h2c", "/job.gcode"], ["31BTESTSTART", "h2c", "job.gcode"],
+    ["01PTESTSTART", "p1s", "/job.gcode"]]) {
+    await assert.rejects(printer.startJob("127.0.0.1", serial, "DUMMY", name, model), /stop after download/);
+  }
+  assert.deepEqual(downloads, ["job.gcode", "cache/job.gcode", "cache/job.gcode"]);
+});
+
 function fakeFtp(t, entries, listError) {
   const events = [];
   t.mock.method(FTPClient.prototype, "access", async options => { events.push({ action: "access", options }); });

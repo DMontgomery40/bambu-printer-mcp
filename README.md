@@ -607,7 +607,7 @@ High-signal fields:
 
 #### list_printer_files
 
-List files stored on the printer's SD card. Scans the `cache/`, `timelapse/`, and `logs/` directories and returns both a flat list and a directory-grouped breakdown.
+List files stored on the printer's SD card. Scans the top-level folder (`directories["/"]`, where H2-series printers keep print and upload files; listed in `files` as `/<name>`) and the `cache/`, `timelapse/`, and `logs/` directories, and returns both a flat list and a directory-grouped breakdown.
 
 This is a read-only query: it never creates directories. Optional directories absent from a successful root listing return empty lists. Authentication, TLS, permission, and transfer failures are reported as errors rather than empty or partial results.
 
@@ -700,7 +700,7 @@ Stop requests close the shared connection immediately, affecting every viewer of
 
 #### delete_printer_file
 
-Delete a single file from the printer's SD card via FTPS. **Destructive.** Requires `confirm: true` — without it the call returns `status: "skipped"` and does not contact the printer. Path traversal segments (`..`) are rejected. Only files under `cache/`, `timelapse/`, and `logs/` can be deleted.
+Delete a single file from the printer's SD card via FTPS. **Destructive.** Requires `confirm: true` — without it the call returns `status: "skipped"` and does not contact the printer. Path traversal segments (`..`) are rejected. Only files under `cache/`, `timelapse/`, and `logs/` can be deleted, plus top-level files on H2-series printers (not X2D), named `/<name>` as `list_printer_files` reports them. A bare name means `cache/<name>`.
 
 ```json
 {

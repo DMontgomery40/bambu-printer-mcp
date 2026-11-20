@@ -128,8 +128,12 @@ export function finiteNumber(value: unknown): number | undefined {
   return Number.isFinite(number) ? number : undefined;
 }
 
+/** Models observed retaining FAILED with fail_reason 0300400C after a canceled job:
+ * X2D, and H2C (a fresh report after a Stop: FAILED, print_error 0, fail_reason
+ * "50348044", the stopped job's name and file). Add a model only with that hardware evidence. */
+export const CANCELLED_JOB_MODELS: ReadonlySet<string> = new Set(["x2d", "h2c"]);
 /**
- * X2D retains FAILED after a canceled job even with no active print error.
+ * X2D and H2C retain FAILED after a canceled job even with no active print error.
  * Bambu Studio classifies FAILED as a finished job; its v02.08.02.61
  * hms_en_20P table (926a7192574bcb9b3a732e1ec59a46d79cb45466)
  * calls 0300400C "The task was canceled."
@@ -137,8 +141,9 @@ export function finiteNumber(value: unknown): number | undefined {
  * Callers still validate HMS, identity, hardware and material configuration,
  * and print dispatch rechecks the identity of the observed job.
  */
-export function isCancelledX2DJob(raw: Record<string, any>, model: string): boolean {
-  return normalizeModel(model) === "x2d" && raw.gcode_state === "FAILED" &&
+export function isCancelledJob(raw: Record<string, any>, model: string): boolean {
+  const normalized = normalizeModel(model);
+  return normalized !== undefined && CANCELLED_JOB_MODELS.has(normalized) && raw.gcode_state === "FAILED" &&
     finiteNumber(raw.print_error) === 0 && finiteNumber(raw.fail_reason) === 0x0300400c &&
     [raw.gcode_file, raw.subtask_name].some(value => typeof value === "string" && value.trim().length > 0);
 }
@@ -344,7 +349,7 @@ export function isPauseNotice(raw: Record<string, any>, requireIdle: boolean): b
 }
 function validateErrors(raw: Record<string,any>, requireIdle: boolean, serial: string, model: string) {
   const state = typeof raw.gcode_state === "string" ? raw.gcode_state.toUpperCase() : "UNKNOWN";
-  const terminal = isCancelledX2DJob(raw, model) || isFinishedIdleJob(raw, model);
+  const terminal = isCancelledJob(raw, model) || isFinishedIdleJob(raw, model);
   if (requireIdle && !["IDLE","FINISH"].includes(state) && !terminal) throw new PrinterRefusal("printer-not-ready", `Printer state ${state} is not safely idle.`);
   if (!requireIdle && !["IDLE","FINISH","RUNNING","PAUSE"].includes(state) && !terminal) throw new Error(`Printer state ${state} is unknown or failed.`);
   if (finiteNumber(raw.print_error) !== 0 && !isPauseNotice(raw, requireIdle)) throw new Error("Printer reports a print error or did not report its error state.");

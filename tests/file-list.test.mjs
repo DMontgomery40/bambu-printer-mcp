@@ -59,6 +59,20 @@ test("optional directories absent from a successful root listing remain empty wi
   assert.deepEqual(calls.slice(1), [["list", "/"], ["list", "/timelapse"], ["close"]]);
 });
 
+// H2-series printers keep print and upload files at the root, beside cache/, timelapse/ and logs/.
+test("file listing includes files at the root without listing other directories", async t => {
+  const calls = ftp(t, {
+    "/": [directory("cache"), directory("timelapse"), directory("model"), file("checked-1-job.gcode.3mf"), { name: "link", isDirectory: false, isSymbolicLink: true }],
+    "/cache": [],
+    "/timelapse": [],
+  });
+  assert.deepEqual(await new BambuImplementation().getFiles("127.0.0.1", "31BTESTFILES", "DUMMY"), {
+    files: ["/checked-1-job.gcode.3mf"],
+    directories: { "/": ["checked-1-job.gcode.3mf"], cache: [], timelapse: [], logs: [] },
+  });
+  assert.deepEqual(calls.slice(1), [["list", "/"], ["list", "/cache"], ["list", "/timelapse"], ["close"]]);
+});
+
 for (const code of [522, "ECONNRESET", "ETIMEDOUT", 550]) {
   for (const path of ["/", "/timelapse"]) {
     test(`file listing propagates ${code} from ${path} instead of returning empty or partial success`, async t => {
@@ -106,4 +120,12 @@ test("MCP tool and resource report listing failures instead of successful empty 
   } finally {
     await client.close();
   }
+});
+
+// A returned root name must never silently select a different cache file.
+test("P1S listing does not expose unsupported root paths when cache has the same name", async t => {
+  ftp(t, { "/": [directory("cache"), file("job.gcode")], "/cache": [file("job.gcode")] });
+  assert.deepEqual(await new BambuImplementation().getFiles("127.0.0.1", "01PTESTFILES", "DUMMY"), {
+    files: ["cache/job.gcode"], directories: {cache: ["job.gcode"], timelapse: [], logs: []},
+  });
 });

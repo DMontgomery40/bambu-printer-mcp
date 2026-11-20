@@ -354,9 +354,10 @@ export declare class BambuImplementation {
      *
      * Only the printer-managed directories (cache/, timelapse/, logs/) are
      * accepted as parents to avoid letting an agent wander further into the
-     * filesystem than expected.
+     * filesystem than expected. On printers that store files at the FTP root,
+     * "/<name>" (as list_printer_files reports it) names a file there.
      */
-    deleteFile(host: string, _serial: string, token: string, filename: string, confirm: unknown): Promise<{
+    deleteFile(host: string, serial: string, token: string, filename: string, confirm: unknown): Promise<{
         status: string;
         deleted: boolean;
         remotePath: string;

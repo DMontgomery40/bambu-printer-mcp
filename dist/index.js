@@ -2401,7 +2401,7 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "list_printer_files",
-                        description: "List files stored on the Bambu Lab printer",
+                        description: "List files stored on the Bambu Lab printer: on H2-series printers, the top-level folder (directories[\"/\"], where H2-series printers keep print and upload files; listed in files as /<name>) and the cache/, timelapse/ and logs/ directories.",
                         inputSchema: {
                             type: "object",
                             properties: {
@@ -2539,13 +2539,13 @@ class BambuPrinterMCPServer {
                     },
                     {
                         name: "delete_printer_file",
-                        description: "Delete a file from the Bambu Lab printer's SD card via FTPS. Destructive: requires confirm:true. Restricted to cache/, timelapse/, and logs/ directories. Path traversal segments (..) are rejected.",
+                        description: "Delete a file from the Bambu Lab printer's SD card via FTPS. Destructive: requires confirm:true. Restricted to cache/, timelapse/, and logs/ directories, plus top-level files on H2-series printers (except X2D). Path traversal segments (..) are rejected.",
                         inputSchema: {
                             type: "object",
                             properties: {
                                 filename: {
                                     type: "string",
-                                    description: "File to delete. Bare names default to cache/<name>; pass a relative path like timelapse/foo.mp4 to target other allowed directories."
+                                    description: "File to delete. Bare names default to cache/<name>; pass a relative path like timelapse/foo.mp4 to target other allowed directories, or /<name> as list_printer_files reports it for a top-level file on an H2-series printer."
                                 },
                                 confirm: {
                                     type: "boolean",
@@ -2630,7 +2630,7 @@ class BambuPrinterMCPServer {
                         inputSchema: {
                             type: "object",
                             properties: {
-                                filename: { type: "string", description: "Name of the file to print" },
+                                filename: { type: "string", description: "Name of the file to print. A bare name means cache/<name>; /<name>, as list_printer_files and upload_file report it, is a top-level file on an H2-series printer." },
                                 bambu_model: {
                                     type: "string",
                                     enum: [...VALID_BAMBU_MODELS],
