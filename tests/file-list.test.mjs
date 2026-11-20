@@ -39,7 +39,7 @@ test("file listing preserves its response and uses shared FTPS options and absol
   const result = await new BambuImplementation().getFiles(...credentials);
   assert.deepEqual(result, {
     files: ["cache/part.3mf", "timelapse/video.mp4"],
-    directories: { "/": [], cache: ["part.3mf"], timelapse: ["video.mp4"], logs: [] },
+    directories: { cache: ["part.3mf"], timelapse: ["video.mp4"], logs: [] },
   });
   const options = calls[0][1];
   assert.equal(options.host, credentials[0]);
@@ -54,7 +54,7 @@ test("file listing preserves its response and uses shared FTPS options and absol
 test("optional directories absent from a successful root listing remain empty without creation", async t => {
   const calls = ftp(t, { "/": [directory("timelapse")], "/timelapse": [] });
   assert.deepEqual(await new BambuImplementation().getFiles(...credentials), {
-    files: [], directories: { "/": [], cache: [], timelapse: [], logs: [] },
+    files: [], directories: { cache: [], timelapse: [], logs: [] },
   });
   assert.deepEqual(calls.slice(1), [["list", "/"], ["list", "/timelapse"], ["close"]]);
 });
@@ -66,7 +66,7 @@ test("file listing includes files at the root without listing other directories"
     "/cache": [],
     "/timelapse": [],
   });
-  assert.deepEqual(await new BambuImplementation().getFiles(...credentials), {
+  assert.deepEqual(await new BambuImplementation().getFiles("127.0.0.1", "31BTESTFILES", "DUMMY"), {
     files: ["/checked-1-job.gcode.3mf"],
     directories: { "/": ["checked-1-job.gcode.3mf"], cache: [], timelapse: [], logs: [] },
   });
@@ -120,4 +120,12 @@ test("MCP tool and resource report listing failures instead of successful empty 
   } finally {
     await client.close();
   }
+});
+
+// A returned root name must never silently select a different cache file.
+test("P1S listing does not expose unsupported root paths when cache has the same name", async t => {
+  ftp(t, { "/": [directory("cache"), file("job.gcode")], "/cache": [file("job.gcode")] });
+  assert.deepEqual(await new BambuImplementation().getFiles("127.0.0.1", "01PTESTFILES", "DUMMY"), {
+    files: ["cache/job.gcode"], directories: {cache: ["job.gcode"], timelapse: [], logs: []},
+  });
 });

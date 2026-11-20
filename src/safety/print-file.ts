@@ -451,12 +451,12 @@ export async function inspectPrintFile(filePath: string, options: {model:string;
         }
         // Studio 2.9.1's GCodeProcessor ends each multi-extruder pre-heating and
         // pre-cooling line with a bare W (heating) or C (cooling) marker:
-        // `M104 T<heater> S<target> N<nozzle> W|C`. The marker is never a heat target.
+        // `M104 T<heater> S<target> N0 W|C`. The marker is never a heat target.
         // Accept only that exact form on dual-nozzle models; T, N and the S target
-        // still pass through the independent thermal checks below.
+        // still pass through the independent thermal checks below; N0 marks slicer output.
         const markers=code==='M104' && dualNozzle ? ['C','W'].filter(key=>args.has(key)) : [];
         if(markers.length) {
-          if(markers.length!==1 || !Number.isNaN(args.get(markers[0])!) || args.size!==4 || !args.has('T') || !args.has('S') || !args.has('N')) fail('unsupported M104 multi-extruder pre-heating or pre-cooling parameters');
+          if(markers.length!==1 || !Number.isNaN(args.get(markers[0])!) || args.size!==4 || args.get('N')!==0 || !args.has('T') || !args.has('S') || !args.has('N')) fail('unsupported M104 multi-extruder pre-heating or pre-cooling parameters');
           args.delete(markers[0]);
         }
         // Official A1 and A1 mini start G-code waits with M109 S<target> H<limit>

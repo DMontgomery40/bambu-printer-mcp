@@ -2908,7 +2908,7 @@ class BambuPrinterMCPServer {
           },
           {
             name: "list_printer_files",
-            description: "List files stored on the Bambu Lab printer: the top-level folder (directories[\"/\"], where H2-series printers keep print and upload files; listed in files as /<name>) and the cache/, timelapse/ and logs/ directories.",
+            description: "List files stored on the Bambu Lab printer: on H2-series printers, the top-level folder (directories[\"/\"], where H2-series printers keep print and upload files; listed in files as /<name>) and the cache/, timelapse/ and logs/ directories.",
             inputSchema: {
               type: "object",
               properties: {

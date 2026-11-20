@@ -1772,7 +1772,8 @@ export class BambuImplementation {
             const root = await client.list("/");
             // H2-series printers keep print and upload files at the root, beside these directories.
             // `files` names them with a leading slash, the form delete_printer_file and start_print_job accept.
-            filesByDirectory["/"] = root.filter(entry => !entry.isDirectory && !entry.isSymbolicLink).map(entry => entry.name);
+            if (storesAtFtpRoot(undefined, serial))
+                filesByDirectory["/"] = root.filter(entry => !entry.isDirectory && !entry.isSymbolicLink).map(entry => entry.name);
             for (const directory of directories) {
                 const present = root.some(entry => entry.name === directory && (entry.isDirectory || entry.isSymbolicLink));
                 filesByDirectory[directory] = present

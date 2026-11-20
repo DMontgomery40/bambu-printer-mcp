@@ -887,7 +887,7 @@ test('Studio 2.9.1 multi-extruder pre-heating W and pre-cooling C markers retain
   await assert.rejects(inspect(t,header('H2C','ABS;PLA','0.4;0.4')+'M104 T1 S290 N0 W\n',{model:'h2c'}),/PLA|temperature|limit/i);
 });
 test('Studio multi-extruder markers reject numeric flags, other forms and single-nozzle models',async t=>{
-  for(const command of ['M104 T1 S25 N0 C1','M104 T1 S25 N0 W0','M104 T1 S25 N0 C W','M104 T1 S25 N0 C C','M104 T1 S25 C','M104 S25 N0 C','M104 T1 N0 C','M104 T1 R25 N0 C','M104 T1 S25 N2 W','M104 T2 S25 N0 W','M104 T1 S25 N0 C A','M104 M S210 T1 C','M109 T1 S25 N0 C','M109 T1 S220 N0 W','M140 S55 C','M191 S40 W','M104 S220 W'])
+  for(const command of ['M104 T1 S25 N0 C1','M104 T1 S25 N0 W0','M104 T1 S25 N0 C W','M104 T1 S25 N0 C C','M104 T1 S25 C','M104 S25 N0 C','M104 T1 N0 C','M104 T1 R25 N0 C','M104 T1 S25 N1 W','M104 T1 S25 N2 W','M104 T2 S25 N0 W','M104 T1 S25 N0 C A','M104 M S210 T1 C','M109 T1 S25 N0 C','M109 T1 S220 N0 W','M140 S55 C','M191 S40 W','M104 S220 W'])
     await assert.rejects(inspect(t,header('H2C','PLA;PLA','0.4;0.4')+command+'\n',{model:'h2c'}),/unsupported|parameter|target|nozzle|duplicate/i,command);
   for(const [name,nozzle] of [['P1S','0.4'],['H2S','0.4'],['A1','0.4'],['P2S','0.4']]) for(const command of ['M104 T0 S25 N0 C','M104 T0 S184 N0 W','M104 S220 C','M104 S220 W'])
     await assert.rejects(inspect(t,header(name,'PLA',nozzle)+command+'\n',{model:name.toLowerCase()}),/unsupported|parameter/i,name+' '+command);
