@@ -98,8 +98,9 @@ test('stock nozzles without an identity chip pass bit 0 while abnormal, unknown 
   // The file-to-hardware comparison is unchanged.
   assert.throws(() => check(h2dReport({diameter:0.6}), job), /nozzle 0 diameter/i);
   assert.throws(() => check(h2dReport({type:'HS00'}), job), /nozzle 0 type/i);
-  // Bits 1-2 are abnormal or unknown regardless of the chip.
-  for (const stat of [2, 3, 4, 5, 6, 7]) assert.throws(() => check(h2dReport({stat}), job), /unreliable, abnormal or unknown/, `stat ${stat}`);
+  // Bits 1-2 are abnormal or unknown regardless of the chip; only a chipless
+  // nozzle's unreliable + unknown (stat 5) passes, covered below.
+  for (const stat of [2, 3, 4, 6, 7]) assert.throws(() => check(h2dReport({stat}), job), /unreliable, abnormal or unknown/, `stat ${stat}`);
   // A chipped nozzle whose information is unreliable must be refreshed first.
   for (const sn of ['B0123456789', '', undefined]) {
     assert.throws(() => check(h2dReport({sn}), job), /nozzle 0 information is unreliable; refresh/, `sn ${sn}`);
@@ -107,6 +108,24 @@ test('stock nozzles without an identity chip pass bit 0 while abnormal, unknown 
   }
   assert.deepEqual(safety.unchippedNozzles(h2dReport({stat:0}).raw), [1]);
   assert.deepEqual(safety.unchippedNozzles({}), []);
+});
+// A stock H2S (OTA 01.02.00.00, TH 02.00.19.36) reports its chipless HS01
+// nozzle as unreliable + unknown, stat 5, also right after the nozzle is
+// confirmed on the touchscreen.
+test('a chipless nozzle reporting unknown (stat 5) passes like stat 1, while chipped or abnormal nozzles still block', () => {
+  const h2sReport = (overrides = {}) => fresh({model_id:'O1S', nozzle_diameter:'0.4', nozzle_type:'HS01', device:{nozzle:{exist:1, src_id:0, state:4096, tar_id:0, info:[
+    {id:0, diameter:0.4, type:'HS01', sn:'N/A', stat:5, color_m:'00000000', fila_id:'', tm:0, wear:0, ...overrides},
+  ]}}});
+  const job = req({model:'h2s', nozzleDiameters:[0.4], nozzleTypes:['hardened_steel'], nozzleFlows:['standard'], verifyMaterials:false});
+  assert.doesNotThrow(() => check(h2sReport(), job));
+  assert.deepEqual(safety.unchippedNozzles(h2sReport().raw), [0]);
+  // The file-to-hardware comparison still runs.
+  assert.throws(() => check(h2sReport({diameter:0.6}), job), /nozzle 0 diameter/i);
+  assert.throws(() => check(h2sReport({type:'HS00'}), job), /nozzle 0 type/i);
+  // A chipped nozzle reporting unknown still blocks.
+  for (const sn of ['B0123456789', '', undefined]) assert.throws(() => check(h2sReport({sn}), job), /unreliable, abnormal or unknown/, `sn ${sn}`);
+  // Abnormal, and unknown without the unreliable bit, still block without a chip.
+  for (const stat of [2, 3, 4, 6, 7]) assert.throws(() => check(h2sReport({stat}), job), /unreliable, abnormal or unknown/, `stat ${stat}`);
 });
 test('rejects busy, failed, missing or unknown states while allowing IDLE and FINISH', () => {
   for(const gcode_state of ['RUNNING','PAUSE','PREPARE','SLICING','FAILED','OFFLINE','UNKNOWN',undefined]) assert.throws(() => check(fresh({gcode_state})), /state|idle/i);

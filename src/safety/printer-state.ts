@@ -187,6 +187,16 @@ function unreliableWithoutChip(entry: any, stat: number): boolean {
   return (stat & 1) !== 0 && hasNoIdentityChip(entry);
 }
 
+/**
+ * A nozzle without an identity chip may also report state unknown (bits 1-2 = 2)
+ * together with the unreliable bit, stat 5: the stock H2S nozzle on firmware
+ * 01.02.00.00 does. Its diameter and type are configured settings too.
+ * Abnormal (bits 1-2 = 1) and chipped nozzles reporting unknown still block.
+ */
+function unknownWithoutChip(entry: any, stat: number): boolean {
+  return (stat & 6) === 4 && unreliableWithoutChip(entry, stat);
+}
+
 /** Nozzles whose reported diameter and type are configured settings rather than chip readings. */
 export function unchippedNozzles(raw: unknown): number[] {
   const info = (raw as any)?.device?.nozzle?.info;
@@ -224,7 +234,7 @@ function reportedNozzles(raw: Record<string,any>): ReportedNozzle[] {
         // BambuStudio DevNozzle: bit 0 set means the information is unreliable;
         // bits 1-2 are 0 normal, 1 abnormal, 2 unknown.
         const stat = finiteNumber(entry.stat);
-        if (stat === undefined || !Number.isInteger(stat) || stat < 0 || (stat & 6) !== 0) throw new Error(`Printer nozzle ${index} information is unreliable, abnormal or unknown.`);
+        if (stat === undefined || !Number.isInteger(stat) || stat < 0 || ((stat & 6) !== 0 && !unknownWithoutChip(entry, stat))) throw new Error(`Printer nozzle ${index} information is unreliable, abnormal or unknown.`);
         if ((stat & 1) !== 0 && !unreliableWithoutChip(entry, stat)) throw new Error(`Printer nozzle ${index} information is unreliable; refresh the nozzle information on the printer.`);
       }
       if (output.some(nozzle => nozzle.index === index)) throw new Error("Printer reported ambiguous duplicate nozzle indices.");
