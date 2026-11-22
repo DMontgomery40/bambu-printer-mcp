@@ -709,6 +709,14 @@ test("printer model safety: schema requires bambu_model, rejects missing/invalid
     `Error must reject invalid model, got: ${badModelError}`
   );
 
+  // --- The H3C is recognised in printer status only, so it is not a bambu_model value ---
+  const statusOnlyResult = await client.callTool({
+    name: "print_3mf",
+    arguments: { three_mf_path: "/tmp/nonexistent_test.3mf", bambu_model: "h3c" },
+  });
+  assert.equal(statusOnlyResult.isError, true, "print_3mf with the status-only H3C must error");
+  assert.match(statusOnlyResult.content?.[0]?.text || "", /H3C in printer status only/);
+
   // --- Runtime validation: every valid model, including H2C, passes model validation ---
   for (const bambuModel of EXPECTED_BAMBU_MODELS) {
     const validModelResult = await client.callTool({

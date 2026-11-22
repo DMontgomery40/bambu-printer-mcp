@@ -9,6 +9,7 @@ import { cameraFrameParser, cameraAuth } from "./camera-wire.js";
 import { createHash } from "node:crypto";
 import { controlReply, refusedControlMessage } from "../control-reply.js";
 import { isFinishedIdleJob, isCancelledJob, readFreshPrinterStatus } from "../safety/printer-state.js";
+import { isStatusOnlyModel, statusOnlyDisplayName, statusOnlyDisplayNameFromSerial, statusOnlyMessage } from "../safety/status-only-models.js";
 import fs from "node:fs/promises";
 import { createReadStream, readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -195,6 +196,8 @@ function sleep(ms) {
 function resolveModelName(data) {
     const modelId = `${data?.model_id ?? ""}`.toUpperCase();
     return (MODEL_ID_TO_NAME[modelId] ||
+        // Named for status only (src/safety/status-only-models.ts); every operation still refuses it.
+        statusOnlyDisplayName(modelId) ||
         data?.model ||
         data?.device?.devModel ||
         data?.device?.dev_model ||
@@ -250,7 +253,8 @@ class TolerantBambuClient extends BambuClient {
             return "A1";
         if (sn.startsWith("030"))
             return "A1M";
-        return undefined;
+        // A display name only: status-only printers are refused by every operation (src/safety/status-only-models.ts).
+        return statusOnlyDisplayNameFromSerial(sn);
     }
     /**
      * Override bambu-node's MQTT connect to pass a client cert+key for mTLS.
@@ -1491,6 +1495,8 @@ export class BambuImplementation {
     async clearHmsErrors(host, serial, token, dispatch) {
         return withPrinterOperation(host, serial, async (assertActive) => {
             const codesFor = (status) => {
+                if (isStatusOnlyModel(status.model))
+                    throw new Error(statusOnlyMessage(status.model));
                 if (!Array.isArray(status.raw?.hms) || status.raw?.print_error === undefined)
                     throw new Error("Fresh error codes are required before clearing hardware errors.");
                 // Hidden notices never block and survive clean_print_error, so they are not errors to clear or re-acknowledge.

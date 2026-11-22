@@ -574,6 +574,8 @@ Retrieve current printer state including temperatures, print progress, layer cou
 
 Chamber status decodes the current temperature from newer firmware's packed CTC reports, including P2S, while retaining legacy chamber/frame fields.
 
+A Bambu Lab H3C is shown as `model: "H3C"`. It is recognised by its model id `N10` or serial prefix `32X`, taken from Bambu Studio 02.09.01.70. The H3C is status-only. Printing, uploading a printable file, heating, resuming and clearing errors refuse it before anything is sent; stop and heater-off still work. `h3c` is not a `bambu_model` value. This support comes from Bambu Studio's source: no H3C has been tested, and its tool rack and AMS-3H are not decoded yet.
+
 Returns a structured object with fields including `status` (gcode_state string), `temperatures.nozzle`, `temperatures.bed`, `temperatures.chamber`, `print.progress`, `print.currentLayer`, `print.totalLayers`, `print.timeRemaining`, and `ams` (raw AMS data from the printer).
 
 #### get_printer_filaments

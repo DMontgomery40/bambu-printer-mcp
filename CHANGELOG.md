@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `get_printer_status` names a Bambu Lab H3C as `H3C`, from its reported model id `N10` or serial prefix `32X` (Bambu Studio 02.09.01.70, `resources/printers/N10.json`). Before, it showed the raw id or `Unknown`, and fresh safety checks waited until they timed out.
+- The H3C is status-only. Printing, uploading a printable file, heating, resuming and clearing errors refuse it at the fresh identity check, before anything is uploaded or sent, whatever `bambu_model` was requested. Stop and heater-off still work. `h3c` is not a `bambu_model` value, setup choice or discovery model, and it is kept out of the H2C/H2D two-nozzle, external-spool `254`/`255`, FTPS-root and cancelled-job rules.
+- An H3C reporting another model's id or serial is still refused as contradictory.
+- This support comes from Bambu Studio's source only. No H3C report has been captured, and nothing was tested on H3C hardware. Its nine-nozzle tool rack, AMS-3H, filament-to-nozzle mapping, G-code, upload storage and print command are not implemented yet.
+
 ## [1.1.99] – 2026-11-20
 
 ### Fixed

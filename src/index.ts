@@ -79,6 +79,7 @@ import { inspectPrintFile } from "./safety/print-file.js";
 import { previewPrintFile } from "./safety/print-preview.js";
 import { loadSafe3mfArchive } from "./safety/archive.js";
 import { SERIAL_MODELS, internalPrintingSupported, externalStorageState, validatePrinterState } from "./safety/printer-state.js";
+import { isStatusOnlyModel, statusOnlyModelValueMessage } from "./safety/status-only-models.js";
 import { isDualNozzleModel } from "./safety/limits.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safety/artifact.js";
 import { detectProfilesRoot } from "./slicer/profile-flatten.js";
@@ -821,6 +822,7 @@ function parseFilamentColours(value: string): string[] {
 
 function validateBambuModel(model: string): string {
   const normalized = model.trim().toLowerCase();
+  if (isStatusOnlyModel(normalized)) throw new Error(statusOnlyModelValueMessage(normalized));
   if (!VALID_BAMBU_MODELS.includes(normalized as BambuModel)) {
     throw new Error(
       `Invalid bambu_model: "${model}". Valid models: ${VALID_BAMBU_MODELS.join(", ")}`

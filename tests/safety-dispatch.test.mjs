@@ -263,6 +263,56 @@ for (const route of ["legacy 3MF", "raw upload-and-print", "remote start"]) {
   });
 }
 
+// The H3C is recognised in status only (src/safety/status-only-models.ts). Synthetic fresh reports: its model id N10
+// and serial prefix 32X come from Bambu Studio's resources/printers/N10.json, not from a captured H3C report.
+const h3cStatus = (raw = {}) => safetyStatus({ model: "h3c", model_id: "N10", ...raw });
+const H3C_REFUSAL = /Bambu Lab H3C.*status only.*nothing was sent/i;
+
+for (const route of ["legacy 3MF", "raw upload-and-print", "remote start"]) {
+  test(`${route} refuses a fresh H3C report at the live check, before upload or dispatch`, async (t) => {
+    const file = await fixture(t, { raw: route !== "legacy 3MF" });
+    const { printer, events } = isolatedPrinter(h3cStatus());
+    printer.ftpDownload = async (_host, _token, _remote, destination) => fs.copyFile(file, destination);
+    const print = route === "legacy 3MF"
+      ? printer.print3mf(host, serial, token, { projectName: "h3c", filePath: file, bambuModel: "p1s", nozzleDiameters: [0.4], useAMS: false })
+      : route === "raw upload-and-print"
+        ? printer.uploadFile(host, serial, token, file, "h3c.gcode", true, "p1s")
+        : printer.startJob(host, serial, token, "h3c.gcode", "p1s");
+    await assert.rejects(print, H3C_REFUSAL);
+    assert.ok(events.some(({ action }) => action === "status"), "refused at the fresh identity check");
+    assertNoDispatch(events);
+  });
+}
+
+test("manual heating refuses a fresh H3C report before publishing, and heater-off is still sent", async () => {
+  for (const [component, target, material] of [["nozzle", 220, "PLA"], ["bed", 60, undefined]]) {
+    const { printer, events } = isolatedPrinter(h3cStatus());
+    await assert.rejects(printer.setTemperature(host, serial, token, component, target, "p1s", material, 0.4), H3C_REFUSAL);
+    assertNoDispatch(events);
+  }
+  for (const component of ["nozzle", "bed"]) {
+    const { printer, events } = isolatedPrinter(h3cStatus());
+    const result = await printer.setTemperature(host, serial, token, component, 0);
+    assert.equal(result.status, "success");
+    assert.match(JSON.stringify(events.find(({ action }) => action === "publish").payload), component === "nozzle" ? /M104 S0/ : /M140 S0/);
+  }
+});
+
+test("stop on an H3C needs no identity check", async () => {
+  const { printer, events } = isolatedPrinter(h3cStatus());
+  let stopped = 0;
+  await printer.cancelJob(host, serial, token, async () => { stopped++; return { status: "success" }; });
+  assert.equal(stopped, 1);
+  assert.deepEqual(events.filter(({ action }) => action === "status"), [], "stop never waits on a fresh identity read");
+});
+
+test("clearing errors on an H3C refuses before the prompt and sends nothing", async () => {
+  const { printer, events, prompts } = isolatedPrinter(h3cStatus({ print_error: 1234 }));
+  await assert.rejects(printer.clearHmsErrors(host, serial, token), H3C_REFUSAL);
+  assert.deepEqual(prompts, [], "nobody is asked to confirm a clear that cannot be sent");
+  assertNoDispatch(events);
+});
+
 test("remote start refuses an artifact that cannot be downloaded for inspection", async () => {
   const { printer, events } = isolatedPrinter();
   printer.ftpDownload = async () => { throw new Error("remote artifact unavailable for inspection"); };
