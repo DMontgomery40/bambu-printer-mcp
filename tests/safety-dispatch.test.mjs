@@ -298,6 +298,13 @@ test("manual heating refuses a fresh H3C report before publishing, and heater-of
   }
 });
 
+test("an upload without printing refuses a printable file on a fresh H3C report before uploading", async (t) => {
+  const file = await fixture(t, { raw: true });
+  const { printer, events } = isolatedPrinter(h3cStatus());
+  await assert.rejects(printer.uploadFile(host, serial, token, file, "h3c.gcode", false, "p1s"), H3C_REFUSAL);
+  assertNoDispatch(events);
+});
+
 test("stop on an H3C needs no identity check", async () => {
   const { printer, events } = isolatedPrinter(h3cStatus());
   let stopped = 0;
@@ -371,6 +378,17 @@ async function pausedJob(t, { confirm = async () => true, resumeStateDir } = {})
   };
   return job;
 }
+
+test("resume refuses a paused job once the fresh report identifies an H3C, before re-reading or publishing", async (t) => {
+  const job = await pausedJob(t);
+  job.printer.getSafetyStatus = async () => {
+    job.events.push({ action: "status" });
+    return h3cStatus(job.report);
+  };
+  await assert.rejects(job.printer.resumeJob(host, serial, token), H3C_REFUSAL);
+  assert.deepEqual(job.published(), [], "no resume command is sent");
+  assert.deepEqual(job.prompts, []);
+});
 
 /** Record the job as a plug-in route placed it, with a file the printer cannot give back: that resume still asks a person. */
 function unverified(job) {

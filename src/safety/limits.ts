@@ -48,9 +48,13 @@ export const ACCEPTED_FILE_MODELS: Readonly<Record<string, ReadonlySet<string>>>
 export function fileModelFitsPrinter(fileModel: string, printerModel: string): boolean {
   return fileModel === printerModel || ACCEPTED_FILE_MODELS[printerModel]?.has(fileModel) === true;
 }
+/** A model name as this server spells model values: case, a "Bambu Lab" prefix, spaces, underscores and hyphens don't count. */
+export function modelSpelling(value: string): string {
+  return value.trim().toLowerCase().replace(/^bambu\s*(?:lab\s*)?/, '').replace(/[\s_-]/g, '');
+}
 export function normalizeModel(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
-  let model = value.trim().toLowerCase().replace(/^bambu\s*(?:lab\s*)?/, '').replace(/[\s_-]/g, '');
+  let model = modelSpelling(value);
   if (model === 'x1carbon') model = 'x1c';
   return Object.prototype.hasOwnProperty.call(MACHINE_LIMITS, model) ? model : undefined;
 }

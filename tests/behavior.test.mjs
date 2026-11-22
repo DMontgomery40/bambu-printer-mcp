@@ -3155,6 +3155,16 @@ test("slice_stl refuses a two-colour slice on a P1S with no AMS, with the filame
   assert.equal(s.slicer_result.sliced_plates[0].filament_change_times, 85, "the slicer's result comes with the refusal");
 });
 
+// Synthetic H3C report (Studio N10.json model id): its tool rack and AMS-3H aren't decoded, so the P1S external-spool
+// and empty-AMS rules must not refuse the slice as if it were a P1S with no AMS.
+test("slice_stl leaves an H3C's filament feed unknown instead of counting it by the requested model", async (t) => {
+  const h3c = { connected: true, model: "H3C", status: "IDLE", raw: { gcode_state: "IDLE", model_id: "N10", ams: { ams: [], ams_exist_bits: "0", tray_now: "255" } } };
+  const result = await sliceWithFakeBambuSlicer(t, { result: "p1s-dad-two-colours.json", status: h3c, arguments: { use_printer_filaments: true } });
+  assert.equal(result.isError, undefined, result.content?.[0]?.text);
+  assert.equal(result.structuredContent.filament_feed.printer, "unknown");
+  assert.match(result.structuredContent.filament_feed.source, /Bambu Lab H3C/);
+});
+
 test("slice_stl returns the two-colour slice with its changes when the person will change filament by hand", async (t) => {
   const result = await sliceWithFakeBambuSlicer(t, { result: "p1s-dad-two-colours.json", status: NO_AMS_P1S, arguments: { use_printer_filaments: true, manual_filament_changes: true } });
   assert.equal(result.isError, undefined, result.content?.[0]?.text);

@@ -33,6 +33,8 @@ export declare function isDualNozzleModel(model: unknown): boolean;
  * The two models have identical MACHINE_LIMITS, and the file is still checked against the printer's own limits. */
 export declare const ACCEPTED_FILE_MODELS: Readonly<Record<string, ReadonlySet<string>>>;
 export declare function fileModelFitsPrinter(fileModel: string, printerModel: string): boolean;
+/** A model name as this server spells model values: case, a "Bambu Lab" prefix, spaces, underscores and hyphens don't count. */
+export declare function modelSpelling(value: string): string;
 export declare function normalizeModel(value: unknown): string | undefined;
 export declare function normalizeMaterial(value: unknown): string | undefined;
 export declare function validateTemperature(component: 'nozzle' | 'bed' | 'chamber', value: unknown, model: string, materials?: string[]): number;

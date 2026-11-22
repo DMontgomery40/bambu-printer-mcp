@@ -9,7 +9,7 @@ import {cameraFrameParser, cameraAuth} from "./camera-wire.js";
 import { createHash } from "node:crypto";
 import { controlReply, refusedControlMessage, type ControlReply } from "../control-reply.js";
 import { isFinishedIdleJob, isCancelledJob, readFreshPrinterStatus } from "../safety/printer-state.js";
-import { isStatusOnlyModel, statusOnlyDisplayName, statusOnlyDisplayNameFromSerial, statusOnlyMessage } from "../safety/status-only-models.js";
+import { assertNotStatusOnly, statusOnlyDisplayName, statusOnlyDisplayNameFromSerial } from "../safety/status-only-models.js";
 import fs from "node:fs/promises";
 import { createReadStream, readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -1641,7 +1641,7 @@ export class BambuImplementation {
   async clearHmsErrors(host: string, serial: string, token: string, dispatch?: (assertActive: () => void, beforeDispatch: () => Promise<void>) => Promise<any>): Promise<any> {
     return withPrinterOperation(host, serial, async assertActive => {
       const codesFor = (status: any): string[] => {
-        if (isStatusOnlyModel(status.model)) throw new Error(statusOnlyMessage(status.model));
+        assertNotStatusOnly(status.model);
         if (!Array.isArray(status.raw?.hms) || status.raw?.print_error === undefined) throw new Error("Fresh error codes are required before clearing hardware errors.");
         // Hidden notices never block and survive clean_print_error, so they are not errors to clear or re-acknowledge.
         const hidden = new Set(hiddenHmsKeys(status.raw, serial, String(status.model ?? "")));

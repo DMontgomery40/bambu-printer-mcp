@@ -1,16 +1,28 @@
+/**
+ * Printers this server recognises in printer status but cannot print, heat, resume or clear errors on yet.
+ *
+ * They are deliberately absent from MACHINE_LIMITS (limits.ts, so normalizeModel never returns them and no
+ * temperature or file check can pass), from the bambu_model choices (VALID_BAMBU_MODELS), from the setup and
+ * discovery tables (SERIAL_MODELS, MODEL_IDS in printer-state.ts) and from every route set (dual-nozzle, H2 FTPS
+ * root, cancelled-job, camera). Recognising one only names it: a fresh report that identifies one resolves to its
+ * value here, and validatePrinterState and hardware-error clearing refuse it before anything is sent. Stop and
+ * heater-off need no identity and stay available.
+ *
+ * H3C: Bambu Studio v02.09.01.70 (commit 56a57d00a591360cf41bf21383915ee5bf357be5), resources/printers/N10.json:
+ * display_name "Bambu Lab H3C", model_id "N10", sn_prefix "32X". This is source-derived: no H3C report has been
+ * captured here. Its tool rack, AMS-3H bindings, filament-to-nozzle mapping, G-code forms, upload storage and job
+ * command are not implemented, and it is not an H2C or H2D: never alias it to either.
+ */
+import { modelSpelling } from "./limits.js";
 const STATUS_ONLY_PRINTERS = [
     { model: "h3c", display: "H3C", modelIds: ["N10"], serialPrefixes: ["32X"] },
 ];
-/** The same spelling rules as normalizeModel: case, a "Bambu Lab" prefix, spaces, underscores and hyphens don't count. */
-function key(value) {
-    return value.trim().toLowerCase().replace(/^bambu\s*(?:lab\s*)?/, "").replace(/[\s_-]/g, "");
-}
 function byIdentity(value) {
     if (typeof value !== "string" || !value.trim())
         return undefined;
     const id = value.trim().toUpperCase();
-    const name = key(value);
-    return STATUS_ONLY_PRINTERS.find(printer => printer.modelIds.includes(id) || printer.model === name || key(printer.display) === name);
+    const name = modelSpelling(value);
+    return STATUS_ONLY_PRINTERS.find(printer => printer.modelIds.includes(id) || printer.model === name || modelSpelling(printer.display) === name);
 }
 function bySerial(serial) {
     if (typeof serial !== "string")
@@ -34,6 +46,7 @@ export function statusOnlyDisplayName(value) {
 export function statusOnlyDisplayNameFromSerial(serial) {
     return bySerial(serial)?.display;
 }
+/** Whether a model id ("N10"), model name ("Bambu Lab H3C") or model value ("h3c") names a status-only printer. */
 export function isStatusOnlyModel(value) {
     return byIdentity(value) !== undefined;
 }
@@ -43,6 +56,11 @@ export function statusOnlyMessage(value) {
     const display = statusOnlyDisplayName(value) ?? String(value);
     return `This printer identifies itself as a Bambu Lab ${display}. This server shows its status only: ` +
         `${UNSUPPORTED}, so nothing was sent. Stop and heater-off still work.`;
+}
+/** Refuses an operation on a printer whose fresh report identified it as status-only, before anything is sent. */
+export function assertNotStatusOnly(observedModel) {
+    if (isStatusOnlyModel(observedModel))
+        throw new Error(statusOnlyMessage(observedModel));
 }
 /** Why a status-only model was refused as a bambu_model value. */
 export function statusOnlyModelValueMessage(value) {

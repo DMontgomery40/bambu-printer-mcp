@@ -131,6 +131,9 @@ test("SSDP: only the printer's own announcement, in this server's model names", 
   assert.equal(parseBambuAdvert(packet("192.168.1.40", "ZZ9"), "192.168.1.40").model, "p1s", "an unknown DevModel falls back to the serial");
   assert.deepEqual(["N1", "N7", "N2S", "O1E", "BL-P001", "N9"].map(modelFromDevModel), ["a1mini", "p2s", "a1", "h2dpro", "x1c", undefined]);
   assert.deepEqual(["01P00A", "03900A", "03000A", "23900A", "00W00A", undefined].map(modelFromSerial), ["p1s", "a1", "a1mini", "h2dpro", "x1", undefined]);
+  // The status-only H3C (Studio N10.json: model id N10, serial 32X) is never a found printer's bambu_model value.
+  assert.equal(modelFromDevModel("N10"), undefined);
+  assert.equal(modelFromSerial("32X00A"), undefined);
 });
 
 test("setup fields: the .env names this server reads, its model choices, and the model a serial names", () => {
@@ -146,6 +149,8 @@ test("setup fields: the .env names this server reads, its model choices, and the
   assert.deepEqual(model.choices, [{ value: "p1s", label: "P1S" }, { value: "p1p", label: "P1P" }, { value: "a1mini", label: "A1 Mini" }, { value: "h2dpro", label: "H2D Pro" }, { value: "x2d", label: "X2D" }]);
   assert.equal(model.fromSerial.models["01P"], "p1s");
   assert.equal(model.fromSerial.models["039"], undefined, "a model this server lists no choice for is left out");
+  assert.equal(model.fromSerial.models["32X"], undefined, "the status-only H3C is not a setup choice");
+  assert.equal(model.choices.some(choice => /h3c/i.test(choice.value) || /H3C/.test(choice.label)), false);
   assert.equal(bambuSetupFields({ server: { name: "b", version: "1" }, models, serial: "ZZZ" }).model, undefined);
 });
 

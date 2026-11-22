@@ -47,10 +47,14 @@ export const ACCEPTED_FILE_MODELS = { p1p: new Set(['p1s']) };
 export function fileModelFitsPrinter(fileModel, printerModel) {
     return fileModel === printerModel || ACCEPTED_FILE_MODELS[printerModel]?.has(fileModel) === true;
 }
+/** A model name as this server spells model values: case, a "Bambu Lab" prefix, spaces, underscores and hyphens don't count. */
+export function modelSpelling(value) {
+    return value.trim().toLowerCase().replace(/^bambu\s*(?:lab\s*)?/, '').replace(/[\s_-]/g, '');
+}
 export function normalizeModel(value) {
     if (typeof value !== 'string')
         return undefined;
-    let model = value.trim().toLowerCase().replace(/^bambu\s*(?:lab\s*)?/, '').replace(/[\s_-]/g, '');
+    let model = modelSpelling(value);
     if (model === 'x1carbon')
         model = 'x1c';
     return Object.prototype.hasOwnProperty.call(MACHINE_LIMITS, model) ? model : undefined;

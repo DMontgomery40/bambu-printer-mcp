@@ -2,7 +2,7 @@ import { PrinterRefusal } from "../refusal.js";
 import { HIDDEN_HMS } from "./hidden-hms.js";
 import { BambuClient, GetVersionCommand, PushAllCommand } from "bambu-node";
 import { isDualNozzleModel, normalizeMaterial, normalizeModel } from "./limits.js";
-import { isStatusOnlyModel, statusOnlyMessage, statusOnlyModel, statusOnlyModelFromSerial } from "./status-only-models.js";
+import { assertNotStatusOnly, statusOnlyModel, statusOnlyModelFromSerial } from "./status-only-models.js";
 
 const MAX_REPORT_AGE_MS = 15_000;
 export const MODEL_IDS: Record<string, string> = {
@@ -426,7 +426,7 @@ export function validatePrinterState(status: any, requirements: PrinterStateRequ
   const raw = status.raw;
   const identity = observedIdentity(raw, String(status.serial ?? ""));
   // No bambu_model can name a status-only printer, so this is refused whatever model was requested.
-  if (isStatusOnlyModel(identity.model)) throw new Error(statusOnlyMessage(identity.model));
+  assertNotStatusOnly(identity.model);
   const model = normalizeModel(requirements.model);
   if (!model || !identity.model || model !== identity.model) throw new Error(`Printer model identity mismatch: requested ${requirements.model}, observed ${identity.model ?? "unknown"}.`);
   validateErrors(raw, requirements.requireIdle !== false, identity.observedSerial ?? "", model);
@@ -506,7 +506,7 @@ export function validatePrinterState(status: any, requirements: PrinterStateRequ
 export function manualHeatingRequirements(status: any, model: string, nozzleDiameter: number, material: string): PrinterStateRequirements {
   const normalized = normalizeModel(model);
   if (!normalized) throw new Error("A known printer model is required for manual nozzle heating.");
-  if (isStatusOnlyModel(status?.model)) throw new Error(statusOnlyMessage(status.model));
+  assertNotStatusOnly(status?.model);
   const raw = status?.raw;
   if (!object(raw)) throw new Error("A fresh printer report is required for manual nozzle heating.");
   if (isDualNozzleModel(normalized) || reportedNozzles(raw).some(nozzle => nozzle.index !== 0)) {

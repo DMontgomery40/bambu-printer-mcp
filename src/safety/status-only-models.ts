@@ -13,23 +13,20 @@
  * captured here. Its tool rack, AMS-3H bindings, filament-to-nozzle mapping, G-code forms, upload storage and job
  * command are not implemented, and it is not an H2C or H2D: never alias it to either.
  */
+import { modelSpelling } from "./limits.js";
+
 type StatusOnlyPrinter = { model: string; display: string; modelIds: readonly string[]; serialPrefixes: readonly string[] };
 
 const STATUS_ONLY_PRINTERS: readonly StatusOnlyPrinter[] = [
   { model: "h3c", display: "H3C", modelIds: ["N10"], serialPrefixes: ["32X"] },
 ];
 
-/** The same spelling rules as normalizeModel: case, a "Bambu Lab" prefix, spaces, underscores and hyphens don't count. */
-function key(value: string): string {
-  return value.trim().toLowerCase().replace(/^bambu\s*(?:lab\s*)?/, "").replace(/[\s_-]/g, "");
-}
-
 function byIdentity(value: unknown): StatusOnlyPrinter | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
   const id = value.trim().toUpperCase();
-  const name = key(value);
+  const name = modelSpelling(value);
   return STATUS_ONLY_PRINTERS.find(printer =>
-    printer.modelIds.includes(id) || printer.model === name || key(printer.display) === name);
+    printer.modelIds.includes(id) || printer.model === name || modelSpelling(printer.display) === name);
 }
 
 function bySerial(serial: unknown): StatusOnlyPrinter | undefined {
@@ -58,6 +55,7 @@ export function statusOnlyDisplayNameFromSerial(serial: unknown): string | undef
   return bySerial(serial)?.display;
 }
 
+/** Whether a model id ("N10"), model name ("Bambu Lab H3C") or model value ("h3c") names a status-only printer. */
 export function isStatusOnlyModel(value: unknown): boolean {
   return byIdentity(value) !== undefined;
 }
@@ -69,6 +67,11 @@ export function statusOnlyMessage(value: unknown): string {
   const display = statusOnlyDisplayName(value) ?? String(value);
   return `This printer identifies itself as a Bambu Lab ${display}. This server shows its status only: ` +
     `${UNSUPPORTED}, so nothing was sent. Stop and heater-off still work.`;
+}
+
+/** Refuses an operation on a printer whose fresh report identified it as status-only, before anything is sent. */
+export function assertNotStatusOnly(observedModel: unknown): void {
+  if (isStatusOnlyModel(observedModel)) throw new Error(statusOnlyMessage(observedModel));
 }
 
 /** Why a status-only model was refused as a bambu_model value. */

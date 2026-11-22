@@ -2,7 +2,7 @@ import { PrinterRefusal } from "../refusal.js";
 import { HIDDEN_HMS } from "./hidden-hms.js";
 import { GetVersionCommand, PushAllCommand } from "bambu-node";
 import { isDualNozzleModel, normalizeMaterial, normalizeModel } from "./limits.js";
-import { isStatusOnlyModel, statusOnlyMessage, statusOnlyModel, statusOnlyModelFromSerial } from "./status-only-models.js";
+import { assertNotStatusOnly, statusOnlyModel, statusOnlyModelFromSerial } from "./status-only-models.js";
 const MAX_REPORT_AGE_MS = 15000;
 export const MODEL_IDS = {
     O1C: "H2C", O1C2: "H2C", O1D: "H2D", O1E: "H2D Pro", O1S: "H2S", N6: "X2D",
@@ -436,8 +436,7 @@ export function validatePrinterState(status, requirements) {
     const raw = status.raw;
     const identity = observedIdentity(raw, String(status.serial ?? ""));
     // No bambu_model can name a status-only printer, so this is refused whatever model was requested.
-    if (isStatusOnlyModel(identity.model))
-        throw new Error(statusOnlyMessage(identity.model));
+    assertNotStatusOnly(identity.model);
     const model = normalizeModel(requirements.model);
     if (!model || !identity.model || model !== identity.model)
         throw new Error(`Printer model identity mismatch: requested ${requirements.model}, observed ${identity.model ?? "unknown"}.`);
@@ -529,8 +528,7 @@ export function manualHeatingRequirements(status, model, nozzleDiameter, materia
     const normalized = normalizeModel(model);
     if (!normalized)
         throw new Error("A known printer model is required for manual nozzle heating.");
-    if (isStatusOnlyModel(status?.model))
-        throw new Error(statusOnlyMessage(status.model));
+    assertNotStatusOnly(status?.model);
     const raw = status?.raw;
     if (!object(raw))
         throw new Error("A fresh printer report is required for manual nozzle heating.");
