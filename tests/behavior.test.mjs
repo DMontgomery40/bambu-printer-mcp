@@ -2849,7 +2849,7 @@ test("slicer stall settings and CPU times parse as ps writes them", async () => 
 test("slice_stl reuses an identical earlier slice, and slices again when an input changes", async (t) => {
   const fakeSlicer = await createFakeBambuSlicer({ result: "p1s-floating-cantilever.json" });
   t.after(() => fs.rmSync(fakeSlicer.tempDir, { recursive: true, force: true }));
-  const model = path.join(fakeSlicer.tempDir, "model.stl");
+  const model = path.join(fakeSlicer.tempDir, "model;rev2.stl");
   fs.copyFileSync(SAMPLE_STL, model);
   const connect = async (extra = {}) => {
     const transport = new StdioClientTransport({

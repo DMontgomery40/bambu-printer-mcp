@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Slice a model again after its contents change, even when its filename contains a semicolon.
+
 ## [1.1.102] – 2026-11-23
 
 ### Fixed
