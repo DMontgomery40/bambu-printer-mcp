@@ -9,7 +9,8 @@ import { cameraFrameParser, cameraAuth } from "./camera-wire.js";
 import { createHash } from "node:crypto";
 import { controlReply, refusedControlMessage } from "../control-reply.js";
 import { isFinishedIdleJob, isCancelledJob, readFreshPrinterStatus } from "../safety/printer-state.js";
-import { assertNotStatusOnly, statusOnlyDisplayName, statusOnlyDisplayNameFromSerial } from "../safety/status-only-models.js";
+import { assertNotStatusOnly, isStatusOnlyModel, statusOnlyDisplayName, statusOnlyDisplayNameFromSerial } from "../safety/status-only-models.js";
+import { decodeToolRack } from "./tool-rack.js";
 import fs from "node:fs/promises";
 import { createReadStream, readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -963,6 +964,10 @@ export class BambuImplementation {
             const chamberTemperature = typeof ctcTemperature === "number" && Number.isInteger(ctcTemperature) && ctcTemperature >= 0 && ctcTemperature <= 0xffffffff
                 ? ctcTemperature & 0xffff
                 : data.chamber_temper || data.frame_temper || 0;
+            const model = resolveModelName(data);
+            // A status-only printer (the H3C) gets its tool rack, nozzles and rack AMS units decoded as Bambu Studio reads
+            // them (src/printers/tool-rack.ts). Display only: never safety evidence. Other printers' status is unchanged.
+            const toolRack = isStatusOnlyModel(model) ? decodeToolRack(data) : undefined;
             return {
                 status: data.gcode_state || "UNKNOWN",
                 connected: true,
@@ -985,7 +990,8 @@ export class BambuImplementation {
                     totalLayers: data.total_layer_num || 0,
                 },
                 ams: data.ams || null,
-                model: resolveModelName(data),
+                ...(toolRack ? { toolRack } : {}),
+                model,
                 serial,
                 raw: data,
             };

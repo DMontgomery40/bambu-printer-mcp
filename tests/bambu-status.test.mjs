@@ -83,6 +83,73 @@ test("printer status names an H3C by its reported model id, as a display name on
   }
 });
 
+// Synthetic report shaped as Bambu Studio 02.09.01.70 parses it (DevNozzleRack/DevNozzleSystem/DevFilaSystem); no H3C
+// report has been captured. info2 = calibrated (bit 0) | rack type A (bits 1-4 = 1) | docks 0 and 2 calibrated (bits 5, 7).
+const H3C_RACK_REPORT = {
+  gcode_state: "IDLE", model_id: "N10",
+  device: {
+    holder: { stat: 9, job: 1, step: [1, 2, "x"], info2: 1 | (1 << 1) | (1 << 5) | (1 << 7), pos: 2 },
+    nozzle: { exist: (1 << 0) | (1 << 16), info: [
+      { id: 0, addr_id: 2, diameter: 0.4, type: "HS01", temp: (220 << 16) | 215, stat: 1 << 5, snow: (6 << 8) | 3, bind_ams: [6, 99], sn: "NZ0", fila_id: "GFL99", color_m: "#FF0000FF" },
+      { id: 16, addr_id: 0, diameter: "0.2", type: "HH01", temp: 0, stat: 0, snow: 0xffff },
+      { id: 17, addr_id: 1, diameter: 0.6, stat: 2 << 6 },
+      { addr_id: 4 },
+      { id: "18", addr_id: 3 },
+    ] },
+  },
+  ams: { ams: [ { id: "6", info: "e06", tray: [{ id: "0" }, { id: "1" }, { id: "2" }] }, { id: "0", info: "1001", tray: [{ id: "0" }] } ] },
+};
+
+test("printer status decodes an H3C's tool rack, nozzles and AMS-3H as Bambu Studio reads them", async () => {
+  const bambu = new BambuImplementation();
+  bambu.printerStore = { waitForInitialReport: async () => H3C_RACK_REPORT };
+  bambu.getPrinter = async () => ({ data: H3C_RACK_REPORT, publish: async () => {} });
+  const { model, toolRack } = await bambu.getStatus("127.0.0.1", "32XTEST", "TEST_TOKEN");
+  assert.equal(model, "H3C");
+  assert.match(toolRack.source, /not verified against an H3C report/);
+  assert.deepEqual(toolRack.holder, { status: "pick-hotend", job: 1, steps: [1, 2], type: "A", calibrated: true },
+    "a directly connected rack reports no position");
+  assert.deepEqual(toolRack.nozzles, [
+    { id: 0, nozzleId: 0, onRack: false, addrId: 2, dockCalibrated: true, present: true, diameter: 0.4, type: "HS01", temperature: { actual: 215, target: 220 },
+      filamentLoaded: true, feedingSlot: { amsId: 6, slotId: 3 }, boundAms: [6], serial: "NZ0", filamentId: "GFL99", colour: "#FF0000FF" },
+    { id: 16, nozzleId: 0, onRack: true, addrId: 0, dockCalibrated: true, present: true, diameter: 0.2, type: "HH01", temperature: { actual: 0, target: 0 }, filamentLoaded: false },
+    { id: 17, nozzleId: 1, onRack: true, addrId: 1, dockCalibrated: false, present: false, diameter: 0.6, filamentLoaded: true },
+  ], "entries without an integer id are skipped; a rack nozzle keeps its own id apart from its dock address; bound AMS ids the report doesn't list are dropped");
+  assert.deepEqual(toolRack.rackAms, [{ id: "6", type: "AMS-3H", trays: 3 }], "only rack AMS units, with the trays they report");
+});
+
+test("tool-rack decoding keeps unknown values unknown and reads an AB rack's position", async () => {
+  const { decodeToolRack } = await import("../dist/printers/tool-rack.js");
+  assert.equal(decodeToolRack({ gcode_state: "IDLE" }), undefined);
+  assert.equal(decodeToolRack(null), undefined);
+  // Synthetic inputs below, shaped by Bambu Studio's parsers; none is a captured report.
+  assert.deepEqual(decodeToolRack({ device: { holder: { stat: 99 } } }).holder,
+    { status: "unknown", job: 0, steps: [], type: "unknown", calibrated: "unknown" });
+  assert.deepEqual(decodeToolRack({ device: { holder: { stat: -1, info: 0, pos: 3 } } }).holder,
+    { status: "unknown", job: 0, steps: [], type: "AB", calibrated: false, position: "centre" });
+  assert.deepEqual(decodeToolRack({ device: { holder: { stat: "9", info2: "3" } } }).holder,
+    { status: "unknown", job: 0, steps: [], type: "unknown", calibrated: "unknown" }, "numeric strings are not integers, as Studio's get<int> reads them");
+  const undocumented = decodeToolRack({ device: { holder: { info2: 15 << 1, pos: 1 }, nozzle: { info: [{ id: 2, stat: 1 << 5 }] } } });
+  assert.equal(undocumented.holder.type, "unknown", "an undocumented rack type stays unknown");
+  assert.equal(Object.hasOwn(undocumented.holder, "position"), false, "Studio reads no position from a rack type above AB");
+  assert.equal(undocumented.nozzles[0].filamentLoaded, true, "and reads filament presence as a directly connected rack");
+  const sparse = decodeToolRack({ device: { nozzle: { info: [{ id: 1, stat: 1 << 5 }] } } });
+  assert.equal(sparse.holder, undefined);
+  assert.deepEqual(sparse.nozzles, [{ id: 1, nozzleId: 1, onRack: false }], "filament presence is read only on a directly connected rack");
+  assert.deepEqual(decodeToolRack({ ams: { ams: [{ id: "1", info: "zz" }, { info: "6", tray: [{}] }, { id: "2", info: "7", tray: [] }] } }).rackAms,
+    [{ id: "2", type: "AMS-B", trays: 0 }], "a unit without an id is skipped");
+});
+
+test("printer status leaves other printers' reports without a toolRack, even with a rack", async () => {
+  for (const reportData of [{ ...H3C_RACK_REPORT, model_id: "O1C2" }, { ...H3C_RACK_REPORT, model_id: "C12" }]) {
+    const bambu = new BambuImplementation();
+    bambu.printerStore = { waitForInitialReport: async () => reportData };
+    bambu.getPrinter = async () => ({ data: reportData, publish: async () => {} });
+    const status = await bambu.getStatus("127.0.0.1", "01PTEST", "TEST_TOKEN");
+    assert.equal(Object.hasOwn(status, "toolRack"), false, reportData.model_id);
+  }
+});
+
 // A sparse "hello" push (model/modules) precedes the full status. On a busy host the
 // full push arrived after the fixed 500 ms settle and get_printer_status reported UNKNOWN.
 test("printer status waits for the full report that follows a sparse first push", async () => {
