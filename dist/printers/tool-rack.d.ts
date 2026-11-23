@@ -14,13 +14,11 @@ declare const RACK_STATUS: readonly ["idle", "hotend-centre", "toolhead-centre",
 export type Unknown = "unknown";
 export interface ToolRackHolder {
     status: (typeof RACK_STATUS)[number] | Unknown;
-    /** 0 none, 1 picking, 2 placing, 3 both (DevNozzleRack::IsPicking/IsPlacing read it with `status`). */
+    /** The report's job number as given; DevNozzleRack::IsPicking/IsPlacing read it together with `status`. */
     job: number;
     steps: number[];
     type: string | Unknown;
     calibrated: boolean | Unknown;
-    /** Dock (hotend address) ids info2 marks as calibrated: bit 5 + address. */
-    calibratedDocks: number[];
     /** Only for an AB rack; a directly connected rack reports none. */
     position?: string;
 }
@@ -30,6 +28,8 @@ export interface ToolRackNozzle {
     nozzleId: number;
     onRack: boolean;
     addrId?: number;
+    /** DevNozzleRack::IsHotendDockingCalibrated: holder `info2` bit 5 + `addrId`, when both are reported. */
+    dockCalibrated?: boolean;
     /** From `nozzle.exist`, bit `id`, when the report gives it. */
     present?: boolean;
     diameter?: number;
@@ -45,6 +45,7 @@ export interface ToolRackNozzle {
         amsId: number;
         slotId: number;
     };
+    /** `bind_ams`, keeping only AMS unit ids the report lists, as Studio does. */
     boundAms?: number[];
     serial?: string;
     filamentId?: string;
@@ -53,7 +54,6 @@ export interface ToolRackNozzle {
 export interface ToolRackAms {
     id: string;
     type: string;
-    extruderId: number;
     trays: number;
 }
 export interface ToolRack {

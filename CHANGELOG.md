@@ -5,10 +5,10 @@
 ### Added
 
 - `get_printer_status` on an H3C adds `toolRack`, its tool rack, nozzles and AMS-3H units decoded as Bambu Studio 02.09.01.70 reads them:
-  - `holder`: the rack's status, job, steps, type, calibration and calibrated docks, and an AB rack's position.
-  - `nozzles`: each nozzle's id, whether it sits on the rack, its dock address, presence, diameter, type, current and target temperature, and serial. On a directly connected rack it also gives whether filament is loaded, the AMS slot feeding it and its bound AMS units.
-  - `rackAms`: AMS units of rack type 6 ("AMS-3H") or 7, with their extruder id and the trays they report.
-- A value Studio's code doesn't define stays `unknown`, and a rack position, a nozzle id, a filament and a spool are never merged into one number.
+  - `holder`: the rack's status, job, steps, type and calibration, and an AB rack's position.
+  - `nozzles`: each nozzle's id, whether it sits on the rack, its dock address and whether that dock is calibrated, presence, diameter, type, current and target temperature, the AMS slot feeding it, its bound AMS units (those the report lists), serial, filament id and colour. On a directly connected rack it also gives whether filament is loaded.
+  - `rackAms`: AMS units of rack type 6 ("AMS-3H") or 7 ("AMS-B"), with the trays they report.
+- A value Studio's code doesn't define stays `unknown`. Integer fields given as strings, entries without an id, and the undocumented `hc` bits are not decoded. A rack position, a nozzle id, a filament and a spool are never merged into one number.
 - `toolRack` is shown for status only. It is not safety evidence and enables no H3C operation. Other printers' status, including an H2C's rack, is unchanged.
 - The field layout comes from Studio's source (`DevNozzleRack`, `DevNozzleSystem`, `DevFilaSystem` at `56a57d00`). It has not been checked against a real H3C report.
 

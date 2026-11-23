@@ -576,7 +576,7 @@ Chamber status decodes the current temperature from newer firmware's packed CTC 
 
 A Bambu Lab H3C is shown as `model: "H3C"`. It is recognised by its model id `N10` or serial prefix `32X`, taken from Bambu Studio 02.09.01.70. The H3C is status-only. Printing, uploading a printable file, heating, resuming and clearing errors refuse it before anything is sent; stop and heater-off still work. `h3c` is not a `bambu_model` value. This support comes from Bambu Studio's source: no H3C has been tested.
 
-On an H3C, `get_printer_status` also returns `toolRack`, decoded as Bambu Studio 02.09.01.70 reads it. It holds the rack's state (`holder`), each nozzle with its dock address, diameter, temperatures and the AMS slot feeding it (`nozzles`), and its AMS-3H units (`rackAms`). Values Studio's code doesn't define read `unknown`. It is for display only: it is not safety evidence, and it has not been checked against a real H3C report.
+On an H3C, `get_printer_status` also returns `toolRack`, decoded as Bambu Studio 02.09.01.70 reads it. It holds the rack's state (`holder`), each nozzle with its dock address, diameter, temperatures and the AMS slot feeding it (`nozzles`), and its rack AMS units (`rackAms`, type 6 "AMS-3H" or 7 "AMS-B"). Values Studio's code doesn't define read `unknown`. It is for display only: it is not safety evidence, and it has not been checked against a real H3C report.
 
 Returns a structured object with fields including `status` (gcode_state string), `temperatures.nozzle`, `temperatures.bed`, `temperatures.chamber`, `print.progress`, `print.currentLayer`, `print.totalLayers`, `print.timeRemaining`, and `ams` (raw AMS data from the printer).
 
