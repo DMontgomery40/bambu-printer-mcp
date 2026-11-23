@@ -23,6 +23,8 @@ This is a stripped-down, Bambu-only fork of [mcp-3D-printer-server](https://gith
 
 ---
 
+Stock H2S chipless nozzles reporting exact status 5 are treated as configured diameter/type/flow settings, which must still match the job. This compatibility exception uses contributor evidence from firmware 01.02.00.00 (TH 02.00.19.36); it does not verify the physical nozzle or apply to other unknown-nozzle reports.
+
 ## Set up with your agent
 
 Tell your agent your printer's **model and LAN address**, if you know them, then copy and paste this:
