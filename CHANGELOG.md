@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.1.102] – 2026-11-23
+
+### Fixed
+
+- Accept the stock H2S chipless nozzle's exact `stat: 5` report as configured nozzle settings, retaining diameter/type/flow comparisons and fresh printer safety checks. Other models, chipped unknown nozzles and abnormal states stay blocked. Thanks to @jappyjan for the firmware report, reproduction and fix in #172. Evidence: contributor report from H2S OTA 01.02.00.00 / TH 02.00.19.36 and offline regressions; no maintainer physical print test.
+
 ## [1.1.101] – 2026-11-23
 
 ### Added
