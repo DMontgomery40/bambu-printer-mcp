@@ -72,6 +72,17 @@ for (const [name, data, expected] of [
   });
 }
 
+// Synthetic reports: the H3C's model id N10 and serial prefix 32X come from Bambu Studio's resources/printers/N10.json.
+test("printer status names an H3C by its reported model id, as a display name only", async () => {
+  for (const [reportData, serial] of [[{ gcode_state: "IDLE", model_id: "N10" }, "32XTEST"], [{ gcode_state: "IDLE", model: "H3C" }, "32XTEST"]]) {
+    const bambu = new BambuImplementation();
+    bambu.printerStore = { waitForInitialReport: async () => reportData };
+    bambu.getPrinter = async () => ({ data: reportData, publish: async () => {} });
+    const status = await bambu.getStatus("127.0.0.1", serial, "TEST_TOKEN");
+    assert.equal(status.model, "H3C");
+  }
+});
+
 // A sparse "hello" push (model/modules) precedes the full status. On a busy host the
 // full push arrived after the fixed 500 ms settle and get_printer_status reported UNKNOWN.
 test("printer status waits for the full report that follows a sparse first push", async () => {

@@ -48,6 +48,7 @@ import { inspectPrintFile } from "./safety/print-file.js";
 import { previewPrintFile } from "./safety/print-preview.js";
 import { loadSafe3mfArchive } from "./safety/archive.js";
 import { SERIAL_MODELS, internalPrintingSupported, externalStorageState, validatePrinterState } from "./safety/printer-state.js";
+import { isStatusOnlyModel, statusOnlyDisplayName, statusOnlyModelFromSerial, statusOnlyModelValueMessage } from "./safety/status-only-models.js";
 import { isDualNozzleModel } from "./safety/limits.js";
 import { withPrinterOperation, withPrintSnapshot, uniquePrintName } from "./safety/artifact.js";
 import { detectProfilesRoot } from "./slicer/profile-flatten.js";
@@ -670,6 +671,8 @@ function parseFilamentColours(value) {
 }
 function validateBambuModel(model) {
     const normalized = model.trim().toLowerCase();
+    if (isStatusOnlyModel(normalized))
+        throw new Error(statusOnlyModelValueMessage(normalized));
     if (!VALID_BAMBU_MODELS.includes(normalized)) {
         throw new Error(`Invalid bambu_model: "${model}". Valid models: ${VALID_BAMBU_MODELS.join(", ")}`);
     }
@@ -1744,6 +1747,11 @@ class BambuPrinterMCPServer {
             return unknown("no printer is configured to ask");
         try {
             let status = await this.bambu.getStatus(host, bambuSerial, bambuToken);
+            // A status-only printer's feeds (the H3C's tool rack and AMS-3H) aren't decoded, so the requested model's
+            // external-spool and four-slot AMS rules must not count them (src/safety/status-only-models.ts).
+            const statusOnly = isStatusOnlyModel(status?.model) ? status.model : statusOnlyModelFromSerial(bambuSerial);
+            if (statusOnly)
+                return unknown(`this printer is a Bambu Lab ${statusOnlyDisplayName(statusOnly)}, whose filament feeds this server doesn't read yet`);
             let feed = feedFromBambuReport(status?.raw, status?.connected === true, dual);
             // An idle printer's first push can be sparse; its AMS block follows (as get_printer_filaments waits for). A
             // printer that isn't connected isn't asked twice.

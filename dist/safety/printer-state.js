@@ -2,6 +2,7 @@ import { PrinterRefusal } from "../refusal.js";
 import { HIDDEN_HMS } from "./hidden-hms.js";
 import { GetVersionCommand, PushAllCommand } from "bambu-node";
 import { isDualNozzleModel, normalizeMaterial, normalizeModel } from "./limits.js";
+import { assertNotStatusOnly, statusOnlyModel, statusOnlyModelFromSerial } from "./status-only-models.js";
 const MAX_REPORT_AGE_MS = 15000;
 export const MODEL_IDS = {
     O1C: "H2C", O1C2: "H2C", O1D: "H2D", O1E: "H2D Pro", O1S: "H2S", N6: "X2D",
@@ -14,13 +15,20 @@ export const SERIAL_MODELS = {
 function object(value) {
     return !!value && typeof value === "object" && !Array.isArray(value);
 }
+/**
+ * A reported model id or name as this server's model value. A status-only printer (status-only-models.ts) resolves
+ * to its own value, so it is named and refused rather than unknown; it never becomes a printable model.
+ */
+function reportedModel(value) {
+    return normalizeModel(MODEL_IDS[value.trim().toUpperCase()] ?? value) ?? statusOnlyModel(value);
+}
 function observedIdentity(raw, configuredSerial) {
     const recognizedModelFromModelId = typeof raw.model_id === "string" && raw.model_id.trim()
-        ? normalizeModel(MODEL_IDS[raw.model_id.trim().toUpperCase()] ?? raw.model_id)
+        ? reportedModel(raw.model_id)
         : undefined;
     const declarations = [raw.model, raw.printer_type, raw.device?.devModel, raw.device?.dev_model]
         .filter(value => typeof value === "string" && value.trim());
-    const models = declarations.map(value => normalizeModel(MODEL_IDS[value.trim().toUpperCase()] ?? value));
+    const models = declarations.map(reportedModel);
     if (models.some(model => !model))
         throw new Error("Printer reported an unknown model identity; cannot verify this printer.");
     if (recognizedModelFromModelId)
@@ -33,7 +41,7 @@ function observedIdentity(raw, configuredSerial) {
         throw new Error("Printer-returned serial does not match the configured printer serial.");
     }
     for (const serial of serials) {
-        const model = normalizeModel(SERIAL_MODELS[serial.toUpperCase().slice(0, 3)] ?? "");
+        const model = normalizeModel(SERIAL_MODELS[serial.toUpperCase().slice(0, 3)] ?? "") ?? statusOnlyModelFromSerial(serial);
         if (model)
             models.push(model);
     }
@@ -427,6 +435,8 @@ export function validatePrinterState(status, requirements) {
         throw new Error("Fresh raw printer report is missing.");
     const raw = status.raw;
     const identity = observedIdentity(raw, String(status.serial ?? ""));
+    // No bambu_model can name a status-only printer, so this is refused whatever model was requested.
+    assertNotStatusOnly(identity.model);
     const model = normalizeModel(requirements.model);
     if (!model || !identity.model || model !== identity.model)
         throw new Error(`Printer model identity mismatch: requested ${requirements.model}, observed ${identity.model ?? "unknown"}.`);
@@ -518,6 +528,7 @@ export function manualHeatingRequirements(status, model, nozzleDiameter, materia
     const normalized = normalizeModel(model);
     if (!normalized)
         throw new Error("A known printer model is required for manual nozzle heating.");
+    assertNotStatusOnly(status?.model);
     const raw = status?.raw;
     if (!object(raw))
         throw new Error("A fresh printer report is required for manual nozzle heating.");

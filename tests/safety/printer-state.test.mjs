@@ -267,6 +267,60 @@ test('official H2C and H2D Pro returned serials agree with declared identity and
   }
 });
 
+// The H3C is recognised for status only (src/safety/status-only-models.ts). Synthetic reports: model id N10 and serial
+// prefix 32X come from Bambu Studio 56a57d00 resources/printers/N10.json, not from a captured H3C report.
+test('a fresh H3C report resolves to its status-only identity instead of timing out', async () => {
+  for (const [label, message, expectedSource] of [
+    ['model id', p => p.pushing && {print:{command:'push_status',model_id:'N10',gcode_state:'IDLE',print_error:0,hms:[]}}, 'report'],
+    ['returned serial', p => p.pushing ? {print:{command:'push_status',gcode_state:'IDLE',print_error:0,hms:[]}} : {info:{command:'get_version',module:[{name:'ota',sn:'32XTEST'}]}}, 'module-serial'],
+  ]) {
+    const printer = new EventEmitter();
+    printer.publish = async payload => {
+      const reply = message(payload);
+      if (reply) printer.emit('rawMessage','device/32XTEST/report',Buffer.from(JSON.stringify(reply)));
+    };
+    const status = await safety.readFreshPrinterStatus(printer,'32XTEST',50);
+    assert.equal(status.model,'h3c',label);
+    assert.equal(status.observation.identitySource,expectedSource,label);
+    for (const model of ['p1s','h2c','h2d','x2d']) {
+      assert.throws(() => check(status,req({model,serial:'32XTEST',nozzleDiameters:[],verifyMaterials:false})),/Bambu Lab H3C.*status only/i,`${label} as ${model}`);
+    }
+    assert.throws(() => safety.manualHeatingRequirements(status,'p1s',0.4,'PLA'),/Bambu Lab H3C.*status only/i,label);
+  }
+});
+test('H3C identity still rejects contradictions with H2C, P1S and other serials', () => {
+  for (const [raw, extra] of [
+    [{model_id:'N10',modules:[{name:'ota',sn:'31BTEST'}]},{serial:'31BTEST'}],
+    [{model_id:'N10',model:'H2C'},{}],
+    [{model_id:'O1C2',modules:[{name:'ota',sn:'32XTEST'}]},{serial:'32XTEST'}],
+    [{model_id:'C12',modules:[{name:'ota',sn:'32XTEST'}]},{serial:'32XTEST'}],
+  ]) {
+    assert.throws(() => check(fresh(raw,extra),req({model:'h2c',nozzleDiameters:[],verifyMaterials:false})),/contradictory/i,JSON.stringify(raw));
+  }
+  assert.throws(() => check(fresh({model_id:'N10-V2'})),/model|identity/i,'an unpublished H3C variant id is not guessed');
+});
+test('the H3C stays out of every printable model, limit and route table', async () => {
+  const limits = await import('../../dist/safety/limits.js');
+  const statusOnly = await import('../../dist/safety/status-only-models.js');
+  assert.equal(limits.normalizeModel('h3c'),undefined);
+  assert.equal(limits.normalizeModel('Bambu Lab H3C'),undefined);
+  assert.equal(Object.hasOwn(limits.MACHINE_LIMITS,'h3c'),false);
+  assert.equal(limits.DUAL_NOZZLE_MODELS.has('h3c'),false);
+  assert.equal(limits.isDualNozzleModel('h3c'),false);
+  assert.equal(Object.hasOwn(limits.ACCEPTED_FILE_MODELS,'h3c'),false);
+  assert.equal(safety.CANCELLED_JOB_MODELS.has('h3c'),false);
+  assert.equal(Object.hasOwn(safety.MODEL_IDS,'N10'),false,'setup/discovery model ids stay bambu_model values');
+  assert.equal(Object.hasOwn(safety.SERIAL_MODELS,'32X'),false,'setup/discovery serial prefixes stay bambu_model values');
+  for (const component of ['nozzle','bed','chamber']) {
+    assert.throws(() => limits.validateTemperature(component,50,'h3c',['PLA']),/Unknown printer model/i);
+  }
+  assert.equal(statusOnly.statusOnlyModel('N10'),'h3c');
+  assert.equal(statusOnly.statusOnlyModel('Bambu Lab H3C'),'h3c');
+  assert.equal(statusOnly.statusOnlyModelFromSerial('32xtest'),'h3c');
+  for (const other of ['O1C2','H2C','N6','C12','',undefined,'N10-V2']) assert.equal(statusOnly.statusOnlyModel(other),undefined,String(other));
+  for (const serial of ['31BTEST','239TEST','20PTEST']) assert.equal(statusOnly.statusOnlyModelFromSerial(serial),undefined,serial);
+});
+
 // Dual-nozzle printers report one virtual external slot per nozzle, numbered as Bambu
 // Studio's VIRTUAL_TRAY_MAIN_ID (255, right/main) and VIRTUAL_TRAY_DEPUTY_ID (254, left/deputy).
 const dualNozzleInfo={nozzle:{info:[{id:0,diameter:0.4,type:'HH01',stat:0},{id:1,diameter:0.4,type:'HH01',stat:0}]}};
