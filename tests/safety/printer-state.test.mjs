@@ -341,6 +341,60 @@ test('the H3C stays out of every printable model, limit and route table', async 
   for (const serial of ['31BTEST','239TEST','20PTEST']) assert.equal(statusOnly.statusOnlyModelFromSerial(serial),undefined,serial);
 });
 
+// The P3C is recognised for status only (src/safety/status-only-models.ts). Synthetic reports: model id N11 and serial
+// prefix 331 come from Bambu Studio 23a33758 resources/printers/N11.json, not from a captured P3C report.
+test('a fresh P3C report resolves to its status-only identity instead of timing out', async () => {
+  for (const [label, message, expectedSource] of [
+    ['model id', p => p.pushing && {print:{command:'push_status',model_id:'N11',gcode_state:'IDLE',print_error:0,hms:[]}}, 'report'],
+    ['returned serial', p => p.pushing ? {print:{command:'push_status',gcode_state:'IDLE',print_error:0,hms:[]}} : {info:{command:'get_version',module:[{name:'ota',sn:'331TEST'}]}}, 'module-serial'],
+  ]) {
+    const printer = new EventEmitter();
+    printer.publish = async payload => {
+      const reply = message(payload);
+      if (reply) printer.emit('rawMessage','device/331TEST/report',Buffer.from(JSON.stringify(reply)));
+    };
+    const status = await safety.readFreshPrinterStatus(printer,'331TEST',50);
+    assert.equal(status.model,'p3c',label);
+    assert.equal(status.observation.identitySource,expectedSource,label);
+    for (const model of ['p1s','h2c','h2d','x2d']) {
+      assert.throws(() => check(status,req({model,serial:'331TEST',nozzleDiameters:[],verifyMaterials:false})),/Bambu Lab P3C.*status only/i,`${label} as ${model}`);
+    }
+    assert.throws(() => safety.manualHeatingRequirements(status,'p1s',0.4,'PLA'),/Bambu Lab P3C.*status only/i,label);
+  }
+});
+test('P3C identity still rejects contradictions with H2C, P1S and other serials', () => {
+  for (const [raw, extra] of [
+    [{model_id:'N11',modules:[{name:'ota',sn:'31BTEST'}]},{serial:'31BTEST'}],
+    [{model_id:'N11',model:'H2C'},{}],
+    [{model_id:'O1C2',modules:[{name:'ota',sn:'331TEST'}]},{serial:'331TEST'}],
+    [{model_id:'C12',modules:[{name:'ota',sn:'331TEST'}]},{serial:'331TEST'}],
+  ]) {
+    assert.throws(() => check(fresh(raw,extra),req({model:'h2c',nozzleDiameters:[],verifyMaterials:false})),/contradictory/i,JSON.stringify(raw));
+  }
+  assert.throws(() => check(fresh({model_id:'N11-V2'})),/model|identity/i,'a subseries label is not substituted for the published model_id');
+});
+test('the P3C stays out of every printable model, limit and route table', async () => {
+  const limits = await import('../../dist/safety/limits.js');
+  const statusOnly = await import('../../dist/safety/status-only-models.js');
+  assert.equal(limits.normalizeModel('p3c'),undefined);
+  assert.equal(limits.normalizeModel('Bambu Lab P3C'),undefined);
+  assert.equal(Object.hasOwn(limits.MACHINE_LIMITS,'p3c'),false);
+  assert.equal(limits.DUAL_NOZZLE_MODELS.has('p3c'),false);
+  assert.equal(limits.isDualNozzleModel('p3c'),false);
+  assert.equal(Object.hasOwn(limits.ACCEPTED_FILE_MODELS,'p3c'),false);
+  assert.equal(safety.CANCELLED_JOB_MODELS.has('p3c'),false);
+  assert.equal(Object.hasOwn(safety.MODEL_IDS,'N11'),false,'setup/discovery model ids stay bambu_model values');
+  assert.equal(Object.hasOwn(safety.SERIAL_MODELS,'331'),false,'setup/discovery serial prefixes stay bambu_model values');
+  for (const component of ['nozzle','bed','chamber']) {
+    assert.throws(() => limits.validateTemperature(component,50,'p3c',['PLA']),/Unknown printer model/i);
+  }
+  assert.equal(statusOnly.statusOnlyModel('N11'),'p3c');
+  assert.equal(statusOnly.statusOnlyModel('Bambu Lab P3C'),'p3c');
+  assert.equal(statusOnly.statusOnlyModelFromSerial('331test'),'p3c');
+  for (const other of ['O1C2','H2C','N6','C12','',undefined,'N11-V2']) assert.equal(statusOnly.statusOnlyModel(other),undefined,String(other));
+  for (const serial of ['31BTEST','239TEST','20PTEST']) assert.equal(statusOnly.statusOnlyModelFromSerial(serial),undefined,serial);
+});
+
 // Dual-nozzle printers report one virtual external slot per nozzle, numbered as Bambu
 // Studio's VIRTUAL_TRAY_MAIN_ID (255, right/main) and VIRTUAL_TRAY_DEPUTY_ID (254, left/deputy).
 const dualNozzleInfo={nozzle:{info:[{id:0,diameter:0.4,type:'HH01',stat:0},{id:1,diameter:0.4,type:'HH01',stat:0}]}};
