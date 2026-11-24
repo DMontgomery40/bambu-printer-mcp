@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.103] – 2026-11-24
+
+### Added
+- Recognise P3C's published N11/331 identity in status, with offline regressions that keep print, upload, heating, resume and error clearing blocked. Its seven-nozzle print path and rack status remain unverified; no P3C hardware testing is claimed.
+
+### Changed
+- Pin the optional Linux X2D networking plug-in to 02.09.02.50 after matching Studio 2.9.2's PrintParams layout and verifying the archive and required library hashes. Linux loading and physical dispatch remain untested for this build.
+- Document actual isolated Studio 02.09.02.62 P1S/H2D/H2C slicing and selected-file inspection, including P1S/H2C two-colour settings and rejection of missing or malformed profiles.
+
+### Fixed
+- Isolate the no-Studio-config transport regression from local desktop preferences.
+
+- Slice a model again after its contents change, even when its filename contains a semicolon. Thanks to @d0ukan for the reproduction, fix and regression tests in #175.
+
 ## [1.1.102] – 2026-11-23
 
 ### Fixed

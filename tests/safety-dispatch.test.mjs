@@ -320,6 +320,63 @@ test("clearing errors on an H3C refuses before the prompt and sends nothing", as
   assertNoDispatch(events);
 });
 
+// The P3C is recognised in status only (src/safety/status-only-models.ts). Synthetic fresh reports: its model id N11
+// and serial prefix 331 come from Bambu Studio's resources/printers/N11.json, not from a captured P3C report.
+const p3cStatus = (raw = {}) => safetyStatus({ model: "p3c", model_id: "N11", ...raw });
+const P3C_REFUSAL = /Bambu Lab P3C.*status only.*nothing was sent/i;
+
+for (const route of ["legacy 3MF", "raw upload-and-print", "remote start"]) {
+  test(`${route} refuses a fresh P3C report at the live check, before upload or dispatch`, async (t) => {
+    const file = await fixture(t, { raw: route !== "legacy 3MF" });
+    const { printer, events } = isolatedPrinter(p3cStatus());
+    printer.ftpDownload = async (_host, _token, _remote, destination) => fs.copyFile(file, destination);
+    const print = route === "legacy 3MF"
+      ? printer.print3mf(host, serial, token, { projectName: "p3c", filePath: file, bambuModel: "p1s", nozzleDiameters: [0.4], useAMS: false })
+      : route === "raw upload-and-print"
+        ? printer.uploadFile(host, serial, token, file, "p3c.gcode", true, "p1s")
+        : printer.startJob(host, serial, token, "p3c.gcode", "p1s");
+    await assert.rejects(print, P3C_REFUSAL);
+    assert.ok(events.some(({ action }) => action === "status"), "refused at the fresh identity check");
+    assertNoDispatch(events);
+  });
+}
+
+test("manual heating refuses a fresh P3C report before publishing, and heater-off is still sent", async () => {
+  for (const [component, target, material] of [["nozzle", 220, "PLA"], ["bed", 60, undefined]]) {
+    const { printer, events } = isolatedPrinter(p3cStatus());
+    await assert.rejects(printer.setTemperature(host, serial, token, component, target, "p1s", material, 0.4), P3C_REFUSAL);
+    assertNoDispatch(events);
+  }
+  for (const component of ["nozzle", "bed"]) {
+    const { printer, events } = isolatedPrinter(p3cStatus());
+    const result = await printer.setTemperature(host, serial, token, component, 0);
+    assert.equal(result.status, "success");
+    assert.match(JSON.stringify(events.find(({ action }) => action === "publish").payload), component === "nozzle" ? /M104 S0/ : /M140 S0/);
+  }
+});
+
+test("an upload without printing refuses a printable file on a fresh P3C report before uploading", async (t) => {
+  const file = await fixture(t, { raw: true });
+  const { printer, events } = isolatedPrinter(p3cStatus());
+  await assert.rejects(printer.uploadFile(host, serial, token, file, "p3c.gcode", false, "p1s"), P3C_REFUSAL);
+  assertNoDispatch(events);
+});
+
+test("stop on an P3C needs no identity check", async () => {
+  const { printer, events } = isolatedPrinter(p3cStatus());
+  let stopped = 0;
+  await printer.cancelJob(host, serial, token, async () => { stopped++; return { status: "success" }; });
+  assert.equal(stopped, 1);
+  assert.deepEqual(events.filter(({ action }) => action === "status"), [], "stop never waits on a fresh identity read");
+});
+
+test("clearing errors on an P3C refuses before the prompt and sends nothing", async () => {
+  const { printer, events, prompts } = isolatedPrinter(p3cStatus({ print_error: 1234 }));
+  await assert.rejects(printer.clearHmsErrors(host, serial, token), P3C_REFUSAL);
+  assert.deepEqual(prompts, [], "nobody is asked to confirm a clear that cannot be sent");
+  assertNoDispatch(events);
+});
+
 test("remote start refuses an artifact that cannot be downloaded for inspection", async () => {
   const { printer, events } = isolatedPrinter();
   printer.ftpDownload = async () => { throw new Error("remote artifact unavailable for inspection"); };
@@ -386,6 +443,17 @@ test("resume refuses a paused job once the fresh report identifies an H3C, befor
     return h3cStatus(job.report);
   };
   await assert.rejects(job.printer.resumeJob(host, serial, token), H3C_REFUSAL);
+  assert.deepEqual(job.published(), [], "no resume command is sent");
+  assert.deepEqual(job.prompts, []);
+});
+
+test("resume refuses a paused job once the fresh report identifies an P3C, before re-reading or publishing", async (t) => {
+  const job = await pausedJob(t);
+  job.printer.getSafetyStatus = async () => {
+    job.events.push({ action: "status" });
+    return p3cStatus(job.report);
+  };
+  await assert.rejects(job.printer.resumeJob(host, serial, token), P3C_REFUSAL);
   assert.deepEqual(job.published(), [], "no resume command is sent");
   assert.deepEqual(job.prompts, []);
 });
@@ -1456,7 +1524,7 @@ const optionFields = (print, keys) => Object.fromEntries(keys.map((key) => [key,
 
 for (const [label, useConf] of [["David's saved Studio options", true], ["no Studio config", false]]) {
   test(`P1S project_file over MQTT sends Bambu Studio's options with ${label}`, async (t) => {
-    if (useConf) withStudioConf(t, await davidStudioConf(t));
+    withStudioConf(t, useConf ? await davidStudioConf(t) : "");
     const legacy = await fixture(t);
     const file = legacy.replace(/\.gcode\.3mf$/, ".3mf");
     await fs.copyFile(legacy, file);

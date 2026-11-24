@@ -10,8 +10,12 @@
  *
  * H3C: Bambu Studio v02.09.01.70 (commit 56a57d00a591360cf41bf21383915ee5bf357be5), resources/printers/N10.json:
  * display_name "Bambu Lab H3C", model_id "N10", sn_prefix "32X". This is source-derived: no H3C report has been
- * captured here. Its tool rack, AMS-3H bindings, filament-to-nozzle mapping, G-code forms, upload storage and job
- * command are not implemented, and it is not an H2C or H2D: never alias it to either.
+ * captured here. Its tool rack is decoded for display only. Filament-to-nozzle mapping, G-code forms, upload storage and job
+ * commands are not implemented, and it is not an H2C or H2D: never alias it to either.
+ *
+ * P3C: Bambu Studio v02.09.02.62 (commit 23a33758933e712c6041e1f8f135f7d6b50004aa), resources/printers/N11.json:
+ * display_name "Bambu Lab P3C", model_id "N11", sn_prefix "331". Its seven-nozzle print path and rack status
+ * have not been validated here; recognising the name does not enable those workflows.
  */
 import { modelSpelling } from "./limits.js";
 
@@ -19,6 +23,7 @@ type StatusOnlyPrinter = { model: string; display: string; modelIds: readonly st
 
 const STATUS_ONLY_PRINTERS: readonly StatusOnlyPrinter[] = [
   { model: "h3c", display: "H3C", modelIds: ["N10"], serialPrefixes: ["32X"] },
+  { model: "p3c", display: "P3C", modelIds: ["N11"], serialPrefixes: ["331"] },
 ];
 
 function byIdentity(value: unknown): StatusOnlyPrinter | undefined {

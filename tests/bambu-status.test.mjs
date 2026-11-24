@@ -83,6 +83,18 @@ test("printer status names an H3C by its reported model id, as a display name on
   }
 });
 
+// Synthetic reports: the P3C's model id N11 and serial prefix 331 come from Bambu Studio's resources/printers/N11.json.
+test("printer status names an P3C by its reported model id, as a display name only", async () => {
+  for (const [reportData, serial] of [[{ gcode_state: "IDLE", model_id: "N11" }, "331TEST"], [{ gcode_state: "IDLE", model: "P3C" }, "331TEST"]]) {
+    const bambu = new BambuImplementation();
+    bambu.printerStore = { waitForInitialReport: async () => reportData };
+    bambu.getPrinter = async () => ({ data: reportData, publish: async () => {} });
+    const status = await bambu.getStatus("127.0.0.1", serial, "TEST_TOKEN");
+    assert.equal(status.model, "P3C");
+    assert.equal(status.toolRack, undefined, "P3C rack parsing has a separate evidence boundary");
+  }
+});
+
 // Synthetic report shaped as Bambu Studio 02.09.01.70 parses it (DevNozzleRack/DevNozzleSystem/DevFilaSystem); no H3C
 // report has been captured. info2 = calibrated (bit 0) | rack type A (bits 1-4 = 1) | docks 0 and 2 calibrated (bits 5, 7).
 const H3C_RACK_REPORT = {

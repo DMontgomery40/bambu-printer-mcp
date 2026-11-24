@@ -74,11 +74,11 @@ export declare const BAMBU_NATIVE_CERTIFICATES: readonly ["slicer_base64.cer", "
 export declare const BAMBU_NATIVE_PLUGIN_LIBRARIES: readonly ["libbambu_networking.so", "libBambuSource.so"];
 /**
  * The pinned Linux plug-in build whose PrintParams layout matches the helper
- * (Bambu Studio v02.09.01.70, network agent 02.09.01.54). The setup installs
+ * (Bambu Studio v02.09.02.62, network agent 02.09.02.50). The setup installs
  * exactly these files and the server refuses anything else.
  */
 export declare const BAMBU_NATIVE_PINNED_PLUGIN: Readonly<{
-    version: "02.09.01.54";
+    version: "02.09.02.50";
     sha256: Readonly<Record<"libbambu_networking.so" | "libBambuSource.so", string>>;
 }>;
 /** Layout shared by the Linux setup script, the server and the helper's environment. */

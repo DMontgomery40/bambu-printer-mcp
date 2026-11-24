@@ -97,9 +97,11 @@ async function keyOf(run) {
         return named;
     };
     const args = [];
-    for (const arg of run.args) {
+    for (const [index, arg] of run.args.entries()) {
+        const option = run.args[index - 1];
+        const pieces = option === "--load-settings" || option === "--load-filaments" ? arg.split(";") : [arg];
         const parts = [];
-        for (const piece of arg.split(";")) {
+        for (const piece of pieces) {
             const value = await part(piece);
             if (value === undefined)
                 return undefined;

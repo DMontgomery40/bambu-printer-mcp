@@ -40,13 +40,13 @@ export const BAMBU_NATIVE_CERTIFICATES = ["slicer_base64.cer", "printer.cer"];
 export const BAMBU_NATIVE_PLUGIN_LIBRARIES = ["libbambu_networking.so", "libBambuSource.so"];
 /**
  * The pinned Linux plug-in build whose PrintParams layout matches the helper
- * (Bambu Studio v02.09.01.70, network agent 02.09.01.54). The setup installs
+ * (Bambu Studio v02.09.02.62, network agent 02.09.02.50). The setup installs
  * exactly these files and the server refuses anything else.
  */
 export const BAMBU_NATIVE_PINNED_PLUGIN = Object.freeze({
-    version: "02.09.01.54",
+    version: "02.09.02.50",
     sha256: Object.freeze({
-        "libbambu_networking.so": "a3d3fb6e6568cbf62a81c88248f4ddfee90ecaa47685d5156ada411271aa5ad3",
+        "libbambu_networking.so": "45321484b612e493296c92236062fec2326c3d4a92cc3d089df26a685fe0eadb",
         "libBambuSource.so": "4e05f16fa02740fd12f0040b9efc3e70d43446c7a1a877c6a3926ef0758ca7db",
     }),
 });
