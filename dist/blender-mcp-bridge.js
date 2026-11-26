@@ -89,6 +89,22 @@ function normalizeToolFailure(result) {
     });
     return failed ? { ...result, isError: true } : result;
 }
+/** Blender Lab returns captured stdout inside a JSON tool result; community servers return plain text. */
+function toolOutputText(result) {
+    const stdout = (value) => value && typeof value === "object" &&
+        typeof value.stdout === "string" ? value.stdout : undefined;
+    const structured = stdout(result.structuredContent);
+    if (structured !== undefined)
+        return structured;
+    return result.content.filter((entry) => entry.type === "text").map((entry) => {
+        try {
+            return stdout(JSON.parse(entry.text)) ?? entry.text;
+        }
+        catch {
+            return entry.text;
+        }
+    }).join("\n");
+}
 export async function regularStl(filePath) {
     const { bytes, triangles } = await stlMetadata(filePath);
     return { bytes, triangles };
@@ -386,7 +402,7 @@ export class BlenderMcpBridge {
             const result = await this.session(timeout, signal, (session) => this.invoke(session, "execute_blender_code", { code, user_prompt: args.user_prompt ?? "" }));
             if (result.isError)
                 throw new BlenderError("Blender MCP reported an editing error. No output was published.");
-            const text = result.content.filter((entry) => entry.type === "text").map((entry) => entry.text).join("\n");
+            const text = toolOutputText(result);
             const receipts = [...text.matchAll(/BAMBU_STL_RESULT:(\{[^\n]*\})/g)];
             let receipt;
             try {

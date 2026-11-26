@@ -49,7 +49,15 @@ reader.on("line", (line) => {
       fs.writeFileSync(plan.stagedOutputPath, mode === "bad-output" ? "not an STL" : stl);
     }
     if (mode === "output-race") fs.writeFileSync(plan.outputPath, "created after preflight");
-    const receipt = { requestId: mode === "wrong-receipt" ? "wrong" : plan.requestId, outputPath: plan.stagedOutputPath };
+    const receipt = { requestId: mode.includes("wrong-receipt") ? "wrong" : plan.requestId, outputPath: plan.stagedOutputPath };
+    if (mode.startsWith("json-") || mode.startsWith("structured-")) {
+      const result = { status: mode.endsWith("error") ? "error" : "ok", result: {},
+        stdout: `Info: File exported successfully\nBAMBU_STL_RESULT:${JSON.stringify(receipt)}\n`,
+        ...(mode.endsWith("error") ? { message: "Python exception after export" } : {}) };
+      return send(request.id, mode.startsWith("structured-")
+        ? { content: [], structuredContent: result }
+        : { content: [{ type: "text", text: JSON.stringify(result) }] });
+    }
     return send(request.id, { content: [{ type: "text", text: `Code executed successfully: BAMBU_STL_RESULT:${JSON.stringify(receipt)}\n` }] });
   }
   return send(request.id, {

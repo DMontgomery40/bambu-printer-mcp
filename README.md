@@ -1361,6 +1361,8 @@ See [CAD setup, confinement, script contract and removal](docs/CAD.md) for confi
 
 #### Blender MCP
 
+Blender Lab MCP 1.0.3 export receipts are accepted from structured or JSON-encoded stdout, alongside community servers returning plain text. Request/path matching, finite STL validation and no-overwrite publication still apply.
+
 Use a standard stdio Blender MCP server with `BLENDER_MCP_COMMAND` and
 `BLENDER_MCP_ARGS`. For the common Blender MCP server, install `uv` and its
 matching Blender addon, enable the addon, and start its connection inside

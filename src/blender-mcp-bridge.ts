@@ -84,6 +84,17 @@ function normalizeToolFailure(result: CallToolResult): CallToolResult {
   return failed ? { ...result, isError: true } : result;
 }
 
+/** Blender Lab returns captured stdout inside a JSON tool result; community servers return plain text. */
+function toolOutputText(result: CallToolResult): string {
+  const stdout = (value: unknown): string | undefined => value && typeof value === "object" &&
+    typeof (value as Arguments).stdout === "string" ? (value as Arguments).stdout as string : undefined;
+  const structured = stdout(result.structuredContent);
+  if (structured !== undefined) return structured;
+  return result.content.filter((entry) => entry.type === "text").map((entry) => {
+    try { return stdout(JSON.parse(entry.text)) ?? entry.text; } catch { return entry.text; }
+  }).join("\n");
+}
+
 export type StlBoundingBox = { min: [number, number, number]; max: [number, number, number]; dimensions: [number, number, number] };
 
 export async function regularStl(filePath: string): Promise<{ bytes: number; triangles: number }> {
@@ -347,7 +358,7 @@ export class BlenderMcpBridge {
     try {
       const result = await this.session(timeout, signal, (session) => this.invoke(session, "execute_blender_code", { code, user_prompt: args.user_prompt ?? "" }));
       if (result.isError) throw new BlenderError("Blender MCP reported an editing error. No output was published.");
-      const text = result.content.filter((entry) => entry.type === "text").map((entry) => entry.text).join("\n");
+      const text = toolOutputText(result);
       const receipts = [...text.matchAll(/BAMBU_STL_RESULT:(\{[^\n]*\})/g)];
       let receipt: any;
       try { receipt = JSON.parse(receipts.at(-1)?.[1] ?? "null"); } catch { /* Invalid receipt is a failure. */ }

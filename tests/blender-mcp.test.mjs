@@ -172,6 +172,18 @@ test("Blender standard edit previews without launching and exports a verified ne
   assert.deepEqual(fs.readdirSync(peer.directory).sort(), [path.basename(output), "peer.jsonl"].sort());
 });
 
+for (const mode of ["json-stdout", "structured-stdout"]) {
+  test(`Blender exports a verified STL from ${mode}`, async (t) => {
+    const peer = await start(t, mode);
+    const output = path.join(peer.directory, 'edited "quoted".stl');
+    const result = await peer.call("blender_mcp_edit_model", { stl_path: sample, output_path: output, operations: ["decimate:1"], execute: true });
+    assert.equal(result.isError, undefined, errorText(result));
+    assert.equal(data(result).output_verified, true);
+    assert.equal(fs.statSync(output).size, 134);
+    assert.deepEqual(fs.readdirSync(peer.directory).sort(), [path.basename(output), "peer.jsonl"].sort());
+  });
+}
+
 test("Blender edit discovery requires output_path for standard MCP while preserving legacy-only requests", async (t) => {
   await t.test("standard configuration advertises the output required by preview and execution", async (t) => {
     const peer = await start(t);
@@ -203,7 +215,7 @@ test("Blender edit discovery requires output_path for standard MCP while preserv
 });
 
 test("Blender standard edits reject text errors, missing receipts and invalid output instead of reporting success", async (t) => {
-  for (const mode of ["text-error", "wrong-receipt", "no-output", "bad-output"]) {
+  for (const mode of ["text-error", "wrong-receipt", "no-output", "bad-output", "json-wrong-receipt", "structured-wrong-receipt", "json-error", "structured-error"]) {
     await t.test(mode, async (t) => {
       const peer = await start(t, mode);
       const output = path.join(peer.directory, "edited.stl");
