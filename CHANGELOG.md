@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.104] – 2026-11-26
+
+### Fixed
+- Accept Blender Lab MCP export receipts from structured or JSON-encoded stdout while retaining request/path matching, output validation and error rejection. Thanks to @miserani for the reproduction and contract evidence in #177.
+
+### Changed
+- Track S1 and Bambu Scan as announced scanner/software capabilities, with Windows availability and explicit integration-contract gaps.
+
 ## [1.1.103] – 2026-11-24
 
 ### Added

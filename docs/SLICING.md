@@ -320,3 +320,10 @@ precedence.
 | `0700-8012 032015` | AMS-map length mismatches plate's filament count | Re-slice; don't hand-edit the file. Confirm AMS slot matches loaded filament |
 | Print starts, heats, no extrusion | Stale start-g-code from different printer profile | Re-slice with the correct printer profile |
 | CLI slicing fails | Missing profiles, unsupported flags, or slicer-version failure | Preserve the error; use matching presets or GUI-export a sliced `.gcode.3mf`. Do not upload the unsliced input |
+
+
+## Scanner inputs and Bambu Scan
+
+Bambu [announces S1 on November 26, 2026](https://blog.bambulab.com/easy-in-hand-pro-in-every-scan-bambu-lab-introduces-the-s1-3d-scanner/), with Bambu Scan available for Windows and macOS support forthcoming. The announcement documents blue-laser and infrared scanning modes, mesh editing and a handoff to Bambu Studio. This is published product evidence, not an implemented MCP scanner integration or a physical test.
+
+S1 discovery, scan controls, export automation and the Studio handoff still need a published SDK, CLI or protocol contract, including output formats and units. No such interface was verified in this release. Existing mesh tools can inspect supported files supplied by the user; that does not verify S1 export compatibility. Scanners and laser/cutting devices do not use FFF printer command routes or inherit their safety checks.
