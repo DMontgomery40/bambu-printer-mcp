@@ -326,4 +326,14 @@ precedence.
 
 Bambu [announces S1 on November 26, 2026](https://blog.bambulab.com/easy-in-hand-pro-in-every-scan-bambu-lab-introduces-the-s1-3d-scanner/), with Bambu Scan available for Windows and macOS support forthcoming. The announcement documents blue-laser and infrared scanning modes, mesh editing and a handoff to Bambu Studio. This is published product evidence, not an implemented MCP scanner integration or a physical test.
 
-S1 discovery, scan controls, export automation and the Studio handoff still need a published SDK, CLI or protocol contract, including output formats and units. No such interface was verified in this release. Existing mesh tools can inspect supported files supplied by the user; that does not verify S1 export compatibility. Scanners and laser/cutting devices do not use FFF printer command routes or inherit their safety checks.
+[Bambu Scan 01.00.00.50](https://wiki.bambulab.com/zh/software/bambu-scan/release-notes/01-00-00-50) documents STL mesh export. Its [file-format reference](https://wiki.bambulab.com/en/software/bambu-scan/manual/file-format) lists STL, OBJ and PLY meshes and ASC point clouds for import/export; STEP (`.stp`) is an import for measurement. OBJ can link material and texture files; STL does not preserve that colour information.
+
+For a manual scan-to-print workflow:
+
+1. In Bambu Scan on Windows, finish processing the mesh and export a separate STL. Keep the original Scan project.
+2. Supply that STL to `get_stl_info` and compare its dimensions with a known physical measurement. Confirm source units and orientation; the format reference does not establish export units or an up-axis. Do not infer scale from the scanner model or silently resize the mesh to fit a printer.
+3. For preparation with the optional CAD tools, declare the STL as an input to `cad_run` in mesh mode and use `load_scan` with explicit `source_units` (`m` or `mm`) and `up_axis`. See [the CAD guide](CAD.md#captured-scan-coordinates) for input snapshots and inspection. Otherwise, provide a correctly sized STL directly to `slice_stl` with the exact installed printer/nozzle preset. Existing material, plate, file and fresh-printer checks still apply before dispatch.
+
+Bambu's [project system](https://wiki.bambulab.com/en/software/bambu-scan/manual/project-system) uses `.bspr` indexes in project folders, `.bsprz` compressed projects and `.bssub` sub-projects; `.bspreset` stores presets. These are not printable meshes or supported MCP inputs. Do not rename them to STL/3MF or send them to a printer. ASC point clouds also need mesh generation before this STL workflow.
+
+Evidence: the export formats and Windows workflow are documented by Bambu; the MCP already processes ordinary STL inputs. No actual Bambu Scan export, scanner connection or physical scan has been verified here. S1 discovery, scan controls, automated export and programmatic Studio handoff still need a verified SDK, CLI or protocol contract. Scanners and laser/cutting devices do not use FFF printer command routes or inherit their safety checks.
