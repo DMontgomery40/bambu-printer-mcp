@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.1.105] – 2026-11-27
+
+### Changed
+- Document Bambu Scan 01.00.00.50 mesh exports and a manual STL preparation workflow, keeping proprietary projects, unverified units and scanner controls outside the supported integration.
+
 ## [1.1.104] – 2026-11-26
 
 ### Fixed
